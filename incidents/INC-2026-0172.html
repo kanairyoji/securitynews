@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Plugin4Shell でSHA固定が破られる — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0172</span>Plugin4Shell でSHA固定が破られる</h1>
+<header class="site-header">
+  <p class="subtitle">AIコーディングエージェント4種（Claude Code・Codex・GitHub Copilot・Gemini CLI）が、マーケットプレイスがコミットハッシュで固定したプラグインを取得したあと、手にしたコードがそのハッシュと一致するかを検証していなかった——プラグインのリポジトリを支配する者が、ピン留めされた SHA と同じ名前のブランチを作って既定ブランチにすると、git は ref を優先するためエージェントは「固定版を導入した」と報告しながら別のコードを実行する。Air Security は Plugin4Shell と名付け、既定で有効なプラグインの自動更新と組み合わさることでゼロクリックの遠隔コード実行になると指摘した。Anthropic は Claude Code 2.1.179、OpenAI は Codex 0.146.0 で修正し、GitHub Copilot は未修正、Google は Gemini CLI を廃止予定として修正しない</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月17日</span>
+  <span>最終更新: 2026年9月18日</span>
+</div>
+
+<div class="lead"><p>セキュリティ企業 <strong>Air Security</strong> は2026年9月17日、主要な<strong>AIコーディングエージェント4種</strong> ——Anthropic の <strong>Claude Code</strong>、OpenAI の <strong>Codex</strong>、Microsoft の <strong>GitHub Copilot</strong>、Google の <strong>Gemini CLI</strong>——に共通する脆弱性を <strong>Plugin4Shell</strong> として公表しました。プラグインの<strong>コミットハッシュによる固定（SHA ピン留め）が、実際には効いていない</strong>という指摘です。</p>
+<p>仕組みはこうです。マーケットプレイスは各プラグインを「レビュー済みの1つの版」に固定するため、コミットハッシュ（コードの特定の断面を指す長い文字列）を記録します。ところがエージェントは、<strong>その断面を取得するだけで、手元に来たコードが本当にそのハッシュのものかを検証していません</strong>。攻撃者がプラグインのリポジトリを支配していれば、<strong>ピン留めされた SHA とまったく同じ名前のブランチ</strong>を作り、それをリポジトリの既定ブランチに設定できます。git は「名前が有効な ref であり同時にオブジェクトIDでもあるとき、ref を優先する」（原文英語）ため、エージェントは<strong>「固定版を導入した」と報告しながら、攻撃者のコードをチェックアウト</strong>します。</p>
+<p>これがゼロクリックになるのは、<strong>プラグインの自動更新</strong>があるためです。Air によれば Claude Code と Codex は既定で導入済みプラグインを自動更新します。利用者がすでに信頼して入れたプラグインが、確認を求められることなく差し替わります。プラグインは<strong>利用者と同じ権限で動く</strong>ため、差し替わったコードは利用者のファイル、保存された認証情報、ログインできるシステムに到達します。</p>
+<p>重要な限定が2つあります。第一に、<strong>GitHub はコミットSHA に似たブランチ名・タグ名の作成を許していない</strong>ため、GitHub 上のリポジトリから導入したプラグインにはこのブランチの手口が効きません。各エージェントの既定カタログは GitHub を指しています。第二に、Air は「マーケットプレイスは Bitbucket や自社の git サーバでもホストでき、それらも対応構成である」として、GitHub の措置では不十分だと反論しています。</p>
+<p>対応は分かれました。<strong>Anthropic は Claude Code 2.1.179、OpenAI は Codex 0.146.0 で修正</strong>し、<strong>GitHub Copilot は未修正</strong>、<strong>Google は Gemini CLI を廃止予定として修正しない</strong>と回答しています。2026年9月18日時点で <strong>CVE は採番されておらず、4ベンダーのいずれもこの問題についてセキュリティアドバイザリを公表していません</strong>。実際の攻撃に使われた形跡も報告されていません。本記録は Air Security の公表と報道で事実を確認し、評価・示唆は本記録の判断として分けて書きます。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>CVE 番号とベンダーのセキュリティアドバイザリ</span><span class="b rsn">公表されていない</span><div class=sm>The Hacker News が2026年9月18日に確認した時点で、CVE は採番されておらず、 4ベンダーのいずれもこの問題についてアドバイザリを公表していない。 利用者は自社の脆弱性管理の仕組み（CVE を起点にする運用）ではこの問題を捕捉できない</div></li><li><span class=ui>実際に悪用された事例の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>報道時点で、実際の攻撃に使われた形跡は報告されていない。 ただし、差し替えが起きても利用者側には「固定版を導入した」と表示されるため、 悪用されていた場合に気づけたかどうかは別の問題である（本記録の観測）</div></li><li><span class=ui>すでに差し替えられたプラグインが、更新後に取り除かれるかどうか</span><span class="b rsn">公表されていない</span><div class=sm>The Hacker News は「更新によって、すでに差し替えられたプラグインが取り除かれるのか、 今後の差し替えを止めるだけなのかは、資料から分からない」と記している。 修正版へ更新しただけで安全と言えるかが確定しない</div></li><li><span class=ui>GitHub Copilot の修正の予定</span><span class="b rsn">公表されていない</span><div class=sm>Air は2026年6月に通知したが応答が無かったとしている。The Register の取材にも Microsoft は回答していない。GitHub の広報は「GitHub 上では悪用できない」と述べたが、 GitHub 以外のホストに置かれたマーケットプレイスへの対応については触れていない</div></li><li><span class=ui>Gemini CLI の企業向け提供における扱い</span><span class="b rsn">公表されていない</span><div class=sm>Google は消費者向けの Gemini CLI の提供を2026年6月に終え Antigravity を勧めているが、 企業向けの利用は更新とともに継続するとしている。本件の修正がその更新に含まれるかは 明らかにされていない</div></li><li><span class=ui>日本の組織における影響</span><span class="b rsn">公表されていない</span><div class=sm>国内での利用状況・被害の有無を示す公表は本記録の作成時点で見つかっていない。 Claude Code・Copilot は国内の開発現場でも広く使われているが、 自社の git サーバや Bitbucket を独自のマーケットプレイスにしている組織が どれだけあるかは分からない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Air Security</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>企業のAIエージェントの保護を主眼とするセキュリティ企業。研究者 Or Nevo、Dor Granat、 Niv Hoffman が本件を発見・公表した</p><p class=org-p><span class=org-l>影響</span>2026年5月に4エージェントすべてに対して動作する実証を作成し、6月に4ベンダーへ 協調開示、9月17日に公表した。「AIエージェントの生態系における最初のサプライチェーン脆弱性」と 位置づけている</p></div></div><div class=org><div class=org-h><span class=org-n>Anthropic（Claude Code）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AIコーディングエージェント Claude Code の提供者。プラグインのマーケットプレイスを持つ</p><p class=org-p><span class=org-l>影響</span>2026年6月17日、Claude Code 2.1.179 で修正したことを Air に確認した。 ただし2.1.179 のリリースノートにこの修正の記載は無いと報じられている</p></div></div><div class=org><div class=org-h><span class=org-n>OpenAI（Codex）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AIコーディングエージェント Codex の提供者</p><p class=org-p><span class=org-l>影響</span>2026年8月12日、Codex 0.146.0 で修正したことを Air に確認した。 The Hacker News は、OpenAI の公開された修正が同じバグを 「git は要求されたコミットSHA をブランチ名として解釈しうる」（原文英語）と記述していると伝えている</p></div></div><div class=org><div class=org-h><span class=org-n>Microsoft / GitHub（GitHub Copilot）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AIコーディングエージェント GitHub Copilot の提供者。あわせて、多くのプラグインが 置かれているコードホスト GitHub の運営者でもある</p><p class=org-p><span class=org-l>影響</span>Air は2026年6月に通知したが修正は出ていないとする。GitHub の広報は 「SHA の悪用を防ぐため、GitHub はコミットSHA に似たブランチ名・タグ名の作成を 利用者に許していない。この緩和により、報告された脆弱性は GitHub 上では悪用できない」 （原文英語）と回答した。Air は、Copilot が GitHub 以外のプラットフォーム上の マーケットプレイスにも対応しているため依然として影響を受けると反論している</p></div></div><div class=org><div class=org-h><span class=org-n>Google（Gemini CLI）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AIコーディングエージェント Gemini CLI の提供者</p><p class=org-p><span class=org-l>影響</span>2026年8月4日、Gemini CLI を廃止予定であるため修正しないと Air に回答した。 利用者には Antigravity への移行を勧めている。Gemini CLI は ブランチ名を FETCH_HEAD とする別の手口の対象になる</p></div></div><div class=org><div class=org-h><span class=org-n>AIコーディングエージェントの利用者（開発者）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>エージェントにプラグイン・スキルを導入して開発業務に用いている個人および組織</p><p class=org-p><span class=org-l>影響</span>プラグインは利用者と同じ権限で動くため、差し替えられたコードは利用者のファイル・ 保存された認証情報・ログインできるシステムに到達しうる。 実際の被害は報告されていない</p></div></div><div class=org><div class=org-h><span class=org-n>（攻撃者）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本件は研究者による公表であり、実際の攻撃は確認されていない。 成立の条件は「プラグインのリポジトリを支配していること」—— 悪性のプラグインを自ら登録してレビューを通したあとに中身を差し替えるか、 正規の作者のリポジトリを乗っ取るかのいずれかである</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>影響を受けるAIコーディングエージェントの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>製品</span></div><div class=fn>Claude Code・Codex・GitHub Copilot・Gemini CLI</div></div><div class=fig><div class=fh><span class=fl>2026年9月18日時点で修正が提供されていない製品の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>製品</span></div><div class=fa>2026年9月18日 時点</div><div class=fn>GitHub Copilot（未修正）と Gemini CLI（廃止予定のため修正しない）</div></div><div class=fig><div class=fh><span class=fl>ベンダーへの開示（2026年6月）から公表（9月17日）まで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>か月</span></div><div class=fn>Air は6月の開示から約3か月を置いて公表した。この間に修正したのは2社で、 残る2製品は未修正のまま公表に至っている</div></div><div class=fig><div class=fh><span class=fl>同じ研究チームの先行研究で悪性スキルが到達したエージェント数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>134,000<span class=fu>エージェント</span></div><div class=fn>本事案の被害ではない。Air の先行研究（SkillJacking・RepoJacking）で、 925 の乗っ取られたスキルが134,000のエージェントに到達し、 別の検証では偽のスキルが約26,000のエージェントに届いたとされる。 プラグイン・スキルの配布経路がどの規模に届くかを示す背景値として併記する</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>プラグインのリポジトリを支配する者が、マーケットプレイスにピン留めされたコミットSHA と 同じ名前のブランチを作って既定ブランチに設定すると、git が ref を優先するため、 エージェントは固定版を導入したと報告しながら攻撃者のコードをチェックアウトする。 既定で有効なプラグインの自動更新と組み合わさることで、利用者の操作を要さない 遠隔コード実行になる。実際の悪用は確認されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">third_party_research</span><span class=srcs>[1] [2]</span></div><div>攻撃者がプラグインのリポジトリの支配を得る。経路は2つで、 ①無害なプラグインを自らマーケットプレイスへ登録してレビューを通す、 ②正規の作者のリポジトリを乗っ取る（同じ研究チームが SkillJacking・RepoJacking として 実証している）</div><div class=fn>根拠: Air Security の公表</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">third_party_research</span><span class=srcs>[1] [2] [3]</span></div><div>ピン留めされた SHA と同じ名前のブランチを作り、リポジトリの既定ブランチに設定する。 git は「名前が有効な ref であり同時にオブジェクトIDでもあるとき ref を優先する」ため、 エージェントの `git checkout &lt;sha&gt;` は攻撃者のブランチを解決する。 Gemini CLI に対しては、既定ブランチを FETCH_HEAD と名付けることで `git checkout FETCH_HEAD` を乗っ取る</div><div class=fn>根拠: Air Security の公表（実証コードと git の挙動の再現）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">third_party_research</span><span class=srcs>[1] [3]</span></div><div>既定で有効なプラグインの自動更新により、利用者の操作なしに差し替えられたコードが 導入され実行される。Air は Claude Code と Codex の自動更新が既定で動くとしている （The Hacker News は、自動更新が既定で有効なのは各エージェント自身の GitHub 上のマーケットプレイスに限られると補足している）</div><div class=fn>根拠: Air Security の公表、The Hacker News の検証</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">third_party_research</span><span class=srcs>[1] [2]</span></div><div>プラグインは利用者と同じ権限で動くため、差し替えられたコードは利用者のファイル、 保存された認証情報、ログインできるシステムに到達しうる。 実際にこの段階まで至った事例は報告されていない</div><div class=fn>根拠: Air Security の公表</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 永続化 / C2通信 / 持ち出し</span><div class=sm>実攻撃が観測されていないため、攻撃者が差し替え後に何を行うかは 実証の範囲でしか語られていない</div></li></ul></div></div>
+<section id="s5"><h2>「レビュー済みのコミットに固定した」という表示のまま、別のコードが動く<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>Air Security が公表した事実は次のとおりである。</p>
+<ul>
+<li>マーケットプレイスは各プラグインを<strong>コミットハッシュ（SHA）で1つのレビュー済みの版に固定</strong>する</li>
+<li>しかしエージェントは、<strong>取得したコードがそのハッシュと一致するかを検証していない</strong></li>
+<li>Claude Code・Codex・GitHub Copilot が実行するのは、おおむね次の2行である</li>
+</ul>
+<p><code>git clone &lt;plugin repo&gt; ./
+  git checkout aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</code></p>
+<ul>
+<li>攻撃者が<strong>ピン留めされた SHA と同じ名前のブランチ</strong>を作り、リポジトリの既定ブランチに設定すると、git は「名前が有効な ref であり同時にオブジェクトIDでもあるとき <strong>ref を優先する</strong>」（原文英語）ため、<strong>攻撃者のブランチがチェックアウトされる</strong></li>
+<li>Gemini CLI は別の経路である。<code>git fetch origin &lt;sha&gt;</code> のあと <code>git checkout FETCH_HEAD</code> を実行するため、<strong>既定ブランチを <code>FETCH_HEAD</code> と名付ける</strong>と、取得したコミットではなくそのブランチが解決される</li>
+<li>修正は1行の断言で済む。Air は<code>test "$(git rev-parse HEAD)" = "&lt;pinned-sha&gt;" || abort</code> を示している</li>
+</ul>
+<p>利用者から見える表示は変わらない。<strong>エージェントは「固定版を導入した」と報告しながら、別のコードを実行する</strong>。ここが本件の核心である。</p></section>
+<section id="s6"><h2>ゼロクリックになるのは、プラグインの自動更新があるため<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>脆弱性そのものは「検証の欠落」だが、<strong>利用者の操作を一切要さない</strong>攻撃に仕立てているのは別の機能である。</p>
+<p>Air によれば、<strong>Claude Code と Codex は既定で導入済みプラグインを自動更新する</strong>。上流でピン留めされたコミットが差し替われば、利用者が何もしなくてもプラグインが入れ替わる。<strong>すでに信頼して導入したものが、確認を求められることなく変わる</strong>。</p>
+<p>攻撃の筋道は2つ挙げられている。</p>
+<ol>
+<li><strong>無害なプラグインを自分でマーケットプレイスへ登録</strong>し、レビューを通したうえで、あとから中身を悪性のものへ差し替える</li>
+<li><strong>正規の作者のリポジトリを乗っ取り</strong>、そのプラグインを導入している全エージェントへ悪性版を押し出す</li>
+</ol>
+<p>2 について、同じ研究チームは以前 SkillJacking・RepoJacking としてリポジトリ乗っ取りが実際に規模を持って成立することを示している。Air の主張は「<strong>乗っ取りは大規模に起きる。そして Plugin4Shell は、それを封じ込めるために作られた仕組みを破る</strong>」（原文英語）というものである。</p>
+<p>プラグインは<strong>利用者と同じ権限で動く</strong>。したがって差し替えられたコードは、その人のファイル、保存された認証情報、ログインできるシステムに到達する。</p></section>
+<section id="s7"><h2>GitHub 上では成立しないが、それは前提条件であって修正ではない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>影響範囲には明確な限定がある。<strong>GitHub はコミットSHA に似たブランチ名・タグ名の作成を許していない。</strong> GitHub の広報は The Register にこう答えている。</p>
+<blockquote>
+<p>SHA の悪用を防ぐため、GitHub はコミットSHA に似たブランチ名・タグ名を利用者が作ることを許していない。この緩和により、報告された脆弱性は GitHub 上では悪用できない。（原文英語）</p>
+</blockquote>
+<p>The Hacker News が2026年9月18日に確認したところ、<strong>Anthropic のコミュニティカタログ、および Claude Code と Copilot の既定カタログのプラグインは、すべて GitHub リポジトリを指していた</strong>。自動更新が既定で有効なのも、各エージェント自身の組み込みマーケットプレイス（GitHub 上）に限られ、外部のものは無効か任意である。<strong>既定のマーケットプレイスからしかプラグインを入れていない利用者は、ブランチ名を使う手口の対象にならない。</strong></p>
+<p>それでも、これを「対処済み」と読むのは早い（本記録の評価）。理由は3つある。</p>
+<ul>
+<li><strong>Air の反論</strong>: マーケットプレイスは Bitbucket や自社の git サーバでもホストでき、Copilot はそうした構成にも対応している。<strong>対応している以上、影響は残る</strong></li>
+<li><strong>Gemini CLI の手口は別</strong>: 既定ブランチを <code>FETCH_HEAD</code> と名付ける経路について、GitHub のハッシュ状の名前を禁じる規則が明確に塞いでいるとは確認されていない</li>
+<li><strong>コードホストの規則は、いつでも自社の外にある</strong>: 今日の GitHub の仕様が明日も同じである保証を、利用者側は持っていない</li>
+</ul>
+<p><strong>本来の防御はエージェント側の1行の検証</strong>であり、コードホストの禁止規則はその代わりにはならない。</p></section>
+<section id="s8"><h2>CVE も、ベンダーのアドバイザリも出ていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>2026年9月19日時点で、次の点は確認できていない。</p>
+<ul>
+<li><strong>CVE 番号</strong>（採番されていない）</li>
+<li><strong>4ベンダーのセキュリティアドバイザリ</strong>（いずれも公表していない）。Anthropic の 2.1.179 のリリースノートにもこの修正の記載は無いと報じられている</li>
+<li><strong>実際に悪用された事例</strong>（報告されていない）</li>
+<li><strong>すでに差し替えられたプラグインが、更新後に取り除かれるかどうか</strong></li>
+<li><strong>GitHub Copilot の修正の予定</strong></li>
+<li><strong>Gemini CLI の企業向け提供で本件が修正されるか</strong></li>
+<li><strong>日本の組織における利用状況と影響</strong></li>
+</ul>
+<p>この欠落は運用に直接効く。<strong>CVE を起点に脆弱性を管理している組織は、この問題を自社の仕組みでは捕捉できない。</strong> 検知も配布も、通常の脆弱性管理の外側で起きている（本記録の観測）。</p></section>
+<section id="s9"><h2>エージェントの「信頼の根拠」は、まだ検証されていない前提の上に積まれている（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p><strong>第一に、破られたのは実装ではなく「安心の設計」である。</strong> SHA ピン留めは、供給網攻撃への対策として推奨されてきた仕組みである。「レビュー済みの版に固定してあるから安全」という説明が、利用者にも監査にも通ってきた。本件はその説明の根拠が検証されていなかったことを示した。<strong>対策として機能していると信じられていたものが、実は表示だけだった</strong>という形は、2026年9月14日の Brevo の事案（CDN のエッジで書き換えられ、オリジンのファイルは無改変のため完全性チェックが働かなかった。INC-2026-0171）と同じ構図である。</p>
+<p><strong>第二に、権限の設計がそのまま被害の上限になる。</strong> プラグインは利用者と同じ権限で動く。開発者の端末には、ソースコード・クラウドの資格情報・SSH 鍵・本番への接続情報が揃っている。<strong>エージェントに与えた権限が、そのまま供給網攻撃の到達範囲</strong>になる。</p>
+<p><strong>第三に、修正の配布が製品の寿命に依存している。</strong> 4製品のうち、2つは修正され、1つは未修正、1つは「廃止予定だから直さない」である。<strong>利用者が選んだ製品の事業上の位置づけが、脆弱性が直るかどうかを決めている</strong>。これは技術の問題ではなく調達の問題であり、CISO が扱うべき論点である。</p>
+<p><strong>第四に、この種の問題は今後 CVE の外側で増える。</strong> 開示から公表まで3か月あったにもかかわらず、CVE も各社のアドバイザリも出ていない。AIエージェントの拡張機能は、OS のパッケージやライブラリと違い、<strong>脆弱性情報の流通経路がまだ整っていない</strong>。当面、利用者は研究者の公表と報道を自分で拾い、自社の利用状況と突き合わせる必要がある。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_versions</th><td>Claude Code は 2.1.179 より前、Codex は 0.146.0 より前が影響を受ける。 GitHub Copilot は修正が提供されておらず全バージョンが対象。 Gemini CLI は廃止予定として修正されないため、すべての導入が影響を受けたままとされる。 ただし成立の条件は「プラグインのリポジトリを支配できること」と 「そのリポジトリを置くコードホストがコミットSHA に似たブランチ名を許すこと」であり、 GitHub 上のリポジトリから導入したプラグインにはブランチ名の手口が効かない （Gemini CLI の FETCH_HEAD の手口については、GitHub の規則が塞いでいるとは確認されていない）</td></tr><tr><th>exploitation_status</th><td>実際の攻撃に使われた形跡は報告されていない（2026年9月18日時点。The Hacker News の確認）。 Air Security は2026年5月に4エージェントすべてに対して動作する実証を作成している。 攻撃者に求められるのは、悪性プラグインを自ら登録してレビュー通過後に差し替えるか、 正規の作者のリポジトリを乗っ取ることであり、未知の脆弱性や認証情報の窃取は要らない</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> Claude Code を 2.1.179 以降、Codex を 0.146.0 以降へ更新する　<b>副作用:</b> すでに差し替えられたプラグインが更新によって取り除かれるのか、 今後の差し替えを止めるだけなのかは公表されていない。 「更新したから安全」とは言い切れず、導入済みプラグインの棚卸しが別途要る</div><div class=sub><b>item:</b> プラグインの自動更新を無効にする　<b>副作用:</b> 不具合修正やセキュリティ修正の適用も止まる。 手動更新に切り替えるなら、更新を確認する担当と頻度を決めないと、 古い版が放置されて別のリスクに変わる</div><div class=sub><b>item:</b> プラグインの導入元を、既定の（GitHub 上の）マーケットプレイスに限定する　<b>副作用:</b> 自社の git サーバや Bitbucket で内製プラグインを配っている組織は、 その配布を止めるか別の手段へ移す必要がある。 開発チームの生産性のために入れた仕組みを外すことになる</div><div class=sub><b>item:</b> エージェントの権限（到達できるファイル・資格情報・ネットワーク）を絞る　<b>副作用:</b> エージェントが実行できる作業が減り、利用者が権限を戻そうとする圧力が生じる。 絞る範囲は業務内容に応じて個別に決める必要があり、一律の設定では運用が回らない</div><div class=sub><b>item:</b> GitHub Copilot と Gemini CLI については、修正が無いことを前提に利用の可否を判断する　<b>副作用:</b> Copilot は Fortune 500 の約9割が使うとされ、代替への移行は容易でない。 利用を続ける場合は、導入元の限定と権限の制限で残余のリスクを受け入れる判断になる</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> プラグインのリポジトリに、40桁の16進数に見えるブランチ名・タグ名が存在する　<b>補足:</b> 自社の git サーバ・Bitbucket をマーケットプレイスにしている場合の点検項目。 GitHub はこの形の名前の作成を許していない</div><div class=sub><b>item:</b> プラグインのリポジトリの既定ブランチが FETCH_HEAD という名前になっている　<b>補足:</b> Gemini CLI を対象とする手口</div><div class=sub><b>item:</b> エージェントが報告するプラグインの版と、実際の作業ツリーの HEAD（git rev-parse HEAD）が一致しない　<b>補足:</b> Air が示す修正そのもの（test &quot;$(git rev-parse HEAD)&quot; = &quot;&lt;pinned-sha&gt;&quot; || abort）の考え方を、 点検に転用したもの（本記録の整理）</div><div class=fn>本記録に載せた点検項目は公表資料から本記録の作成者が整理したものであり、 ベンダーが公式に示した検知手順ではない</div></td></tr><tr><th>再発防止策</th><td><ul class=cl><li>チェックアウト後に HEAD とピン留めされた SHA を突き合わせる検証をエージェント側に入れる（Air が示した修正）</li><li>Claude Code 2.1.179・Codex 0.146.0 での修正の適用</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年5月</td><td class=nowrap><span class="b kind">発生</span></td><td>Air Security が4つのエージェントすべてに対して動作する実証攻撃を作成した</td></tr><tr><td class="sm nowrap tw">2026年6月</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>Anthropic・OpenAI・Microsoft（GitHub）・Google の4ベンダーへ協調開示した</td></tr><tr><td class="sm nowrap tw">2026年6月17日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Anthropic が Claude Code 2.1.179 で修正したことを Air に確認した</td></tr><tr><td class="sm nowrap tw">2026年8月4日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>Google が、Gemini CLI を廃止予定であるため修正しないと Air に回答した。 利用者には Antigravity への移行を勧めている</td></tr><tr><td class="sm nowrap tw">2026年8月12日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>OpenAI が Codex 0.146.0 で修正したことを Air に確認した</td></tr><tr><td class="sm nowrap tw">2026年9月17日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Air Security が Plugin4Shell として公表した。研究者は Or Nevo、Dor Granat、Niv Hoffman。 「修正はエージェント側で出すしかなく、修正が存在する製品では更新だけが完全な緩和策である」 （原文英語）とした</td></tr><tr><td class="sm nowrap tw">2026年9月17日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>GitHub の広報が The Register に対し、コミットSHA に似たブランチ名・タグ名の作成を 許していないため GitHub 上では悪用できないと回答した。 Air は、Copilot が Bitbucket 等のマーケットプレイスにも対応しているため 緩和としては不十分だと反論した</td></tr><tr><td class="sm nowrap tw">2026年9月18日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Hacker News が各エージェントの既定カタログを確認し、Anthropic のコミュニティ カタログおよび Claude Code・Copilot の既定カタログのプラグインがすべて GitHub リポジトリを指していることを報じた。あわせて、CVE が採番されておらず、 4ベンダーのいずれもセキュリティアドバイザリを公表しておらず、 実際の攻撃に使われた形跡も無いことを確認したと伝えた</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">当事者の公表なし</span><span class=ui>ベンダーによる公式のアドバイザリが存在しない</span><div class=sm>The Hacker News が2026年9月18日に確認した時点で、CVE は採番されておらず、 4ベンダーのいずれもこの問題についてセキュリティアドバイザリを公表していない。 本記録の作成者も2026年9月19日に openai/codex のリリースページ（rust-v0.146.0）と anthropics/claude-code の CHANGELOG を確認したが、 前者に本件の修正に関する記述は見当たらず、後者は 2.1.179 の項目自体が 現行の文書に残っていなかった。したがって本記録の事実関係は、 発見者（Air Security）の公表と報道に依拠している</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>OpenAI の修正がバグをどう記述しているか</span><div class=sm>The Hacker News は、OpenAI の公開された修正が 「git は要求されたコミットSHA をブランチ名として解釈しうる」、 その結果 plugin source が「ピン留めしたのとは別のコミットを実体化する」 （いずれも原文英語）と記述していると伝えている。 本記録の作成者は Codex 0.146.0 のリリースページを確認したが、 この記述を見つけられなかった。引用の出所は The Hacker News である</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響範囲の評価（GitHub の措置で足りるか）</span><div class=sm>GitHub は「コミットSHA に似たブランチ名・タグ名の作成を許していないため、 報告された脆弱性は GitHub 上では悪用できない」（原文英語）とする。 Air は「マーケットプレイスは Bitbucket 等でもホストでき、Copilot はそれに対応しているため 依然として脆弱」と反論している。The Hacker News は、既定カタログのプラグインが すべて GitHub を指しており、自動更新が既定で有効なのも GitHub 上の組み込み マーケットプレイスに限られることを確認したうえで、 「既定のマーケットプレイスからのみ導入している利用者は、ブランチ名を使う手口の 対象にならない」と整理している。本記録は3者の主張をいずれも記載した</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>自動更新が既定で有効な範囲</span><div class=sm>Air は「Claude Code と Codex は既定で導入済みプラグインを自動更新する」とする。 The Hacker News は「自動更新が既定で有効なのはエージェント自身の組み込み マーケットプレイス（GitHub 上）に限られ、外部のものは無効か任意である」と 各社の文書にもとづいて補足している。両者は矛盾ではなく粒度の違いだが、 危険性の見積もりは変わる</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>すでに差し替えられたプラグインの扱い</span><div class=sm>The Hacker News は「更新によって、すでに差し替えられたプラグインが取り除かれるのか、 今後の差し替えを止めるだけなのかは、資料から分からない」と明記している。 更新だけで安全と言えるかが確定しない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ピン留めされた SHA と同じ名前のブランチを作ることで、固定版の表示のまま攻撃者のコードが実行される経路</div><div class=svgwrap><svg viewBox="0 0 794 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,118.0 C193.0,118.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C295.0,60.0 295.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,257.0 C397.0,257.0 397.0,72.0 424,72.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,72.0 424,72.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,72.0 C499.0,72.0 499.0,168.0 424,168.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,251.0 C499.0,251.0 499.0,72.0 424,72.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,168.0 C601.0,168.0 601.0,84.0 628,84.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,84.0 C703.0,84.0 703.0,147.0 628,147.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,147.0 C703.0,147.0 703.0,218.0 628,218.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,199.0 C193.0,199.0 193.0,257.0 220,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="81.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プラグインのリポジトリを</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">支配する者</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">自ら登録して差し替える／</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">作者のリポジトリを乗っ取</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ピン留め SHA と同名</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のブランチ（既定ブランチ</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に設定）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">Gemini CLI に</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">は FETCH_HEAD</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コードホスト（Bitbu</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">cket・自社 git </text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サーバ）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">GitHub はハッシュ</text><text x="295.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">状の名前を禁止</text><rect x="220" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プラグインのマーケットプ</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レイス</text><text x="295.0" y="269.0" text-anchor="middle" fill="#64b5f6" font-size="10">レビュー済みのコミットハ</text><text x="295.0" y="281.0" text-anchor="middle" fill="#64b5f6" font-size="10">ッシュで固定</text><rect x="424" y="28.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="50.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エージェントの git </text><text x="499.0" y="64.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">clone / git </text><text x="499.0" y="78.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">checkout &lt;s…</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">git は ref を </text><text x="499.0" y="103.0" text-anchor="middle" fill="#f48fb1" font-size="10">object id より</text><rect x="424" y="130.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="152.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">欠けている検証（rev-</text><text x="499.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">parse HEAD と</text><text x="499.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> SHA の突き合わせ）</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">これが本件の脆弱性</text><rect x="424" y="220.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プラグインの自動更新（既</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">定で有効）</text><text x="499.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">利用者の操作を不要にする</text><rect x="628" y="60.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実行される攻撃者のコード</text><text x="703.0" y="95.0" text-anchor="middle" fill="#f48fb1" font-size="10">表示は「固定版」のまま</text><rect x="628" y="122.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開発者の端末（利用者と同</text><text x="703.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">じ権限）</text><rect x="628" y="186.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ファイル・保存された認証</text><text x="703.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">情報・ログインできるシス</text><text x="703.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">テム</text><rect x="16" y="169.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Air Security</text><text x="91.0" y="204.0" text-anchor="middle" fill="#80cbc4" font-size="10">5月に実証・6月に開示・</text><text x="91.0" y="216.0" text-anchor="middle" fill="#80cbc4" font-size="10">9/17 公表</text></svg></div><div class=fn>layer 0 は攻撃者（プラグインのリポジトリを支配する者）。layer 1 はコードホストと マーケットプレイス。layer 2 はエージェントの取得・チェックアウト処理と、 そこで抜けている検証。layer 3 は実行される攻撃者のコードと到達先。 GitHub はハッシュ状のブランチ名を禁止しているため、この経路は Bitbucket・自社 git サーバで成立する。実際の悪用は確認されていない。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>マーケットプレイスのレビューは登録時点のコードを見る。 レビュー後に中身が差し替わることを前提にした継続的な確認は行われていない</div></td><td><div class=ctl><span class="b eff">検知できた</span>プラグインの作者・リポジトリの所有権の変更を監視し、変更時に再レビューを求める</div><div class=ctl><span class="b eff">影響を限定できた</span>導入するプラグインを、社内で審査した一覧に限定する（許可制）</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>利用者側の表示は「固定版を導入した」のままである。 エージェントが HEAD を検証しない限り、利用者が気づく手がかりは無い</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>チェックアウト後に test &quot;$(git rev-parse HEAD)&quot; = &quot;&lt;pinned-sha&gt;&quot; を確認して不一致なら中止する（Air が示した修正）</div><div class=ctl><span class="b eff">侵入を防げた</span>コミットSHA に似たブランチ名・タグ名の作成を、コードホスト側で禁止する（GitHub の措置）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>プラグインの更新をログに残し、差分を確認する運用があれば気づける。 既定の運用では、更新は利用者に通知されない</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>プラグインの自動更新を無効にし、更新を手動の確認を伴う作業にする</div><div class=ctl><span class="b eff">検知できた</span>エージェントが導入・更新したプラグインの版と取得元を記録し、定期的に突き合わせる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>端末側の EDR や認証情報へのアクセス監視が働けば捉えうるが、 エージェント自身が日常的にファイルと資格情報へ触れるため、 正常な動作との区別は難しい（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>エージェントを実行する環境を分離し（コンテナ・専用アカウント）、到達できる範囲を限定する</div><div class=ctl><span class="b eff">影響を限定できた</span>開発者端末の長期有効な資格情報を秘密管理基盤へ移し、短命な資格情報に置き換える</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>AIコーディングエージェントの拡張機能を、ソフトウェア資産として台帳に載せる</div><div class=lw>プラグインは利用者と同じ権限で動き、開発者端末のソースコード・認証情報・ 接続先に到達する。それでいて、通常のソフトウェア資産管理の外側にあることが多い</div><div class=la><b>取るべき行動</b> どのエージェントを誰が使い、どのプラグイン・スキルをどのマーケットプレイスから 導入しているかを一覧化する。導入を許可制にし、一覧に無いものを検出する仕組みを決める</div></li><li><div class=lp>「CVE が出ていない＝問題が無い」と読める運用を点検する</div><div class=lw>本件は2026年6月にベンダーへ開示され9月に公表されたが、CVE は採番されず、 4ベンダーのいずれもアドバイザリを出していない。 CVE を起点にした脆弱性管理では捕捉できない</div><div class=la><b>取るべき行動</b> 利用しているAIエージェント・拡張機能について、ベンダーのリリースノートと 研究者の公表を定期的に確認する担当と頻度を決める。 脆弱性管理の入力を CVE データベースだけに依存させない</div></li><li><div class=lp>採用する開発ツールの「製品の寿命」を、セキュリティの判断材料に入れる</div><div class=lw>Google は Gemini CLI を廃止予定として本件を修正しないと回答した。 利用者が選んだ製品の事業上の位置づけが、脆弱性が直るかどうかを決めている</div><div class=la><b>取るべき行動</b> 主要な開発ツールについて、提供者の保守方針（サポート期限・修正の提供範囲）を 調達時に確認し、契約または記録に残す。廃止予定が公表された製品は、 移行の期限を決めて計画に載せる</div></li><li><div class=lp>自社の git サーバ・Bitbucket を拡張機能の配布に使っているかを確認する</div><div class=lw>GitHub はコミットSHA に似たブランチ名を許さないためこの手口が効かないが、 Bitbucket や自社サーバでは成立する。Copilot はそうした構成にも対応している</div><div class=la><b>取るべき行動</b> 社内で独自のプラグイン・スキルのマーケットプレイスを立てていないかを確認し、 立てている場合は、コードホストがハッシュ状のブランチ名を許すかを検証する。 許す場合は、ホスト側の禁止設定かエージェント側の更新のどちらで塞ぐかを決める</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>Claude Code は 2.1.179 以降、Codex は 0.146.0 以降へ更新する</div><div class=lw>修正はエージェント側にしか入れられない。マーケットプレイスは利用者のために この問題を直せない（検証は利用者の端末で行われるため）</div><div class=la><b>取るべき行動</b> 利用中の版を確認し、2.1.179／0.146.0 以降へ更新する。 更新後も、すでに差し替えられたプラグインが取り除かれるかは公表されていないため、 導入済みプラグインを一度棚卸しし、不要なものは削除する</div></li><li><div class=lp>ピン留めを信頼する前に、ピン留めが検証されているかを確かめる</div><div class=lw>マーケットプレイスがコミットハッシュで固定していても、 エージェントが `git rev-parse HEAD` と突き合わせていなければ意味を持たない</div><div class=la><b>取るべき行動</b> 自社で同種の仕組み（依存の固定、コンテナイメージのダイジェスト指定、 スクリプトの取得）を作っている場合は、取得したものが指定した識別子と 一致するかを実際に検証しているかコードで確認する。していなければ `test &quot;$(git rev-parse HEAD)&quot; = &quot;&lt;pinned-sha&gt;&quot; || abort` に相当する検証を足す</div></li><li><div class=lp>プラグイン・拡張機能の自動更新を、既定のまま使うかを意識的に決める</div><div class=lw>本件がゼロクリックになったのは自動更新のためである。 一方で自動更新を止めると、修正の適用も止まる</div><div class=la><b>取るべき行動</b> エージェントごとに自動更新の設定を確認し、既定のマーケットプレイス（GitHub 上）からの 更新は許し、外部ホストからの更新は手動にする、といった方針を決めて設定に反映する。 決めた内容を開発環境の標準設定として配布する</div></li><li><div class=lp>エージェントに与える権限を、端末の全権限から切り離す</div><div class=lw>プラグインは利用者と同じ権限で動く。開発者端末には本番への接続情報や クラウドの資格情報が揃っていることが多い</div><div class=la><b>取るべき行動</b> エージェントを専用のコンテナ・専用アカウントで動かし、 参照できるディレクトリと到達できるネットワークを限定する。 長期有効な資格情報は端末から取り除き、短命なトークンに置き換える</div></li><li><div class=lp>自社ホストのマーケットプレイスで、ハッシュ状のブランチ名を禁止する</div><div class=lw>攻撃の前提は、コードホストが40桁の16進数に見えるブランチ名の作成を許すことである</div><div class=la><b>取るべき行動</b> 自社の git サーバ・Bitbucket で、40桁の16進数に一致するブランチ名・タグ名の作成を フック（pre-receive 等）で拒否する。既存のリポジトリに該当する名前が無いかも走査する</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 開発者がAIコーディングエージェントにプラグイン・スキルを導入して業務に使っている</td><td class=sm>プラグインは利用者と同じ権限で動き、差し替えられたコードは ファイル・認証情報・ログインできるシステムに到達しうる</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自社の git サーバまたは Bitbucket を、プラグイン・スキルの配布元にしている</td><td class=sm>GitHub はコミットSHA に似たブランチ名を許さないためこの手口が効かないが、 それ以外のホストでは成立する</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> エージェントのプラグインの自動更新を既定のまま使っている</td><td class=sm>自動更新が、利用者の操作を要さない差し替え（ゼロクリック）を成立させている</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 開発者端末に、本番環境やクラウドへの長期有効な資格情報が保存されている</td><td class=sm>エージェントに与えた権限がそのまま被害の上限になる</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性管理の入力が CVE データベースに限られている</td><td class=sm>本件は CVE が採番されておらず、4ベンダーのいずれもアドバイザリを公表していない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 採用している開発ツールの保守方針（サポート期限・修正の提供範囲）を把握していない</td><td class=sm>Google は Gemini CLI を廃止予定として修正しないと回答し、GitHub Copilot は未修正のままである</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年7月29日 OpenAI</span> <a href="https://github.com/openai/codex/releases/tag/rust-v0.146.0" target="_blank" rel="noreferrer noopener nofollow">Release 0.146.0 · openai/codex</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(修正が入ったとされる版の一次資料。本記録の作成者が2026年9月19日に確認したが、 本件〈コミットSHA をブランチ名として解釈しうる問題の修正〉に関する記述は 見当たらなかった。The Hacker News は OpenAI の公開された修正がこのバグを 記述していると報じているが、本記録の作成者はその記述をこのページで確認できていない。 「一次資料に当たったが載っていない」ことの出典として挙げる)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年6月17日（版の公開日） Anthropic</span> <a href="https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md" target="_blank" rel="noreferrer noopener nofollow">anthropics/claude-code CHANGELOG.md</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(Claude Code 2.1.179 の一次資料として確認を試みたもの。本記録の作成者が 2026年9月19日に取得した時点で、文書に残っていたのは 2.1.267 以降で、 2.1.179 の項目自体が見つからなかった。The Hacker News も 「2.1.179 のリリースノートに修正の記載は無く、修正されたという説明は Air によるものだ」と 報じている)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月17日 Air Security</span> <a href="https://www.air.security/blog-posts/plugin4shell" target="_blank" rel="noreferrer noopener nofollow">Plugin4Shell - Zero Click RCE Vulnerability found in top 4 most popular coding agents</a> <span class="b kind">調査レポート</span><span class=sm>（(発見者による公表。本記録の作成者が2026年9月19日に取得した。 2つの攻撃手口〈ピン留め SHA と同名のブランチ／Gemini CLI の FETCH_HEAD〉、 エージェントが実行する git コマンド、「when a name is both a valid ref and an object id, git prefers the ref」という git の挙動、修正の1行 〈test &quot;$(git rev-parse HEAD)&quot; = &quot;&lt;pinned-sha&gt;&quot; || abort〉、 開示のタイムライン〈5月 発見・6月 開示・6月17日 Claude Code 2.1.179・ 8月4日 Google が修正しないと回答・8月12日 Codex 0.146.0・9月17日 公表〉、 GitHub が40桁のブランチ名を拒否するため成立しないこと、 Bitbucket と自社 git サーバは対応構成であることの出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月18日 The Hacker News</span> <a href="https://thehackernews.com/2026/09/plugin4shell-lets-repository-owners.html" target="_blank" rel="noreferrer noopener nofollow">Plugin4Shell Lets Repository Owners Swap Pinned Plugin Code Across Four AI Coding Agents</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった報道の一つ。本文は保存分 〈output/articles/20260918/0321_the-hacker-news_plugin4shell-lets-repository-owners-swap-pinned-pl.md〉で 確認した。2026年9月18日時点で CVE が採番されておらず4ベンダーのいずれも アドバイザリを公表していないこと、実攻撃の形跡が無いこと、 既定カタログのプラグインがすべて GitHub を指していること、 自動更新が既定で有効なのは組み込みマーケットプレイスに限られること、 Anthropic の 2.1.179 のリリースノートに修正の記載が無いこと、 すでに差し替えられたプラグインが更新で取り除かれるかは資料から分からないこと、 OpenAI の公開された修正の記述、先行研究〈約26,000エージェントに到達〉の出典)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年9月17日 The Register</span> <a href="https://www.theregister.com/security/2026/09/17/ai-coding-agents-0-click-rce-flaw-could-hand-attackers-keys-to-the-kingdom/5297335" target="_blank" rel="noreferrer noopener nofollow">AI coding agents&#x27; 0-click RCE flaw could hand attackers keys to the kingdom</a> <span class="b kind">記事</span><span class=sm>（(本文は保存分〈output/articles/20260918/0054_the-register-security_ai-coding-agents-0-click-rce-flaw-could-hand-attac.md〉で 確認した。GitHub 広報の回答〈SHA の悪用を防ぐため、コミットSHA に似たブランチ名・ タグ名の作成を許していない〉と Air の反論〈Bitbucket 等でもマーケットプレイスは ホストでき、Copilot はそれに対応している〉、Microsoft から回答が得られていないこと、 研究者名〈Or Nevo・Dor Granat・Niv Hoffman〉、 Fortune 500 の約9割が Copilot を使うという Microsoft の数字、 2つの攻撃の筋道〈自ら登録して差し替える／作者のリポジトリを乗っ取る〉の出典)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月19日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月18日の日次ニュース（The Hacker News・The Register）を起点に、 発見者である Air Security の公表本文を取得して裏取りした。 2つの攻撃手口・git の挙動・修正の1行・開示のタイムライン・各ベンダーの対応は Air の公表で確認している。ベンダー側の一次資料として openai/codex のリリースページと anthropics/claude-code の CHANGELOG を確認したが、 前者に本件の記述は見当たらず、後者は 2.1.179 の項目自体が残っていなかった。 CVE も4ベンダーのアドバイザリも存在しないため、 「一次資料に当たったが載っていない」ことを齟齬（no_official_statement・self_unverified）として 記録し、事実関係は発見者の公表と報道に依拠していることを明示した。 GitHub の措置で足りるかについては GitHub・Air・The Hacker News の主張が分かれるため、 3者の言い分をいずれも記載した。実際の悪用は確認されていない。 GitHub Copilot が未修正であり続報が見込まれるため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Plugin4Shell</span><span class="b tag">AIコーディングエージェント</span><span class="b tag">ClaudeCode</span><span class="b tag">Codex</span><span class="b tag">GitHubCopilot</span><span class="b tag">GeminiCLI</span><span class="b tag">プラグイン</span><span class="b tag">スキル</span><span class="b tag">マーケットプレイス</span><span class="b tag">SHAピン留め</span><span class="b tag">コミットハッシュ</span><span class="b tag">git</span><span class="b tag">サプライチェーン</span><span class="b tag">ゼロクリック</span><span class="b tag">RCE</span><span class="b tag">自動更新</span><span class="b tag">AirSecurity</span><span class="b tag">CVE未採番</span><span class="b tag">開発者端末</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-19 07:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
