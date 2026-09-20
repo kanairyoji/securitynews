@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>룩핀、Metabase 経由で会員情報流出 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0178</span>룩핀、Metabase 経由で会員情報流出</h1>
+<header class="site-header">
+  <p class="subtitle">韓国の男性ファッションプラットフォーム「룩핀（LOOKPIN）」を運営するレベル13が、データ分析ツール Metabase の脆弱性を突かれて利用者のメールアドレス・パスワードハッシュ（一部は携帯電話番号・接続IP）が流出したと2026年9月20日に利用者へ通知した——報道によれば大量照会と抽出が確認されたのは8月29日と9月15〜16日で、Metabase が勧告と修正版を公開した8月6日・11日から3週間以上あとにあたる。気づいた端緒は9月16日15時ごろの「身に覚えのないアカウント」の発見で、2時間30分後に当該システムへの接続を遮断した。影響人数・脆弱性の識別子・侵入の詳細は公表されていない</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月20日</span>
+  <span>最終更新: 2026年9月20日</span>
+</div>
+
+<div class="lead"><p>韓国の男性ファッションプラットフォーム <strong>룩핀（LOOKPIN）</strong> を運営する <strong>株式会社レベル13</strong>（(주)레벨13）は <strong>2026年9月20日</strong>、利用者へ送ったメールで個人情報の流出を通知しました。流出した項目は<strong>メールアドレスとパスワードのハッシュ</strong>で、一部の利用者では<strong>携帯電話番号と接続IP</strong> も流出したとしています。</p>
+<p>原因について同社は「<strong>データ分析ツール『メタベース（Metabase）』のセキュリティ脆弱性を悪用した攻撃</strong>」（原文韓国語）と説明し、そこに接続されていた顧客情報が流出したと把握している、としています。気づいた端緒は <strong>9月16日15時ごろの「身に覚えのないアカウント」の発見</strong>で、同日 <strong>17時30分ごろ</strong>に当該システムへの接続を遮断しました。報道（전남일보）によれば、調査の過程で<strong>大量の照会とデータ抽出が8月29日と9月15〜16日に確認</strong>されています。</p>
+<p>同社は関連システムの接続パスワードと認証情報の変更・使用中止を進めており、証拠を保全して関係機関の調査に協力するとしています。<strong>韓国インターネット振興院（KISA）への侵害事故申告と個人情報流出申告は完了</strong>しており、利用者にはパスワードの変更と、配送・返金・補償を装うショートメッセージや電話への注意を呼びかけています。追加の調査結果は <strong>9月21日18時まで</strong>にアプリと公式ホームページで案内する予定だと報じられています。</p>
+<p>本記録がこの事案を日本の読者向けに残すのは、<strong>Metabase の勧告（8月6日・11日）から3週間以上あとに、まだ侵害が起きている</strong>ためです。同じ脆弱性の系列では Framework・Tally（INC-2026-0009）、Trezor の物流委託先 ShipMonk（INC-2026-0098）、豪州の Mathspace（INC-2026-0104）を記録済みで、いずれも8月中の事案でした。CERT-FR は<strong>9月10日</strong>に「<strong>脆弱な Metabase の多数の侵害を把握している</strong>」（原文フランス語）とする警報を出しており、本件はその時期に重なります。Metabase を自社で立てている日本の組織にとって、「8月に修正を当てたかどうか」ではなく「<strong>当てる前に入られていなかったかを確かめたか</strong>」がまだ問われている、という先例として記録します。</p>
+<p>もうひとつ、本件で見るべきは<strong>検知の端緒</strong>です。レベル13が気づいたのは「身に覚えのないアカウント」であり、これは Metabase が勧告で求めた事後確認（管理者アカウント・API キー・セッションの点検）そのものにあたる痕跡です。8月29日の抽出から18日後という遅れはあるものの、見つけてから遮断までは2時間30分でした。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="法務・コンプライアンスへの示唆">法務・コンプライアンスへの示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>影響を受けた利用者の人数と、対象期間・退会者の扱い</span><span class="b rsn">公表されていない</span><div class=sm>利用者向け通知にも報道にも人数の記載が無い。「流出項目は利用者ごとに異なる」とされる のみで、母数（会員数）も公表されていない。本記録は規模の数値を持たない</div></li><li><span class=ui>悪用された脆弱性の識別子（CVE / GHSA）と、自社の Metabase のバージョン・修正適用の有無</span><span class="b rsn">公表されていない</span><div class=sm>レベル13は「メタベースのセキュリティ脆弱性」とだけ述べ、識別子もバージョンも示していない。 8月6日・11日の勧告より後の活動であることから既知の脆弱性の放置が疑われるが、 当事者はそう述べていない（原因の整理と齟齬の欄に記した）</div></li><li><span class=ui>Metabase が自社ホストか Metabase Cloud か、インターネットから到達できる位置にあったか</span><span class="b rsn">公表されていない</span><div class=sm>構成についての記述が無い。8月6日の勧告では Metabase Cloud には提供元が修正を適用しており、 自社ホストの更新は利用者の作業だった（INC-2026-0009・INC-2026-0104）。 どちらかで「誰が修正を当てるべきだったか」が変わるが、本件では判断できない</div></li><li><span class=ui>「身に覚えのないアカウント」が Metabase 上のものか、攻撃者が作成したものか</span><span class="b rsn">公表されていない</span><div class=sm>発見された対象が Metabase の管理者アカウントなのか、接続先データベースのアカウントなのか、 自社サービス側のアカウントなのかは示されていない。誰がどの点検で見つけたかも不明</div></li><li><span class=ui>パスワードハッシュのアルゴリズムとソルトの有無</span><span class="b rsn">公表されていない</span><div class=sm>「비밀번호 해시（パスワードハッシュ）」とのみ記されている。アルゴリズム（bcrypt・Argon2 か、 SHA-1/MD5 のような高速ハッシュか）、ソルト・ストレッチングの有無によって、 利用者が負うリスクの大きさは大きく変わるが、判断材料が無い</div></li><li><span class=ui>攻撃者の身元、恐喝・公開・売買の有無</span><span class="b rsn">公表されていない</span><div class=sm>犯行声明・恐喝の記述は無い。同じ Metabase の脆弱性を使った他社の事案では ShinyHunters の 関与が報じられているが（INC-2026-0098）、本件との関係は示されていない</div></li><li><span class=ui>外部フォレンジック調査の起用の有無と、個人情報保護委員会（개인정보보호위원회）への報告</span><span class="b rsn">公表されていない</span><div class=sm>申告先として名前が挙がっているのは KISA のみ。外部調査会社の名前は無く、 調査を自社で行っているかも公表されていない</div></li><li><span class=ui>9月21日18時までに予告された追加調査結果の内容</span><span class="b rsn">調査中</span><div class=sm>전남일보 は、レベル13が9月21日18時までにアプリと公式ホームページで追加の調査結果を 案内し、追加の流出項目や必要な保護措置が確認されれば個別に通知すると述べたと報じている。 本記録の作成時点（9月20日）では未掲出である</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社レベル13（(주)레벨13。男性ファッションプラットフォーム「룩핀（LOOKPIN）」の運営会社）</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月16日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>韓国でアプリを中心に男性向けファッションの通販プラットフォーム「룩핀」を運営する事業者。 本件で侵害されたのは同社がデータ分析に使う Metabase で、そこに顧客情報を持つデータが 接続されていた（同社の説明）。業種は衣料品の通販プラットフォームとして小売・EC に 分類した（本記録の判断）。自社ホストか Metabase Cloud かは公表されていない</p><p class=org-p><span class=org-l>影響</span>Metabase の脆弱性を突かれ、接続されていた顧客情報が流出した。流出項目はメールアドレスと パスワードのハッシュで、一部の利用者では携帯電話番号と接続IPも含まれる。9月16日に 当該システムへの接続を遮断し、関連システムの接続パスワード・認証情報の変更または 使用中止を進めている。KISA への侵害事故申告と個人情報流出申告を完了した</p></div></div><div class=org><div class=org-h><span class=org-n>룩핀（LOOKPIN）の利用者（人数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>룩핀 に登録していた利用者。影響人数、対象期間、退会者が含まれるかはいずれも 公表されていない。「流出項目は利用者ごとに異なる」と報じられている</p><p class=org-p><span class=org-l>影響</span>メールアドレスとパスワードのハッシュが流出し、一部の利用者では携帯電話番号と接続IPも 流出した。同社はパスワードの変更と、他サイトで同じパスワードを使っている場合の変更、 配送・返金・補償を装うショートメッセージ・電話への注意を求めている</p></div></div><div class=org><div class=org-h><span class=org-n>Metabase, Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>オープンソースの BI・データ分析ツール Metabase の開発元。2026年8月6日に管理者権限に 至る SQL インジェクションの勧告2件（GHSA-vwf4-m7j8-wcjf・GHSA-r8h2-qpfx-mx59）と修正版を、 8月11日にクエリ検証・権限・ネットワーク露出にまたがる勧告（GHSA-r495-55cx-fjh7）を 公開している。本件で悪用された脆弱性がこのうちどれかは公表されていない</p><p class=org-p><span class=org-l>影響</span>本件についての Metabase 社個別の公表は確認できていない。同社は8月6日の勧告で、 修正の適用に加えて全セッションの失効・API キーと管理者アカウントの点検・ 接続先データベースの資格情報のローテーションを求めている</p></div></div><div class=org><div class=org-h><span class=org-n>韓国インターネット振興院（KISA / 한국인터넷진흥원）</span><span class="b role">監督官庁</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>韓国の侵害事故申告および個人情報流出申告の受理機関。レベル13は本件について 侵害事故申告と個人情報流出申告をいずれも完了したと述べている。 申告の日付、KISA 側の対応、個人情報保護委員会（개인정보보호위원회）への報告の有無は 公表されていない</p><p class=org-p><span class=org-l>影響</span>報道によれば、KISA は同じ月に Metabase の SQL インジェクションおよび権限検証に関する 脆弱性を確認し、セキュリティ更新を勧告している</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Metabase の勧告（8月6日）から最初に確認された大量照会・抽出（8月29日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>23<span class=fu>日</span></div><div class=fn>本記録の作成者が算出。8月11日の追加勧告（T2）を起点にしても18日ある。 レベル13は自社の Metabase が未修正だったとは述べていないため、この日数は 「勧告が出てからどれだけ時間があったか」を示すものであり、放置期間そのものではない</div></div><div class=fig><div class=fh><span class=fl>最初に確認された大量照会・抽出（8月29日）から「身に覚えのないアカウント」の発見（9月16日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>18<span class=fu>日</span></div><div class=fn>本記録の作成者が算出。8月29日の活動は事後の調査で確認されたもので、当日には 気づいていない。侵入の開始日は公表されていないため、これは滞留期間の下限にあたる</div></div><div class=fig><div class=fh><span class=fl>「身に覚えのないアカウント」の発見（9月16日15時ごろ）からシステム接続の遮断（同日17時30分ごろ）まで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>2.5<span class=fu>時間</span></div><div class=fn>本記録の作成者が算出。両方の時刻が「ごろ（쯤）」と報じられているため approx とした</div></div><div class=fig><div class=fh><span class=fl>発見（9月16日）から利用者へのメール通知（9月20日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fn>本記録の作成者が算出。この4日の間に何を調べ、なぜこの日に通知したかは公表されていない</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>攻撃者は、レベル13がデータ分析に使う Metabase のセキュリティ脆弱性を悪用し、これに 接続されていた顧客情報を読み出した。報道によれば大量の照会とデータ抽出が2026年8月29日と 9月15〜16日に確認されている。レベル13は9月16日15時ごろに「身に覚えのないアカウント」を 発見し、17時30分ごろに当該システムへの接続を遮断した。悪用された脆弱性の識別子、侵入の 開始時期、攻撃者の身元はいずれも公表されていない。以下は公表と報道の範囲で整理し、 公表されていない段階は推測で埋めていない。</p><div class=twrap><table class="g dt"><tbody><tr><th>名称</th><td>Metabase（データ分析・BI ツール。自社ホストか Metabase Cloud かは非公表）</td></tr><tr><th>システム内での役割</th><td>レベル13のデータ分析に使われ、顧客情報を含むデータに接続されていた （「これに接続されていた顧客情報が流出した」という同社の説明から本記録が整理）</td></tr><tr><th>ベンダー</th><td>Metabase, Inc.</td></tr><tr><th>CVE番号</th><td>非公表（CVE-2026-72898 を含む8月6日・11日の勧告のいずれかとみられるが同定できていない）</td></tr><tr><th>ゼロデイだったか</th><td>False</td></tr><tr><th>補足</th><td>レベル13は「メタベースのセキュリティ脆弱性」とのみ述べ、識別子もバージョンも示していない。 活動が確認された8月29日・9月15〜16日は、Metabase の勧告（8月6日の SQL インジェクション2件、 8月11日のクエリ検証・権限・ネットワーク露出）より後であるため、本記録は既知の脆弱性と 推定し、未知の脆弱性（ゼロデイ）ではないものとして扱った。ただしこれは推定であり、同定はできていない （discrepancies 参照）</td></tr><tr><th>CVE番号</th><td><span class="b rsn">公表されていない</span></td></tr></tbody></table></div><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [4] [5]</span></div><div>攻撃者が Metabase のセキュリティ脆弱性を悪用した。8月6日の勧告が示す脆弱性であれば 未認証のエンドポイントへの SQL インジェクションで管理者権限に至る経路だが、 本件でどの脆弱性が使われたかは公表されていない。侵入の開始日も公表されていない</div><div class=fn>根拠: レベル13の利用者向け通知（「メタベースのセキュリティ脆弱性が悪用された」原文韓国語）</div></li><li><div class=stg><span class="b stage">2. 永続化</span><span class="b conf">undisclosed</span><span class=srcs>[1] [3] [4]</span></div><div>レベル13が9月16日に発見した「身に覚えのないアカウント」。攻撃者が作成・利用していた ものかは同社が明言しておらず、Metabase 上のものか接続先のものかも示されていない。 本記録は「発見された痕跡」として記し、攻撃者の手口としては断定しない</div><div class=fn>根拠: レベル13の利用者向け通知（「9月16日15時ごろに身に覚えのないアカウントを発見し」原文韓国語）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">undisclosed</span><span class=srcs>[3]</span></div><div>大量の照会（대량 조회）が2026年8月29日と9月15〜16日に行われたと報道が伝える。 何を照会したか、どのデータベースに対してか、照会の量・時間帯は公表されていない</div><div class=fn>根拠: 전남일보の報道（レベル13の調査で確認された日付として）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">undisclosed</span><span class=srcs>[1] [3]</span></div><div>データ抽出（추출）が照会と同じ日（8月29日・9月15〜16日）に行われたと報道が伝える。 抽出の方法（Metabase のエクスポート機能か API 経由か）、件数、対象は公表されていない。 結果として流出したのはメールアドレス・パスワードハッシュと、一部の携帯電話番号・接続IP</div><div class=fn>根拠: 전남일보の報道、およびレベル13の利用者向け通知（流出項目）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl><li>メールアドレス<span class=sm>　全対象者に共通する項目とみられる（流出項目は利用者ごとに異なると報じられている）</span></li><li>パスワードのハッシュ<span class=sm>　アルゴリズム・ソルトの有無は公表されていない</span></li><li>携帯電話番号、接続IP（一部の利用者）<span class=sm>　「一部の利用者では携帯電話番号と接続IPも流出した」（原文韓国語）</span></li></ul><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 実行 / 権限昇格 / 検知回避 / 認証情報アクセス / 内部探索 / 横展開 / C2通信 / 影響（暗号化・破壊・改ざん）</span><div class=sm>通知にも報道にもこれらの段階の記述が無い。侵入の開始時期、Metabase 以外のシステムへの 横展開の有無、攻撃者のインフラ、暗号化や破壊の有無はいずれも公表されていない。 流出したデータの公開・売買・恐喝についての言及も無い</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>最初に確認された大量照会・抽出（8月29日）から「身に覚えのないアカウント」の発見（9月16日）まで</div><div class=mv>18<span class=fu>日</span></div><div class=fn>侵入の開始日が公表されていないため、これは滞留期間の下限である。 この18日のあいだに9月15〜16日の2度目の活動が起きている</div></div><div class=met><div class=ml>発見（9月16日15時ごろ）から当該システムへの接続遮断（同日17時30分ごろ）まで</div><div class=mv>0<span class=fu>日</span></div><div class=fn>値の 0 は同日中を意味する。実際は約2時間30分で、本DBに記録した事案のなかでも速い部類にあたる</div></div><div class=met><div class=ml>発見（9月16日）から利用者へのメール通知（9月20日）まで</div><div class=mv>4<span class=fu>日</span></div><div class=fn>一般向けの公表ページは本記録の作成時点で確認できておらず、この「公表」は 利用者へのメール通知を指す</div></div><div class=met><div class=ml>発見（9月16日）から本人（利用者）への通知（9月20日）まで</div><div class=mv>4<span class=fu>日</span></div><div class=fn>公表と本人通知が同一の手段（メール）で行われたため、disclosure と同じ値になる</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>「身に覚えのないアカウント」の発見から2時間30分で当該（分析）システムへの接続を遮断した。룩핀 のサービス本体を止めたという記述は無い</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 分析システムを止めれば攻撃者の経路は断てるが、社内のデータ分析業務は止まる。 サービス本体を止めなければ利用者への影響は無いが、侵入が分析システムに限られる 確証が無い段階では、他の経路が残るおそれがある</div></li><li><div class=ui>関連システムの接続パスワードと認証情報を変更、または使用中止にする対応を進めるとした。利用者にはパスワードの変更を「求める」にとどめ、強制的なリセットを行ったという記述は無い</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 自社側の資格情報を切れば攻撃者の残存経路は断てる。利用者のパスワードを強制リセット すれば使い回しのリスクを確実に断てるが、全利用者に手間を強いる。求めるだけにとどめると、 変更しない利用者にはリスクが残る</div></li><li><div class=ui>発見から4日後（9月20日）に利用者へメールで通知し、追加の調査結果は翌日18時までにアプリと公式ホームページで案内すると期限を切った</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 調査を待てば内容は正確になるが、利用者がパスワードを変える機会は遅れる。 期限を切って予告すれば利用者は待てるが、その期限を守れなければ信用を損なう</div></li><li><div class=ui>原因をツール名（Metabase）まで書き、流出項目・申告の完了・注意喚起を公表した。影響人数・脆弱性の識別子・自社の構成（自社ホストかクラウドか）・修正適用の有無は公表しなかった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> ツール名まで書けば同じツールを使う他社が自衛できるが、自社の運用の不備を推測される。 人数を伏せれば影響の印象は抑えられるが、利用者は自分が対象かを判断できない</div></li></ul></div>
+<section id="s6"><h2>大量照会と抽出は8月29日と9月15〜16日——Metabase の勧告（8月6日・11日）から3週間以上あとに起きており、8月に修正を当てた組織でも「当てる前に入られていないか」はまだ終わっていない<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3] [4] [5] [6]</span></h2><p>レベル13の説明は、原因について次のように述べている。</p>
+<blockquote>
+<p>現在までの当社の調査によれば、データ分析ツール「メタベース」のセキュリティ脆弱性が悪用されたことが分かりました。これに接続されていた顧客情報が流出したと把握しています。（原文韓国語）</p>
+</blockquote>
+<p>Metabase の脆弱性そのものは INC-2026-0009 に記録した。2026年8月6日に、未認証エンドポイントへのSQL インジェクションで管理者権限に至る脆弱性（GHSA-vwf4-m7j8-wcjf。のちの CVE-2026-72898）と、公開共有ダッシュボード経由の SQL インジェクション（GHSA-r8h2-qpfx-mx59）の勧告と修正版が出ており、さらに8月11日には「クエリ検証・権限・ネットワーク露出にまたがる複数の脆弱性」（GHSA-r495-55cx-fjh7）の勧告が出ている。전남일보 は、KISA も同じ月に SQL インジェクションと権限検証に関する脆弱性を確認してセキュリティ更新を勧告していたと書いており、これは上の2つの勧告に対応するとみられる（本記録の整理）。</p>
+<p>一方で、同紙が伝える本件の活動時期は <strong>8月29日</strong> と <strong>9月15〜16日</strong> である。勧告から23日後と40日後にあたる。本記録がこの事案を残す理由はここにある。</p>
+<p>同じ脆弱性の系列で本DBが記録してきたのは、Metabase Cloud の Framework・Tally（8月3日。INC-2026-0009）、Trezor の物流委託先 ShipMonk（INC-2026-0098）、豪州の Mathspace（8月10日侵入・8月27日持ち出し。INC-2026-0104）で、いずれも<strong>8月中</strong>の事案だった。CERT-FR は<strong>9月10日</strong>に警報 CERTFR-2026-ALE-010 を出し、「CERT-FR は脆弱な Metabase の多数の侵害を把握している」（原文フランス語）と書いている。本件の9月15〜16日の活動は、その警報の直後にあたる。</p>
+<p>つまり、この脆弱性の系列は8月で終わっていない。<strong>すでに修正を当てた組織であっても、当てる前に入られていなかったかの確認（侵害チェック）が済んでいなければ、本件と同じ順序をたどりうる</strong>——これが本記録の評価である。Mathspace は修正の2日前に持ち出しが完了しており、修正時に侵害チェックをしなかったために5日気づかなかった（INC-2026-0104）。レベル13の場合は、修正の有無自体が公表されていない。</p>
+<p>なお、レベル13は<strong>どの脆弱性か・自社の Metabase が未修正だったか</strong>を述べていない。本記録は原因に patch-management（脆弱性の放置）を併記したが、これは日付の前後関係から導いた<strong>本記録の推定</strong>であり、未知の脆弱性だった可能性を排除していない。</p></section>
+<section id="s7"><h2>気づいた端緒は「身に覚えのないアカウント」——ベンダーが勧告で求めた事後確認そのものが検知につながり、発見から2時間30分で遮断した。ただし最初の抽出からは18日たっていた<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [3] [4]</span></h2><p>通知によれば、レベル13は <strong>9月16日15時ごろに「身に覚えのないアカウント（미확인 계정）」を発見</strong>し、<strong>17時30分ごろに当該システムへの接続を遮断</strong>した。差は約2時間30分である。</p>
+<p>この端緒は、技術者にとって示唆がある。Metabase が8月6日の勧告で利用者に求めたのは、修正版の適用だけではなかった。<strong>全ユーザーセッションの失効、API キーの点検（見覚えのないキーの削除）、管理者アカウントの点検（予期しない変更の検出）、接続先データベースの資格情報のローテーション、ログと問い合わせ履歴の点検</strong>である（INC-2026-0009）。「身に覚えのないアカウント」は、この点検で見つけるべき痕跡そのものにあたる。</p>
+<p>裏を返せば、この痕跡は<strong>修正を当てた時点で点検していれば、もっと早く見つかった可能性がある</strong>（本記録の評価）。実際、確認された最初の大量照会・抽出は8月29日で、発見までに18日ある。その18日のあいだに、9月15〜16日の2度目の活動が起きている。</p>
+<p>発見された対象が Metabase 上の管理者アカウントなのか、接続先データベースのアカウントなのか、自社サービス側のアカウントなのかは公表されていない。誰がどの点検で見つけたのかも書かれていない。本記録としては、「<strong>不審なアカウントが1つ見つかる</strong>」という粒度の事象が、大量抽出の事後発見につながった経路として記録しておく。</p></section>
+<section id="s8"><h2>流出したのはメールアドレスとパスワードハッシュ、一部に携帯電話番号と接続IP——人数もハッシュの方式も公表されておらず、利用者が負うリスクの大きさは外から測れない<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [3]</span></h2><p>通知が挙げた流出項目は次のとおりである。</p>
+<ul>
+<li>メールアドレス</li>
+<li>パスワードのハッシュ</li>
+<li>（一部の利用者）携帯電話番号、接続IP</li>
+</ul>
+<p>報道は「流出項目は利用者ごとに異なる」としている。<strong>影響人数は公表されていない</strong>。母数となる会員数も、対象期間も、退会者が含まれるかも書かれていない。本記録は規模の数値を持たない（unknowns に明示した）。</p>
+<p>本記録の評価として、この組み合わせには2つの意味がある。</p>
+<p>第一に、<strong>メールアドレスとパスワードハッシュの組は、ハッシュの方式しだいで重さが変わる</strong>。bcrypt や Argon2 のように適切にソルトとコストを与えたハッシュであれば総当たりの費用は高いが、SHA-1・MD5 のような高速ハッシュであれば、よく使われるパスワードは短時間で戻る。レベル13は方式を公表しておらず、<strong>利用者は自分の負うリスクの大きさを判断できない</strong>。同社がパスワードの変更と、他サイトで同じパスワードを使っている場合の変更を求めているのは、この不確かさを前提にした対応と読める。</p>
+<p>第二に、<strong>接続IPと携帯電話番号が一部に含まれる</strong>ことは、流出元が「メールアドレスとパスワードだけを持つ認証テーブル」ではなく、<strong>接続の記録まで含むデータ</strong>だったことを示す。Metabase は分析のために本番データベースやデータ基盤に接続する道具であり、管理者権限を取られれば接続先にあるものが読まれる。同社の説明「これに接続されていた顧客情報が流出した」はその構造を指している（本記録の整理）。</p>
+<p>携帯電話番号が出た利用者には、SMS を使った詐欺が直接届く。同社が「<strong>配送・返金・補償を装うショートメッセージや電話</strong>」への注意を具体的に挙げているのは、通販プラットフォームの利用者にとって自然な文脈のなりすましを想定したものと読める。</p></section>
+<section id="s9"><h2>遮断は同日2時間30分、認証情報の変更・使用中止と証拠保全を並行し、KISA への2種類の申告を終えたうえで4日後に利用者へ通知——追加の調査結果は翌日18時までと期限を切った<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [3] [7]</span></h2><p>同社が通知で述べた対応は次のとおりである。</p>
+<ul>
+<li>9月16日17時30分ごろ、当該（分析）システムへの接続を遮断した</li>
+<li>関連システムの接続パスワードと認証情報の変更、または使用中止を進めている</li>
+<li>関連する証拠を保全しており、関係機関の調査と要請に誠実に協力する</li>
+<li>KISA への侵害事故申告を完了し、個人情報流出申告も完了した</li>
+<li>利用者にパスワードの変更と、流出した個人情報を悪用したフィッシングへの注意を求めた</li>
+</ul>
+<blockquote>
+<p>大切な個人情報を守れなかったことをお詫びします。（原文韓国語）</p>
+</blockquote>
+<p>加えて전남일보は、同社が <strong>9月21日18時までにアプリと公式ホームページで追加の調査結果を案内</strong>し、追加の流出項目や必要な保護措置が確認されれば個別に通知すると述べたと報じている。利用者への呼びかけには、メッセージ内のリンクを押さず公式アプリ・公式ホームページで確認するように、という内容も含まれている。</p>
+<p>本記録の評価として、良い点は2つある。<strong>封じ込めが速い</strong>（発見から2時間30分）ことと、<strong>次の発表に期限を切っている</strong>ことである。後者は、調査中を理由に沈黙が続く公表と比べて利用者が待てる形になっている。一方で<strong>弱い点も2つ</strong>ある。<strong>人数が無い</strong>ため利用者は自分が対象かを推し量れず、<strong>一次公表がウェブに出ていない</strong>ため、通知メールを受け取っていない人や報道で知った人が原文を確かめる先が無い（本記録の作成時点では公式サイトに掲出を確認できなかった）。フィッシングへの注意を呼びかける通知が<strong>メールでしか存在しない</strong>状態は、「その通知メール自体が本物か」を利用者が確かめられないという弱さも抱えている。</p></section>
+<section id="s10"><h2>日本の組織にとっての読みどころ——Metabase は「社内向けの読む道具」として日本でも広く自社運用されており、本件は勧告から40日後でも侵害が続いていることを示す4件目の事例になる<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [3] [4] [6]</span></h2><p>本件は韓国の事案で、日本の組織は当事者ではない。それでも記録するのは、<strong>構造が日本の組織にそのまま当てはまる</strong>ためである。</p>
+<p>本DBが記録した Metabase 起因の事案を時系列で並べる。</p>
+<table>
+<thead>
+<tr>
+<th>事案</th>
+<th>活動時期</th>
+<th>記録</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Framework・Tally（Metabase Cloud）</td>
+<td>2026年8月3日</td>
+<td>INC-2026-0009</td>
+</tr>
+<tr>
+<td>Trezor の物流委託先 ShipMonk</td>
+<td>2026年8月（8月13日初報）</td>
+<td>INC-2026-0098</td>
+</tr>
+<tr>
+<td>Mathspace（自社ホスト・豪州）</td>
+<td>侵入8月10日／持ち出し8月27日</td>
+<td>INC-2026-0104</td>
+</tr>
+<tr>
+<td><strong>룩핀／レベル13（韓国）</strong></td>
+<td><strong>8月29日・9月15〜16日</strong></td>
+<td>本記録</td>
+</tr>
+</tbody>
+</table>
+<p>勧告（8月6日）からの経過は、順に −3日・数日・4日、そして <strong>23日と40日</strong>である。CERT-FR の9月10日の警報「脆弱な Metabase の多数の侵害を把握している」と合わせると、<strong>この脆弱性を使った侵害は9月半ばでもまだ進行している</strong>と読める（本記録の評価）。</p>
+<p>日本の組織で注意したいのは、Metabase のような BI・分析ツールが「<strong>社内の人が数字を読むための道具</strong>」として導入され、<strong>セキュリティ資産の棚卸しから漏れやすい</strong>ことである。外向きのサービスではないため公開資産の一覧に載らず、情報システム部門ではなくデータ部門や事業部門が立てていることも多い。それでいて、接続先は本番データベースやデータ基盤であり、管理者を取られれば<strong>顧客データの全量が読める位置</strong>にある。本DBでは国内事案の VOISING（INC-2026-0086）でも同じ構造を記録している。</p>
+<p>本件からの具体的な問いは3つである。①自社に Metabase（または Grafana・Redash・Superset）が立っていないか、誰が管理しているか。②8月6日・11日の勧告以降に修正を当てたとして、その際に<strong>ベンダーが求めた侵害チェック</strong>（管理者アカウント・API キー・セッション・ログの点検、接続先 DB の資格情報の更新）まで実施し、結果を記録したか。③その BI ツールのサービスアカウントは、接続先で<strong>全テーブルの読み取り権限</strong>を持っていないか。</p>
+<p>なお本件は、日本の読者にとって<strong>通知の作法</strong>としても読める。人数が無く、一次公表がウェブに無く、ハッシュの方式が示されない公表は、読み手が自分のリスクを見積もれない。自社が公表する側に回ったときに何を書くべきかの反面として使える（本記録の評価）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>侵入経路</th><td>データ分析ツール Metabase のセキュリティ脆弱性の悪用（識別子・バージョンは非公表）</td></tr><tr><th>侵入経路の確度</th><td>確認済み</td></tr><tr><th>露出期間</th><td>公表されていない。確認されている活動は2026年8月29日と9月15〜16日で、 2026年9月16日17時30分ごろの接続遮断まで（侵入の開始日は非公表のため、 これは確認された活動の範囲であって露出期間そのものではない）</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>メールアドレス</li><li>パスワードのハッシュ</li><li>携帯電話番号（一部の利用者）</li><li>接続IP（一部の利用者）</li></ul><span class="b rsn">stated</span><div class=fn>流出項目は利用者ごとに異なると報じられている。追加の項目が確認されれば個別に通知すると 同社が述べているため、この一覧は確定ではない</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年9月20日　<b>補足:</b> 流出した情報が悪用された・公開された・売買されたという記述は通知にも報道にも無い。 一方で同社は「流出した個人情報を悪用したフィッシング攻撃に注意し、パスワードを 変更してほしい」と求めており、悪用の可能性を前提にした呼びかけを行っている。 悪用が無かったと確認されたわけではない</td></tr><tr><th>ログの有無</th><td>大量照会・抽出の日付（8月29日・9月15〜16日）を事後の調査で特定できていることから、 ログは残っていたとみられる（本記録の推定）。同社は「関連する証拠を保全している」と 述べている。ログの保存期間、データ基盤側のクエリ履歴の有無、侵入の開始時期まで 遡れるかは公表されていない</td></tr><tr><th>通知</th><td><b>手法:</b> 利用者へのメール（2026年9月20日）。追加の調査結果はアプリと公式ホームページで9月21日18時までに案内する予定　<b>範囲:</b> 対象者の範囲・人数は公表されていない　<b>補足:</b> 本記録の作成時点で、公式ウェブサイト（lookpin.co.kr・cs.lookpin.co.kr）に 流出に関する公表ページは確認できなかった</td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年8月6日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Metabase が、未認証エンドポイントへの SQL インジェクションで管理者権限に至る脆弱性 （GHSA-vwf4-m7j8-wcjf。のちの CVE-2026-72898）と、公開共有ダッシュボード経由の SQL インジェクション（GHSA-r8h2-qpfx-mx59）について勧告と修正版を公開した。 修正の適用に加え、全セッションの失効・API キーと管理者アカウントの点検・接続先 データベースの資格情報のローテーションを求めている（INC-2026-0009）</td></tr><tr><td class="sm nowrap tw">2026年8月11日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Metabase が「クエリ検証・権限・ネットワーク露出にまたがる複数の脆弱性」 （GHSA-r495-55cx-fjh7。深刻度 Critical）の勧告を公開した。報道が伝える 「KISA が同月に確認した SQL インジェクションと権限検証に関する脆弱性」は、 8月6日の勧告とこの勧告に対応するとみられる（本記録の整理）</td></tr><tr><td class="sm nowrap tw">2026年8月29日</td><td class=nowrap><span class="b kind">発生</span></td><td>大量の照会とデータ抽出が行われた（レベル13の調査で確認されたと報道が伝える日付のひとつ）。 何が照会・抽出されたか、この時点で気づかなかった理由は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年9月15日〜16日</td><td class=nowrap><span class="b kind">発生</span></td><td>再び大量の照会とデータ抽出が行われた（同上）。この2度目の活動と、翌日の 「身に覚えのないアカウント」の発見との前後関係・因果は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年9月16日15時ごろ（韓国標準時。日本標準時と同時刻）</td><td class=nowrap><span class="b kind">検知</span></td><td>レベル13が「身に覚えのないアカウント（미확인 계정）」を発見した。誰がどの画面で 見つけたか、そのアカウントが攻撃者の作成したものかは公表されていない</td></tr><tr><td class="sm nowrap tw">2026年9月16日17時30分ごろ（韓国標準時）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>当該（分析）システムへの接続を遮断した。発見からおよそ2時間30分後にあたる</td></tr><tr><td class="sm nowrap tw">2026年9月20日までに（完了と公表。実施日は非公表）</td><td class=nowrap><span class="b kind">当局・上位機関への報告（組織 → 当局の向き）</span></td><td>KISA への侵害事故申告と個人情報流出申告をいずれも完了した。あわせて証拠を保全し、 関係機関の調査と要請に協力すると表明した。関連システムの接続パスワードと認証情報の 変更または使用中止も進行中とした</td></tr><tr><td class="sm nowrap tw">2026年9月20日</td><td class=nowrap><span class="b kind">公表</span></td><td>レベル13が利用者へメールで流出を通知した。流出項目（メールアドレス・パスワードハッシュ、 一部は携帯電話番号・接続IP）、原因（Metabase の脆弱性）、申告の完了、パスワード変更と フィッシングへの注意を伝えた</td></tr><tr><td class="sm nowrap tw">2026年9月20日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>보안뉴스（Boannews）が利用者向け通知の内容を報じ、전남일보 も同日に報じた。 전남일보 は8月29日・9月15〜16日の大量照会と抽出、9月21日18時までの追加案内の予定、 KISA が同月に Metabase の脆弱性を確認して更新を勧告していたことを加えている。 本記録はこの日の日次ニュース（보안뉴스）を起点としている</td></tr><tr><td class="sm nowrap tw">2026年9月20日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が lookpin.co.kr・cs.lookpin.co.kr・lookpin.co.kr/notice を確認したが、 流出に関する公表ページは見つからなかった。一次公表は利用者向けメールであり、 本記録は報道の引用を通じてのみその内容を把握している</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>一次公表（利用者向けメール）の原文を本記録は入手できていない</span><div class=sm>本件の一次公表はレベル13が2026年9月20日に利用者へ送ったメールであり、ウェブ上には 掲出されていない。本記録の作成者は lookpin.co.kr・cs.lookpin.co.kr・lookpin.co.kr/notice を 確認したが、流出に関する公表ページを見つけられなかった。したがって本記録の事実関係は、 보안뉴스 と 전남일보 が引用した通知の文面に依拠している。引用の範囲を超える内容 （通知の全文・宛先の範囲・件名）は確認できていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用された脆弱性の識別子は公表されておらず、CVE-2026-72898 と同定していない</span><div class=sm>レベル13は「メタベースのセキュリティ脆弱性」とのみ述べ、CVE 番号も GHSA 番号も バージョンも示していない。Metabase は2026年8月6日に SQL インジェクションの勧告2件 （GHSA-vwf4-m7j8-wcjf＝CVE-2026-72898、GHSA-r8h2-qpfx-mx59）を、8月11日に クエリ検証・権限・ネットワーク露出にまたがる勧告（GHSA-r495-55cx-fjh7）を公開しており、 전남일보 が伝える「KISA が同月に確認した SQL インジェクションと権限検証の脆弱性」は これらに対応するとみられる。しかし本件でどれが使われたかは分からない。 Mathspace の記録（INC-2026-0104）では報道が「同じ Metabase の SQL インジェクション」と 明記していたため同定したが、本件にはその材料が無い</div></li><li><span class="b dk">本記録による推定</span><span class=ui>原因に patch-management（脆弱性の放置）を併記したのは本記録の推定である</span><div class=sm>確認された活動（8月29日・9月15〜16日）が勧告（8月6日・11日）より後であることから、 既知の脆弱性が残っていたと本記録は推定した。しかしレベル13は自社の Metabase が 未修正だったとは述べておらず、修正適用の有無も公表していない。 未知の脆弱性だった可能性、あるいは修正は当てたが既に侵入されていた可能性 （Mathspace と同じ順序）も残る</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>8月29日・9月15〜16日の大量照会と抽出は전남일보のみが伝えており、보안뉴스 の記事には無い</span><div class=sm>보안뉴스（本DBの日次ニュースが収集した記事）は、9月16日の発見・遮断、流出項目、 Metabase の脆弱性、KISA への申告までを伝えるが、活動の日付には触れていない。 전남일보 は同日の記事でこれに加えて8月29日・9月15〜16日の大量照会と抽出、 9月21日18時までの追加案内の予定、利用者への注意事項を伝えている。両者は矛盾しないが、 本記録の中心的な論点（勧告から23日後・40日後の活動）は전남일보の1紙に依拠している</div></li><li><span class="b dk">本記録による推定</span><span class=ui>レベル13の日本語表記・法人形態は本記録が便宜的に当てたもの</span><div class=sm>韓国語表記は「(주)레벨13」で、英語の正式名称を確認できなかったため、 本記録では「株式会社レベル13」と表記した。プラットフォーム名は「룩핀」で、 英字表記は「LOOKPIN」（同社ドメイン lookpin.co.kr より）とした</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>本件と他の Metabase 起因事案（ShinyHunters の関与が報じられたもの）との関係は不明</span><div class=sm>同じ脆弱性の系列では ShipMonk への恐喝で ShinyHunters の関与が報じられている （INC-2026-0098）。本件については犯行声明・恐喝・データの公開に関する記述が 通知にも報道にも無い。本記録は攻撃者を「身元不明」とし、他事案との関連付けはしない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>8月6日・11日の Metabase の勧告から3週間以上あとの8月29日と9月15〜16日に大量照会・抽出が行われ、9月16日の「身に覚えのないアカウント」の発見で2時間30分後に遮断、4日後に利用者へ通知した</div><div class=svgwrap><svg viewBox="0 0 794 284" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,46.0 C193.0,46.0 193.0,149.0 220,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,128.0 C193.0,128.0 193.0,149.0 220,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,66.0 C295.0,66.0 295.0,149.0 220,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,149.0 C295.0,149.0 295.0,225.0 220,225.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,149.0 C397.0,149.0 397.0,142.0 424,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,142.0 C397.0,142.0 397.0,66.0 220,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,142.0 C601.0,142.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,225.0 C499.0,225.0 499.0,148.0 628,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,148.0 C703.0,148.0 703.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,148.0 C703.0,148.0 703.0,230.0 628,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,224.0 C193.0,224.0 193.0,66.0 220,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Metabase</text><text x="91.0" y="51.0" text-anchor="middle" fill="#80cbc4" font-size="10">INC-2026-000</text><text x="91.0" y="63.0" text-anchor="middle" fill="#80cbc4" font-size="10">9</text><rect x="16" y="90.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KISA（同月に SQL</text><text x="91.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">i・権限検証の脆弱性を確</text><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認し更新を勧告）</text><text x="91.0" y="153.0" text-anchor="middle" fill="#b0bec5" font-size="10">報道による</text><rect x="16" y="180.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CERT-FR（9/10</text><text x="91.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 警報「多数の Meta</text><text x="91.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">base の侵害を把握…</text><text x="91.0" y="243.0" text-anchor="middle" fill="#b0bec5" font-size="10">CERTFR-2026-</text><text x="91.0" y="255.0" text-anchor="middle" fill="#b0bec5" font-size="10">ALE-010</text><rect x="220" y="35.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="57.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（身元不明・恐喝の</text><text x="295.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">有無も非公表）</text><text x="295.0" y="84.0" text-anchor="middle" fill="#f48fb1" font-size="10">侵入開始日は非公表</text><rect x="220" y="111.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レベル13の Metab</text><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ase（自社ホストかクラ</text><text x="295.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウドかは非公表）</text><text x="295.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">修正適用の有無も非公表</text><rect x="220" y="201.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="223.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">身に覚えのないアカウント</text><text x="295.0" y="236.0" text-anchor="middle" fill="#f48fb1" font-size="10">9/16 15時ごろ発見</text><rect x="424" y="105.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="127.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Metabase に接続</text><text x="499.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されていた顧客情報</text><text x="499.0" y="154.0" text-anchor="middle" fill="#ffcc80" font-size="10">8/29・9/15〜16</text><text x="499.0" y="166.0" text-anchor="middle" fill="#ffcc80" font-size="10"> に大量照会と抽出</text><rect x="628" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">룩핀 の利用者（人数非公</text><text x="703.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表）</text><text x="703.0" y="72.0" text-anchor="middle" fill="#8892b0" font-size="10">メール・パスワードハッシ</text><text x="703.0" y="84.0" text-anchor="middle" fill="#8892b0" font-size="10">ュ／一部は携帯番号・接続</text><rect x="628" y="111.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">株式会社レベル13（룩핀</text><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 運営）</text><text x="703.0" y="160.0" text-anchor="middle" fill="#80cbc4" font-size="10">9/16 17時30分ご</text><text x="703.0" y="172.0" text-anchor="middle" fill="#80cbc4" font-size="10">ろ遮断・9/20 メール</text><rect x="628" y="199.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="703.0" y="221.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KISA（侵害事故申告・</text><text x="703.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報流出申告の受理）</text><text x="703.0" y="248.0" text-anchor="middle" fill="#b0bec5" font-size="10">申告日は非公表</text></svg></div><div class=fn>layer 0 は勧告の発信（Metabase の8月6日・11日の勧告、KISA の同月の更新勧告、 CERT-FR の9月10日の警報）。layer 1 は攻撃者と侵入口（レベル13の Metabase。 悪用された脆弱性の識別子は非公表）。layer 2 は Metabase が接続していた顧客情報を持つデータ。 layer 3 は流出した項目と利用者、および申告先。破線に相当する関係（勧告が届いたか、 修正を当てたか）は公表されていない。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>8月6日・11日に勧告と修正版があり、Metabase は侵害の確認方法（不正な管理者アカウント・ API キー・セッション・ログのパターン）も示していた（INC-2026-0009）。 KISA も同月に更新を勧告している。勧告どおりに点検していれば、8月29日の活動より前に 侵入に気づけた可能性がある（本記録の評価）。実際に気づいたのは9月16日である</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>自社で立てた OSS（BI・監視・CI/CD 等）ごとに GitHub Security Advisory やベンダー通知の購読先を決め、重大度に応じて担当へ自動でエスカレーションする</div><div class=ctl><span class="b eff">侵入を防げた</span>KEV 収載・CVSS 9 以上の脆弱性について、公開から数日以内の修正適用を求める社内 SLA</div><div class=ctl><span class="b eff">侵入を防げた</span>社内向け BI ツールをインターネットから直接到達できない位置（VPN・IdP 前段の認証プロキシの背後）に置く</div><div class=ctl><span class="b eff">検知できた</span>管理者アカウントの新規作成・管理者セッションの確立をアラート化する</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>この段階は実際に検知された唯一の段階である。Metabase の勧告が求めた事後確認 （管理者アカウント・API キーの点検）で見つかる種類の痕跡にあたる（本記録の整理）。 ただし最初の抽出（8月29日）からは18日が経過していた</div></td><td><div class=ctl><span class="b eff">検知できた</span>管理コンソールのアカウント一覧・API キー一覧の棚卸しを定例化し、台帳と突き合わせる</div><div class=ctl><span class="b eff">復旧を早められた</span>脆弱性の修正適用時に、ベンダー推奨の侵害チェックを完了させることを作業完了の条件にする</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>Metabase の管理者は接続先データベースへ任意のクエリを発行できる。平時と異なる 時間帯・量・対象テーブルへの照会はデータ基盤側のクエリ履歴で見える性質のものだが、 レベル13が監視していたかは公表されていない。8月29日の活動に当日は気づいていない （本記録の整理）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>BI ツール用の DB アカウントに必要最小限の読み取り権限（ビュー・マスク済みカラム）だけを与え、個人情報の生データに直接届かないようにする</div><div class=ctl><span class="b eff">検知できた</span>データ基盤側のクエリ履歴で、BI ツールのサービスアカウントによる大量取得・全件取得をアラート化する</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>事後の調査で日付を特定できていることから、ログには記録が残っていたとみられる （本記録の推定）。エクスポートの件数にしきい値を設けていれば当日に気づけた可能性がある</div></td><td><div class=ctl><span class="b eff">検知できた</span>BI ツールのエクスポート・ダウンロードの件数にしきい値を設け、超過をアラート化する</div><div class=ctl><span class="b eff">影響を限定できた</span>パスワードを計算コストの高いハッシュ（bcrypt・Argon2 等）とソルトで保存し、流出しても即座に復元されないようにする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>「身に覚えのないアカウント」の発見から2時間30分で当該（分析）システムへの接続を遮断した。룩핀 のサービス本体を止めたという記述は無い</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。不審なアカウントという断片的な兆候の段階で、 確証を待たずに接続を切った判断は速い。ただし同社は遮断の理由も、他システムへの 影響を確認したかも述べていないため、評価は所要時間にもとづく限定的なものである</td></tr><tr><td>関連システムの接続パスワードと認証情報を変更、または使用中止にする対応を進めるとした。利用者にはパスワードの変更を「求める」にとどめ、強制的なリセットを行ったという記述は無い</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。自社側の資格情報の変更・使用中止は Metabase の勧告が 求める対応と整合する。一方、**パスワードのハッシュが流出しているのに強制リセットを していない**（少なくとも通知に記述が無い）点は弱い。ハッシュの方式が公表されていないため、 利用者は「自分のパスワードが戻されうるか」を判断できないまま、変更するかどうかを 自分で決めることになる</td></tr><tr><td>発見から4日後（9月20日）に利用者へメールで通知し、追加の調査結果は翌日18時までにアプリと公式ホームページで案内すると期限を切った</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。4日という速さと、次の発表に期限を切った点は評価できる。 一方で**影響人数が無く、一次公表がウェブに出ていない**ため、通知を受け取っていない人は 自分が対象かを確かめられず、報道で知った人は原文にたどり着けない。 フィッシングへの注意を呼びかける通知がメールだけで存在する状態は、 「その通知自体が本物か」を利用者が確かめる手段が無いという問題も抱える</td></tr><tr><td>原因をツール名（Metabase）まで書き、流出項目・申告の完了・注意喚起を公表した。影響人数・脆弱性の識別子・自社の構成（自社ホストかクラウドか）・修正適用の有無は公表しなかった</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。**原因をツール名まで書いたことは、同業他社にとって 価値のある公表**である（Mathspace も同様に Metabase の名を出した。INC-2026-0104）。 他方、人数と、ハッシュの方式と、含まれなかった項目が無いため、読み手は影響の 大きさを測れない。本記録はこの3点を欠けとして記す</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「修正を当てた」で脆弱性対応を閉じない——8月に当てた組織でも、当てる前に入られていなかったかの確認が済んでいなければ本件と同じ順序をたどる</div><div class=lw>Metabase の勧告は8月6日・11日だが、本件の大量照会・抽出は8月29日と9月15〜16日である。 CERT-FR は9月10日に「脆弱な Metabase の多数の侵害を把握している」と警報を出した。 Mathspace は修正の2日前に持ち出しが完了しており、修正時に侵害チェックをしなかったため 5日間それに気づかなかった（INC-2026-0104）</div><div class=la><b>取るべき行動</b> 2026年8月以降に適用した重大な修正（Metabase に限らず、KEV 収載・CVSS 9 以上のもの）を 一覧にし、それぞれについて「ベンダーが推奨した侵害チェックを実施し、結果を記録したか」を 今月中に確認する。記録が無いものは、実施していないものとして扱う</div></li><li><div class=lp>社内向けの BI・分析ツールは資産の棚卸しから漏れやすいが、顧客データの全量が読める位置にある</div><div class=lw>レベル13は「Metabase に接続されていた顧客情報が流出した」と説明している。BI ツールは 外向きのサービスではないため公開資産の一覧に載りにくく、情報システム部門ではなく データ部門や事業部門が立てていることも多い。本DBでは Mathspace（INC-2026-0104）・ ShipMonk（INC-2026-0098）・国内の VOISING（INC-2026-0086）で同じ構造を記録している</div><div class=la><b>取るべき行動</b> 自社に Metabase・Grafana・Redash・Superset・Looker 等が何台立っているか、 誰が管理し、何に接続し、インターネットから到達できるかを棚卸しする。 管理者が不在の（立てた人が異動・退職した）インスタンスがあれば、それを最優先で扱う</div></li><li><div class=lp>パスワードハッシュが流出したときは、ハッシュの方式を公表するか、強制リセットするかのどちらかを選ぶ——どちらもしないと、利用者はリスクを判断できない</div><div class=lw>レベル13はハッシュの方式を公表しておらず、強制リセットも行っていない（通知に記述が無い）。 bcrypt か SHA-1 かで、利用者が負うリスクは桁が違う。利用者は自分で判断できないまま 「変更してほしい」と求められている</div><div class=la><b>取るべき行動</b> 自社の漏えい対応計画に「認証情報が流出した場合の既定動作」を書いておく。 強制リセットを行う条件（ハッシュ方式・ソルトの有無・件数）を事前に決め、 公表文の雛形に「保存方式」を書く欄を設ける</div></li><li><div class=lp>通知をメールだけで行うと、フィッシングへの注意を呼びかける通知そのものの真正性を利用者が確かめられない</div><div class=lw>本件の一次公表は利用者へのメールで、本記録の作成時点で公式サイトに公表ページを 確認できなかった。通知の内容は「配送・返金・補償を装うメッセージに注意」であり、 その注意喚起自体がメールで届く構造になっている</div><div class=la><b>取るべき行動</b> 漏えい時の通知は、公式サイトの公表ページ（URL を固定）とメールを同時に出し、 メール本文には「この通知が本物かは、アドレスバーに公式ドメインを自分で入力して 確かめてください」と書く運用を雛形に入れる。窓口はメールの返信ではなく、 公式サイト経由で到達できるようにする</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>Metabase を自社で立てているなら、今日でも「修正版か」ではなく「不正なアカウント・API キー・セッションが無いか」を確認する</div><div class=lw>本件で検知の端緒になったのは「身に覚えのないアカウント」である。これは Metabase が 8月6日の勧告で点検を求めた痕跡そのものにあたる。CERT-FR は9月10日の警報で、 侵害の確認方法として POST /api/session/reset_password（HTTP 400）に続く GET /api/user/current（HTTP 200）という連続したリクエストを挙げている</div><div class=la><b>取るべき行動</b> ①バージョンが修正版以上か、②修正適用より前に作られた管理者アカウント・API キーが 残っていないか、③core_session テーブルに古いセッションが残っていないか、 ④アプリケーションログに CERT-FR が示した2リクエストの並びが無いか、 ⑤接続先データベースの資格情報を修正後に更新したか——この5点を確認して記録に残す</div></li><li><div class=lp>BI ツールのサービスアカウントは接続先で最小権限にし、大量取得をデータ基盤側のクエリ履歴で検知する</div><div class=lw>本件では8月29日と9月15〜16日に大量の照会と抽出が行われたが、当日には気づいていない。 Metabase の管理者は接続先データベースへ任意のクエリを発行できる</div><div class=la><b>取るべき行動</b> BI ツール用の DB ユーザに全テーブルの読み取りを与えず、マスク済みビューや集計テーブル 経由に変える。Snowflake・BigQuery・PostgreSQL 等のクエリ履歴で、そのサービスアカウントに よる行数の多い取得や平時と異なる時間帯のクエリをアラート化する。 BI ツール側のエクスポート件数にも上限としきい値を置く</div></li><li><div class=lp>接続IP のようなアクセスログ系のデータが顧客テーブルと同じ場所に載っていないかを確かめる</div><div class=lw>本件の流出項目には一部の利用者の接続IP が含まれる。これは流出元が認証情報のテーブルだけ ではなく、接続の記録まで含むデータだったことを示す（本記録の整理）。分析用に作った 結合済みのテーブルやビューは、こうした項目を1か所に集めがちである</div><div class=la><b>取るべき行動</b> 分析基盤にある結合済みテーブル・マテリアライズドビューの列を棚卸しし、 個人を特定できる項目（メールアドレス・電話番号・IP・端末ID）が1行にまとまっている ものを洗い出す。分析に不要な列は落とすか、ハッシュ化・マスクする</div></li><li><div class=lp>パスワードは計算コストの高いハッシュとソルトで保存し、流出時に「方式を公表できる」状態にしておく</div><div class=lw>本件はハッシュの方式が公表されておらず、利用者もセキュリティ担当者もリスクの大きさを 見積もれない。公表できないのは、公表したくない方式である可能性を読み手に与える</div><div class=la><b>取るべき行動</b> 自社の認証情報の保存方式（アルゴリズム・コストパラメータ・ソルト）を確認し、 高速ハッシュ（MD5・SHA-1・ソルト無し SHA-256）のままなら移行計画を立てる。 移行はログイン時の再ハッシュで段階的に行える</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>法務・コンプライアンスへの示唆</div><ul><li><div class=lp>韓国では侵害事故申告と個人情報流出申告の2つを KISA に対して行う。海外に利用者・拠点を持つ組織は、国ごとに「誰に・いつまでに」を一覧にしておく</div><div class=lw>レベル13は侵害事故申告と個人情報流出申告の両方を完了したと述べている。 日本の個人情報保護委員会への報告（速報3〜5日・確報30日）とは制度も窓口も異なる</div><div class=la><b>取るべき行動</b> 自社サービスの利用者が所在する国ごとに、漏えい時の報告先・期限・様式を一覧にする。 韓国（KISA・個人情報保護委員会）、豪州（OAIC）、EU（各国 DPA・72時間）など、 該当する制度を法務とセキュリティで共有し、インシデント対応計画に添付する</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Metabase・Grafana・Redash・Superset 等の BI・分析ツールを自社で立てており、顧客の個人情報を持つデータベースやデータ基盤に接続している</td><td class=sm>本件はまさにこの構成で、「Metabase に接続されていた顧客情報」が流出した。 管理者権限を取られれば接続先にあるものが読める。Mathspace（INC-2026-0104）・ ShipMonk（INC-2026-0098）・VOISING（INC-2026-0086）と同型である</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 2026年8月以降に重大な脆弱性の修正を適用したが、ベンダーが推奨する侵害チェック（不正なアカウント・API キー・セッション・ログの点検）を実施した記録が無い</td><td class=sm>本件の活動は勧告から23日後・40日後で、CERT-FR は9月10日にも「多数の侵害を把握している」と 警報を出している。修正を当てただけでは、当てる前に入られていたことに気づけない</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> BI ツールのサービスアカウントが接続先データベースで全テーブルの読み取り権限を持ち、個人情報の生データに直接届く</td><td class=sm>最小権限やマスク済みビューであれば、侵害されても持ち出される範囲を限定できた （本記録の評価）。本件では接続IP のようなアクセスログ系の項目まで流出している</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 利用者のパスワードを高速ハッシュ（MD5・SHA-1・ソルト無し SHA-256）で保存している、または保存方式を即答できない</td><td class=sm>流出時に方式を公表できなければ、利用者も監督機関もリスクの大きさを判断できない。 本件は方式が公表されず、強制リセットも行われていない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 漏えい時の通知手段がメールだけで、公式サイトに固定 URL の公表ページを出す運用が決まっていない</td><td class=sm>本件では一次公表が利用者向けメールで、本記録の作成時点で公式サイトに公表ページを 確認できなかった。フィッシングへの注意を呼びかける通知の真正性を利用者が確かめられない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 社内で誰かが立てた分析ツール・管理ツールが資産台帳に載っておらず、脆弱性勧告の購読担当が決まっていない</td><td class=sm>BI ツールは外向きのサービスではないため棚卸しから漏れやすい。Mathspace は勧告が 「特定・エスカレーションされなかった」と自ら認めている（INC-2026-0104）</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月20日 株式会社レベル13（룩핀）</span> 룩핀 이용자 대상 개인정보 유출 안내 메일（룩핀 利用者向け個人情報流出のお知らせメール） <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次公表。レベル13が2026年9月20日に利用者へ送ったメールによる通知。ウェブ上には 掲出されておらず、本記録の作成者は原文を入手できていない。内容は보안뉴스（出典3ではなく 出典2の記事）と전남일보（出典3）が引用した範囲で把握している。引用によれば、 9月16日15時ごろの「身に覚えのないアカウント」の発見と17時30分ごろの接続遮断、 流出項目（メールアドレス・パスワードハッシュ、一部は携帯電話番号・接続IP）、 原因（Metabase のセキュリティ脆弱性の悪用と、これに接続された顧客情報の流出）、 関連システムの接続パスワード・認証情報の変更または使用中止、証拠の保全と関係機関への協力、 KISA への侵害事故申告と個人情報流出申告の完了、パスワード変更とフィッシングへの注意、 謝罪の出典。本記録の作成者が2026年9月20日に公式サイトを確認した範囲では未掲出)）</span></li><li><span class=rid>[7]</span> <span class=sm>（該当ページを確認できず） 株式会社レベル13（룩핀）</span> <a href="https://www.lookpin.co.kr/" target="_blank" rel="noreferrer noopener nofollow">룩핀 공식 웹사이트（公式ウェブサイト。流出に関する公表ページの有無の確認）</a> <span class="b kind">お知らせ・告知ページ</span><span class="b dead">現在参照不可</span><span class=sm>（(本記録の作成者が2026年9月20日に lookpin.co.kr・cs.lookpin.co.kr・lookpin.co.kr/notice を 確認したが、個人情報流出に関する公表ページは見つからなかった。「一次公表がウェブに 出ていない」という本記録の記述の根拠。availability は「該当ページが存在しない」意味で dead とした。報道によれば9月21日18時までにアプリと公式ホームページで追加の案内が 行われる予定であり、以後に掲出される可能性がある)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年9月10日 CERT-FR（ANSSI）</span> <a href="https://www.cert.ssi.gouv.fr/alerte/CERTFR-2026-ALE-010/" target="_blank" rel="noreferrer noopener nofollow">Vulnérabilité dans Metabase (10 septembre 2026) — CERTFR-2026-ALE-010</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(フランス政府の CSIRT が2026年9月10日に出した警報。「CERT-FR は脆弱な Metabase の 多数の侵害を把握している」（原文フランス語）、侵害の確認方法（POST /api/session/reset_password が HTTP 400 → GET /api/user/current が HTTP 200 という連続したリクエスト）、 影響を受けるバージョン、回避策（/api/session/reset_password の外部公開の遮断）、 復旧手順（core_session テーブルの全行削除・API キーと管理者アカウントの点検・ 接続先 DB の資格情報の更新）の出典。9月中旬の時点で侵害が続いていたことを示す資料として引く。 本文は本DBの2026年9月10日の保存記事から取得した。本件への直接の言及は無い)）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年8月6日 Metabase, Inc.</span> <a href="https://github.com/metabase/metabase/security/advisories/GHSA-vwf4-m7j8-wcjf" target="_blank" rel="noreferrer noopener nofollow">SQL injection using an unauthenticated endpoint leading to admin access (GHSA-vwf4-m7j8-wcjf)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(Metabase の GitHub Security Advisory。未認証エンドポイントへの SQL インジェクションで 管理者アクセスに至る脆弱性（のちの CVE-2026-72898）、修正版、侵害指標、推奨される事後対応 （全セッションの失効・API キーと管理者アカウントの点検・接続先データベースの資格情報の ローテーション・ログと問い合わせ履歴の点検）の出典。詳細は INC-2026-0009。 本件で悪用された脆弱性がこれであるとは確認されていない。 本記録の作成時に再取得はしていない)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年8月11日 Metabase, Inc.</span> <a href="https://github.com/metabase/metabase/security/advisories/GHSA-r495-55cx-fjh7" target="_blank" rel="noreferrer noopener nofollow">Multiple vulnerabilities across query validation, permissions, and network exposure (GHSA-r495-55cx-fjh7)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(Metabase の GitHub Security Advisory。深刻度 Critical。クエリ検証・権限・ネットワーク露出に またがる複数の脆弱性。전남일보 が伝える「KISA が同月に確認した権限検証に関する脆弱性」に 対応するとみられる（本記録の整理）。本記録の作成者が2026年9月20日に Metabase の Security Advisory 一覧で GHSA ID・公開日・題名・深刻度を確認した。 本文の詳細は取得していない)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年9月20日 보안뉴스（Boannews）</span> <a href="https://www.boannews.com/news/articleView.html?idxno=145962" target="_blank" rel="noreferrer noopener nofollow">남성 패션 플랫폼 ‘룩핀’, 개인정보 유출 공지...이메일·비밀번호 해시 등</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった2026年9月20日の日次ニュースの記事。韓国のセキュリティ専門媒体。 レベル13の利用者向け通知の内容——9月16日15時ごろの未確認アカウントの発見と17時30分ごろの 接続遮断、流出項目、Metabase の脆弱性の悪用、接続パスワード・認証情報の変更または使用中止、 KISA への侵害事故申告と個人情報流出申告の完了、証拠保全と関係機関への協力、謝罪——の出典。 活動の日付（8月29日・9月15〜16日）には触れていない。本文は日次ニュースの保存記事から取得した)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年9月20日 전남일보（全南日報）</span> <a href="https://www.jnilbo.com/news/articleView.html?idxno=90000067213" target="_blank" rel="noreferrer noopener nofollow">패션 플랫폼 ‘룩핀’ 개인정보 유출…이메일·비밀번호 등 노출</a> <span class="b kind">記事</span><span class=sm>（(韓国の地方紙。出典2 と同日の報道で、加えて①調査の過程で大量の照会とデータ抽出が 8月29日と9月15〜16日に確認されたこと、②9月21日18時までにアプリと公式ホームページで 追加の調査結果を案内し、追加の流出項目や必要な保護措置が確認されれば個別に通知すると 述べたこと、③KISA が同月に SQL インジェクションと権限検証に関する脆弱性を確認して セキュリティ更新を勧告していたこと、④利用者への注意事項（配送・返金・補償を装う ショートメッセージ・電話への注意、メッセージ内のリンクではなく公式アプリ・ ホームページで確認、他サイトで同じパスワードを使っている場合の変更）の出典。 本記録の作成者が2026年9月20日に要点を取得した。全文は保存していない)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月20日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月20日の日中の収集で保存した보안뉴스の記事を起点に、전남일보の同日記事で 活動の日付（8月29日・9月15〜16日）と追加案内の予定を補い、Metabase の Security Advisory 一覧で 8月6日・11日の勧告の GHSA ID と公開日を確認した。一次公表は利用者向けメールでウェブに 掲出されておらず、公式サイト3か所を確認したが公表ページは見つからなかったため、 その旨を discrepancies（self_unverified）と出典7に明記し、references の group: primary_party は availability: not_published として立てた。 悪用された脆弱性は同定できていないため CVE を断定せず、原因の patch-management は 日付の前後関係からの推定であることを root_causes_note と discrepancies に明記した。 影響人数・ハッシュ方式・構成（自社ホストかクラウドか）・含まれなかった項目は いずれも非公表であり unknowns に残した。9月21日18時までに追加の調査結果が案内される 予定であるため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">룩핀</span><span class="b tag">LOOKPIN</span><span class="b tag">レベル13</span><span class="b tag">韓国</span><span class="b tag">ファッション</span><span class="b tag">通販プラットフォーム</span><span class="b tag">小売EC</span><span class="b tag">Metabase</span><span class="b tag">BIツール</span><span class="b tag">データ分析基盤</span><span class="b tag">勧告後の侵害</span><span class="b tag">侵害チェック未実施の疑い</span><span class="b tag">身に覚えのないアカウント</span><span class="b tag">大量照会</span><span class="b tag">データ抽出</span><span class="b tag">パスワードハッシュ</span><span class="b tag">接続IP</span><span class="b tag">携帯電話番号</span><span class="b tag">人数非公表</span><span class="b tag">ハッシュ方式非公表</span><span class="b tag">一次公表がウェブに無い</span><span class="b tag">メールのみの通知</span><span class="b tag">KISA</span><span class="b tag">侵害事故申告</span><span class="b tag">個人情報流出申告</span><span class="b tag">CERT-FR</span><span class="b tag">フィッシング注意喚起</span><span class="b tag">発見から2時間30分で遮断</span><span class="b tag">一次資料未入手</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-20 17:13 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
