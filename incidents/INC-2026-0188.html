@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Check Point 管理サーバにゼロデイ悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0188</span>Check Point 管理サーバにゼロデイ悪用</h1>
+<header class="site-header">
+  <p class="subtitle">ファイアウォールの設定・ログ・管理者操作を一手に握る Check Point Security Management Server に、パストラバーサルとファイルアップロードの不備（CVE-2026-93616・CVSS 9.8）があり、認証を持たない攻撃者が任意のスクリプトを置いて実行できる——攻撃は2026年7月23日に少数の標的に対して行われており、緊急ホットフィックスが出たのは約2か月後の9月22日だった。同社は「攻撃を受けた顧客を少数把握している」と述べ、侵害の手がかり（1,001字を超える利用者名のログイン試行など）を公開した。米 CISA は同日、本件と VPN 側の CVE-2026-85102 を KEV へ収載し、期限を3日後の9月25日とした</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">未知の脆弱性の悪用</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月22日</span>
+  <span>最終更新: 2026年9月23日</span>
+</div>
+
+<div class="lead"><p><strong>Check Point Security Management Server</strong> は、配下のゲートウェイのセキュリティポリシーを保管・配信し、管理者の変更を処理し、システムのログを集める中枢です。そこに、認証を持たない攻撃者が<strong>任意のスクリプトをアップロードして実行できる</strong>脆弱性 CVE-2026-93616 が見つかりました。種別はパストラバーサル（ディレクトリトラバーサル）とファイルアップロードの組み合わせで、CVE のレコードにおける CVSS は 9.8 です。</p>
+<p>重いのは<strong>時間差</strong>です。Check Point によれば、この脆弱性を使った攻撃は<strong>2026年7月23日</strong>に少数の標的に対して行われていました。緊急ホットフィックスが出たのは約2か月後の<strong>2026年9月22日</strong>です。同社は「本脆弱性は実際に悪用されている。Check Point は攻撃を受けた顧客を少数把握している」（原文英語）と述べ、侵害の手がかり（IoC）をアドバイザリ sk1000171 で公開しました。</p>
+<p>影響は主力の管理サーバだけではありません。Security Management Server、Multi-Domain Security Management Server、Log Server、Multi-Domain Log Server、SmartEvent の<strong>5製品</strong>が対象です。修正は R82.20 向けの Security Hotfix と、各系列の Jumbo Hotfix Accumulator（R82.10 は Take 45 以上、R82 は Take 127 以上など）で提供されます。直ちに当てられない場合の緩和策は、<strong>TCP/19009 への到達を信頼できる IP に限ること</strong>（SmartConsole の Manage &amp; Settings → Permissions &amp; Administrators → Trusted Clients）と、管理サーバをファイアウォールの背後に置くことです。</p>
+<p>同じ日、CISA は本件と、VPN 側の証明書検証の不備 <strong>CVE-2026-85102</strong> をそろって KEV（悪用が確認された脆弱性カタログ）へ収載し、対応期限を3日後の9月25日としました。CVE-2026-85102 は9月9日に修正が出ていたもので、Check Point はその時点で悪用の証拠を持っていませんでしたが、<strong>9月12日から悪用の試みが始まり</strong>、小規模事業所向けの Spark 製品の利用者が狙われています。本記録の作成者が2026年9月23日に確認した範囲では、JPCERT/CC の2026年の注意喚起一覧に本件の注意喚起はありません（Check Point については2026年6月10日の CVE-2026-50751 が直近です）。本記録は、公表資料に基づく事実と、本記録の作成者による評価を分けて整理します。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>2026年7月23日の攻撃で、どの組織が、どこまで侵害されたか</span><span class="b rsn">公表されていない</span><div class=sm>Check Point は「攻撃を受けた顧客を少数把握している」とするのみで、 標的の名称・国・業種・件数、悪用後に何が行われたか（ポリシーの改ざん、 ログの削除、配下のゲートウェイへの波及の有無）を公表していない。 The Hacker News も「アドバイザリは7月の攻撃の標的も攻撃者も示さず、 悪用後に何をしたかも述べていない」（原文英語）としている。</div></li><li><span class=ui>Check Point が攻撃をいつ把握し、なぜ修正に約2か月かかったか</span><span class="b rsn">公表されていない</span><div class=sm>公表されているのは攻撃の日（2026年7月23日）と修正の日（2026年9月22日）だけで、 その間の経緯——把握の時期、調査の期間、修正に要した時間、 顧客への事前通知の有無——は示されていない。61日という差は 本記録の作成者が算出したものであり、Check Point が 「61日かかった」と述べたわけではない。</div></li><li><span class=ui>攻撃者の主体と動機</span><span class="b rsn">公表されていない</span><div class=sm>Check Point も CISA も帰属を示していない。CVE-2026-85102 の悪用の試みについては、 匿名化基盤から送られ特定の証明書主体名が使われたことだけが示されている。 管理サーバは諜報目的にもランサムウェアの前段にも使える位置にあるが、 いずれも公表資料では裏付けられない。</div></li><li><span class=ui>日本国内の影響（稼働台数・露出台数・被害の有無）</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録の作成者が2026年9月23日に確認した範囲で、国内の被害公表は見当たらず、 JPCERT/CC の2026年の注意喚起一覧にも本件の注意喚起は無い （Check Point については2026年6月10日の CVE-2026-50751 が直近）。 国内の稼働台数・露出台数も公表されていない。 「情報が無い」ことは「影響が無い」ことを意味しない。</div></li><li><span class=ui>CVE-2026-93616 の悪用に必要なネットワーク到達性の条件</span><span class="b rsn">公表されていない</span><div class=sm>The Hacker News は「アドバイザリは、攻撃者にどのようなネットワークアクセスが 必要かを述べていない」（原文英語）としている。緩和策が TCP/19009 への 到達制限であることから、管理サーバの Web サービスへ到達できることが 条件とみられるが、これは本記録の作成者の読みであり、 開発元が明示したものではない。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Check Point Software Technologies</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Security Management Server などの開発元。2026年9月22日に CVE-2026-93616 の 緊急ホットフィックスとアドバイザリ sk1000171 を公開し、実際の悪用と、 攻撃を受けた顧客を少数把握していることを明らかにした。攻撃は2026年7月23日に 行われていたとしている。IoC（cpm.elg に残る1,001字を超える利用者名のログイン試行、 コアダンプの生成時刻の一致、ReflectionUtils のエラーログに現れる「../」）と、 TCP/19009 の到達制限という緩和策を示した。あわせて、9月9日に修正した CVE-2026-85102 について、9月12日から悪用の試みが始まったことを公表している</p></div></div><div class=org><div class=org-h><span class=org-n>米サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年9月22日、CVE-2026-93616 と CVE-2026-85102 を KEV へ追加し、 連邦民間行政機関の対応期限を2026年9月25日（3日後）に設定した。 同日、F5 BIG-IP APM の CVE-2026-94127 と Arista VeloCloud Orchestrator の CVE-2026-93952 も同じ期限で追加している</p></div></div><div class=org><div class=org-h><span class=org-n>カナダ・サイバーセキュリティセンター（Canadian Centre for Cyber Security）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年9月9日に AV26-902 を公開し、9月22日までに2度更新した。 Update 1 で CVE-2026-85102 と CVE-2026-93616 が実際に悪用されていることを、 Update 2 で両者が CISA の KEV へ追加されたことを伝えている</p></div></div><div class=org><div class=org-h><span class=org-n>オランダ国家サイバーセキュリティセンター（NCSC-NL）</span><span class="b role">注意喚起主体</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年9月上旬、CVE-2026-85102 と CVE-2026-85103 について 「まもなく悪用の試みが起きると予想する」（原文英語）として緊急の適用を促した。 実際に CVE-2026-85102 では9月12日から悪用の試みが観測されている。 報道（BleepingComputer・Security Affairs・The Hacker News）を通じて把握したもので、 本記録の作成者は NCSC-NL の原文を確認していない</p></div></div><div class=org><div class=org-h><span class=org-n>JPCERT コーディネーションセンター（JPCERT/CC）</span><span class="b role">注意喚起主体</span><span class="b lc">被害なし確認</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本件に関する注意喚起は、本記録の作成者が2026年9月23日に2026年の注意喚起一覧を 確認した範囲では出ていない（2026年9月の注意喚起は Cisco Secure Email Gateway・ Adobe・マイクロソフトの3件）。Check Point については2026年6月10日に 「Check Point Software Technologies社製品における認証バイパスの脆弱性 （CVE-2026-50751）に関する注意喚起」が出ている。関係が無いことを記録するために挙げている</p></div></div><div class=org><div class=org-h><span class=org-n>（攻撃者——主体・目的は非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Check Point は、CVE-2026-93616 を用いた2026年7月23日の攻撃について、 標的の名前も攻撃者も、悪用後に何が行われたかも公表していない。 CVE-2026-85102 の悪用の試みについては、匿名化基盤（VPN サービス・プロキシ）から 送られ、証明書の主体名に CN=vpn,OU=users,O=global が使われたと述べている</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-93616 の CVSS 基本値（CVE レコード）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>スコア</span></div><div class=fn>The Hacker News は「Check Point は CVE のレコードで 9.8 と評価した」と伝えている。 同じ2026年9月22日に KEV へ収載された4件のうち、Arista VeloCloud Orchestrator の CVE-2026-93952 が 10.0、残る3件（本件・CVE-2026-85102・F5 の CVE-2026-94127）が 9.8 だった。</div></div><div class=fig><div class=fh><span class=fl>悪用の日から緊急ホットフィックスの公開まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>61<span class=fu>日</span></div><div class=fn>2026年7月23日の攻撃から、2026年9月22日のホットフィックス公開までの日数。 Check Point がいつ攻撃を把握したかは公表されていないため、 この61日は「攻撃が起きてから修正が世に出るまで」であって、 「把握してから修正まで」ではない。利用組織の側から見ると、 その間は脆弱性の存在すら知らされていなかった期間にあたる。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-93616 の影響を受ける製品の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>製品</span></div><div class=fn>Security Management Server、Multi-Domain Security Management Server、Log Server、 Multi-Domain Log Server、SmartEvent。Check Point のアドバイザリ本文で確認した。 The Hacker News は「アドバイザリは Security Management のみを影響ありとしている」と 書いており、参照した時点による記述の違いがある（齟齬に記録した）。 ログ収集専用機やイベント分析機を「管理サーバではない」と扱って 対象から外すと、当たっていない機器が残る。</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から米連邦機関の対応期限まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年9月22日の追加に対し、期限は9月25日。同じ2026年9月には Cisco Secure Email Gateway（INC-2026-0146）・ConnectWise ScreenConnect（INC-2026-0154）・ Cisco ISE（INC-2026-0161）・F5 BIG-IP APM（INC-2026-0187）でも3日が設定されている。 期限の対象は米連邦民間行政機関であり、日本の組織に法的な効力は無い。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-85102 の修正公開から悪用の試みの開始まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年9月9日の修正公開に対し、悪用の試みは9月12日から観測された。 修正の公開時点で Check Point は悪用の証拠を持っておらず、 オランダ NCSC-NL は「まもなく悪用の試みが起きると予想する」と述べていた。 公開された修正から攻撃側が脆弱性の位置を割り出すまでの時間が 3日だったことを示す（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>侵害の手がかりとなる利用者名の長さ（cpm.elg のログイン試行）</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>1,001<span class=fu>字</span></div><div class=fn>Check Point は cpm.elg のログで 「login(loginRequest=LoginRequest{authenticationInfo=…」の項目のうち、 利用者名が1,001字以上のものを探すよう求めている。 正規の運用で1,000字を超える利用者名は使われないため、 長さそのものが手がかりになる。Check Point は別途、 「Administrator failed to log in: Username too long」という監査ログの警告を 関連する脆弱性の検知に挙げている。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>認証を持たない攻撃者が、Check Point の管理サーバの Web サービスへ到達し、 パストラバーサルとファイルアップロードの不備（CVE-2026-93616）を突いて 任意のスクリプトを置き、サーバ上で実行する。2026年7月23日に少数の標的に対して 行われた攻撃で、悪用後に何が行われたかは公表されていない。 Check Point は、cpm.elg に残る1,001字を超える利用者名のログイン試行、 その時刻と一致するコアダンプ、ReflectionUtils のエラーログに現れる「../」を 手がかりとして示している。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [3] [4]</span></div><div>攻撃者が管理サーバの Web サービスへ要求を送り、 パストラバーサル（要求が到達できるファイル・フォルダの制限の不備）を突いて 任意のスクリプトをアップロードする。認証も利用者の操作も不要である。</div><div class=fn>根拠: Check Point のアドバイザリ sk1000171</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>置かれたスクリプトが管理サーバ上で実行される。 2026年7月23日の攻撃で何が実行されたかは公表されていない。</div><div class=fn>根拠: Check Point のアドバイザリ（アップロードしたスクリプトの実行）</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class="b conf">unconfirmed</span><span class=srcs>[1]</span></div><div>管理サーバには配下のゲートウェイの構成、ポリシー、管理者の操作の記録、 組織全体のログが集まる。本件で攻撃者がそれらを参照したかは公表されていない （本記録の作成者による位置づけ）。</div><div class=fn>根拠: 公表資料に記載なし（製品の役割からの評価）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">unconfirmed</span><span class=srcs>[3] [4]</span></div><div>管理サーバはポリシーを配る側であり、掌握されれば配下のゲートウェイの 防御の設定そのものを変えられうる。ログを集める側でもあるため、 調査の材料の信頼性にも影響する。本件でそうした操作が行われたかは公表されていない。</div><div class=fn>根拠: 公表資料に記載なし（製品の役割からの評価。Security Affairs も企業ネットワーク全体への影響を指摘）</div></li></ol></div>
+<section id="s5"><h2>破られたのは「守る機器」ではなく「守り方を決める機器」だった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3] [4] [5]</span></h2><p>Check Point Security Management Server は、配下のゲートウェイのセキュリティポリシーを保管・配信し、管理者の変更を処理し、システム全体のログを集める中枢です。</p>
+<p>CVE-2026-93616 は、その管理サーバの Web サービスにおける<strong>パストラバーサルとファイルアップロードの不備</strong>です。Check Point のアドバイザリ sk1000171 は「ディレクトリトラバーサルとファイルアップロードの脆弱性により、認証されていない攻撃者が Check Point Management Server 上に任意のスクリプトをアップロードして実行できる」（原文英語）と説明しています。要求が到達できるファイルとフォルダの範囲を、サービスが正しく制限していませんでした。</p>
+<p>本記録の評価として、この位置は<strong>ゲートウェイの1台が破られるのとは意味が違います</strong>。ポリシーを配る側を握られると、攻撃者は個々の機器を破る必要がなくなります。管理サーバには、配下の機器の構成、管理者の操作の記録、そして組織全体のログが集まっています。ログを集める側を握られることは、「何をされたか」を後から調べる材料の信頼性が落ちることも意味します。</p>
+<p>なお、CISA と FBI は2024年5月以降、パストラバーサルの類を出荷前に取り除くようソフトウェア企業へ求めており、この種の欠陥は「2007年以来『許されないもの』と呼ばれてきた」（原文英語）としています。本件はセキュリティ製品の中枢でそれが起きた事例です。</p></section>
+<section id="s6"><h2>攻撃は7月23日、修正は9月22日——利用組織は61日間、存在すら知らされていなかった<span class="b slot">概観</span><span class=srcs>出典 [1] [5]</span></h2><p>Check Point は、CVE-2026-93616 を用いた攻撃が <strong>2026年7月23日</strong>に少数の標的に対して行われたとしています。緊急ホットフィックスが出たのは<strong>2026年9月22日</strong>、その差は61日です。</p>
+<p>この61日をどう読むかは注意が要ります。Check Point は、攻撃をいつ把握したかを公表していません。したがって61日は「把握から修正まで」ではなく、<strong>「攻撃が起きてから修正が世に出るまで」</strong>です。把握が遅れていた可能性も、把握したうえで修正に時間がかかった可能性も、どちらも否定できません。</p>
+<p>利用組織の側から見える事実は単純です。その間、<strong>脆弱性の存在も、攻撃が起きていたことも知らされていませんでした</strong>。侵害の手がかり（IoC）が公開されたのも9月22日です。7月23日前後のログの保全期間が過ぎている環境では、公開された手がかりを当てはめる対象そのものが残っていないことになります。</p>
+<p>本記録の評価として、ここから引き出せる実務的な結論は「重要機器のログの保全期間を、ベンダーが IoC を出すまでの時間に耐えられる長さにする」ことです。90日を下回る設定では、本件のような時間差に届きません。</p></section>
+<section id="s7"><h2>対象は管理サーバだけではない——ログ収集機とイベント分析機も同じ穴を持つ<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [3] [5]</span></h2><p>Check Point が示した影響製品は5つです。</p>
+<ul>
+<li>Security Management Server</li>
+<li>Multi-Domain Security Management Server</li>
+<li>Log Server</li>
+<li>Multi-Domain Log Server</li>
+<li>SmartEvent</li>
+</ul>
+<p>対象版は、R82.20（Jumbo Hotfix 未適用）、R82.10 の Take 44 以下、R82 の Take 126 以下、R81.20 の Take 166 以下、R81.10 の Take 190 以下（サポート終了）、および R81・R80.40・R80.30・R80.20・R80.10・R80（いずれもサポート終了）です。修正は R82.20 向けの Security Hotfix と、各系列の Jumbo Hotfix Accumulator（R82.10 は Take 45 以上、R82 は Take 127 以上など）で提供されます。</p>
+<p>本記録の評価として、<strong>見落としやすいのは Log Server と SmartEvent です</strong>。資産台帳で「管理サーバ」として登録されているのは Security Management Server だけで、ログ収集専用機やイベント分析機は別の分類に入っていることがあります。対象を製品名で機械的に突き合わせないと、当たっていない機器が1台残ります。</p>
+<p>もう1点、サポート終了版（R81.10 以下）を使っている場合、Jumbo Hotfix の提供そのものが期待できません。この場合の選択肢は版の更改か、緩和策（到達制限）での封じ込めのどちらかになり、いずれも3日では終わりません。<strong>サポート終了版が残っていること自体が、緊急時に取れる手を奪っている</strong>という読み方が要ります。</p></section>
+<section id="s8"><h2>当てるだけでは足りない——「当てたことは、攻撃されていなかったことを示さない」<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3] [4] [5]</span></h2><p>Check Point は sk1000171 で侵害の手がかり（IoC）を公開しました。The Hacker News はこの点について「修正を適用しても、それ以前に攻撃されていたかどうかは分からない」（原文英語）と明記しています。</p>
+<p>公開された手がかりは次の3つです。</p>
+<ol>
+<li><strong>cpm.elg のログ</strong>に残る<code>login(loginRequest=LoginRequest{authenticationInfo=…</code> の項目のうち、<strong>利用者名が1,001字以上</strong>のもの。正規の運用でそのような長さは使われない</li>
+<li><strong>コアダンプファイルの生成時刻</strong>が、上記のログイン試行の時刻と一致すること</li>
+<li><strong>ReflectionUtils のエラーログ</strong>に現れるディレクトリトラバーサルの並び（「../」など）</li>
+</ol>
+<p>直ちに当てられない場合の緩和策は、<strong>TCP/19009 への到達を信頼できる IP に限ること</strong>と、管理サーバをファイアウォールの背後に置くことです。前者は SmartConsole のManage &amp; Settings → Permissions &amp; Administrators → Trusted Clients で設定します。Check Point 自身が「一時的な措置にすぎない」としています。</p>
+<p>本記録の評価として、Trusted Clients の設定は<strong>運用を止めうる</strong>点に注意が要ります。管理端末、監視システム、自動連携の仕組みなど、管理サーバへ正規に到達している相手を洗い出せていない状態で絞ると、自分の運用が先に止まります。平時に「誰が管理サーバへ到達しているか」の一覧を持っているかどうかが、緊急時にこの緩和策を使えるかを決めます。</p></section>
+<section id="s9"><h2>VPN 側は「修正が出た3日後」に狙われた——公開された修正は攻撃者への地図でもある<span class="b slot">背景・過去事例</span><span class=srcs>出典 [3] [4] [5]</span></h2><p>同じ日に KEV へ収載されたもう1件、<strong>CVE-2026-85102</strong> は、Check Point のゲートウェイが VPN 接続を確立する際の証明書の検証における不備です。認証を経ていない攻撃者にゲートウェイ上でのコード実行を許しうるもので、修正は<strong>2026年9月9日</strong>に公開されました（sk1000117）。対象は Security Gateway と Spark ファイアウォールで、Site-to-Site VPN またはリモートアクセス VPN を使っている場合に該当します。</p>
+<p>公開の時点で、Check Point は悪用の証拠を持っていませんでした。オランダの NCSC-NL は「まもなく悪用の試みが起きると予想する」として緊急の適用を促しています。そして実際に、<strong>9月12日から悪用の試みが始まりました</strong>。修正公開の3日後です。標的は小規模事業所向けの Spark 製品の利用者で、通信は匿名化基盤（VPN サービス・プロキシ）から送られ、証明書の主体名には <code>CN=vpn,OU=users,O=global</code> などが使われました。</p>
+<p>本記録の評価として、この3日は「悪用の証拠が無い＝急がなくてよい」という判断の危うさを示します。修正が公開されれば、その差分から脆弱性の位置を割り出せます。とくに小規模事業所向けの製品は、専任の運用担当がいない場所に置かれがちで、攻撃側から見れば<strong>修正が当たるまでの時間が長い</strong>ことが期待できます。拠点・子会社・店舗に置かれた小型機の更新を、本社の機器と同じ速度で回せるか。本件は、その差がそのまま露出期間になることを示しています。</p></section>
+<section id="s10"><h2>国内の注意喚起は出ていない——過去には出ていたからこそ、出ないことを前提にする<span class="b slot">未確定事項</span><span class=srcs>出典 [7]</span></h2><p>本記録の作成者が2026年9月23日に確認した範囲では、JPCERT/CC の2026年の注意喚起一覧に本件の注意喚起はありません（2026年9月の注意喚起はCisco Secure Email Gateway・Adobe・マイクロソフトの3件）。</p>
+<p>一方で、Check Point 製品については<strong>2026年6月10日</strong>に「Check Point Software Technologies社製品における認証バイパスの脆弱性（CVE-2026-50751）に関する注意喚起」が出ています。つまり、「この製品は国内の注意喚起の対象になりうる」という実績はありながら、本件では（確認時点で）出ていません。</p>
+<p>本記録の評価として、これは JPCERT/CC の運用の問題ではなく、<strong>利用組織側の着手条件の設計の問題</strong>です。注意喚起が出るかどうかは、その時点で国内の相談が上がっているかなど複数の要因に左右されます。過去に出た実績があると「今回も出るはずだ」と考えてしまいますが、実悪用が確認されている脆弱性については、開発元のアドバイザリとCISA の KEV 収載をそれぞれ単独の着手条件として扱う必要があります。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-93616　<b>cvss:</b> 9.8　<b>概要:</b> Check Point Security Management Server の Web サービスにおける ディレクトリトラバーサルとファイルアップロードの不備。認証を持たない攻撃者が 任意のスクリプトをアップロードし、サーバ上で実行できる。影響製品は Security Management Server・Multi-Domain Security Management Server・ Log Server・Multi-Domain Log Server・SmartEvent。2026年7月23日に 少数の標的に対する攻撃で悪用され、修正は2026年9月22日に公開された。 CISA が同日 KEV へ収載した　<b>exploited:</b> はい</div><div class=sub><b>id:</b> CVE-2026-85102　<b>概要:</b> Check Point のゲートウェイが VPN 接続を確立する際の証明書の検証における不備。 認証を経ていない攻撃者にコード実行を許しうる。対象は Security Gateway と Spark ファイアウォール（Site-to-Site VPN またはリモートアクセス VPN 利用時）で、 R81・R81.10（いずれもサポート終了）・R81.10.x・R81.20・R82・R82.00.x・R82.10。 修正は2026年9月9日（sk1000117）。公開時点で悪用の証拠は無かったが、 9月12日から Spark 利用者に対する悪用の試みが観測された。CISA が 2026年9月22日に KEV へ収載した　<b>exploited:</b> はい</div><div class=sub><b>id:</b> CVE-2026-85103　<b>概要:</b> ASN.1 の復号処理におけるヒープオーバーフローで、遠隔コード実行に至りうる。 ゲートウェイと管理サーバの双方が対象。修正は2026年9月9日。 オランダ NCSC-NL が CVE-2026-85102 とあわせて緊急の適用を促した。 KEV には収載されていない　<b>exploited:</b> いいえ</div><div class=sub><b>id:</b> CVE-2026-91843　<b>概要:</b> 管理サーバの別の脆弱性。2026年9月16日に LivePatch（Take 28、R82.20 では Take 29）で 修正された。フランスの CERT Santé による要約に基づく。 Check Point は、この LivePatch では CVE-2026-93616 は修正されないとしている　<b>exploited:</b> いいえ</div></td></tr><tr><th>affected_versions</th><td>CVE-2026-93616: R82.20（Jumbo Hotfix 未適用）、R82.10 の Jumbo Hotfix Take 44 以下、 R82 の Take 126 以下、R81.20 の Take 166 以下、R81.10 の Take 190 以下（サポート終了）、 R81・R80.40・R80.30・R80.20・R80.10・R80（いずれもサポート終了）。 修正は R82.20 向け Security Hotfix と各系列の Jumbo Hotfix Accumulator （R82.10 は Take 45 以上、R82 は Take 127 以上）。なお The Hacker News は、 Check Point のアドバイザリが R82.20 を「Jumbo Hotfix 未適用」の条件なしに 影響ありとしている点が CVE レコードと異なると指摘している。 CVE-2026-85102: Security Gateway と Spark ファイアウォールの R81・R81.10（サポート終了）・R81.10.x・R81.20・R82・R82.00.x・R82.10。 利用組織は開発元のアドバイザリ（sk1000171・sk1000117）で直接確認する必要がある</td></tr><tr><th>exploitation_status</th><td>CVE-2026-93616 は実際の悪用が確認されている。Check Point は 「本脆弱性は実際に悪用されている。Check Point は攻撃を受けた顧客を少数把握している」 （原文英語）と述べ、攻撃は2026年7月23日に少数の標的に対して行われたとしている。 CVE-2026-85102 については、2026年9月12日から悪用の試みが観測され、 小規模事業所向けの Spark 製品の利用者が狙われている。 米 CISA は2026年9月22日に両者を KEV へ収載し、連邦民間行政機関に 2026年9月25日までの対処を指示した。攻撃者・標的・悪用後の行動は公表されていない</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 修正の適用（R82.20 Security Hotfix／各系列の Jumbo Hotfix Accumulator）　<b>副作用:</b> 管理サーバの更新中はポリシーの配信と管理操作が行えない。 Multi-Domain 構成では対象が複数に及ぶ。サポート終了版（R81.10 以下）では Jumbo Hotfix の提供が期待できず、版の更改という別の工程が必要になる</div><div class=sub><b>item:</b> TCP/19009 への到達を信頼できる IP に限定（SmartConsole の Trusted Clients）　<b>副作用:</b> 管理端末・監視システム・自動連携の仕組みなど、正規に到達している相手を 洗い出せていない状態で絞ると、自分の運用と自動連携が先に止まる。 Check Point 自身が一時的な措置としており、修正の代替にはならない</div><div class=sub><b>item:</b> 管理サーバをファイアウォールの背後に置く　<b>副作用:</b> 構成変更に伴う経路の見直しが必要で、即日で済むとは限らない。 到達できる位置にいる攻撃者（内部からの横展開を含む）には効かない</div><div class=sub><b>item:</b> IoC による侵害確認（cpm.elg・コアダンプ・ReflectionUtils のエラーログ）　<b>副作用:</b> 攻撃は2026年7月23日で、IoC の公開は9月22日である。ログの保全期間が 60日程度の環境では、確認しようとした時点で対象が残っていない。 「出力なし＝安全」とは読めず、保全期間が足りない事実も記録に残す必要がある</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> cpm.elg のログで login(loginRequest=LoginRequest{authenticationInfo=… の項目のうち、利用者名が1,001字以上のもの　<b>補足:</b> 正規の運用でこの長さは使われない。長さという単純な指標で機械的に拾える</div><div class=sub><b>item:</b> 上記のログイン試行の時刻と一致するコアダンプファイルの生成　<b>補足:</b> 単独では兆候にならないが、時刻の一致で意味を持つ</div><div class=sub><b>item:</b> ReflectionUtils のエラーログに現れるディレクトリトラバーサルの並び（「../」など）　<b>補足:</b> パストラバーサルの試行そのものの痕跡</div><div class=sub><b>item:</b> 監査ログ・管理者ログインのログに現れる「Administrator failed to log in: Username too long」　<b>補足:</b> Check Point が関連する認証回避（CVE-2026-16232）の検知手がかりとして挙げたもの。 本件の IoC とは別だが、同じ管理サーバの調査で同時に確認する価値がある</div><div class=sub><b>item:</b> CVE-2026-85102 の悪用の試みで用いられた証明書の主体名（CN=vpn,OU=users,O=global）　<b>補足:</b> 匿名化基盤（VPN サービス・プロキシ）からの接続とあわせて確認する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月23日</td><td class=nowrap><span class="b kind">発生</span></td><td>CVE-2026-93616 を用いた攻撃が、少数の標的に対して行われた。 Check Point が後日のアドバイザリで日付を明らかにしたもので、 標的の名称・攻撃者・悪用後の行動は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年9月9日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Check Point が VPN 側の CVE-2026-85102（証明書検証の不備・認証回避と遠隔コード実行）と CVE-2026-85103（ASN.1 復号のヒープオーバーフロー）の修正を公開（sk1000117）。 この時点では悪用の証拠は無いとしていた。カナダ CCCS が AV26-902 を公開し、 オランダ NCSC-NL は「まもなく悪用の試みが起きると予想する」として緊急の適用を促した</td></tr><tr><td class="sm nowrap tw">2026年9月12日</td><td class=nowrap><span class="b kind">発生</span></td><td>CVE-2026-85102 に対する悪用の試みが始まる。標的は小規模事業所向けの Spark ファイアウォールの利用者で、通信は匿名化基盤（VPN サービス・プロキシ）から 送られ、証明書の主体名に CN=vpn,OU=users,O=global などが使われた</td></tr><tr><td class="sm nowrap tw">2026年9月16日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Check Point が管理サーバの別の脆弱性 CVE-2026-91843 を LivePatch（Take 28、 R82.20 では Take 29）で修正。フランスの CERT Santé による要約に基づく。 Check Point は、この LivePatch では CVE-2026-93616 は修正されないとしている</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">公表</span></td><td>Check Point が CVE-2026-93616 の緊急ホットフィックスとアドバイザリ sk1000171 を公開。 パストラバーサルとファイルアップロードの不備により認証を持たない攻撃者が 任意のスクリプトを置いて実行できること、実際に悪用されていること、 攻撃を受けた顧客を少数把握していることを明らかにし、IoC と緩和策 （TCP/19009 の到達制限、ファイアウォールの背後への設置）を示した。 対象は Security Management Server・Multi-Domain Security Management Server・ Log Server・Multi-Domain Log Server・SmartEvent</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>米 CISA が CVE-2026-93616 と CVE-2026-85102 を KEV へ追加。対応期限はいずれも 2026年9月25日。カナダ CCCS は AV26-902 を Update 2 として改訂した。 同日、F5 BIG-IP APM の CVE-2026-94127 と Arista VeloCloud Orchestrator の CVE-2026-93952 も同じ期限で追加されている</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>台湾の iThome が、Check Point・F5・Arista の4件が同日に KEV へ収載されたこと、 Check Point の2件の修正がそれぞれ9月9日・9月22日に出ていたことを報じた</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が Check Point のアドバイザリ sk1000171、カナダ CCCS の AV26-902、 CISA の KEV カタログを取得し、脆弱性の内容・対象製品・対象版・修正・緩和策・ IoC・悪用の記述・対応期限を確認した。あわせて JPCERT/CC の2026年の注意喚起一覧に 本件の注意喚起が無いことを確認した</td></tr><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>米連邦民間行政機関に課された対応期限（2件とも）。日本の組織に法的な効力は無いが、 「当局が実悪用を確認し、3日で対処せよと命じた」という事実は 社内での優先順位づけの根拠になる（本記録の評価）</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響製品の範囲が、アドバイザリの版と報道で一致しない</span><div class=sm>本記録の作成者が2026年9月23日に取得した sk1000171 は、影響製品として Security Management Server・Multi-Domain Security Management Server・Log Server・ Multi-Domain Log Server・SmartEvent の5つを挙げている。BleepingComputer も 同じ5製品を挙げる。一方 The Hacker News は「Check Point のアドバイザリは Security Management のみを影響ありとしており、他の影響製品について 同社に問い合わせている」（原文英語）と書いている。アドバイザリが 更新された結果とみられるが、本記録の作成者は改訂の履歴を確認できていない。 利用組織は開発元のアドバイザリで最新の一覧を直接確認する必要がある。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>R82.20 が「Jumbo Hotfix 未適用」の条件つきで影響ありか、無条件か</span><div class=sm>The Hacker News は、CVE のレコードが R82.20 を「Jumbo Hotfix 未適用」の場合として 挙げる一方、Check Point のアドバイザリは R82.20 をその条件なしに 影響ありとしていると指摘している。R82.20 を運用している組織は、 Jumbo Hotfix の適用状況にかかわらず対象として扱うほうが安全である （本記録の評価）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>関連する認証回避 CVE-2026-16232 の悪用の有無について報道が食い違う</span><div class=sm>BleepingComputer は同一の記事内で「Qilin のアフィリエイトが認証回避 （CVE-2026-50751）のゼロデイを6月から、2件目の認証回避（CVE-2026-16232）を 少なくとも7月から悪用している」と書きながら、後段では 「Check Point はまだ CVE-2026-16232 を実悪用として示していない」（いずれも原文英語）と 書いている。Security Affairs は「7月に修正され、現在も実悪用下にある」としている。 本記録の作成者は Check Point の該当アドバイザリを確認していないため、 CVE-2026-16232 の悪用の有無は本記録では確定させない。 KEV に収載されているのは CVE-2026-93616 と CVE-2026-85102 の2件である。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>NCSC-NL・CERT Santé の原文を本記録の作成者が確認していない</span><div class=sm>オランダ NCSC-NL が CVE-2026-85102・CVE-2026-85103 について緊急の適用を促したこと、 フランスの CERT Santé が LivePatch Take 28／29 を要約したことは、 いずれも報道（BleepingComputer・Security Affairs・The Hacker News）を通じて 把握したものである。本記録の作成者は両機関の原文を確認していない。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>国内の注意喚起・被害公表の不在は、確認時点での状態である</span><div class=sm>本記録の作成者が2026年9月23日に JPCERT/CC の2026年の注意喚起一覧を確認した結果であり、 その後に公開される可能性を排除しない。不在の確認は、掲載一覧の参照という 方法の限界を伴う。国内の稼働台数・露出台数は、そもそも公表されていない。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証なしのファイル設置が「守り方を決める機器」の掌握に変わる経路と、61日後に公開された手がかり</div><div class=svgwrap><svg viewBox="0 0 1406 284" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,142.0 C193.0,142.0 193.0,142.0 220,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,142.0 C397.0,142.0 397.0,142.0 424,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,142.0 C601.0,142.0 601.0,142.0 628,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,142.0 C805.0,142.0 805.0,47.0 832,47.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,142.0 C805.0,142.0 805.0,129.0 832,129.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,47.0 C907.0,47.0 907.0,224.0 832,224.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,142.0 C805.0,142.0 805.0,142.0 1036,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,98.0 C907.0,98.0 907.0,142.0 424,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,193.0 C907.0,193.0 907.0,142.0 424,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="105.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="127.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（主体・目的は非公</text><text x="91.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表）</text><text x="91.0" y="154.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年7月23日・少</text><text x="91.0" y="166.0" text-anchor="middle" fill="#f48fb1" font-size="10">数の標的</text><rect x="220" y="98.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="120.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証なしの要求（TCP/</text><text x="295.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">19009 の Web </text><text x="295.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サービスへ）</text><text x="295.0" y="161.0" text-anchor="middle" fill="#ffcc80" font-size="10">到達性の条件は明示されて</text><text x="295.0" y="173.0" text-anchor="middle" fill="#ffcc80" font-size="10">いない</text><rect x="424" y="98.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="120.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Check Point </text><text x="499.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Security Man</text><text x="499.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">agement Ser…</text><text x="499.0" y="161.0" text-anchor="middle" fill="#64b5f6" font-size="10">CVE-2026-936</text><text x="499.0" y="173.0" text-anchor="middle" fill="#64b5f6" font-size="10">16・CVSS 9.8・</text><rect x="628" y="105.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="127.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">置かれた任意のスクリプト</text><text x="703.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の実行</text><text x="703.0" y="154.0" text-anchor="middle" fill="#f48fb1" font-size="10">悪用後の行動は公表されて</text><text x="703.0" y="166.0" text-anchor="middle" fill="#f48fb1" font-size="10">いない</text><rect x="832" y="16.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配下ゲートウェイのポリシ</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ー・管理者の操作</text><text x="907.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">配る側を握られる</text><rect x="832" y="92.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">組織のログ（管理サーバが</text><text x="907.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">集約）</text><text x="907.0" y="141.0" text-anchor="middle" fill="#ffcc80" font-size="10">集める側を握られると調査</text><text x="907.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">の材料が疑わしくなる</text><rect x="832" y="180.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Security Gat</text><text x="907.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">eway / Spark</text><text x="907.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（配下の機器）</text><text x="907.0" y="243.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE-2026-851</text><text x="907.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">02 は9月12日から別</text><rect x="1036" y="98.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="120.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IoC（cpm.elg </text><text x="1111.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の1,001字超の利用者</text><text x="1111.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">名・コアダンプ・「..…</text><text x="1111.0" y="161.0" text-anchor="middle" fill="#ffcc80" font-size="10">公開は2026年9月22</text><text x="1111.0" y="173.0" text-anchor="middle" fill="#ffcc80" font-size="10">日＝攻撃の61日後</text><rect x="1240" y="54.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1315.0" y="76.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Check Point（</text><text x="1315.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sk1000171・緊急</text><text x="1315.0" y="104.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ホットフィックス）</text><text x="1315.0" y="117.0" text-anchor="middle" fill="#80cbc4" font-size="10">攻撃を受けた顧客を少数把</text><text x="1315.0" y="129.0" text-anchor="middle" fill="#80cbc4" font-size="10">握</text><rect x="1240" y="156.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1315.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA（KEV 収載・</text><text x="1315.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">期限 9月25日）</text><text x="1315.0" y="205.0" text-anchor="middle" fill="#b0bec5" font-size="10">同日に F5・Arist</text><text x="1315.0" y="217.0" text-anchor="middle" fill="#b0bec5" font-size="10">a も収載</text></svg></div><div class=fn>攻撃者は管理サーバの Web サービスへ要求を送り（layer 0→1）、 パストラバーサルとファイルアップロードの不備を突いて任意のスクリプトを置き（layer 2）、 サーバ上で実行する（layer 3）。管理サーバは配下のゲートウェイへポリシーを配り、 組織のログを集める位置にある（layer 4）。痕跡は cpm.elg・コアダンプ・ ReflectionUtils のエラーログに残るが、公開は攻撃の61日後だった（layer 5）。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>Check Point は ReflectionUtils のエラーログに「../」などの ディレクトリトラバーサルの並びが残りうるとしている。 ログを外部へ転送していれば、事後に確認できる層である。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正（R82.20 Security Hotfix／各系列の Jumbo Hotfix Accumulator）を適用する</div><div class=ctl><span class="b eff">侵入を防げた</span>TCP/19009 への到達を信頼できる IP に限り、管理サーバをファイアウォールの背後に置く</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>Check Point は、cpm.elg に残る1,001字を超える利用者名のログイン試行と、 その時刻に一致するコアダンプファイルの生成を手がかりとして挙げている。 長さという単純な指標で拾えるため、ログが残っていれば機械的に確認できる。</div></td><td><div class=ctl><span class="b eff">検知できた</span>cpm.elg と監査ログを外部の基盤へ転送し、保全期間を90日以上確保する</div><div class=ctl><span class="b eff">影響を限定できた</span>管理サーバからの外向き通信を必要な宛先に限定し、それ以外を遮断・記録する</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>攻撃者が何を参照したかが公表されていないため、検知の機会も評価できない。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>管理者アカウントの権限を役割ごとに分け、単一のアカウントで全体を見られない構成にする</div><div class=ctl><span class="b eff">検知できた</span>ポリシーの取得・エクスポート操作を監査ログに残し、外部へ転送する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>ポリシーの変更履歴を機器の外へ出していれば、事後の改変を検知できる。 本件で検知が行われたかは公表されていない。</div></td><td><div class=ctl><span class="b eff">検知できた</span>ポリシーの版管理を機器外でも行い、定期に差分を突き合わせる</div><div class=ctl><span class="b eff">検知できた</span>ログを管理サーバとは別の系統（SIEM 等）へ二重に集め、片方が汚染されても比較できるようにする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>重要機器のログの保全期間は「ベンダーが IoC を出すまでの時間」に耐える長さにする</div><div class=lw>本件では、攻撃が2026年7月23日、IoC の公開が9月22日で、61日の差があった。 保全期間が60日の環境では、公開された手がかりを当てはめる対象が残っていない。 調査ができないことは「被害が無かった」ことにはならない。</div><div class=la><b>取るべき行動</b> 管理サーバ・境界機器・認証基盤のログについて、保全期間を90日以上に設定し、 機器の外へ転送する。予算の制約で全ログが無理なら、 認証・管理操作・エラーログに絞って長期保全する層を分ける。</div></li><li><div class=lp>「セキュリティ製品だから安全」ではなく「攻撃者にとって最も価値のある的」と位置づける</div><div class=lw>破られたのはポリシーを配り、管理者の操作を処理し、ログを集める中枢だった。 Security Affairs は「管理サーバは配下のポリシー・管理者の活動・システムログを 制御するため、侵害は企業ネットワーク全体に広い影響を持ちうる」（原文英語）としている。 セキュリティ製品の管理面は、業務システムより高い優先度で扱う対象である。</div><div class=la><b>取るべき行動</b> 資産の重要度評価で、セキュリティ製品の管理サーバ・ログサーバ・ イベント分析機を最上位の区分に置く。到達制御・特権の分離・ ログの二重化を、業務系の基幹システムと同じ水準で適用する。</div></li><li><div class=lp>サポート終了版を残していること自体が、緊急時に取れる手を奪う</div><div class=lw>本件の対象には R81.10 以下のサポート終了版が含まれるが、 これらに Jumbo Hotfix の提供は期待できない。残された選択肢は 版の更改か緩和策での封じ込めで、いずれも KEV の3日には収まらない。</div><div class=la><b>取るべき行動</b> 保守サポートの期限を資産台帳の必須項目にし、期限切れの機器を 四半期ごとに経営へ報告する。更改の予算がつかない場合は、 「緊急時に更新できない機器」として残存リスクを文書で承認する。</div></li><li><div class=lp>拠点・子会社の小型機を、本社の機器と同じ速度で更新できるかを測っておく</div><div class=lw>CVE-2026-85102 では、修正公開の3日後から悪用の試みが始まり、 小規模事業所向けの Spark 製品の利用者が狙われた。専任の運用担当がいない場所に 置かれた機器は、攻撃側から見れば修正が当たるまでの時間が長い。</div><div class=la><b>取るべき行動</b> 直近の緊急更新について、本社・拠点・子会社それぞれの「公開から適用までの 実日数」を測る。差が大きい層には、集中管理か更新の自動化か 運用委託かのいずれかを当てる判断材料にする。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>対象を「管理サーバ」ではなく製品名の一覧で突き合わせる</div><div class=lw>影響するのは Security Management Server だけでなく、 Multi-Domain Security Management Server・Log Server・ Multi-Domain Log Server・SmartEvent を含む5製品である。 資産台帳の分類が「管理サーバ」「ログ収集」「監視」に分かれていると、 製品名での突き合わせを怠ったぶんだけ漏れる。</div><div class=la><b>取るべき行動</b> アドバイザリに列挙された製品名をそのまま検索語にして資産台帳を検索し、 該当した機器をすべて一覧にする。版数は Jumbo Hotfix の Take 番号まで記録する。</div></li><li><div class=lp>到達制限をかける前に「誰が管理サーバに到達しているか」を知っておく</div><div class=lw>緩和策は TCP/19009 への到達を信頼できる IP に限ることだが、 管理端末・監視システム・自動連携の仕組みを洗い出せていなければ、 絞った瞬間に自分の運用が止まる。緊急時にその洗い出しから始めると間に合わない。</div><div class=la><b>取るべき行動</b> 管理サーバへの接続元を平時に記録・集計し、Trusted Clients に 登録すべき一覧を作っておく。四半期ごとに実績と突き合わせて更新する。</div></li><li><div class=lp>侵害確認は「長さ」のような単純な指標から始める</div><div class=lw>Check Point が示した手がかりの中心は、cpm.elg に残る利用者名が 1,001字以上であることだった。正規の運用でその長さは使われないため、 複雑な相関分析をしなくても機械的に拾える。</div><div class=la><b>取るべき行動</b> 利用者名・パラメータの異常な長さ、パストラバーサルの並び（「../」）、 コアダンプの生成時刻といった単純な指標を、定期のログ検査に組み込む。 該当が出たときにだけ詳細な調査へ進む二段構えにする。</div></li><li><div class=lp>LivePatch と Jumbo Hotfix の関係を取り違えない</div><div class=lw>Check Point は2026年9月16日に LivePatch で別の脆弱性（CVE-2026-91843）を 修正したが、その LivePatch では CVE-2026-93616 は修正されない。 「最近パッチを当てたから大丈夫」という判断が成立しない構造になっている。</div><div class=la><b>取るべき行動</b> どの修正がどの CVE に対応するかを、適用記録に CVE 番号で紐づけて残す。 LivePatch の Take 番号と Jumbo Hotfix の Take 番号は別系統であることを 手順書に明記する。</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Check Point の Security Management Server・Multi-Domain Security Management Server・Log Server・Multi-Domain Log Server・SmartEvent のいずれかを運用している</td><td class=sm>5製品が CVE-2026-93616 の対象である。台帳上の分類が「管理サーバ」以外に なっている機器を見落とすと、当たっていない機器が残る。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 管理サーバの Jumbo Hotfix の Take 番号を即座に答えられない</td><td class=sm>対象かどうかは系列と Take 番号の組み合わせで決まる（R82.10 は Take 44 以下、 R82 は Take 126 以下など）。版数の粒度が粗い管理では判定そのものができない。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 管理サーバの Web サービス（TCP/19009）へ、管理セグメント以外から到達できる</td><td class=sm>公表されている緩和策は到達元の制限である。絞っていなければ、 修正を当てるまでの間に悪用を止める手段が無い。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 管理サーバ・ログサーバのログを機器の外へ転送しておらず、保全期間が90日未満である</td><td class=sm>攻撃（7月23日）と IoC の公開（9月22日）に61日の差があった。 保全期間が足りなければ、公開された手がかりを当てはめる対象が残らない。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 保守サポートが終了した版（R81.10 以下）の機器が残っている</td><td class=sm>修正の提供が期待できず、KEV の3日という期限に対して取れる手が 版の更改か封じ込めしかなくなる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 拠点・子会社・店舗に置いた小型機（Spark など）の更新を、本社と別の体制で回している</td><td class=sm>CVE-2026-85102 では修正公開の3日後から悪用の試みが始まり、 Spark の利用者が狙われた。更新の遅れがそのまま露出期間になる。</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月22日 Check Point Software Technologies</span> <a href="https://support.checkpoint.com/results/sk/sk1000171" target="_blank" rel="noreferrer noopener nofollow">Security Advisory – Action Required – Active Exploitation of CVE-2026-85102 and a Management Pre-Authentication Vulnerability CVE-2026-93616（sk1000171）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。原文英語。CVE-2026-93616 が「ディレクトリトラバーサルとファイルアップロードの 脆弱性により、認証されていない攻撃者が Management Server 上に任意のスクリプトを アップロードして実行できる」ものであること、影響製品（Security Management Server・ Multi-Domain Security Management Server・Log Server・Multi-Domain Log Server・SmartEvent）、 影響バージョン（R82.20／R82.10 Take 44 以下／R82 Take 126 以下／R81.20 Take 166 以下／ R81.10 Take 190 以下／R80 系）、修正（R82.20 Security Hotfix と各系列の Jumbo Hotfix Accumulator）、緩和策（TCP/19009 への到達を信頼できる IP に限定、 ファイアウォールの背後への設置）、IoC（cpm.elg の1,001字以上の利用者名を含む ログイン試行、コアダンプの生成時刻の一致、ReflectionUtils のエラーログの「../」）の出典。 本記録の作成者が2026年9月23日に本文を取得して確認した)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年9月9日（2026年9月22日 Update 2） カナダ・サイバーセキュリティセンター（Canadian Centre for Cyber Security）</span> <a href="https://cyber.gc.ca/en/alerts-advisories/check-point-security-advisory-av26-902" target="_blank" rel="noreferrer noopener nofollow">Check Point security advisory (AV26-902) – Update 2</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。原文英語。2026年9月9日時点で Security Gateway・Spark ファイアウォール （Site-to-Site VPN／リモートアクセス VPN 利用時）・Security Management Server が 影響を受けること、Update 1 で CVE-2026-85102 と CVE-2026-93616 が実際に 悪用されていると Check Point が報告したこと、Update 2 で2026年9月22日に CISA が両者を KEV へ追加したこと、CVE-2026-85103 が ASN.1 復号のヒープオーバーフローで 遠隔コード実行に至りうることの出典。本記録の作成者が2026年9月23日に取得して確認した)）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年9月23日（確認時点） JPCERT コーディネーションセンター</span> <a href="https://www.jpcert.or.jp/at/2026.html" target="_blank" rel="noreferrer noopener nofollow">注意喚起一覧（2026年）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。日本語。本件に関する注意喚起が掲載されていないことの確認に用いた。 2026年9月の注意喚起は、15日「Cisco Secure Email GatewayにおけるSQLインジェクションの 脆弱性（CVE-2026-76461）」、9日「Adobe AcrobatおよびReaderの脆弱性（APSB26-141）」、 9日「2026年9月マイクロソフトセキュリティ更新プログラム」の3件。 Check Point 製品については2026年6月10日に 「Check Point Software Technologies社製品における認証バイパスの脆弱性 （CVE-2026-50751）に関する注意喚起」が出ている。 本記録の作成者が2026年9月23日に確認した)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月22日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/check-point-patches-management-server-zero-day-exploited-in-attacks/" target="_blank" rel="noreferrer noopener nofollow">Check Point warns of Management Server zero-day exploited in attacks</a> <span class="b kind">記事</span><span class=sm>（(原文英語。緊急ホットフィックスの公開、管理サーバが「ポリシーを保管・管理し、 管理者の変更を処理し、システムのログを集める中央の保管庫」であること、 CVE-2026-93616 が低い複雑さで悪用できるパストラバーサルであること、 影響製品5つ、「本脆弱性は実際に悪用されている。Check Point は攻撃を受けた顧客を 少数把握している」という同社の記述、緩和策（ファイアウォールの背後への設置と SmartConsole の Trusted Clients による到達制限）、CISA と FBI が2024年5月以降 パストラバーサルの根絶を求めていること、「Administrator failed to log in: Username too long」という監査ログの手がかり、過去の Check Point 製品の 悪用事例（CVE-2024-24919・CVE-2026-50751・CVE-2026-16232）、 オランダ NCSC-NL が CVE-2026-85102・CVE-2026-85103 の緊急適用を促したことの出典)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年9月22日 Security Affairs</span> <a href="https://securityaffairs.com/199549/security/check-point-fixes-a-new-actively-exploited-critical-security-flaw.html" target="_blank" rel="noreferrer noopener nofollow">Check Point Fixes a New Actively Exploited Critical Security Flaw</a> <span class="b kind">記事</span><span class=sm>（(原文英語。管理サーバの侵害が企業ネットワーク全体に広い影響を持ちうること、 影響製品が主力の管理サーバにとどまらないこと、実際の被害件数は 検知されない・報告されない侵害があるため公表より多い可能性があること、 IoC の公開、緩和策が一時的な措置にすぎないこと、 オランダ NCSC-NL の警告と CVE-2026-16232 に関する記述の出典)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年9月22日 The Hacker News</span> <a href="https://thehackernews.com/2026/09/check-point-warns-of-management-server.html" target="_blank" rel="noreferrer noopener nofollow">Check Point Warns of Management Server Zero-Day Exploited in Targeted Attacks</a> <span class="b kind">記事</span><span class=sm>（(原文英語。攻撃が2026年7月23日に少数の標的に対して行われたこと、 修正が9月22日に出たこと、CVE レコードの CVSS が 9.8 であること、 影響バージョンの一覧と R82.20 の扱いが CVE レコードとアドバイザリで異なること、 アドバイザリが標的も攻撃者も悪用後の行動も示していないこと、 修正の適用は「それ以前に攻撃されていたかどうか」を示さないこと、 CVE-2026-85102 の悪用の試みが2026年9月12日から Spark 利用者に対して始まり 匿名化基盤と CN=vpn,OU=users,O=global の証明書が使われたこと、 2026年9月16日の LivePatch（Take 28／R82.20 では Take 29）で CVE-2026-91843 が 修正されたが CVE-2026-93616 は直らないこと、sk1000171・sk1000117 の位置づけの出典)）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年9月23日 iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179150" target="_blank" rel="noreferrer noopener nofollow">Check Point、F5、Arista應用系統漏洞遭積極利用</a> <span class="b kind">記事</span><span class=sm>（(原文中国語（繁体）。CISA が2026年9月22日に4件を KEV へ追加し連邦機関に 9月25日までの修正を求めたこと、4件が Check Point の CVE-2026-85102・CVE-2026-93616、 Arista VeloCloud Orchestrator の CVE-2026-93952、F5 BIG-IP APM の CVE-2026-94127 で あること、Check Point の2件の修正がそれぞれ9月9日・9月22日に出ていたこと、 CVE-2026-93952 が CVSS 10.0、残る3件が 9.8 であることの出典)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月23日</span> <span class="b rev">新規作成</span> 2026年9月23日の日中の新着記事（BleepingComputer・The Hacker News・Security Affairs・ カナダ CCCS・iThome）を起点に作成した。本記録の作成者が Check Point の アドバイザリ sk1000171、カナダ CCCS の AV26-902、CISA の KEV カタログを取得して 裏を取り、脆弱性の内容・影響製品・影響バージョン・修正・緩和策・IoC・ 悪用の記述・対応期限を確認した。あわせて JPCERT/CC の2026年の注意喚起一覧を確認し、 本件の注意喚起が出ていないこと（Check Point については2026年6月10日の CVE-2026-50751 が直近であること）を記録した。国内の被害を裏づける公表資料が 無いため日本との関係は「有名事象として記録」の扱いとした。 影響製品の範囲・R82.20 の条件・CVE-2026-16232 の悪用の有無について 資料間の食い違いがあり、齟齬に記録した。被害組織・件数・攻撃者・ 悪用後の行動がいずれも公表されていないため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Check Point</span><span class="b tag">セキュリティ管理サーバ</span><span class="b tag">SmartEvent</span><span class="b tag">ログサーバ</span><span class="b tag">CVE-2026-93616</span><span class="b tag">CVE-2026-85102</span><span class="b tag">パストラバーサル</span><span class="b tag">ファイルアップロード</span><span class="b tag">認証不要</span><span class="b tag">ゼロデイ</span><span class="b tag">実悪用</span><span class="b tag">CISA KEV</span><span class="b tag">3日期限</span><span class="b tag">管理サーバ</span><span class="b tag">ポリシー配信</span><span class="b tag">ログ集約</span><span class="b tag">IoC</span><span class="b tag">cpm.elg</span><span class="b tag">TCP19009</span><span class="b tag">到達元の制限</span><span class="b tag">Jumbo Hotfix</span><span class="b tag">サポート終了版</span><span class="b tag">Spark</span><span class="b tag">VPN</span><span class="b tag">NCSC-NL</span><span class="b tag">JPCERT注意喚起なし</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-23 13:34 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
