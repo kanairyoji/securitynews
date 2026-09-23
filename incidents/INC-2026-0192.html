@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>WordPress にコメント経由のRCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0192</span>WordPress にコメント経由のRCE</h1>
+<header class="site-header">
+  <p class="subtitle">WordPress コアに、匿名の訪問者が投稿したコメント1件でスクリプトを仕込める保存型クロスサイトスクリプティング（CVE-2026-93485・通称 Comment2Shell）が見つかり、2026年9月17日の 7.1.1 で修正された——コメントは保存時の検査（KSES）を通るが、表示時の整形（wpautop）が引用符で囲まれた属性値の中の改行を扱えず、良性の HTML がその場で動くイベントハンドラに変わる。ログイン中の管理者がそのページを開くと、管理者のセッションでプラグインを導入でき、Web シェルによるサーバ上のコード実行にまで届く。影響は 4.7 から 7.1 までの約10年分の版におよび、既定の「コメント承認」は迂回できる経路が複数ある</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月17日</span>
+  <span>最終更新: 2026年9月23日</span>
+</div>
+
+<div class="lead"><p>WordPress は <strong>2026年9月17日</strong>、保守とセキュリティのリリース <strong>7.1.1</strong> を公開し、<strong>11件のセキュリティ修正</strong>を入れました。そのうち1件が、<strong>アカウントを持たない攻撃者が到達できる唯一のもの</strong>（The Hacker News）にあたります。</p>
+<p>WordPress 自身の記述は次のとおりです（原文英語）。</p>
+<blockquote>
+<p><code>wpautop()</code> における保存型クロスサイトスクリプティングにより、<strong>認証されていない訪問者がスクリプトを注入できる（コメントの承認を条件とする）</strong>。報告者は Rafie Muhammad（Awesome Motive, Inc.）。</p>
+</blockquote>
+<p>識別子は <strong>CVE-2026-93485</strong>（採番は Patchstack・<strong>CVSS 3.1 で 7.1</strong>・CWE-79）、研究者が付けた通称は <strong>Comment2Shell</strong> です。</p>
+<p>仕組みは「<strong>2つの処理のすき間</strong>」です。WordPress はコメントを<strong>保存するとき</strong>に危険な HTML を落とし（KSES と呼ばれる処理）、<strong>表示するとき</strong>に段落などへ整形します（<code>wpautop()</code>）。Patchstack の解説によれば、<code>wpautop()</code> の正規表現は<strong>引用符で囲まれた属性値の中にある「&gt;」を認識できず</strong>、タグが途中で分断されます。その結果、攻撃者が仕込んだ文字列が<strong>ブラウザから見ると「その場で動くイベントハンドラ」の位置</strong>へ移動します。皮肉なことに、攻撃の成立に必要な文字列（属性値の中の改行を <code>--&gt;</code> へ変える変換）は<strong>KSES 側が供給していました</strong>。</p>
+<p>スクリプトは<strong>ページを読み込んだだけで動き、クリックは要りません</strong>。動くのは開いた人の権限で、<strong>ログイン中の管理者が開いた場合</strong>は、その管理者のセッションを使って<strong>プラグインを導入</strong>でき、Web シェルを置けば<strong>サーバ上のコード実行</strong>に届きます。</p>
+<p>影響範囲は <strong>4.7 から 7.1 まで</strong>で、修正は 7.1.1・7.0.5・6.9.8 と、セキュリティ修正の対象である全ブランチ（<strong>4.7.36 まで遡る</strong>）へバックポートされました。既定では新規投稿者のコメントは承認待ちになりますが、Patchstack は「<strong>モデレーションはセキュリティ機能ではない</strong>」（原文英語）とし、研究者は承認を経ずにページへ載せる経路を複数示しています。2026年9月23日時点で悪用の報告はなく、CISA の KEV カタログにも収載されていません。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際の悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>WordPress も Patchstack も悪用に言及していない。The Hacker News は 「攻撃に使われた形跡は無く、米政府の実際に悪用された脆弱性の一覧にも入っていない」としている。 本記録の作成者が2026年9月23日に確認した CISA の KEV カタログ（2026.09.22 版）にも CVE-2026-93485 は収載されていない</div></li><li><span class=ui>報告の経路と日付</span><span class="b rsn">見解が分かれる</span><div class=sm>研究者の技術解説は「2026年9月8日に HackerOne 経由で報告」とし、 Patchstack は「2026年9月15日に Patchstack の脆弱性開示プログラムへ報告された」と記す。 また WordPress の謝辞は所属を Awesome Motive, Inc. と表記し、CVE レコードの credits は Patchstack Bug Bounty Program と表記している。どちらが誤りかを判断する材料は無い</div></li><li><span class=ui>影響を受けるサイト数・更新が適用された割合</span><span class="b rsn">公表されていない</span><div class=sm>WordPress は自動バックグラウンド更新に対応するサイトでは更新が自動で始まるとするのみで、 実際に適用された割合や、未更新のまま残っているサイト数は公表していない</div></li><li><span class=ui>影響を受けるクラシックテーマの網羅的な一覧</span><span class="b rsn">公表されていない</span><div class=sm>研究者の解説はブロックテーマ全般と、同じ整形処理を通すクラシックテーマの例として Twenty Twenty-One を挙げるにとどまる。どのテーマが該当するかを利用者が 網羅的に判定する手順は示されていない</div></li><li><span class=ui>攻撃を受けたかどうかを事後に確認する方法</span><span class="b rsn">公表されていない</span><div class=sm>WordPress も Patchstack も、修正前に仕込まれたコメントや、 不正に導入されたプラグインを検出する手順を公式には示していない。 The Hacker News は「更新しても既に加えられた変更は元に戻らない」として、 見覚えのないプラグイン・ファイルの確認を勧めている</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>WordPress プロジェクト（WordPress.org）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WordPress コアの開発・配布元</p><p class=org-p><span class=org-l>影響</span>2026年9月17日に 7.1.1 を公開し、11件のセキュリティ修正を入れた。 修正は 4.7 まで遡って全対象ブランチへバックポートされ、自動バックグラウンド更新に 対応するサイトでは自動的に適用が始まる</p></div></div><div class=org><div class=org-h><span class=org-n>コメントを受け付けている WordPress 4.7〜7.1 のサイト運営者</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>ブロックテーマ（Twenty Twenty-Two 以降の既定）、または同じ整形処理でコメントを表示する クラシックテーマでコメントを出しているサイト</p><p class=org-p><span class=org-l>影響</span>匿名のコメント1件でスクリプトを仕込まれ、ログイン中の管理者がそのページを開いた場合は 管理者権限でのプラグイン導入からサーバ上のコード実行に至りうる。実被害は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>Rafie Muhammad</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本脆弱性の報告者。WordPress 7.1.1 の謝辞は「Rafie Muhammad（Awesome Motive, Inc.）」と表記し、 CVE レコードの credits は「Rafie Muhammad | Patchstack Bug Bounty Program」と表記している</p><p class=org-p><span class=org-l>影響</span>2026年9月21日に攻撃連鎖の技術解説を公開した。報告日については資料により 9月8日（HackerOne 経由）と9月15日（Patchstack の脆弱性開示プログラム）の記載がある</p></div></div><div class=org><div class=org-h><span class=org-n>Patchstack</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本 CVE の採番機関（CNA）であり、報告を受け付けた脆弱性開示プログラムの運営者</p><p class=org-p><span class=org-l>影響</span>CVE-2026-93485 を採番して CVSS 3.1 で 7.1 と評価し、2026年9月18日に公開した。 あわせて 7.1.1 の修正内容の解説を公開し、コメント承認を「セキュリティ機能ではない」と指摘した</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-93485 の CVSS 基本値（採番機関 Patchstack・CVSS 3.1）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7.1<span class=fu>点</span></div><div class=fn>ベクタは CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:L。権限不要（PR:N）だが 利用者の関与が必要（UI:R＝管理者がページを開くこと）とされ、スコープは変化する（S:C）。 サーバ上のコード実行まで含めた評価ではない点に注意が要る</div></div><div class=fig><div class=fh><span class=fl>WordPress 7.1.1 に含まれたセキュリティ修正の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>11<span class=fu>件</span></div><div class=fn>WordPress のリリース告知による。本件以外は、権限を持つ利用者を前提とするもの （寄稿者権限での投稿上書き、REST API のパストラバーサル、コメント／ノートの権限昇格、 テーマ導入の CSRF など）である。The Hacker News は 「アカウントを持たない攻撃者が到達できるのは本件だけ」としている</div></div><div class=fig><div class=fh><span class=fl>7.1.1（9月17日）から 7.1.2（9月22日）までの間隔</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>日</span></div><div class=fn>本記録の作成者が算出した日数差である。7.1.2 は本件とは別の脆弱性 （CVE-2026-87902・未認証のローカルファイル取り込み）の修正であり、 7.1.1 へ更新したばかりのサイトも再度の更新を要した</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>匿名の訪問者が、許可された HTML タグの属性値の中に改行を置いたコメントを通常のフォームから投稿する。 保存時の KSES は「落とすべき危険な記法」が無いため素通しし、プレースホルダー変換の過程で 攻撃に必要な文字列を供給する。表示時に wpautop() の正規表現が引用符で囲まれた属性値の中の「&gt;」を 認識できずタグを分断し、攻撃者の文字列がその場で動くイベントハンドラの位置へ移る。 ページを開いた時点でスクリプトが動き、開いた人の権限で実行される。 ログイン中の管理者が開いた場合は、そのセッションでプラグインを導入でき、 Web シェルによるサーバ上のコード実行に至りうる。実際の悪用は確認されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[3] [5] [6]</span></div><div>攻撃者が、許可された HTML タグ（研究者の解説では blockquote の cite 属性）の 属性値の中に改行を含むコメントを、通常のコメントフォームから匿名で投稿する。</div><div class=fn>根拠: 研究者の技術解説（2026年9月21日）／Patchstack の解説</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>コメントがページに表示される際、wpautop() などの整形処理がタグを分断し、 攻撃者の文字列がイベントハンドラとして解釈される。ページの読み込みだけで発火し、 クリックなどの操作は要らない。</div><div class=fn>根拠: WordPress のリリース告知の記述／Patchstack の技術解説</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[5] [6]</span></div><div>ログイン中の管理者がそのページを開くと、スクリプトが管理者のセッションを使って プラグインの導入機能を呼び出す。管理者以外が開いた場合は、その権限の範囲で動く。</div><div class=fn>根拠: 研究者の技術解説／The Hacker News の説明</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">unconfirmed</span><span class=srcs>[5] [6]</span></div><div>導入されたプラグインに含まれる Web シェルにより、攻撃者が送ったコマンドが サーバ上で実行されうる。実際にこの段階まで至った事例は公表されていない。</div><div class=fn>根拠: 研究者の技術解説（実際の被害報告は無い）</div></li></ol></div>
+<section id="s5"><h2>匿名コメント1件がページに載るだけで動くスクリプトになった——クリックは要らない<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>WordPress 7.1.1（2026年9月17日）のセキュリティ修正一覧に載った本件の記述は次のとおりである（原文英語）。</p>
+<blockquote>
+<p>Stored cross-site scripting in <code>wpautop()</code> allows an unauthenticated visitor to inject script (subject to comment approval), reported by Rafie Muhammad (Awesome Motive, Inc.).</p>
+<p>（訳: <code>wpautop()</code> における保存型クロスサイトスクリプティングにより、認証されていない訪問者がスクリプトを注入できる（コメントの承認を条件とする）。報告者は Rafie Muhammad）</p>
+</blockquote>
+<p>識別子と評価は次のとおりである。</p>
+<ul>
+<li><strong>CVE-2026-93485</strong>（採番機関は <strong>Patchstack</strong>、公開は2026年9月18日）</li>
+<li><strong>CWE-79</strong>（ウェブページ生成時の入力の不適切な無害化）</li>
+<li><strong>CVSS 3.1 で 7.1</strong>（<code>AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:L</code>）</li>
+<li>影響範囲は <strong>WordPress 4.7 から 7.1 まで</strong>（7.1 は 7.1.1 未満、7.0 は 7.0.4 以下、6.9 は 6.9.7 以下……とブランチごとに範囲がある）</li>
+<li>通称は研究者が付けた <strong>Comment2Shell</strong></li>
+</ul>
+<p>攻撃の入口は<strong>通常のコメントフォーム</strong>である。アカウントは不要で、仕込まれたスクリプトは<strong>ページが読み込まれた時点で動く</strong>。クリックなどの操作は要らない。スクリプトは<strong>そのページを開いた人の権限</strong>で動くため、閲覧者が管理者であれば管理者の権限で動く。</p></section>
+<section id="s6"><h2>保存時の検査と表示時の整形のすき間で、良性の HTML がイベントハンドラに変わった<span class="b slot">原因・手口</span><span class=srcs>出典 [3] [5]</span></h2><p>WordPress はコメントを扱うときに2つの処理を通す。</p>
+<ol>
+<li><strong>保存するとき</strong>——KSES（コメントの無害化処理）が、許可されていない HTML を落とす（サニタイズ）</li>
+<li><strong>表示するとき</strong>——<code>wpautop()</code> などが、改行を段落やタグへ整形する</li>
+</ol>
+<p>Patchstack の解説によれば、本件は<strong>この2つのすき間</strong>にあった。</p>
+<ul>
+<li>攻撃者は、<strong>許可されている HTML タグの属性値の中に改行を置いた</strong>コメントを投稿する</li>
+<li>KSES は素通しする。<strong>そこには「落とすべき危険な記法」が何も無い</strong>ためである。しかも KSES はプレースホルダー変換の過程で、属性値の中の改行を <code>--&gt;</code> に変える—— <strong>攻撃に必要な文字を WordPress 自身が供給していた</strong></li>
+<li>表示時、<code>wpautop()</code> の正規表現は<strong>引用符で囲まれた属性値の中の「&gt;」を認識できず</strong>、タグを途中で分断する。分断の結果、攻撃者の文字列が<strong>ブラウザからはその場で動くイベントハンドラに見える位置</strong>へ移る</li>
+</ul>
+<p>研究者の解説では、<code>blockquote</code> の <code>cite</code> 属性に置いた改行が KSES を通り、<code>wpautop()</code> や <code>wptexturize()</code> を含む整形の連鎖を経て JavaScript の実行に至る、と説明されている。</p>
+<p>表示側には条件がある。<strong>ブロックテーマ</strong>（Twenty Twenty-Two 以降の WordPress の既定）は該当し、<strong>同じ整形処理でコメントを出すクラシックテーマ</strong>も該当する（研究者の解説は Twenty Twenty-One を挙げる）。</p>
+<p><strong>注目すべきは、攻撃者が「危険な入力」を送っていないことである。</strong>送ったのは許可された HTML であり、それを危険に変えたのは WordPress 自身の整形処理だった。</p></section>
+<section id="s7"><h2>コード実行に必要な最後の1手は「管理者がそのページを開くこと」——そこからプラグイン導入で Web シェルが置ける<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [2] [3] [5] [6]</span></h2><p>スクリプトが動いた先の話である。</p>
+<p>スクリプトは<strong>開いた人の権限</strong>で動く。ログインしていない訪問者が開けば、その訪問者のブラウザで動くだけである。しかし<strong>ログイン中の管理者が同じページを開いた場合</strong>、スクリプトは管理者のセッションを使って<strong>プラグインを導入</strong>できる。導入するプラグインに Web シェル（攻撃者が送ったコマンドを実行する小さなファイル）を含めれば、<strong>サーバ上での任意のコード実行</strong>に届く。</p>
+<p>「管理者のブラウザからプラグインを入れてサーバを取る」という経路自体は以前から知られたもので、本件に固有のものではない。本件が新しいのは、<strong>その最初の1手を、アカウントを持たない誰もが、コメントフォームから打てた</strong>という点にある。</p>
+<p>公開された CVSS（7.1）は、<strong>この最後の段階までを織り込んだ評点ではない</strong>。ベクタは機密性・完全性・可用性への影響をいずれも「低」としており、スコープの変化（S:C）でブラウザ側の影響を拾っている形である。<strong>数字だけを見て「中程度」と判断すると、到達点を見誤る。</strong></p></section>
+<section id="s8"><h2>「コメント承認」は迂回できる——モデレーションをセキュリティ機能として数えない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3] [5] [6] [7]</span></h2><p>WordPress の記述には「<strong>コメントの承認を条件とする</strong>」という但し書きが付いている。既定では、初めて投稿する人のコメントは承認待ちになり、そのままではページに出ない。しかし Patchstack は「<strong>モデレーションはセキュリティ機能ではない</strong>」（原文英語）と書き、研究者は承認を経ずにページへ載せる経路を3つ挙げている。</p>
+<ol>
+<li>WordPress に<strong>あらかじめ用意されている「A WordPress Commenter」アカウント</strong>での投稿</li>
+<li><strong>コメント承認の設定が無効</strong>にされている場合</li>
+<li><strong>承認待ちのコメントが、以前にコメントした人には見える</strong>性質を使い、細工したリンクで開かせる</li>
+</ol>
+<p>加えて、一度承認された投稿者のコメントは以後<strong>自動で承認される</strong>（既定の挙動）。つまり「無害なコメントを1回通しておく」だけで、以後の投稿は審査を経ずに載る。</p>
+<p><strong>対処は更新である。</strong></p>
+<ul>
+<li>7.1 系は <strong>7.1.1</strong>、7.0 系は <strong>7.0.5</strong>、6.9 系は <strong>6.9.8</strong> へ。古いブランチも <strong>4.7.36</strong> まで遡って修正が出ている</li>
+<li>自動バックグラウンド更新に対応しているサイトは、更新が自動で始まる</li>
+<li>すぐに更新できない場合は、<strong>投稿のコメントを閉じる／サイト全体でコメントを止める</strong>ことで入口を塞げる。WAF やセキュリティプラグインが当該コメントを弾く場合もある</li>
+<li><strong>更新は、すでに加えられた変更を元に戻さない。</strong> 狙われた可能性があるサイトは、見覚えのないプラグインやファイルの有無を確認する必要がある</li>
+</ul>
+<p>なお WordPress は <strong>9月22日に 7.1.2</strong> を出している。こちらは本件とは別の脆弱性（CVE-2026-87902・未認証のローカルファイル取り込み）の修正で、<strong>7.1.1 も影響を受ける</strong>。<strong>9月17日に更新したサイトも、5日後にもう一度更新する必要があった。</strong></p></section>
+<section id="s9"><h2>「入力の無害化」と「出力の整形」を別々のチームが持つと、すき間は誰の担当でもなくなる（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [3] [5]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p>本件の教訓は WordPress に限らない。<strong>保存時に無害化し、表示時に整形する</strong>という設計はごく一般的で、自前のアプリケーションでも普通に採られている。問題は、</p>
+<ul>
+<li>無害化の担当は「<strong>危険な記法を落とせばよい</strong>」と考える</li>
+<li>整形の担当は「<strong>渡ってくるのは無害化済みのデータだ</strong>」と考える</li>
+</ul>
+<p>という前提が、<strong>両者のあいだで一度も突き合わされない</strong>ことにある。本件では、無害化を通った良性の HTML を、整形処理が危険なものへ作り変えた。さらに、攻撃に必要な文字列を供給したのは無害化処理そのものだった。<strong>どちらの処理も単体では「正しく」動いている。</strong></p>
+<p>実務に落とすと次の2点になる。</p>
+<ol>
+<li><strong>無害化したデータを後から書き換える処理を、無害化と同じ強度で検査する。</strong>段落整形・タイポグラフィ変換・埋め込み展開・翻訳・要約など、「表示のために整える」処理はすべてこの位置にある</li>
+<li><strong>最終的にブラウザへ届く文字列で検査する。</strong> 中間の状態で「安全だ」と確認しても、その後の変換が安全性を壊す。テストは入口ではなく<strong>出口に置く</strong></li>
+</ol>
+<p>加えて本件は、<strong>「承認」「レビュー」「人の目」を安全装置として数えることの危うさ</strong>も示している。コメント承認は本来スパム対策であって、攻撃対策として設計されていない。同じことは、社内の承認フロー・コードレビュー・投稿前チェックにも当てはまる。<strong>運用上の手続きを、技術的な統制の代わりに置かない。</strong></p></section>
+<section id="s10"><h2>悪用の有無・影響サイト数・事後確認の手順はいずれも公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3] [5] [6] [9]</span></h2><p>2026年9月23日時点で、次の点は公表されていない。</p>
+<ul>
+<li><strong>実際の悪用の有無</strong>（報道は「形跡は無い」とし、KEV カタログ 2026.09.22 版にも未収載）</li>
+<li><strong>報告の経路と日付</strong>（研究者は9月8日・HackerOne、Patchstack は9月15日・自社の開示プログラム）</li>
+<li><strong>影響を受けるサイト数</strong>と、更新が適用された割合</li>
+<li>影響を受ける<strong>クラシックテーマの網羅的な一覧</strong></li>
+<li><strong>攻撃を受けたかどうかを事後に確認する手順</strong>（公式には示されていない）</li>
+</ul></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-93485　<b>cvss:</b> 7.1　<b>概要:</b> WordPress コアの wpautop() における保存型クロスサイトスクリプティング（CWE-79）。 認証されていない訪問者が投稿したコメントが、表示時の整形処理でイベントハンドラへ変換され、 ページの読み込みだけで実行される。ログイン中の管理者が開いた場合は、 管理者セッションでのプラグイン導入を経てサーバ上のコード実行に至りうる。 採番は Patchstack、CVSS 3.1 で 7.1、通称 Comment2Shell。　<b>exploited:</b> いいえ</div></td></tr><tr><th>affected_versions</th><td>WordPress コア 4.7 から 7.1 まで（7.1 は 7.1.1 未満、7.0 は 7.0.4 以下、6.9 は 6.9.7 以下など ブランチごとに範囲がある）。修正版は 7.1.1・7.0.5・6.9.8 ほか、セキュリティ修正の対象である 全ブランチへ 4.7.36 まで遡ってバックポートされている。 表示側の条件として、ブロックテーマ（Twenty Twenty-Two 以降の既定）、 および同じ整形処理でコメントを表示するクラシックテーマ（例: Twenty Twenty-One）が対象になる。</td></tr><tr><th>exploitation_status</th><td>実際の悪用は確認されていない。The Hacker News は2026年9月22日時点で 「攻撃に使われた形跡は無く、米政府の実際に悪用された脆弱性の一覧にも入っていない」としている。 本記録の作成者が2026年9月23日に取得した CISA の KEV カタログ（2026.09.22 版・1,721件）にも CVE-2026-93485 は収載されていない。 なお、同じ 7.1 系で9月22日に修正された別の脆弱性（CVE-2026-87902）については、 パッチ公開から5時間以内に探索行為が観測されたと Patchstack が報告している（本件とは別の脆弱性）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> WordPress を 7.1.1（各ブランチの修正版）へ更新する　<b>副作用:</b> コアの更新でテーマ・プラグインとの相性問題が出る可能性がある。 なお9月22日に 7.1.2 が出ているため、9月17日以降に 7.1.1 へ上げたサイトも 5日後に再度の更新が必要になった</div><div class=sub><b>item:</b> 投稿のコメントを閉じる、またはサイト全体でコメントを止める　<b>副作用:</b> 読者との双方向のやり取りが失われる。既存のコメントの表示をどうするかの判断も要る</div><div class=sub><b>item:</b> コメント承認の運用を見直す（自動承認を止める）　<b>副作用:</b> モデレーションの負荷が増える一方で、迂回経路があるため防御としては不完全である</div><div class=sub><b>item:</b> 管理者アカウントで日常的にサイトを閲覧しない（管理用と閲覧用を分ける）　<b>副作用:</b> 運用の手間が増え、コメント確認などの日常業務の動線が変わる</div><div class=sub><b>item:</b> 管理画面からのプラグイン導入・ファイル編集を禁止する設定にする　<b>副作用:</b> プラグインの更新・導入を配備の仕組み側で行う必要があり、緊急時の対応手順を用意しておかないと かえって更新が遅れる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月8日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>研究者の技術解説に記載された報告日。HackerOne 経由で報告したとされる。 Patchstack は別に「2026年9月15日に Patchstack の脆弱性開示プログラムへ報告された」と記しており、 報告の経路と日付は資料間で一致していない</td></tr><tr><td class="sm nowrap tw">2026年9月17日</td><td class=nowrap><span class="b kind">公表</span></td><td>WordPress 7.1.1（保守・セキュリティリリース）が公開された。11件のセキュリティ修正を含み、 うち本件は「認証されていない訪問者がスクリプトを注入できる（コメントの承認を条件とする）」と 記載された。修正は 4.7 まで遡って全対象ブランチへバックポートされた</td></tr><tr><td class="sm nowrap tw">2026年9月18日</td><td class=nowrap><span class="b kind">公表</span></td><td>CVE-2026-93485 が公開された（採番機関は Patchstack、予約・公開とも9月18日、CWE-79、 CVSS 3.1 で 7.1）。説明には「既定の WordPress インストールで再現可能な保存型 XSS で、 コメント承認の要件は迂回される」旨が記されている</td></tr><tr><td class="sm nowrap tw">2026年9月21日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>報告者が攻撃連鎖の技術解説を公開した。匿名コメント → KSES の通過 → 表示時の整形による イベントハンドラ化 → 管理者セッションでのプラグイン導入 → Web シェルという流れと、 コメント承認を経ずにページへ載せる3つの経路が示された</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Hacker News が本件を報じ、「11件のうちアカウントを持たない攻撃者が到達できる唯一の修正」 「攻撃の報告は無く KEV にも無い」と伝えた。同日、WordPress は別の脆弱性 （CVE-2026-87902・未認証のローカルファイル取り込み）を修正した 7.1.2 を公開している</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>台湾の iThome が本件を報じた。本記録はこの記事が入った同日の日中の収集分を起点としている</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が一次資料を取得して確認した。WordPress 7.1.1 のリリース告知（謝辞の文言・ バックポートの範囲・自動更新の記述）、CVE レコード（CNA・CVSS・CWE・影響範囲・credits）、 Patchstack の解説を参照した。CISA の KEV カタログ（2026.09.22 版・1,721件）に CVE-2026-93485 は収載されていない</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>報告の経路と日付</span><div class=sm>研究者の技術解説は「2026年9月8日に HackerOne 経由で WordPress へ非公開報告」と記し、 Patchstack の解説は「2026年9月15日に Patchstack の脆弱性開示プログラムへ報告され、 検証のうえ WordPress チームへ連絡した」と記している。 また WordPress のリリース告知の謝辞は所属を「Awesome Motive, Inc.」と表記し、 CVE レコードの credits は「Rafie Muhammad | Patchstack Bug Bounty Program」と表記している。 同一人物の報告であることは一致しているが、経路・日付・所属の表記は揃っていない。 本記録は両方を併記し、どちらかを採らない</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>深刻度の評価と到達点の差</span><div class=sm>公開された CVSS 3.1 の 7.1 は、機密性・完全性・可用性への影響をいずれも「低」とし、 スコープの変化（S:C）でブラウザ側の影響を拾う評価である。 一方、研究者と報道が示す到達点は管理者セッション経由のプラグイン導入による サーバ上のコード実行であり、評点の前提と到達点の説明が同じ尺度に乗っていない。 本記録は評点と到達点を別々に記載する</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>影響を受けるクラシックテーマの範囲</span><div class=sm>研究者の解説はブロックテーマ全般と、同じ整形処理を通すクラシックテーマの例として Twenty Twenty-One を挙げるにとどまり、網羅的な一覧も判定手順も示していない。 WordPress 側の記述もテーマの条件に触れていない</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>技術解説の内容についての裏取り</span><div class=sm>攻撃連鎖の細部（blockquote の cite 属性、KSES のプレースホルダー変換が 属性値内の改行を「--&gt;」へ変える挙動、承認を迂回する3つの経路）は、 Patchstack の解説と研究者の技術解説の記述にもとづく。 本記録の作成者は実環境で再現していない。WordPress 自身の記述は 「wpautop() における保存型 XSS」「コメントの承認を条件とする」までである</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>匿名コメントの投稿から、表示時の整形によるスクリプト実行を経てサーバ上のコード実行に至る経路</div><div class=svgwrap><svg viewBox="0 0 590 358" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,149.0 C91.0,149.0 91.0,209.0 16,209.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,209.0 C193.0,209.0 193.0,46.0 220,46.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,46.0 C295.0,46.0 295.0,127.0 220,127.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,127.0 C295.0,127.0 295.0,215.0 220,215.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,215.0 C397.0,215.0 397.0,79.0 424,79.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,79.0 C499.0,79.0 499.0,141.0 424,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C499.0,141.0 499.0,203.0 424,203.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,203.0 C499.0,203.0 499.0,273.0 424,273.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,304.0 C295.0,304.0 295.0,215.0 220,215.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="126.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（匿名・認証不要）</text><rect x="16" y="186.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コメントフォーム（公開）</text><rect x="220" y="16.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">保存時の無害化 KSES</text><text x="295.0" y="51.0" text-anchor="middle" fill="#f48fb1" font-size="10">良性の HTML として</text><text x="295.0" y="63.0" text-anchor="middle" fill="#f48fb1" font-size="10">素通し</text><rect x="220" y="90.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コメント承認（モデレーシ</text><text x="295.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ョン）</text><text x="295.0" y="139.0" text-anchor="middle" fill="#f48fb1" font-size="10">迂回経路が3つ示されてい</text><text x="295.0" y="151.0" text-anchor="middle" fill="#f48fb1" font-size="10">る</text><rect x="220" y="178.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="200.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表示時の整形 wpaut</text><text x="295.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">op()</text><text x="295.0" y="227.0" text-anchor="middle" fill="#f48fb1" font-size="10">属性値内の &gt; を認識で</text><text x="295.0" y="239.0" text-anchor="middle" fill="#f48fb1" font-size="10">きない</text><rect x="424" y="54.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="76.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イベントハンドラとして実</text><text x="499.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">行されるスクリプト</text><rect x="424" y="118.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログイン中の管理者</text><rect x="424" y="178.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="200.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理者セッションで導入さ</text><text x="499.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れるプラグイン</text><rect x="424" y="242.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="264.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web シェル（サーバ上</text><text x="499.0" y="278.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のコード実行）</text><text x="499.0" y="291.0" text-anchor="middle" fill="#ffcc80" font-size="10">実被害の報告は無い</text><rect x="220" y="266.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="288.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WordPress 7.</text><text x="295.0" y="302.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1.1 ／ 4.7.36</text><text x="295.0" y="316.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> まで遡るバックポート</text><text x="295.0" y="329.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年9月17日</text></svg></div><div class=fn>layer 0 は攻撃者と公開されているコメントフォーム。layer 1 は保存時の無害化（KSES）と 保存されたコメント、表示時の整形（wpautop）。layer 2 はイベントハンドラとして実行される スクリプトと、それを開いた管理者、管理者セッションで導入されるプラグイン、そして Web シェル。 右側は修正（7.1.1 以降）。コメント承認は経路上にあるが迂回可能であることを示す。 サーバ上のコード実行まで至った事例は公表されていない。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>コメントはデータベースに保存され、管理画面でも読める。ただし見た目は 通常の HTML であり、危険な記法が含まれていないため、人の目でも スパムフィルタでも異常として拾いにくい。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>コメントを閉じる（投稿単位またはサイト全体）</div><div class=ctl><span class="b eff">影響を限定できた</span>WAF やセキュリティプラグインで当該パターンのコメントを弾く</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>実行されるのは閲覧者のブラウザであり、サーバ側のログには通常のページ表示としか残らない。 Content-Security-Policy を設定していれば、インラインのイベントハンドラの実行を 止められる可能性があるが、WordPress の既定では設定されていない。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>WordPress を 7.1.1（または各ブランチの修正版）へ更新する</div><div class=ctl><span class="b eff">影響を限定できた</span>インラインスクリプトを禁じる Content-Security-Policy を設定する</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>プラグインの新規導入は管理画面の操作としてサイト上に痕跡が残り、 ファイル変更監視を入れていれば検知できる。既定では通知も監査ログも無い。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>管理者アカウントでの日常的なサイト閲覧を避ける（管理作業用と閲覧用を分ける）</div><div class=ctl><span class="b eff">侵入を防げた</span>管理画面からのプラグイン導入・ファイル編集を禁止する（DISALLOW_FILE_MODS 等）</div><div class=ctl><span class="b eff">検知できた</span>ファイル変更監視と管理操作の監査ログを入れる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>WordPress も Patchstack も、修正前に仕込まれたコメントや不正なプラグインを 検出する公式の手順を示していない。事後確認は運営者側の資産（ファイル一覧・ プラグイン一覧・Web サーバのログ）に依存する。</div></td><td><div class=ctl><span class="b eff">検知できた</span>見覚えのないプラグイン・ファイルの有無を確認する（更新は既存の改変を元に戻さない）</div><div class=ctl><span class="b eff">影響を限定できた</span>Web サーバ実行ユーザの書き込み権限を、プラグイン領域から外す</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>CMS のコア更新を「月次のパッチ作業」ではなく、公開当日に動く対象として扱う</div><div class=lw>本件は認証不要でコメントフォームから到達でき、影響範囲は 4.7 から 7.1 までの約10年分の版に及ぶ。 さらに WordPress は9月17日の 7.1.1 に続いて9月22日に 7.1.2 を出しており、 月次の定例作業では2回とも取り逃す</div><div class=la><b>取るべき行動</b> 自社サイト・関係会社サイト・キャンペーンサイトの WordPress の版と自動更新の設定を棚卸しし、 コアのセキュリティリリースは公開当日に適用する運用（または自動更新の有効化）へ切り替える</div></li><li><div class=lp>「人の承認」を技術的な安全装置として数えない</div><div class=lw>WordPress の記述は「コメントの承認を条件とする」だが、Patchstack は 「モデレーションはセキュリティ機能ではない」とし、迂回経路が複数示されている。 一度承認された投稿者は以後自動承認される点も効いている</div><div class=la><b>取るべき行動</b> 自社の統制一覧から「承認・レビュー・目視確認」に依存している項目を抜き出し、 迂回されたときに何が起きるかを1つずつ確認する。技術的な統制で置き換えられるものは置き換える</div></li><li><div class=lp>委託先が構築・運用しているサイトについて、更新の責任が誰にあるかを契約で確認する</div><div class=lw>WordPress サイトは制作会社が構築し、更新は誰も担当していないという状態になりやすい。 本件の修正は 4.7 まで遡って出ているが、適用されなければ意味が無い</div><div class=la><b>取るべき行動</b> 保守契約の範囲に「コアのセキュリティリリースの適用」と「適用の報告」が含まれているかを確認し、 含まれていない場合の担当を決める。休眠サイト・キャンペーンサイトも対象に入れる</div></li><li><div class=lp>更新だけでは終わらない——「更新は既存の改変を元に戻さない」ことを手順に書く</div><div class=lw>すでにコメントが仕込まれ、管理者が開いていた場合、更新後も不正なプラグインやファイルは残る。 公式には事後確認の手順が示されていない</div><div class=la><b>取るべき行動</b> 脆弱性対応の手順に「更新後の確認」（プラグイン一覧・管理者アカウント一覧・ ファイル変更の有無・直近のコメント）を明記し、誰がどこまで見るかを決める</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>無害化（サニタイズ）を通ったデータを、後段の整形処理が書き換えていないかを見る</div><div class=lw>本件は KSES を通った良性の HTML を、表示時の wpautop() が分断して イベントハンドラに変えた。しかも攻撃に必要な文字列は KSES 側が供給していた。 どちらの処理も単体では正しく動いている</div><div class=la><b>取るべき行動</b> 自社アプリで「保存時に無害化し、表示時に整形する」構造になっている箇所を洗い出し、 整形処理の入出力に対するテストを、XSS の観点で追加する</div></li><li><div class=lp>検査は入口ではなく、ブラウザへ届く最終出力に置く</div><div class=lw>中間の状態で安全を確認しても、その後の変換が安全性を壊す。 本件は「保存されたデータ」を見る限り危険に見えない</div><div class=la><b>取るべき行動</b> レンダリング後の HTML を対象にした自動テスト（イベントハンドラ属性や javascript: スキームの出現を検出する）を継続的インテグレーションへ入れる</div></li><li><div class=lp>管理者セッションでの閲覧を減らし、管理画面からの変更経路を塞ぐ</div><div class=lw>本件がサーバ上のコード実行に届く最後の1手は「ログイン中の管理者がページを開くこと」と 「管理者セッションでプラグインを導入できること」である</div><div class=la><b>取るべき行動</b> 管理作業用と閲覧用のアカウントを分ける。本番では DISALLOW_FILE_MODS 等で 管理画面からのプラグイン導入・ファイル編集を止め、配備の仕組み経由でのみ変更する</div></li><li><div class=lp>Content-Security-Policy でインラインのイベントハンドラを止める</div><div class=lw>本件の実行はページ内のインラインイベントハンドラとして起きる。 WordPress の既定では CSP は設定されない</div><div class=la><b>取るべき行動</b> 公開サイトに CSP を導入し、インラインスクリプトとイベントハンドラを禁じる。 既存テーマ・プラグインの動作確認を伴うため、report-only から段階的に進める</div></li><li><div class=lp>コメント・問い合わせなど「匿名の入力が保存されて後で表示される」経路を棚卸しする</div><div class=lw>保存型 XSS は、入力した本人ではなく後で見る人（多くは管理者）に当たる。 本件はその典型で、入口は最も無防備な公開フォームだった</div><div class=la><b>取るべき行動</b> 匿名入力が保存され管理画面で表示される経路（問い合わせ・応募・アンケート・レビュー）を列挙し、 管理画面側の表示でもエスケープが効いているかを実際の値で確認する</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> WordPress 4.7〜7.1 のコアを使い、投稿へのコメントを受け付けている</td><td class=sm>入口は通常のコメントフォームで認証は不要。表示側はブロックテーマ（近年の既定）が該当する</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> コアの自動バックグラウンド更新を無効にしている、または更新を月次の作業にしている</td><td class=sm>7.1.1（9月17日）と 7.1.2（9月22日）は5日違いで出ており、定例作業では両方を取り逃す</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 管理者アカウントで日常的にサイトの公開ページを閲覧している</td><td class=sm>サーバ上のコード実行に届く条件が「ログイン中の管理者が当該ページを開くこと」である</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 管理画面からのプラグイン導入・ファイル編集を許可したままにしている</td><td class=sm>管理者セッションを奪われたときに、そのままサーバ上のコード実行へつながる</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> サイトの制作・運用を委託しており、コア更新の責任範囲を契約で確認していない</td><td class=sm>休眠サイトやキャンペーンサイトは更新の担当が不在になりやすい</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 自社アプリで、保存時に無害化し表示時に整形する構造の処理を持っている</td><td class=sm>本件の原因は個々の処理の誤りではなく、無害化と整形のあいだのすき間だった</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月17日 WordPress プロジェクト（WordPress.org News）</span> <a href="https://wordpress.org/news/2026/09/wordpress-7-1-1-maintenance-and-security-release/" target="_blank" rel="noreferrer noopener nofollow">WordPress 7.1.1 Maintenance and Security Release</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料。本記録の作成者が2026年9月23日に取得した。11件のセキュリティ修正、 本件の記述「Stored cross-site scripting in wpautop() allows an unauthenticated visitor to inject script (subject to comment approval), reported by Rafie Muhammad (Awesome Motive, Inc.)」、 4.7 まで遡るバックポート、自動バックグラウンド更新に関する記述の出典。原文英語・訳は本記録)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年9月18日 Patchstack（CVE 採番機関 / CNA）</span> <a href="https://www.cve.org/CVERecord?id=CVE-2026-93485" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-93485（WordPress core・保存型クロスサイトスクリプティング）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(一次資料。本記録の作成者が2026年9月23日に cveawg.mitre.org の API から取得した。 CNA が Patchstack であること、CWE-79、CVSS 3.1 の 7.1 とベクタ （AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:L）、影響範囲（4.7〜7.1・ブランチごとの上限）、 予約・公開とも2026年9月18日、credits「Rafie Muhammad | Patchstack Bug Bounty Program」、 「コメント承認の要件が迂回される」旨の記述の出典。原文英語・訳は本記録)）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年9月22日 WordPress プロジェクト（WordPress.org News）</span> <a href="https://wordpress.org/news/2026/09/wordpress-7-1-2-release/" target="_blank" rel="noreferrer noopener nofollow">WordPress 7.1.2 Release</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(比較資料。本件の5日後に出た別のセキュリティリリース。修正対象は CVE-2026-87902 （未認証のローカルファイル取り込み・条件次第でコード実行）で、7.1.1 も影響を受ける。 7.1.1 へ更新したサイトも再度の更新が必要になったことの出典)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[9]</span> <span class=sm>2026年9月22日版 米サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（カタログ版 2026.09.22・1,721件）</a> <span class="b kind">統計・集計資料</span><span class=sm>（(本記録の作成者が2026年9月23日に JSON を取得し、CVE-2026-93485 が収載されていないことを確認した)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月 Patchstack</span> <a href="https://patchstack.com/articles/wordpress-7-1-1-maintenance-and-security-release/" target="_blank" rel="noreferrer noopener nofollow">WordPress 7.1.1 Maintenance and Security Release</a> <span class="b kind">ブログ</span><span class=sm>（(採番機関による解説。CVSS とベクタ、影響バージョン、報告日（2026年9月15日・ Patchstack の脆弱性開示プログラム）、wpautop() の正規表現が引用符で囲まれた属性値の中の 「&gt;」を認識できないこと、KSES のプレースホルダー変換が攻撃に必要な文字を供給すること、 「モデレーションはセキュリティ機能ではない」という指摘、7.1.1 の修正11件の内訳の出典。 原文英語・訳は本記録)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年9月21日 研究者による技術解説（idnsec.com）</span> <a href="https://idnsec.com/research/comment2shell-zero-click-pre-auth-xss-to-rce-in-wordpress-core/" target="_blank" rel="noreferrer noopener nofollow">Comment2Shell: Zero-Click Pre-Auth XSS to RCE in WordPress Core</a> <span class="b kind">ブログ</span><span class=sm>（(報告者による攻撃連鎖の解説。blockquote の cite 属性の改行が KSES を通ること、 wpautop()・wptexturize() を含む整形の連鎖でイベントハンドラ化すること、 管理者セッションでのプラグイン導入から Web シェルに至ること、 影響するテーマ（ブロックテーマ／Twenty Twenty-One）、承認を迂回する3つの経路、 報告日2026年9月8日（HackerOne）と修正日2026年9月17日、 4.7.36 までのバックポートの出典。原文英語・訳は本記録。 本記録の作成者は実環境での再現はしていない)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年9月22日 The Hacker News</span> <a href="https://thehackernews.com/2026/09/wordpress-comment2shell-flaw-can-turn.html" target="_blank" rel="noreferrer noopener nofollow">WordPress Comment2Shell Flaw Can Turn Anonymous Comment XSS Into RCE via Admin Session</a> <span class="b kind">記事</span><span class=sm>（(報道。保存時の検査と表示時の整形のすき間という整理、クリック不要で動くこと、 11件のうちアカウント不要で到達できるのは本件だけであること、各ブランチの修正版、 コメントを閉じる等の暫定措置、「更新は既に加えられた変更を元に戻さない」という注意、 攻撃の報告が無く KEV にも無いことの出典。 本文は保存分〈output/articles/20260922/0145_the-hacker-news_wordpress-comment2shell-flaw-can-turn-anonymous-co.md〉で確認した)）</span></li><li><span class=rid>[8]</span> <span class=sm>2026年9月23日 iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179167" target="_blank" rel="noreferrer noopener nofollow">WordPress存在資安漏洞Comment2Shell，攻擊者可將匿名留言用於執行程式碼</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事。9月17日の 7.1.1 で11件を修正したこと、 Comment2Shell（CVE-2026-93485）が事前認証不要のゼロクリックの脆弱性であること、 CVSS 7.1、ページを読み込むだけで起動し管理者のセッションでプラグインを導入しうることの出典。 本文は保存分〈output/articles/20260923/0165_ithome-security_wordpresscomment2shell.md〉で確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月23日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月23日の日中の収集分（iThome）を起点に、WordPress 7.1.1 のリリース告知、 CVE レコード（cveawg.mitre.org の API）、Patchstack の解説、報告者の技術解説、 7.1.2 のリリース告知、CISA の KEV カタログを取得して裏取りした。 修正の記述・謝辞・バックポートの範囲は WordPress の一次資料で、 CVSS・CWE・影響範囲・採番機関は CVE レコードで確認している。 攻撃連鎖の細部は Patchstack と報告者の解説にもとづき、実環境での再現はしていない旨を齟齬に記録した。 日本の組織が当事者ではないが、WordPress は日本でも広く使われており、 「無害化を通った良性の HTML を、表示時の整形処理が危険なものへ変えた」という構造と、 「コメント承認という人手の手続きを安全装置として数えられない」という点で 先例になると判断して記録した。 悪用の有無・影響サイト数・事後確認の手順は公表されていないため未確定事項とした。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">WordPress</span><span class="b tag">WordPress 7.1.1</span><span class="b tag">Comment2Shell</span><span class="b tag">CVE-2026-93485</span><span class="b tag">CWE-79</span><span class="b tag">保存型XSS</span><span class="b tag">wpautop</span><span class="b tag">KSES</span><span class="b tag">コメント承認</span><span class="b tag">ブロックテーマ</span><span class="b tag">管理者セッション</span><span class="b tag">プラグイン導入</span><span class="b tag">Webシェル</span><span class="b tag">Patchstack</span><span class="b tag">CMS運用</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-23 17:25 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

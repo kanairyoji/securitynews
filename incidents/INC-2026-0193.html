@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>WordPress 7.1.2 で未認証LFI修正 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0193</span>WordPress 7.1.2 で未認証LFI修正</h1>
+<header class="site-header">
+  <p class="subtitle">WordPress コアのページテンプレート解決に、認証を持たない攻撃者がテーマの外にある読み取り可能な PHP ファイルを読み込ませられる欠陥（CVE-2026-87902）が見つかり、2026年9月22日の 7.1.2 で修正された——サーバ環境とテーマの前提が揃うとコード実行にまで届く。影響は 4.7.0 から 7.1.1 までで、5日前に出たばかりの 7.1.1 も対象に含まれる。Patchstack は修正公開から5時間以内に探索行為を観測しており、WordPress の自己評価は CVSS 4.0 で 9.2（Critical）、CVE を採番した HackerOne の評価は CVSS 3.1 で 8.1 と割れている</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月22日</span>
+  <span>最終更新: 2026年9月23日</span>
+</div>
+
+<div class="lead"><p>WordPress は <strong>2026年9月22日</strong>、セキュリティのみのリリース <strong>7.1.2</strong> を公開しました。修正は1件、<strong>CVE-2026-87902</strong>（GHSA-7hp8-65ch-5whp）です。</p>
+<p>WordPress 自身の記述は「<strong>認証されていない攻撃者が、特定の条件下でページテンプレートの解決を操作し、有効なテーマのフォルダの外にある読み取り可能なローカルの PHP ファイルを取り込ませられる。サーバ環境とテーマの前提が満たされた場合、リモートコード実行につながりうる</strong>」（原文英語）です。深刻度は <strong>Critical</strong> としています。</p>
+<p>影響範囲は <strong>4.7.0 から 7.1.1 まで</strong>。<strong>5日前（9月17日）に出たばかりの 7.1.1 も含まれます。</strong>修正はブランチごとに 7.1.2／7.0.6／6.9.9／6.8.10／6.7.9／6.6.9 と出され、セキュリティ修正の対象である全ブランチへ <strong>4.7.37 まで遡って</strong>バックポートされました。</p>
+<p>仕組みは<strong>パス・トラバーサル</strong>です。発見者 Robert Ressl の解説によれば、ページテンプレートを決める処理は、リクエストのクエリ変数（<code>pagename</code>）から<code>page-{値}.php</code> という名前を組み立てます。この値が、<strong>隣接するコードが使っているパスの検査を通っていませんでした</strong>。二重にエンコードされたトラバーサルは最初の処理を素通りし、後段のデコードで区切り文字として効きます。</p>
+<p>ただし<strong>読み込めるのはサーバ上に既にある <code>.php</code> ファイル</strong>で、それが「読み込まれると何か役に立つことをする」ファイルでなければコード実行にはなりません。Ressl の実証では、PHP の設定<strong><code>register_argc_argv</code> が有効</strong>で、<strong>PEAR の実行用ファイルが読み取り可能</strong>という条件のもとで、2回のリクエストに分けてコード実行を成立させています（隔離したラボ3環境・WordPress 7.0.2・実行権限は Web サーバのアカウント）。<strong>実サイトでの検証は行っていない</strong>と明記されています。</p>
+<p><strong>評点は割れています。</strong> WordPress と発見者は <strong>CVSS 4.0 で 9.2（Critical）</strong>、CVE を採番した HackerOne は <strong>CVSS 3.1 で 8.1</strong> としています。</p>
+<p>そして <strong>Patchstack は、修正公開から5時間以内（9月22日17時44分 UTC）に探索行為を観測</strong>しました。観測されたのは <code>wp-links-opml.php</code> など標準ファイルを読ませようとする確認行為で、それ自体はコード実行になりません。<strong>「脆弱性の有無を調べて回る段階」</strong>です。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>4</span></div><ul><li><span class=ui>実際に侵害されたサイトの有無</span><span class="b rsn">公表されていない</span><div class=sm>Patchstack が観測したのは探索行為（標準ファイルを読ませる確認）までで、 コード実行に至った事例は報告されていない。The Hacker News も9月22日時点で 攻撃に使われた報告は無いとしている。本記録の作成者が9月23日に確認した CISA の KEV カタログ（2026.09.22 版）にも収載されていない</div></li><li><span class=ui>前提条件に当てはまるサイトの割合</span><span class="b rsn">公表されていない</span><div class=sm>「page-」で始まる直下フォルダを持つテーマの数や、register_argc_argv が有効な ホスティング環境の割合を示した集計は公表されていない。 Patchstack は「既定の Docker イメージや cPanel 環境で一般的」と述べるにとどまる</div></li><li><span class=ui>探索を行っている主体</span><span class="b rsn">公表されていない</span><div class=sm>Patchstack は発信元の IP アドレスと利用者エージェント（Go-http-client/1.1）を示しているが、 主体の帰属は示していない。本記録も帰属を推定しない</div></li><li><span class=ui>修正が公開された正確な時刻</span><span class="b rsn">公表されていない</span><div class=sm>WordPress のリリース告知に時刻の記載がないため、探索行為の初観測（17時44分 UTC）までの 正確な間隔は算出できない。Patchstack の「5時間以内」という表現に依っている</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>WordPress プロジェクト（WordPress.org）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WordPress コアの開発・配布元</p><p class=org-p><span class=org-l>影響</span>2026年9月22日にセキュリティのみのリリース 7.1.2 を公開し、 CVE-2026-87902 を Critical として告知した。修正は 4.7 まで遡って全対象ブランチへ バックポートされ、自動バックグラウンド更新に対応するサイトでは自動的に適用が始まる</p></div></div><div class=org><div class=org-h><span class=org-n>WordPress 4.7.0〜7.1.1 を使っているサイト運営者</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>影響するすべてのブランチのコアを使っているサイト</p><p class=org-p><span class=org-l>影響</span>認証不要でテーマ外の PHP ファイルを取り込ませられる。 有効なテーマに「page-」で始まるフォルダがあり、サーバ側の前提が揃う場合は コード実行に至りうる。実際の被害は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>Robert Ressl</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本脆弱性の発見者。2026年7月20日に HackerOne の脆弱性報奨金プログラム経由で非公開報告し、 修正公開と同日に技術解説・実証コード・検証用ラボを公開した</p><p class=org-p><span class=org-l>影響</span>WordPress のリリース告知で「責任ある開示」として謝辞が示されている。 隔離したラボ3環境で WordPress 7.0.2 に対する攻撃連鎖を記録し、 Web サーバのアカウント権限での PHP 実行を実証した（実サイトでの検証は行っていない）</p></div></div><div class=org><div class=org-h><span class=org-n>Patchstack</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WordPress エコシステムの脆弱性を扱うセキュリティ事業者</p><p class=org-p><span class=org-l>影響</span>修正公開から5時間以内（2026年9月22日17時44分 UTC）に探索行為を観測したと報告し、 悪用の前提条件の確認方法と、更新できない場合の暫定措置を公開した</p></div></div><div class=org><div class=org-h><span class=org-n>HackerOne</span><span class="b role">プラットフォーム事業者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WordPress の脆弱性報奨金プログラムの運営者であり、本 CVE の採番機関（CNA）</p><p class=org-p><span class=org-l>影響</span>CVE-2026-87902 を2026年9月22日に公開し、CVSS 3.1 で 8.1、CWE-98 と評価した</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-87902 の CVSS 基本値（WordPress・発見者の評価・CVSS 4.0）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.2<span class=fu>点</span></div><div class=fn>深刻度は Critical。発見者の解説は、ベクタの AT:P（攻撃に前提条件がある）が テーマとサーバ環境の条件を反映していると説明している</div></div><div class=fig><div class=fh><span class=fl>同じ CVE に採番機関（HackerOne）が付けた CVSS 基本値（CVSS 3.1）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.1<span class=fu>点</span></div><div class=fn>ベクタは CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H。 攻撃条件の複雑さを高（AC:H）と評価している点が 9.2 との差につながっている。 版が異なるため単純比較はできない。本記録は両方を併記する</div></div><div class=fig><div class=fh><span class=fl>発見者の報告（2026年7月20日）から修正版の公開（9月22日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>64<span class=fu>日</span></div><div class=fn>本記録の作成者が算出した日数差である。発見者の解説にある報告日と、 WordPress のリリース日から計算した</div></div><div class=fig><div class=fh><span class=fl>修正公開から探索行為の初観測まで</span><span class="b conf">最大</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>時間</span></div><div class=fn>Patchstack は初観測を2026年9月22日17時44分（UTC）とし、「パッチ公開から5時間以内」と表現している。 最大値として5時間を置いたのは、WordPress 側が修正を公開した正確な時刻が公表されていないためで、 実際の間隔はこれより短い可能性がある</div></div><div class=fig><div class=fh><span class=fl>7.1.1（9月17日）から 7.1.2（9月22日）までの間隔</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>日</span></div><div class=fn>本記録の作成者が算出した日数差である。7.1.1 は別の脆弱性（CVE-2026-93485 ほか11件）の 修正であり、本件の影響は 7.1.1 にも及ぶ。9月17日に更新したサイトも再度の更新が必要になった</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>認証を持たない攻撃者が、公開されているページの URL（クエリ変数 pagename）に 二重エンコードしたトラバーサルを入れてリクエストする。WordPress はその値から page-{値}.php というテンプレート候補名を組み立てるが、パスの検査を通していないため、 有効なテーマのフォルダの外にある読み取り可能な PHP ファイルが取り込まれる。 取り込まれたファイルが「読み込まれた時点で何かをする」もの（PEAR の実行用ファイルなど）で、 かつ PHP の register_argc_argv が有効であれば、2回のリクエストに分けてコード実行に至りうる。 実証は隔離したラボでのみ行われ、実サイトでの侵害は公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[5]</span></div><div>攻撃者が、標準ファイル（wp-links-opml.php、wp-includes/functions.php、wp-cron.php）を 読み込ませるリクエストを送り、そのサイトに欠陥があるかどうかを判定する。 Patchstack が修正公開から5時間以内に観測したのはこの段階である。</div><div class=fn>根拠: Patchstack の観測報告（2026年9月22日17時44分 UTC 初観測）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4]</span></div><div>テンプレート候補名 page-{値}.php の組み立てにパスの検査が無いため、 有効なテーマのフォルダの外にある読み取り可能な PHP ファイルが取り込まれる。 成立には、有効なテーマの直下に page- で始まるフォルダがあること、 匿名でアクセスできる公開ページがあり、カスタムテンプレートが割り当てられていないことが要る。</div><div class=fn>根拠: WordPress のリリース告知／発見者の技術解説／CVE レコード（CWE-98）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs>[3] [4]</span></div><div>取り込まれた PHP ファイルが「読み込まれた時点で何かをする」ものである場合に実害が出る。 発見者の実証では、PEAR の実行用ファイルを取り込ませて攻撃者の制御下にある PHP ファイルを生成し （1回目）、次にそのファイルを本件の欠陥経由で取り込ませた（2回目）。 PHP の register_argc_argv が有効であることが条件である。</div><div class=fn>根拠: 発見者の技術解説（隔離したラボ3環境・WordPress 7.0.2 での実証）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">unconfirmed</span><span class=srcs>[4] [5]</span></div><div>実証では Web サーバのアカウント権限での PHP 実行までが確認されている。 OS の権限昇格は実証されておらず、実サイトでの侵害も公表されていない。</div><div class=fn>根拠: 発見者の技術解説（実サイトでの検証は行っていないと明記）</div></li></ol></div>
+<section id="s5"><h2>5日前に出たばかりの 7.1.1 も対象——認証不要でテーマ外の PHP ファイルを読み込ませられる<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [6]</span></h2><p>WordPress 7.1.2（2026年9月22日）は<strong>セキュリティのみのリリース</strong>で、修正は1件である。</p>
+<ul>
+<li><strong>CVE-2026-87902</strong>（GHSA-7hp8-65ch-5whp）、WordPress の評価は <strong>Critical</strong></li>
+<li>説明は「認証されていない攻撃者が、特定の条件下でページテンプレートの解決を操作し、有効なテーマのフォルダの外にある読み取り可能なローカルの PHP ファイルを取り込ませられる。<strong>サーバ環境とテーマの前提が満たされた場合、リモートコード実行につながりうる</strong>」（原文英語）</li>
+<li>影響は <strong>4.7.0 から 7.1.1 まで</strong></li>
+<li>修正は <strong>7.1.2／7.0.6／6.9.9／6.8.10／6.7.9／6.6.9</strong>、さらにセキュリティ修正の対象である全ブランチへ <strong>4.7.37 まで遡って</strong>バックポート</li>
+<li>自動バックグラウンド更新に対応しているサイトでは、更新が自動的に始まる</li>
+<li>謝辞は <strong>Robert Ressl</strong>（責任ある開示に対して）</li>
+</ul>
+<p>注意が要るのは<strong>日付</strong>である。WordPress は<strong>9月17日に 7.1.1</strong> を出したばかりだった（11件のセキュリティ修正・うち1件が匿名コメント経由の保存型 XSS）。<strong>その 7.1.1 も本件の影響を受ける。</strong> 定例の更新作業を月1回にしている運用では、9月の2本のうちどちらか、あるいは両方を取り逃すことになる。</p></section>
+<section id="s6"><h2>組み立てたテンプレート名がパスの検査を通っていなかった——読み込めるのは「既にあるファイル」だけ<span class="b slot">原因・手口</span><span class=srcs>出典 [3] [4]</span></h2><p>発見者 Robert Ressl の技術解説によれば、欠陥は<strong>ページテンプレートを決める処理</strong>にある。</p>
+<ul>
+<li>WordPress は、リクエストのクエリ変数（<code>pagename</code>・<code>page_id</code>。匿名の POST でも受け付ける）からテンプレート候補の名前 <strong><code>page-{値}.php</code></strong> を組み立てる</li>
+<li>二重にエンコードされたトラバーサル（<code>%252e%252e</code> のような形）は最初の処理を素通りし、後段のデコードで<strong>ディレクトリの区切りとして効く</strong></li>
+<li>組み立てた名前が、<strong>隣の行のコードが使っているパスの検査を通っていなかった</strong></li>
+<li>「正規化」と「封じ込め」は別物である——発見者の言葉では「パスの正規化は行き先を決めるが、その行き先がテーマのフォルダ内にとどまることは保証しない」（原文英語）</li>
+</ul>
+<p>Patchstack の解説によれば、7.1.2 の修正は2段構えである。①該当する値にパスの検査を追加し、②解決されたテンプレートのパスが許可されたフォルダ内にあることを確かめる仕組みを新設した。</p>
+<p><strong>ここまでは「ファイルの取り込み」であって、コード実行ではない。</strong>読み込まれるのはサーバ上に<strong>既に存在する <code>.php</code> ファイル</strong>であり、そのファイルが「読み込まれた時点で何か役に立つことをする」ものでなければ実害は小さい。WordPress の説明にある「<strong>一部のサーバでは</strong>」はこの意味である。</p></section>
+<section id="s7"><h2>コード実行に必要な前提は2つ——テーマの「page-」フォルダと、PHP の register_argc_argv<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [3] [4] [6]</span></h2><p>発見者がラボで成立させた連鎖には、次の前提が要った。</p>
+<p><strong>WordPress 側</strong></p>
+<ul>
+<li>有効なテーマの<strong>直下に「page-」で始まるフォルダ</strong>があること（例: <code>page-templates/</code>）。古い既定テーマなどが該当し、<strong>現行の既定テーマは該当しない</strong></li>
+<li>匿名でアクセスできる<strong>公開済みのページ</strong>があること</li>
+<li>そのページに<strong>カスタムテンプレートが割り当てられていない</strong>こと</li>
+</ul>
+<p><strong>サーバ側</strong></p>
+<ul>
+<li><strong>PEAR の実行用ファイル（<code>pearcmd.php</code>）が読み取り可能</strong>であること</li>
+<li>PHP の設定 <strong><code>register_argc_argv</code> が有効</strong>であること</li>
+<li>PEAR の出力先が<strong>書き込み可能</strong>であること</li>
+</ul>
+<p>連鎖は2回のリクエストに分かれる。1回目で PEAR の入口を取り込ませて攻撃者の制御下にあるPHP ファイルを生成させ、2回目でそのファイルを本件の欠陥経由で取り込ませる。実証は<strong>隔離したラボ3環境・WordPress 7.0.2</strong> で行われ、実行権限は <strong>Web サーバのアカウント</strong>、<strong>OS の権限昇格は実証されていない</strong>。発見者は<strong>実サイトでは検証していない</strong>と明記している。</p>
+<p>Patchstack は、サイト運営者が<strong>自分の露出度を測る2つのチェック</strong>として「有効なテーマに <code>page-</code> で始まる直下フォルダがあるか」「PHP の <code>register_argc_argv</code> が有効か」を挙げ、<strong>どちらも修正ではない</strong>と断っている。<code>register_argc_argv</code> は PHP 8.5 で既定が無効、それ以前のバージョンでは既定が有効で、Patchstack は「既定の Docker イメージや cPanel 環境で一般的」と指摘している。</p></section>
+<section id="s8"><h2>修正公開から5時間以内に探索が始まった——観測されたのは「脆弱性の有無を確かめる読み込み」<span class="b slot">帰属</span><span class=srcs>出典 [4] [5]</span></h2><p>Patchstack は <strong>2026年9月22日17時44分（UTC）</strong>、修正公開から<strong>5時間以内</strong>に本件を狙う探索行為を初めて観測したと報告している。</p>
+<ul>
+<li>読ませようとしていたのは <code>wp-links-opml.php</code>・<code>wp-includes/functions.php</code>・<code>wp-cron.php</code> といった<strong>WordPress の標準ファイル</strong>。これらはコード実行にはつながらず、<strong>「その欠陥があるかどうか」を判定するための確認行為</strong>である</li>
+<li>発信元は IPv4 の <code>169.58.48.193</code>・<code>169.58.48.195</code> と IPv6 の <code>2001:df1:e8c0::106b</code> に集中し、多くが利用者エージェント <code>Go-http-client/1.1</code> を使っていた</li>
+<li>主体の帰属は示されていない</li>
+</ul>
+<p>Patchstack が示した対応は次のとおりである。</p>
+<ol>
+<li><strong>最優先で更新する</strong>（7.1.2、またはバックポート版 7.0.6・6.9.9・6.8.10 以降）</li>
+<li>直ちに更新できない場合、<strong><code>pagename</code> に含まれるトラバーサル（<code>%252e%252e</code>）を拒否する</strong></li>
+<li><strong>過去のログを確認する</strong>——ページの URL に対して想定外のファイルの中身が返っていないか</li>
+</ol>
+<p>この「公開直後に探索が始まる」という現象は、本件に限らない。<strong>修正の公開は、攻撃者にとっては欠陥の在り処の公開でもある。</strong>発見者が実証コードを同日に公開していることも、探索の立ち上がりの速さに関係している可能性があるが、Patchstack は因果を述べていない（本記録も断定しない）。</p></section>
+<section id="s9"><h2>「条件が揃わないと動かない脆弱性」ほど、自社の条件を調べる手間が防御になる（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [3] [4] [5]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p>本件の評点が <strong>9.2（WordPress・CVSS 4.0）と 8.1（HackerOne・CVSS 3.1）</strong> で割れているのは、「前提条件の多さをどう数えるか」の違いに見える。しかし運用側にとって重要なのはどちらの数字でもなく、<strong>自社が前提を満たしているかどうか</strong>である。</p>
+<p>本件の前提は、<strong>調べられる形になっている</strong>という点で珍しい。</p>
+<ul>
+<li>有効なテーマの直下に <code>page-</code> で始まるフォルダがあるか——<strong>ファイル一覧を見れば分かる</strong></li>
+<li>PHP の <code>register_argc_argv</code> が有効か——<strong>設定を1つ見れば分かる</strong></li>
+</ul>
+<p>どちらも数分で確認でき、結果は「更新を今夜やるか、週末でよいか」という判断に直結する。<strong>脆弱性情報を読んだあとに、自社の条件を実際に確認する工程を持っているかどうか</strong>が、優先度付けの精度をそのまま決める。</p>
+<p>同時に、<strong>「条件が揃わないから安全」と結論を止めないこと</strong>も要る。条件はテーマの入れ替えやホスティングの移行で変わる。本件では、更新そのものが2段構えの防御（パスの検査の追加と、テンプレートのパスが許可された場所にあるかの確認）を入れており、<strong>条件に依存しない対処は更新だけ</strong>である。</p>
+<p>もう1つ、<strong>PEAR のような「入っているが使っていない部品」</strong>の扱いも本件の論点である。発見者は、直ちに更新できない場合の緩和として <code>register_argc_argv</code> の無効化と<strong>使っていない PEAR 構成要素の削除</strong>を挙げている（いずれも欠陥自体は直さない）。サーバ上に残っている未使用の実行可能なファイルは、<strong>単体では無害でも、ファイル取り込みの欠陥と組み合わさると部品として使われる。</strong></p></section>
+<section id="s10"><h2>侵害の有無・前提に当てはまるサイトの割合・探索主体はいずれも公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [5] [6] [7]</span></h2><p>2026年9月23日時点で、次の点は公表されていない。</p>
+<ul>
+<li><strong>実際に侵害されたサイトの有無</strong>（観測されているのは探索行為まで。KEV カタログ2026.09.22 版にも未収載）</li>
+<li><strong>前提条件に当てはまるサイトの割合</strong>（該当テーマの数、<code>register_argc_argv</code> が有効な環境の割合）</li>
+<li><strong>探索を行っている主体</strong>（発信元の IP と利用者エージェントは示されているが帰属は示されていない）</li>
+<li><strong>修正が公開された正確な時刻</strong>（「5時間以内」という表現の分母が確定しない）</li>
+</ul></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-87902　<b>cvss:</b> 9.2　<b>概要:</b> WordPress コアのページテンプレート解決における未認証のローカルファイル取り込み（CWE-98）。 リクエストのクエリ変数から組み立てたテンプレート候補名がパスの検査を通らず、 有効なテーマのフォルダの外にある読み取り可能な PHP ファイルを取り込ませられる。 サーバ環境（PHP の register_argc_argv、読み取り可能な PEAR）とテーマの前提 （直下に page- で始まるフォルダ）が揃う場合はコード実行に至りうる。 WordPress・発見者の評価は CVSS 4.0 で 9.2（Critical）、 採番機関 HackerOne の評価は CVSS 3.1 で 8.1。　<b>exploited:</b> いいえ</div></td></tr><tr><th>affected_versions</th><td>WordPress コア 4.7.0 から 7.1.1 まで（2026年9月17日に公開された 7.1.1 を含む）。 修正版は 7.1.2・7.0.6・6.9.9・6.8.10・6.7.9・6.6.9 ほか、セキュリティ修正の対象である 全ブランチへ 4.7.37 まで遡ってバックポートされている。 コード実行にまで至る条件として、有効なテーマの直下に「page-」で始まるフォルダがあること、 PHP の register_argc_argv が有効であること、読み取り可能な PEAR の実行用ファイルがあることが挙げられている。</td></tr><tr><th>exploitation_status</th><td>Patchstack は2026年9月22日17時44分（UTC・修正公開から5時間以内）に探索行為を観測したと報告している。 観測されたのは標準ファイルを読み込ませる確認行為までで、コード実行に至った事例の報告は無い。 The Hacker News は9月22日時点で攻撃に使われた報告は無いとしている。 本記録の作成者が2026年9月23日に取得した CISA の KEV カタログ（2026.09.22 版・1,721件）にも CVE-2026-87902 は収載されていない。 発見者は同日に実証コードと検証用ラボを公開している。</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> WordPress を 7.1.2（各ブランチの修正版）へ更新する　<b>副作用:</b> 9月17日の 7.1.1 に続く2度目の更新となり、月次の定例作業では間に合わない。 テーマ・プラグインとの相性確認の手間が短期間に2回発生する</div><div class=sub><b>item:</b> pagename に含まれるトラバーサル（%252e%252e）を WAF で拒否する　<b>副作用:</b> 正規表現の書き方によっては正常なページ表示を巻き込む。欠陥自体は直らない</div><div class=sub><b>item:</b> PHP の register_argc_argv を Web リクエストで無効にする　<b>副作用:</b> この設定に依存している別のアプリケーションが動かなくなる可能性がある。 ホスティング事業者の管理下にあって変更できない場合もある</div><div class=sub><b>item:</b> 使っていない PEAR 構成要素を削除する　<b>副作用:</b> PEAR を利用している他のアプリケーションに影響する。 共用ホスティングでは利用者側で削除できないことがある</div><div class=sub><b>item:</b> 有効なテーマの直下に「page-」で始まるフォルダがあるかを確認する　<b>副作用:</b> 確認は露出度の把握であって対策ではない。テーマの入れ替えで条件が変わるため、 一度確認しただけでは足りない</div></td></tr><tr><th>indicators</th><td><div class=sub>169.58.48.193</div><div class=sub>169.58.48.195</div><div class=sub>2001:df1:e8c0::106b</div><div class=sub>Go-http-client/1.1</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月17日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>WordPress 7.1.1（保守・セキュリティリリース）が公開された。11件のセキュリティ修正を含むが、 本件は含まれておらず、7.1.1 も本件の影響を受ける</td></tr><tr><td class="sm nowrap tw">2026年7月20日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>発見者が HackerOne 経由で WordPress へ非公開報告した（翌7月21日に受領確認）</td></tr><tr><td class="sm nowrap tw">2026年9月15日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>WordPress 側から発見者へ、修正を含むリリースの予定とクレジット表記の確認が伝えられた</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">公表</span></td><td>WordPress 7.1.2 が公開され、CVE-2026-87902 が Critical として告知された。 修正は 4.7 まで遡って全対象ブランチへバックポートされた。 同日、発見者が技術解説・実証コード・検証用ラボを公開した</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">公表</span></td><td>CVE-2026-87902 が公開された（採番機関は HackerOne、CVSS 3.1 で 8.1、CWE-98、 影響は 7.1.2 未満）。説明は「認証されていない攻撃者が、ページテンプレートの解決処理に 有効なテーマのフォルダの外にある読み取り可能なローカルの .php ファイルを 取り込ませられる」（原文英語）である</td></tr><tr><td class="sm nowrap tw">2026年9月22日17時44分（UTC）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>Patchstack が探索行為を初めて観測した（修正公開から5時間以内）。 標準ファイル（wp-links-opml.php、wp-includes/functions.php、wp-cron.php）を 読み込ませようとする確認行為で、発信元は特定の IPv4 2件と IPv6 1件、 多くが Go-http-client/1.1 の利用者エージェントを使っていた</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Hacker News が報じ、「9月22日時点で攻撃に使われた報告は無く、CISA の 実際に悪用された脆弱性の一覧にも入っていない」と伝えた。 本記録はこの記事が入った9月23日の収集分を起点としている</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が一次資料を取得して確認した。WordPress 7.1.2 のリリース告知、 CVE レコード（採番機関・CVSS・CWE・影響範囲）、発見者の技術解説、 Patchstack の2本の解説を参照した。CISA の KEV カタログ（2026.09.22 版・1,721件）に CVE-2026-87902 は収載されていない</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>同一 CVE に対する深刻度評価</span><div class=sm>WordPress と発見者は CVSS 4.0 で 9.2（Critical）とし、 CVE を採番した HackerOne は CVSS 3.1 で 8.1（ベクタは AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H）としている。 版が異なるうえ、攻撃条件の複雑さの評価（AC:H）が差につながっている。 本記録は両方を併記し、どちらかを採らない</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>コード実行の実証範囲</span><div class=sm>コード実行は発見者が隔離したラボ3環境（WordPress 7.0.2）で実証したもので、 実サイトでは検証されておらず、OS の権限昇格も実証されていない。 本記録の作成者も再現していない。WordPress 自身の記述は 「サーバ環境とテーマの前提が満たされた場合、リモートコード実行につながりうる」までである</div></li><li><span class="b dk">本記録による推定</span><span class=ui>探索行為と実証コード公開の関係</span><div class=sm>発見者は修正公開と同日に実証コードと検証用ラボを公開しており、 Patchstack は同日中に探索行為を観測している。両者の因果関係は どちらの資料にも書かれていない。本記録も関係を断定しない</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>探索行為の発信元情報の扱い</span><div class=sm>本記録に記載した IP アドレスと利用者エージェントは Patchstack の観測報告によるもので、 本記録の作成者は悪性を検証していない。Go-http-client/1.1 は正規の自動化処理でも 使われる値であり、単独で判定に使えるものではない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>公開ページの URL から、テーマ外の PHP ファイルの取り込みを経てコード実行に至りうる経路</div><div class=svgwrap><svg viewBox="0 0 590 338" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,130.0 C91.0,130.0 91.0,199.0 16,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,199.0 C193.0,199.0 193.0,48.0 220,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,48.0 C295.0,48.0 295.0,125.0 220,125.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,201.0 C295.0,201.0 295.0,48.0 220,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,125.0 C397.0,125.0 397.0,42.0 424,42.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,42.0 C499.0,42.0 499.0,119.0 424,119.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,119.0 C499.0,119.0 499.0,202.0 424,202.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,284.0 C295.0,284.0 295.0,125.0 220,125.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,284.0 C397.0,284.0 397.0,48.0 220,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="107.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（認証不要）</text><rect x="16" y="167.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="189.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開ページへのリクエスト</text><text x="91.0" y="203.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（pagename に二</text><text x="91.0" y="217.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">重エンコードのトラバー…</text><rect x="220" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ページテンプレート解決（</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">page-{値}.php</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> を組み立て）</text><rect x="220" y="94.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">通っていなかったパスの検</text><text x="295.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">査</text><text x="295.0" y="143.0" text-anchor="middle" fill="#f48fb1" font-size="10">CWE-98</text><rect x="220" y="170.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">有効なテーマの「page</text><text x="295.0" y="206.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-」フォルダ</text><text x="295.0" y="219.0" text-anchor="middle" fill="#f48fb1" font-size="10">成立条件の1つ</text><rect x="424" y="17.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="39.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">テーマ外の読み取り可能な</text><text x="499.0" y="53.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> PHP ファイル</text><rect x="424" y="81.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PEAR の実行用ファイ</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル＋register_a</text><text x="499.0" y="131.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rgc_argv</text><text x="499.0" y="144.0" text-anchor="middle" fill="#f48fb1" font-size="10">サーバ側の成立条件</text><rect x="424" y="171.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="193.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web サーバ権限でのコ</text><text x="499.0" y="207.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ード実行</text><text x="499.0" y="220.0" text-anchor="middle" fill="#ffcc80" font-size="10">ラボでのみ実証</text><rect x="220" y="246.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="268.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WordPress 7.</text><text x="295.0" y="282.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1.2 ／ 4.7.37</text><text x="295.0" y="296.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> まで遡るバックポート</text><text x="295.0" y="309.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年9月22日</text><rect x="424" y="247.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="269.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">探索行為（修正公開から5</text><text x="499.0" y="283.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">時間以内）</text><text x="499.0" y="296.0" text-anchor="middle" fill="#f48fb1" font-size="10">Patchstack が</text><text x="499.0" y="308.0" text-anchor="middle" fill="#f48fb1" font-size="10">観測</text></svg></div><div class=fn>layer 0 は攻撃者と、二重エンコードしたトラバーサルを載せた公開ページへのリクエスト。 layer 1 はテンプレート名を組み立てる処理と、通っていなかったパスの検査、 および成立条件となるテーマの「page-」フォルダ。layer 2 は取り込まれるテーマ外の PHP ファイル、 PEAR を使う2段構えの実行、Web サーバ権限でのコード実行。右側は修正（7.1.2）と Patchstack が観測した探索行為。コード実行は隔離したラボでのみ実証されている。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">検知した</span><div class=sm>リクエストは Web サーバのアクセスログに残る。Patchstack は発信元の IP と 利用者エージェント（Go-http-client/1.1）を特定しており、 ページの URL に対して想定外のファイルの中身が返っていないかを 過去ログで確認するよう勧めている。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>pagename に含まれるトラバーサル（%252e%252e）を WAF で拒否する</div><div class=ctl><span class="b eff">検知できた</span>アクセスログで想定外の応答内容を確認する</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>取り込み自体は正常なページ表示として処理されるため、 応答の内容を見なければ気づけない。WordPress 側に監査ログは無い。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>WordPress を 7.1.2（各ブランチの修正版）へ更新する</div><div class=ctl><span class="b eff">影響を限定できた</span>有効なテーマに page- で始まる直下フォルダがあるかを確認する（露出度の把握）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>PEAR の出力先にファイルが生成されるため、ファイル変更監視を入れていれば検知できる。 既定では監視も通知も無い。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>PHP の register_argc_argv を Web リクエストで無効にする</div><div class=ctl><span class="b eff">影響を限定できた</span>使っていない PEAR 構成要素を削除する</div><div class=ctl><span class="b eff">検知できた</span>ファイル変更監視を入れる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>WordPress も Patchstack も、侵害を事後に判定する公式の手順は示していない。 Patchstack は過去ログの確認を勧めるにとどまる。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>Web サーバ実行ユーザの書き込み権限を必要最小限にする</div><div class=ctl><span class="b eff">検知できた</span>更新後にファイル一覧・プラグイン一覧・管理者アカウントを確認する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>同月内に2回来るコアの緊急更新を、運用が吸収できる形にしておく</div><div class=lw>WordPress は9月17日に 7.1.1、9月22日に 7.1.2 を出しており、 本件の影響は 7.1.1 にも及ぶ。月次の定例作業では2本とも取り逃す</div><div class=la><b>取るべき行動</b> コアのセキュリティリリースについては自動バックグラウンド更新を有効にするか、 「公開当日に適用する」担当と手順を決める。委託運用の場合は契約範囲を確認する</div></li><li><div class=lp>「前提条件つきの脆弱性」は、条件を実地で確認してから優先度を決める</div><div class=lw>本件の評点は 9.2（CVSS 4.0）と 8.1（CVSS 3.1）に割れているが、 実際の危険度を決めるのは自社のテーマ構成と PHP 設定である。 しかも条件は数分で確認できる形になっている</div><div class=la><b>取るべき行動</b> 脆弱性対応の手順に「前提条件の実地確認」を工程として入れ、 誰が何を見るか（本件ではテーマの直下フォルダと PHP 設定）を記録として残す</div></li><li><div class=lp>修正の公開は、攻撃者にとっては所在の公開でもあると前提を置く</div><div class=lw>Patchstack は修正公開から5時間以内に探索行為を観測している。 「公開直後の数時間」が最も危険な時間帯になる</div><div class=la><b>取るべき行動</b> 公開サイトについて、緊急更新までの暫定防御（WAF ルールの適用、当該機能の停止）を あらかじめ用意し、発動の判断者を決めておく</div></li><li><div class=lp>サーバ上の「入っているが使っていない部品」を棚卸しの対象にする</div><div class=lw>本件でコード実行の踏み台になったのは PEAR という、多くのサイトが使っていない構成要素である。 単体では無害でも、ファイル取り込みの欠陥と組み合わさると部品になる</div><div class=la><b>取るべき行動</b> Web サーバ上の未使用の実行可能なファイル・拡張・管理ツールを洗い出し、 削除または到達不可にする。ホスティング事業者の管理下にある場合は照会する</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>自組織の WordPress の版を数えるのではなく、実際の更新適用を確認する</div><div class=lw>影響は 4.7.0 から 7.1.1 までで、事実上すべての現役サイトが対象である。 自動更新が有効でも、ファイル権限の都合で失敗しているサイトがある</div><div class=la><b>取るべき行動</b> 管理下の全サイトについてコアの版を機械的に収集し、7.1.2 以降 （各ブランチの修正版）であることを確認する。失敗しているサイトを個別に追う</div></li><li><div class=lp>前提条件の2つのチェックを、今日のうちに実行する</div><div class=lw>「有効なテーマの直下に page- で始まるフォルダがあるか」 「PHP の register_argc_argv が有効か」は数分で確認でき、 コード実行まで至るかどうかの判断に直結する</div><div class=la><b>取るべき行動</b> テーマディレクトリの一覧と php.ini（または phpinfo）の該当設定を確認し、 結果を記録する。どちらも修正ではないため、更新は別に行う</div></li><li><div class=lp>パスを組み立てる処理では、正規化と「許可された場所に収まっているか」の検査を分けて書く</div><div class=lw>発見者の言葉では「パスの正規化は行き先を決めるが、その行き先が許可されたフォルダ内に とどまることは保証しない」。本件は隣接するコードが使っていた検査を1か所だけ通していなかった</div><div class=la><b>取るべき行動</b> 自社コードでファイルパスを外部入力から組み立てている箇所を洗い出し、 解決後のパスが許可されたディレクトリ配下にあることを最終確認する共通処理を通す</div></li><li><div class=lp>二重エンコードを前提にした検査を書く</div><div class=lw>本件では、二重にエンコードされたトラバーサルが最初の処理を素通りし、 後段のデコードで区切り文字として効いた</div><div class=la><b>取るべき行動</b> 入力の検査は「デコード後の最終形」に対して行う。WAF ルールを書く場合も %252e%252e のような二重エンコード形を含める（Patchstack の暫定措置と同じ考え方）</div></li><li><div class=lp>アクセスログを「応答の中身」の観点でも確認できるようにしておく</div><div class=lw>探索行為はページ URL への通常のリクエストに見える。 Patchstack は、ページ URL に対して想定外のファイルの中身が返っていないかを勧めている</div><div class=la><b>取るべき行動</b> 応答サイズ・応答内容の異常（PHP ソースや設定ファイルの断片）を検出できるよう、 ログの保持期間と項目を見直す</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> WordPress 4.7.0〜7.1.1 のコアを使っているサイトがある（休眠サイトを含む）</td><td class=sm>影響範囲は事実上すべての現役ブランチで、認証も利用者の操作も不要である</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 2026年9月17日の 7.1.1 へ更新して「今月は対応済み」としている</td><td class=sm>7.1.1 も本件の影響を受ける。9月は5日違いで2本のセキュリティリリースが出た</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 有効なテーマの直下に「page-」で始まるフォルダがある（古い既定テーマなど）</td><td class=sm>コード実行に至る前提の1つであり、現行の既定テーマは該当しない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> PHP の register_argc_argv が有効（PHP 8.5 より前は既定で有効）</td><td class=sm>もう1つの前提条件。Patchstack は既定の Docker イメージや cPanel 環境で一般的と指摘している</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Web サーバ上に使っていない PEAR 構成要素が残っている</td><td class=sm>取り込まれた側のファイルとして、コード実行の踏み台に使われた</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 緊急更新までのあいだに発動できる暫定防御（WAF ルール等）の手順と判断者が決まっていない</td><td class=sm>修正公開から5時間以内に探索行為が観測されている</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月22日 WordPress プロジェクト（WordPress.org News）</span> <a href="https://wordpress.org/news/2026/09/wordpress-7-1-2-release/" target="_blank" rel="noreferrer noopener nofollow">WordPress 7.1.2 Release</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料。本記録の作成者が2026年9月23日に取得した。CVE-2026-87902 と GHSA-7hp8-65ch-5whp、 Critical という評価、脆弱性の説明（未認証でテーマ外の読み取り可能な PHP ファイルを取り込ませられる。 サーバ環境とテーマの前提が揃えばコード実行に至りうる）、4.7 まで遡るバックポート、 自動バックグラウンド更新の記述、Robert Ressl への謝辞の出典。原文英語・訳は本記録)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年9月22日 HackerOne（CVE 採番機関 / CNA）</span> <a href="https://www.cve.org/CVERecord?id=CVE-2026-87902" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-87902（WordPress core・ページテンプレート解決のファイル取り込み）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(一次資料。本記録の作成者が2026年9月23日に cveawg.mitre.org の API から取得した。 採番機関が HackerOne であること、説明文、CVSS 3.1 の 8.1 とベクタ、CWE-98、 影響が 7.1.2 未満であること、公開日の出典。原文英語・訳は本記録)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[7]</span> <span class=sm>2026年9月22日版 米サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（カタログ版 2026.09.22・1,721件）</a> <span class="b kind">統計・集計資料</span><span class=sm>（(本記録の作成者が2026年9月23日に JSON を取得し、CVE-2026-87902 が収載されていないことを確認した。 カタログの版が2026年9月22日である点に注意が要る（探索行為の観測と同日）)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月22日 Patchstack</span> <a href="https://patchstack.com/articles/wordpress-7-1-2-security-release-unauthenticated-lfi-to-rce/" target="_blank" rel="noreferrer noopener nofollow">WordPress 7.1.2 Security Release: Unauthenticated LFI to RCE</a> <span class="b kind">ブログ</span><span class=sm>（(解説。CVSS 9.2、影響範囲 4.7.0〜7.1.1、CWE-98、欠陥の位置（テンプレート名の組み立てが 隣接コードのパス検査を通っていないこと）、7.1.2 の修正が2段構えであること、 成立条件（テーマの page- フォルダ、register_argc_argv）、 「既定の Docker イメージや cPanel 環境で一般的」という指摘、 サイト運営者向けの2つのチェック項目の出典。原文英語・訳は本記録)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年9月 Patchstack</span> <a href="https://patchstack.com/articles/cve-2026-87902-attackers-started-probing-wordpress-sites-hours-after-the-patch/" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-87902: Attackers Started Probing WordPress Sites Hours After the Patch</a> <span class="b kind">調査レポート</span><span class=sm>（(観測報告。初観測が2026年9月22日17時44分（UTC）で修正公開から5時間以内であること、 読ませようとした標準ファイル（wp-links-opml.php・wp-includes/functions.php・wp-cron.php）、 発信元の IPv4 2件・IPv6 1件と利用者エージェント Go-http-client/1.1、 推奨対応（更新、%252e%252e の拒否、過去ログの確認）の出典。原文英語・訳は本記録。 本記録の作成者は観測データを独自に検証していない)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年9月22日 Robert Ressl</span> <a href="https://ressl.ch/blog/cve-2026-87902-wordpress/" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-87902: Critical WordPress file inclusion and conditional RCE</a> <span class="b kind">ブログ</span><span class=sm>（(発見者による技術解説。クエリ変数からのテンプレート名の組み立て、二重エンコードの通過、 「正規化は封じ込めを保証しない」という整理、成立条件（WordPress 側3つ・サーバ側3つ）、 PEAR を使う2段構えの実行、CVSS 4.0 の 9.2、 報告から公開までの経緯（2026年7月20日に HackerOne 経由で報告、7月21日受領確認、 9月15日にリリース予定の通知、9月22日に公開）、 隔離したラボ3環境・WordPress 7.0.2 での実証と、実サイト未検証・OS 権限昇格は未実証である旨、 更新できない場合の緩和（register_argc_argv の無効化・未使用 PEAR の削除）の出典。 原文英語・訳は本記録)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年9月22日 The Hacker News</span> <a href="https://thehackernews.com/2026/09/wordpress-issues-patch-for-critical.html" target="_blank" rel="noreferrer noopener nofollow">WordPress Issues Patch for Critical Flaw That Can Enable Code Execution on Some Servers</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事。各ブランチの修正版の対応表、4.7.37 までのバックポート、 7.1.1 も影響を受けること、「一部のサーバでは」の意味、 register_argc_argv が PHP 8.5 で既定無効・それ以前は既定有効であること、 現行の既定テーマは page- で始まるフォルダを持たないこと、 報告が2026年7月に HackerOne 経由で行われたこと、9月22日時点で攻撃の報告も KEV 収載も無いことの出典。 本文は保存分〈output/articles/20260923/0058_the-hacker-news_wordpress-issues-patch-for-critical-flaw-that-can-.md〉で確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月23日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月23日の収集分（The Hacker News）を起点に、WordPress 7.1.2 のリリース告知、 CVE レコード（cveawg.mitre.org の API）、発見者の技術解説、Patchstack の解説2本、 CISA の KEV カタログを取得して裏取りした。 修正の記述・謝辞・バックポートの範囲は WordPress の一次資料で、 採番機関・CVSS 3.1・CWE は CVE レコードで、成立条件と実証範囲は発見者の解説で、 探索行為の観測は Patchstack の報告で確認している。 コード実行は隔離したラボでのみ実証されており、実サイトでの侵害は公表されていないため、 その旨を齟齬と未確定事項に記録した。 日本の組織が当事者ではないが、WordPress は日本でも広く使われており、 「5日前に出たばかりの版も影響を受ける」「修正公開から5時間以内に探索が始まった」 「前提条件が数分で確認できる形で示されている」という3点で先例になると判断して記録した。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">WordPress</span><span class="b tag">WordPress 7.1.2</span><span class="b tag">CVE-2026-87902</span><span class="b tag">CWE-98</span><span class="b tag">ローカルファイル取り込み</span><span class="b tag">パストラバーサル</span><span class="b tag">ページテンプレート</span><span class="b tag">PHP設定 register-argc-argv</span><span class="b tag">PEAR</span><span class="b tag">未認証</span><span class="b tag">探索行為</span><span class="b tag">Patchstack</span><span class="b tag">HackerOne</span><span class="b tag">CMS運用</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-23 17:25 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
