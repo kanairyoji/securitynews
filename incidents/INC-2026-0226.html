@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Storm-3168 が Azure 資源を7分で破壊 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0226</span>Storm-3168 が Azure 資源を7分で破壊</h1>
+<header class="site-header">
+  <p class="subtitle">Microsoft が2026年9月25日、侵害された Azure のサービスプリンシパル2つを使った破壊活動の詳細を公表した——Sysdig が7月に「初めて文書化されたエージェント型ランサムウェア作戦」として報告した JADEPUFFER を同社は Storm-3168 として追跡しており、今回が同集団の Azure 上の活動の初の詳細な観測になる。2026年6月初旬、1つ目のサービスプリンシパルが約15時間30分かけて300回以上の読み取りで環境を棚卸しし、2つ目が2サブスクリプションを5秒で列挙した。存在しないストレージアカウントへの ListKey が失敗した1秒未満後に破壊が始まり、35分間で150回以上、うち破壊の連続は約7分間で100回以上のストレージアカウント削除試行だった。侵害されたサービスプリンシパルの client ID・client secret・tenant ID は、以前に被害組織の従業員が公開 GitHub Issue へ平文で書いており、編集で消したあとも公開の編集履歴から読める状態だった</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">権限管理の不備</span><span class="b cause">設定不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月25日</span>
+  <span>最終更新: 2026年9月27日</span>
+</div>
+
+<div class="lead"><p><strong>Microsoft</strong> は <strong>2026年9月25日</strong>、Azure 環境で起きた大規模な資源破壊とクラウド資格情報の収集について、観測の詳細を公表しました。</p>
+<p>追跡名は <strong>Storm-3168</strong>。Sysdig が2026年7月に「<strong>初めて文書化されたエージェント型ランサムウェア作戦</strong>」として報告した<strong>JADEPUFFER</strong> と同一の脅威アクターだと Microsoft は述べています。<strong>同集団の Azure 上の活動が詳細に公開されたのは今回が初めて</strong>です。</p>
+<p>起きたことは次のとおりです（すべて Microsoft の観測）。</p>
+<ul>
+<li><strong>2026年6月初旬</strong>、同一テナントに属する<strong>2つのサービスプリンシパルが侵害</strong>されていた</li>
+<li>1つ目が<strong>約15時間30分・300回以上の読み取り</strong>で仮想マシン・サブスクリプション・リソースグループを棚卸しした</li>
+<li>その約90分後、2つ目が<strong>2つのサブスクリプションを5秒で列挙</strong>した</li>
+<li>16時間後、2つ目が App Service の構成ストアを列挙し、<strong>存在しないストレージアカウントへの ListKey に失敗</strong>した</li>
+<li>その<strong>1秒未満後に破壊が始まった</strong>。35分間で<strong>150回以上</strong>の破壊・資格情報収集の操作、うち<strong>破壊の連続は約7分間で100回以上のストレージアカウント削除試行</strong></li>
+<li>最後の破壊活動の約30分後、<strong>30回以上の ListKeys でストレージアカウントのアクセスキーを取得</strong>した</li>
+</ul>
+<p><strong>止まった部分もあります。</strong> Azure の<strong>リソースロック</strong>と<strong>ストレージアカウント単位の削除保護</strong>が一部の削除を拒否しました。SQL データベースの削除は<strong>全て失敗</strong>しましたが、理由は防御ではなく攻撃側が<strong>サポートされない API バージョンを使った</strong>ことです。</p>
+<p>初期侵入の経路は確定していません。ただし Microsoft は、侵害されたサービスプリンシパルの <strong>client ID・client secret・tenant ID が、被害組織の従業員によって公開の GitHub Issue へ平文で書かれていた</strong>こと、<strong>編集で消したあとも Issue の公開編集履歴から読める状態だった</strong>ことを指摘し、「<strong>公開された資格情報は、失効または更新するまで有効であり続ける。元の掲載を消すだけでは是正にならない</strong>」（原文英語）と述べています。</p>
+<p>日本の組織が当事者だという公表はありません。それでも本記録が扱うのは、<strong>人ではなく自動化されたものが動いている前提でクラウドの被害の速度が変わっている</strong>ことが、この観測で数字として示されたからです。<strong>気づいてから止めるまでの時間が、7分より長い組織は間に合いません。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>被害組織はどこか（名称・業種・国・規模）</span><span class="b rsn">公表されていない</span><div class=sm>Microsoft は「影響を受けたテナント」としか書いていない。 **業種も国も規模も示されていないため、 「自分の業界が狙われているか」という問いには答えられない。**</div></li><li><span class=ui>サービスプリンシパルはどうやって侵害されたのか</span><span class="b rsn">調査したが確定せず</span><div class=sm>Microsoft は「**どのように最初に侵害されたのかは不明である**」と明記している。 公開 GitHub Issue への平文掲載という有力な経路を示しつつ、 「**この秘密が本活動に使われたかは確認できなかった**」としている。 年初から観測されていた App Service への探索も、 **後に破壊が起きたサブスクリプションとは重ならなかった。**</div></li><li><span class=ui>被害組織はいつ気づき、どう止めたのか</span><span class="b rsn">公表されていない</span><div class=sm>**検知の時期も、封じ込めの方法も、誰が気づいたのかも書かれていない。** 本記録は response.metrics（侵入から検知まで等）を算出できない。 **観測は攻撃側の操作の記録から構成されており、防御側の時間軸が無い。**</div></li><li><span class=ui>復旧できたのか、データは失われたのか</span><span class="b rsn">公表されていない</span><div class=sm>削除されたストレージアカウント・Key Vault・Function App・App Service プランが 復旧できたかは公表されていない。 **Azure Site Recovery と Azure Backup の保護ロックへの削除試行が行われている**ため、 復旧手段そのものが狙われていたことは分かるが、結果は書かれていない</div></li><li><span class=ui>取得されたストレージアカウントのアクセスキーで、データは持ち出されたのか</span><span class="b rsn">公表されていない</span><div class=sm>Microsoft は「**データ持ち出しの成功は確認していない**」と述べている。 これは「持ち出されていない」ことの証明ではない。 **30回以上の ListKeys が成功しており、キーは失効させない限り有効である。**</div></li><li><span class=ui>「エージェント型（agentic）」の中身は何か</span><span class="b rsn">公表されていない</span><div class=sm>Microsoft は表題に &quot;Agentic-driven&quot; と掲げ、 並列トークンと操作の時間間隔から「**自動化された、あるいはスクリプト化された実行**」を 強く示すと述べている。 **ただし、LLM が使われたのか、単に並列化されたスクリプトなのかを 区別する証拠は示されていない。** Sysdig の「エージェント型ランサムウェア」という 位置づけの根拠も、本記録の作成者は原報告で確認していない</div></li><li><span class=ui>日本の組織への影響</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録の作成者は2026年9月27日時点で、 **日本の組織が本活動の対象になったという公表を確認できていない。** 「影響が無い」ことを確認したのではなく、**探して見つからなかった**という意味である</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>被害テナント（Azure 利用組織。組織名・業種・国は公表されていない）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Storm-3168（Microsoft の追跡名。Sysdig は JADEPUFFER として報告）</span><span class="b role">推定加害者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Microsoft（Microsoft Security Research）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Sysdig</span><span class="b role">報告したベンダー</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>破壊操作が連続した時間</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>7<span class=fu>分</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>Microsoft の表現は &quot;The destructive sequence lasted for about 7 minutes&quot;。 **この7分に100回以上のストレージアカウント削除試行が入っている。** 人手による対応が追いつく時間ではない</div></div><div class=fig><div class=fh><span class=fl>ストレージアカウントの削除試行の回数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>100<span class=fu>回</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>Microsoft の表現は &quot;100+ storage account deletion attempts&quot;。 **「試行」であり、成功した数は別に示されていない** （「対象の大半は実際に削除された」とのみ記載）。 **アカウント数ではなく操作の回数である**</div></div><div class=fig><div class=fh><span class=fl>破壊または資格情報収集に関わる操作の総数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>150<span class=fu>回</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>35分間での操作数。Microsoft の表現は &quot;150+ destructive or credential collection related operations in 35 minutes&quot;</div></div><div class=fig><div class=fh><span class=fl>1つ目のサービスプリンシパルによる列挙の継続時間</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>15.5<span class=fu>時間</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>&quot;about 15 hours and 30 minutes with 300+ successful read operations&quot;。 **破壊の7分に対し、偵察には15時間半かけている。** 検知の機会はこの長い偵察のほうにあった</div></div><div class=fig><div class=fh><span class=fl>1つ目のサービスプリンシパルの読み取り操作の成功数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>300<span class=fu>回</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>成功した読み取りのみの数。失敗分は示されていない</div></div><div class=fig><div class=fh><span class=fl>2つ目のサービスプリンシパルが2サブスクリプションを列挙した時間</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>秒</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>**同じ列挙を1つ目は15時間半かけて行っている。** 同一テナント内で速度が3桁以上違う点が、 自動化された実行であることの根拠として挙げられている</div></div><div class=fig><div class=fh><span class=fl>アクセスキーの取得に成功した ListKeys 要求の数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>30<span class=fu>回</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>破壊の後に行われた資格情報の収集。 **取得されたキーで実際にデータが持ち出されたかは確認されていない** （Microsoft は「将来の持ち出しを容易にしうる」と述べるにとどまる）</div></div><div class=fig><div class=fh><span class=fl>破壊と資格情報収集に使われたサービスプリンシパルへ発行されたトークンの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>件</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>4つが削除を、5つ目がストレージの棚卸しとキー取得を担った。 **削除用の2つは同じ70秒間に同時に有効**で、一方はストレージ、 もう一方はストレージと SQL の混在を担当した。 **並列実行の裏づけとして Microsoft が挙げている**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>同一 Azure テナント内の2つのサービスプリンシパル（ワークロード ID）を侵害し、 既存のロール割り当ての範囲で環境全体を列挙したうえで、 ストレージアカウント・Key Vault・Function App・App Service プランを大量に削除し、 復旧資源（Site Recovery / Backup の保護ロック）にも削除を試み、 最後にストレージアカウントのアクセスキーを収集した。 偵察に約15時間30分、破壊の連続は約7分。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>侵害されたサービスプリンシパルとして Azure Resource Manager に対して API を呼び出す。ユーザーエージェントは `python-requests/2.34.2`、 2つのサービスプリンシパルは Storm-3168 に結びつく同一のネットワーク指紋を共有していた</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li><li><div class=stg><span class="b stage">2. 内部探索</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>1つ目のサービスプリンシパルが約15時間30分にわたり300回以上の読み取りで 仮想マシン・サブスクリプション・リソースグループ・リソースを列挙した。 その約90分後、2つ目が2サブスクリプションを5秒で列挙し、 16時間後に App Service の構成ストアを列挙した（露出した資格情報の探索とみられる）</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>**権限昇格は観測されていない。** すべての破壊操作は、その ID に既に 割り当てられていたロールの範囲で実行された。ストレージの削除は **グループ経由で付与された** Storage Account Contributor、 アプリ資源の削除は直接付与の Contributor、 SQL の削除試行は直接付与の SQL DB Contributor が通した</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>存在しないストレージアカウントへの ListKey 失敗の1秒未満後に破壊を開始。 35分間で150回以上の破壊・資格情報収集操作、うち約7分間で100回以上の ストレージアカウント削除試行。大半は成功した。 同一リソースグループの Key Vault・Function App・App Service プランも削除。 Azure SQL データベースの並行削除は、サポートされない API バージョンのため全て失敗</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li><li><div class=stg><span class="b stage">5. 影響（暗号化・破壊・改ざん）</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>復旧手段そのものを狙った。Azure Site Recovery のロックと Azure Backup の保護ロックに対する削除が複数回試みられ、 いずれも失敗した。terraform・バックアップにちなんだ名前の ストレージアカウントが破壊対象に含まれていた</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li><li><div class=stg><span class="b stage">6. 認証情報アクセス</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>最後の破壊活動の約30分後、ストレージアカウントの一覧を要求し、 30回以上の ListKeys に成功してアクセスキーを取得した。 対象には Azure Site Recovery 関連のストレージアカウントが含まれていた</div><div class=fn>根拠: Microsoft Security Blog（2026年9月25日）</div></li></ol></div>
+<section id="s5"><h2>偵察に15時間半、破壊に7分——同じテナントの中で速度が3桁違った<span class="b slot">概観</span><span class=srcs>出典 [1]</span></h2><p>Microsoft が2026年9月25日に公表した観測は、時間の刻みが細かいことに意味があります。</p>
+<table>
+<thead>
+<tr>
+<th>段階</th>
+<th>所要</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1つ目のサービスプリンシパルの列挙</td>
+<td><strong>約15時間30分</strong></td>
+<td>300回以上の読み取り</td>
+</tr>
+<tr>
+<td>2つ目のサービスプリンシパルの列挙</td>
+<td><strong>5秒</strong></td>
+<td>2サブスクリプションの VM・リソースグループ</td>
+</tr>
+<tr>
+<td>最後の棚卸し → ListKey 失敗</td>
+<td>70秒</td>
+<td>存在しないストレージアカウント宛</td>
+</tr>
+<tr>
+<td>ListKey 失敗 → 破壊開始</td>
+<td><strong>1秒未満</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>破壊の連続</td>
+<td><strong>約7分</strong></td>
+<td>100回以上のストレージアカウント削除試行</td>
+</tr>
+<tr>
+<td>破壊・資格情報収集の全体</td>
+<td>35分</td>
+<td>150回以上の操作</td>
+</tr>
+<tr>
+<td>最後の破壊 → ListKeys</td>
+<td>約30分後</td>
+<td>30回以上成功</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同じテナントの中で、同じ種類の列挙が15時間半と5秒で行われています。</strong> Microsoft はこの速度差と、削除用トークン2つが同じ70秒間に同時に有効だったこと、操作の時間間隔から「<strong>自動化された、あるいはスクリプト化された実行</strong>」を強く示すと述べています。</p>
+<p>壊された対象は、ストレージアカウント（大半が実際に削除された）、Key Vault、Function App、App Service プランです。SQL データベースの削除は並行して試みられましたが、<strong>全て失敗</strong>しました。理由は防御ではなく、<strong>攻撃側がサポートされない API バージョンを使った</strong>ためです。</p></section>
+<section id="s6"><h2>止めたのは「権限」ではなく「ロック」だった<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p>この事案で防御が効いた箇所は、はっきりしています。</p>
+<ul>
+<li><strong>Azure のリソースロック</strong></li>
+<li><strong>ストレージアカウント単位の削除保護</strong></li>
+</ul>
+<p>この2つが、一部のストレージアカウントの削除を拒否しました。Microsoft の言葉では「<strong>侵害された ID が広い管理権限を持っていてもなお有効であり続ける、独立した安全装置の価値を示している</strong>」（原文英語）。</p>
+<p>逆に、<strong>権限は何も止めませんでした。</strong> 操作はすべて、その ID に既に割り当てられていたロールの範囲で通っています。</p>
+<table>
+<thead>
+<tr>
+<th>破壊操作</th>
+<th>通した権限</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ストレージアカウントの削除</td>
+<td><strong>グループ経由で付与された</strong> Storage Account Contributor</td>
+</tr>
+<tr>
+<td>Key Vault・Function App・App Service プランの削除</td>
+<td>直接付与の Contributor</td>
+</tr>
+<tr>
+<td>SQL データベースの削除試行</td>
+<td>直接付与の SQL DB Contributor</td>
+</tr>
+</tbody>
+</table>
+<p>注目すべきは、ストレージの破壊を通したのが<strong>グループ経由の付与</strong>だという点です。ID 単体の権限一覧を見ているだけでは、この権限は見えません。</p>
+<p><strong>狙われたのは復旧手段そのものでもあります。</strong> Azure Site Recovery のロックと Azure Backup の保護ロックに対しても削除が試みられ（いずれも失敗）、terraform やバックアップにちなんだ名前のストレージアカウントが対象に含まれていました。</p></section>
+<section id="s7"><h2>公開 GitHub Issue の編集履歴に、client secret が残っていた<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1]</span></h2><p>初期侵入の経路は<strong>確定していません</strong>。Microsoft は「不明である」と明記しています。</p>
+<p>ただし、ひとつの事実が示されています。侵害されたサービスプリンシパルの <strong>client ID・client secret・tenant ID は、被害組織の従業員によって公開の GitHub Issue へ平文で書かれていました。</strong> <strong>Issue は後に編集されて秘密は削除されましたが、公開されている編集履歴からは読める状態が続きました。</strong></p>
+<p>Microsoft はここで一般則を述べています——「<strong>露出した秘密を削除したり伏せ字にしたりしても、その秘密が無効になるわけではない。インターネット上のいかなる公開の場所に露出した資格情報も、侵害されたものとして扱い、速やかに失効または更新すべきである</strong>」（原文英語）。</p>
+<p><strong>「消したから大丈夫」は成立しません。</strong> GitHub の Issue とコメントは編集履歴を公開しており、Pull Request の差分、CI のログ、チャットの編集前メッセージなども同じ性質を持ちます。</p>
+<p>もうひとつ、2026年の年初から観測されていた活動があります。Storm-3168 に結びつくインフラが、複数の顧客の Azure App Service に対して、<strong>WordPress の管理系パス・PHP-CGI・LangFlow のコード検証エンドポイント<code>/api/v1/validate/code</code>・web shell と思われるパス</strong>を繰り返し探索していました。<strong>ただしこれらは、後に破壊が起きたサブスクリプションとは重なっていません。</strong> App Service から Azure Resource Manager へ資格情報が渡る経路も見つかっていません。<strong>経路として提示されているわけではない</strong>点に注意が要ります。</p></section>
+<section id="s8"><h2>「7分で終わる破壊」に、人間の対応手順は間に合わない（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p><strong>ここからは本記録の作成者の評価です。</strong></p>
+<p>この観測から読み取るべき点は、攻撃の新奇性ではなく<strong>時間の配分</strong>だと考えます。</p>
+<p><strong>1. 検知の機会は破壊の側ではなく偵察の側にある。</strong>破壊は7分で終わりました。アラートを受けてから人が状況を把握し、ID を無効化するまでに7分で到達できる組織は多くありません。一方、<strong>その前には約15時間30分・300回以上の読み取りという、きわめて目立つ偵察</strong>がありました。<strong>ここを見ていないなら、破壊の側でどれだけ早く鳴らしても遅い</strong>と考えます。「サービスプリンシパルによる、平常時より桁違いに多い列挙操作」は検知条件として書けるはずのものです。</p>
+<p><strong>2. 権限の見直しは、この事案では効かなかった側である。</strong>すべての操作は既存のロール割り当ての範囲で通りました。つまり<strong>権限設計は「正しく」機能していて、その正しさが破壊を通した</strong>ことになります。最小権限は当然に必要ですが、<strong>それだけでは破壊は止まりません。</strong>止めたのはリソースロックと削除保護という、<strong>権限とは独立に働く層</strong>でした。ここに投資の優先順位を置き替える理由があります。</p>
+<p><strong>3. 復旧資源を「守る対象」として明示的に扱う。</strong>攻撃側は Site Recovery と Backup の保護ロックを消しにかかっています。<strong>バックアップがあることと、バックアップが消せないことは別</strong>です。自社の復旧手段が、本番と同じ ID・同じサブスクリプション・同じロールの射程に入っていないかを確認する価値があります。</p>
+<p><strong>4. 「エージェント型」という語には留保を置く。</strong> Microsoft は "Agentic-driven" と題し、AI が組み立てる攻撃への移行というより広い傾向を指摘しています。<strong>ただし、本文が示す証拠は「自動化またはスクリプト化された実行」までです。</strong> LLM の関与を直接示す証拠は書かれていません。<strong>防御側にとって重要なのは、その区別ではなく速度</strong>です。<strong>人手でやっていた頃の前提（攻撃者も休む・打鍵に時間がかかる）が成り立たなくなった</strong>ことだけが、確実に言える変化だと考えます。</p></section>
+<section id="s9"><h2>分かっていないことのほうが多い<span class="b slot">未確定事項</span><span class=srcs>出典 [1]</span></h2><p>2026年9月27日時点で、次の点は公表されていません。</p>
+<ul>
+<li><strong>被害組織はどこか</strong>（名称・業種・国・規模のいずれも不明）</li>
+<li><strong>サービスプリンシパルはどうやって侵害されたのか</strong>（GitHub Issue の秘密が使われたかは「確認できなかった」）</li>
+<li><strong>被害組織はいつ気づき、どう止めたのか</strong>——防御側の時間軸が一切無い</li>
+<li><strong>復旧できたのか、データは失われたのか</strong></li>
+<li><strong>30回以上取得されたアクセスキーで、データが持ち出されたのか</strong></li>
+<li><strong>「エージェント型」の中身</strong>（LLM の関与を示す証拠は書かれていない）</li>
+</ul>
+<p>とくに3点目のため、本記録は<strong>「侵入から検知まで」「検知から封じ込めまで」を算出できません。</strong>この観測は攻撃側の操作ログから構成されており、<strong>防御側が何をしたかは記録の外</strong>にあります。</p></section>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**先行する報告（本記録の観測ではない）。** Sysdig が JADEPUFFER を発見し、「**初めて文書化されたエージェント型 ランサムウェア作戦**」として報告した。Microsoft はこれを Storm-3168 として追跡している</td></tr><tr><td class="sm nowrap tw">2026年の年初以降</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>Storm-3168 に結びつくインフラから、**複数の顧客の Azure App Service に対する 繰り返しの探索**が観測されていた。対象は WordPress の管理系パス、PHP-CGI、 **LangFlow のコード検証エンドポイント `/api/v1/validate/code`**、 web shell と思われるパスなど。 **ただしこれらの App Service は、後に破壊が起きたサブスクリプションとは重ならず、 App Service から Azure Resource Manager へ資格情報が渡る経路も見つかっていない**</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（破壊活動より前）</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>被害組織の従業員が、**侵害されたサービスプリンシパルの client ID・client secret・ tenant ID を、公開の GitHub Issue に平文で記載**していた。 **Issue は後に編集されて秘密は消されたが、公開の編集履歴からは読める状態が続いた。** Microsoft は「**この秘密が本活動に使われたかは確認できなかった**」と明記している</td></tr><tr><td class="sm nowrap tw">2026年6月初旬</td><td class=nowrap><span class="b kind">発生</span></td><td>同一テナントの**1つ目の侵害されたサービスプリンシパル**が、 Azure の仮想マシン・サブスクリプション・リソースグループ・リソースを **約15時間30分にわたり300回以上の読み取り操作**で列挙した。 組織の Azure 環境全体を見渡す視野を攻撃側に与える活動である</td></tr><tr><td class="sm nowrap tw">T3 の開始から約90分後</td><td class=nowrap><span class="b kind">発生</span></td><td>**2つ目の侵害されたサービスプリンシパル**が、 **2つのサブスクリプションにまたがる仮想マシンとリソースグループを5秒で列挙**した。 両サービスプリンシパルは **Storm-3168 に結びつく同一のネットワーク指紋**と、 ユーザーエージェント **`python-requests/2.34.2`** を使っていた</td></tr><tr><td class="sm nowrap tw">T4 の16時間後</td><td class=nowrap><span class="b kind">発生</span></td><td>2つ目のサービスプリンシパルが **Azure App Service の構成ストアの列挙に成功**した （露出した資格情報を探していた可能性がある、と Microsoft は述べている）。 **Azure OpenSearch の資源の探索は失敗**した。 この最後の棚卸しの**70秒後**、**存在しないストレージアカウントに対する ListKey 操作**を試みて失敗した</td></tr><tr><td class="sm nowrap tw">T5 の1秒未満後</td><td class=nowrap><span class="b kind">発生</span></td><td>**破壊活動が始まった。** 同じサービスプリンシパルが**35分間で150回以上の破壊・資格情報収集に関わる操作**を行い、 **うち破壊の連続は約7分間、100回以上のストレージアカウント削除試行**だった。 **対象の大半の Azure ストレージアカウントは実際に削除された。** 同一リソースグループの Key Vault・Function App・App Service プランも削除された</td></tr><tr><td class="sm nowrap tw">T6 と並行</td><td class=nowrap><span class="b kind">発生</span></td><td>**止まった部分がある。** 一部のストレージアカウントは **Azure のリソースロックとストレージアカウント単位の 削除保護によって削除を拒否**された。 Azure Site Recovery のロックと Azure Backup の保護ロックに対する削除試行も失敗した。 複数の Azure SQL データベースへの並行した削除試行は**全て失敗**したが、 理由は防御ではなく**攻撃側が Azure SQL Database のリソース種別に対して サポートされない API バージョンを使った**ことである</td></tr><tr><td class="sm nowrap tw">最後の破壊活動の約30分後</td><td class=nowrap><span class="b kind">発生</span></td><td>同じサービスプリンシパルが Azure ストレージアカウントの一覧を要求し、 **30回以上の ListKeys に成功してアクセスキーを取得**した。 対象には **Azure Site Recovery 関連のストレージアカウント**が含まれていた</td></tr><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>Microsoft Security Blog が 「Storm-3168: Agentic-driven cloud attacks using compromised service principals」を公表した。 **JADEPUFFER に関する公開情報を Azure 側から拡張する初の詳細な観測**だとしている。 あわせて、Defender for Cloud の各プランの有効化、 ワークロード ID と秘密の保護、最小権限、復旧資源の保護を推奨した</td></tr><tr><td class="sm nowrap tw">2026年9月27日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が Microsoft のブログ本文を取得して確認した。 **被害テナントの組織名・業種・国、侵害の検知時期、復旧の状況、 被害額はいずれも記載が無い。** 身代金要求文は観測されておらず、 データ持ち出しの成功も確認されていないと明記されている</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">本記録による推定</span><span class=ui>「エージェント型（agentic）」という位置づけの根拠</span><div class=sm>Microsoft は表題に &quot;Agentic-driven cloud attacks&quot; を掲げ、 「AI が組み立てる攻撃への広い移行を示す」と述べている。 **ただし本文が示す証拠は、並列トークン・操作間隔・作業分担から推認される 「自動化された、あるいはスクリプト化された実行」までである。** LLM の関与を直接示す証拠（プロンプト・API 呼び出し・モデル由来の痕跡）は 示されていない。**本記録は「自動化」と「エージェント型」を同一視せず、 観測された事実は前者であると読む。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Sysdig の JADEPUFFER 報告を原文で確認していない</span><div class=sm>「2026年7月に Sysdig が初めて文書化されたエージェント型ランサムウェア作戦として 報告した」という記述は、**Microsoft のブログ内の記述にもとづく。** 本記録の作成者は Sysdig の原報告を取得していない。 したがって、JADEPUFFER と Storm-3168 の同一性の根拠、 「エージェント型」と判断された理由は検証できていない。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>公開 GitHub Issue の秘密が本活動に使われたかは確認されていない</span><div class=sm>Microsoft は「**この秘密が、ここで述べた活動に使われたかどうかは確認できなかった**」 （原文英語）と明記している。 **報道や要約では「GitHub Issue から漏れた資格情報で侵害された」と 読めてしまいやすいが、一次資料はそこまで述べていない。** 本記録は初期侵入の経路を未確定として扱う。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>被害組織の検知・封じ込め・復旧が一切記載されていない</span><div class=sm>Microsoft のブログは攻撃側の操作の観測で構成されており、 **防御側がいつ気づき、どう止め、どこまで戻せたかは書かれていない。** 本記録は response.metrics（侵入から検知まで等）を算出できない。 **「対応が悪かった」わけではなく、「対応が記録の外にある」**という意味である。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>侵害された2つのサービスプリンシパルが、偵察15時間半・破壊7分で Azure 環境を壊した</div><div class=svgwrap><svg viewBox="0 0 1202 476" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,238.0 C193.0,238.0 193.0,238.0 220,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,238.0 C397.0,238.0 397.0,187.0 424,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,238.0 C295.0,238.0 295.0,187.0 424,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,238.0 C295.0,238.0 295.0,282.0 424,282.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,187.0 C601.0,187.0 601.0,238.0 628,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C601.0,282.0 601.0,238.0 628,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C703.0,282.0 703.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C703.0,282.0 703.0,142.0 832,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C703.0,282.0 703.0,231.0 832,231.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C703.0,282.0 703.0,320.0 832,320.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,416.0 C907.0,416.0 907.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,282.0 C805.0,282.0 805.0,238.0 1036,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="194.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Storm-3168（S</text><text x="91.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ysdig の JADE</text><text x="91.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PUFFER）</text><text x="91.0" y="257.0" text-anchor="middle" fill="#f48fb1" font-size="10">python-reque</text><text x="91.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">sts/2.34.2・同</text><rect x="220" y="194.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開 GitHub Is</text><text x="295.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sue の編集履歴に残っ</text><text x="295.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">た client se…</text><text x="295.0" y="257.0" text-anchor="middle" fill="#ffcc80" font-size="10">本活動に使われたかは確認</text><text x="295.0" y="269.0" text-anchor="middle" fill="#ffcc80" font-size="10">されていない</text><rect x="424" y="150.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="172.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害されたサービスプリン</text><text x="499.0" y="186.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シパル①（偵察）</text><text x="499.0" y="199.0" text-anchor="middle" fill="#f48fb1" font-size="10">約15時間30分・300</text><text x="499.0" y="211.0" text-anchor="middle" fill="#f48fb1" font-size="10">回以上の読み取り</text><rect x="424" y="238.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="260.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害されたサービスプリン</text><text x="499.0" y="274.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シパル②（破壊・資格情報</text><text x="499.0" y="288.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">収集）</text><text x="499.0" y="301.0" text-anchor="middle" fill="#f48fb1" font-size="10">2サブスクリプションを5</text><text x="499.0" y="313.0" text-anchor="middle" fill="#f48fb1" font-size="10">秒で列挙</text><rect x="628" y="201.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="223.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害テナント（組織名は非</text><text x="703.0" y="237.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表）</text><text x="703.0" y="250.0" text-anchor="middle" fill="#64b5f6" font-size="10">同一テナント内の2サブス</text><text x="703.0" y="262.0" text-anchor="middle" fill="#64b5f6" font-size="10">クリプション</text><rect x="832" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Azure ストレージア</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント</text><text x="907.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">100回以上の削除試行・</text><text x="907.0" y="77.0" text-anchor="middle" fill="#ffcc80" font-size="10">大半が削除された</text><rect x="832" y="104.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Key Vault・Fu</text><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nction App・A</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">pp Service …</text><text x="907.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">削除された</text><rect x="832" y="194.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Azure SQL デー</text><text x="907.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タベース</text><text x="907.0" y="243.0" text-anchor="middle" fill="#ffcc80" font-size="10">削除試行は全て失敗（AP</text><text x="907.0" y="255.0" text-anchor="middle" fill="#ffcc80" font-size="10">I バージョン不適合）</text><rect x="832" y="282.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Site Recover</text><text x="907.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">y ロック・Backup</text><text x="907.0" y="332.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 保護ロック</text><text x="907.0" y="345.0" text-anchor="middle" fill="#ffcc80" font-size="10">削除試行は失敗</text><rect x="832" y="372.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="394.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リソースロック／ストレー</text><text x="907.0" y="408.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジアカウント単位の削除保</text><text x="907.0" y="422.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">護</text><text x="907.0" y="435.0" text-anchor="middle" fill="#f48fb1" font-size="10">一部の削除を拒否した唯一</text><text x="907.0" y="447.0" text-anchor="middle" fill="#f48fb1" font-size="10">の防御</text><rect x="1036" y="201.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="223.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ストレージアカウントのア</text><text x="1111.0" y="237.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クセスキー</text><text x="1111.0" y="250.0" text-anchor="middle" fill="#ffcc80" font-size="10">30回以上の ListK</text><text x="1111.0" y="262.0" text-anchor="middle" fill="#ffcc80" font-size="10">eys に成功</text></svg></div><div class=fn>被害組織の従業員が公開 GitHub Issue に書いた client ID・client secret・tenant ID は、 編集で消したあとも公開の編集履歴から読める状態だった （**ただし Microsoft は、この秘密が本活動に使われたかは確認できなかったとしている**）。 同一テナントの2つのサービスプリンシパルが侵害され、 1つ目が約15時間30分・300回以上の読み取りで環境を棚卸しし、 2つ目が5秒で2サブスクリプションを列挙したうえで破壊に移った。 破壊を止めたのは権限ではなく、**リソースロックとストレージアカウント単位の削除保護**である。</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ユーザーエージェントとアクセス元は、正常な利用との差が出る観測点である。** `python-requests` のような汎用クライアントからのワークロード ID の認証は、 自社の正規の呼び出し元と突き合わせれば区別できる（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>サービスプリンシパルにアクセス元（IP 範囲）の条件付きアクセスを課す</div><div class=ctl><span class="b eff">侵入を防げた</span>秘密ベースの認証をやめ、フェデレーション資格情報（ワークロード ID フェデレーション）へ移す</div><div class=ctl><span class="b eff">検知できた</span>サービスプリンシパルのサインインを、想定するクライアントとアクセス元の一覧と突き合わせて監視する</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本事案で最も長く、最も目立った段階である（約15時間30分）。** 破壊は7分で終わるため、**実質的にここが唯一の実用的な検知窓**だと本記録は考える</div></td><td><div class=ctl><span class="b eff">検知できた</span>ワークロード ID による列挙系操作（読み取り）の件数を平常値と比較して閾値アラートを置く</div><div class=ctl><span class="b eff">検知できた</span>Microsoft Defender for Resource Manager を有効化する</div><div class=ctl><span class="b eff">影響を限定できた</span>サービスプリンシパルの参照範囲をサブスクリプション単位で絞り、横断的な列挙ができないようにする</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**昇格そのものが無いため、昇格を検知する機会も無い。** 正当な権限の行使として記録される（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ワークロード ID のロール割り当てを、グループ経由の継承まで含めて棚卸しする</div><div class=ctl><span class="b eff">影響を限定できた</span>削除を伴うロール（Contributor 系）をワークロード ID から外し、必要な操作だけを個別のロールで与える</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>削除は監査ログに残るが、**7分で終わる事象に人の対応は間に合わない。** ここで必要なのは検知ではなく、**検知を待たずに効く自動の拒否**である（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>重要なストレージアカウント・Key Vault にリソースロック（CanNotDelete）を設定する</div><div class=ctl><span class="b eff">侵入を防げた</span>ストレージアカウント単位の削除保護を有効にする</div><div class=ctl><span class="b eff">検知できた</span>Defender for Storage / Key Vault / Databases を有効化する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**保護ロックへの削除試行は、それ自体が極めて強いシグナルである。** 平常運用でこの操作が起きることはまずない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>復旧資源（Site Recovery / Backup / 保護ロック）への変更・削除操作を単独で高優先度アラートにする</div><div class=ctl><span class="b eff">影響を限定できた</span>復旧資源を本番とは別のサブスクリプション・別の管理 ID の射程に置く</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ListKeys は「鍵を配れ」という要求であり、頻度で見れば異常は明確**である。 破壊のあとに静かに行われており、騒ぎの陰に隠れやすい（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>ストレージアカウントの共有キーによるアクセスを無効化し、Entra ID 認証に統一する</div><div class=ctl><span class="b eff">検知できた</span>ListKeys の呼び出し回数を監視し、短時間の多数回を異常として扱う</div><div class=ctl><span class="b eff">影響を限定できた</span>共有キーを定期的に自動ローテーションする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「7分で終わる破壊」を前提に、対応手順の時間目標を置き直す</div><div class=lw>破壊の連続は約7分だった。アラートから人が判断して ID を無効化するまでに 7分で到達できる体制は、多くの組織にとって現実的ではない。 **人の速度で守れる範囲を超えた事象が実際に起きている。**</div><div class=la><b>取るべき行動</b> **「人が間に合う前提の対策」と「人を待たずに効く対策」を台帳の上で分ける。** 後者（リソースロック・削除保護・共有キーの無効化・自動失効）を先に埋め、 前者は偵察段階の検知に振り向ける。 自社の「アラートから ID 無効化まで」の実測値を1度測ることから始める。</div></li><li><div class=lp>復旧手段が、本番と同じ ID の射程に入っていないかを確認する</div><div class=lw>攻撃側は Site Recovery と Backup の保護ロックを消しにかかった。 バックアップがあることと、バックアップが消せないことは別である。</div><div class=la><b>取るべき行動</b> **復旧資源を別サブスクリプション・別の管理 ID の下に置き、 本番のワークロード ID からは触れないようにする。** 年1回、「本番を全権限で操作できる ID から、バックアップを消せるか」を 実際に試して確認する（検証環境で行う）。</div></li><li><div class=lp>公開の場に出た秘密は「消した」では終わらないと、規程に書く</div><div class=lw>侵害されたサービスプリンシパルの資格情報は、従業員が公開 GitHub Issue に 平文で書いたものだった。編集で消したあとも、公開の編集履歴から読める状態が続いた。 Microsoft は「露出した資格情報は侵害されたものとして扱え」と明記している。</div><div class=la><b>取るべき行動</b> **「公開の場に秘密を出したら、削除ではなく失効・再発行」を規程に明記する。** 報告した従業員を責めない運用（無過失の申告経路）をあわせて用意する。 申告されない露出のほうが危険だからである。</div></li><li><div class=lp>ワークロード ID を、人のアカウントと同じ棚卸しの対象に入れる</div><div class=lw>本事案で動いたのは人のアカウントではなくサービスプリンシパルである。 破壊を通した権限は**グループ経由で付与**されており、 ID 単体の権限一覧を見ても現れない。</div><div class=la><b>取るべき行動</b> **サービスプリンシパル・マネージド ID の一覧、所有者、付与ロール （グループ経由の継承を含む）、最終利用日を四半期ごとに棚卸しする。** 所有者が不明な ID と90日以上未使用の ID を削除候補として扱う。</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>偵察段階（列挙操作の急増）を検知条件として書く</div><div class=lw>破壊は7分、偵察は約15時間30分・300回以上の読み取りだった。 **実用的な検知窓は偵察のほうにしかない。**</div><div class=la><b>取るべき行動</b> **ワークロード ID ごとの読み取り／列挙操作の平常値を記録し、 桁違いの増加をアラートにする。** あわせて Defender for Resource Manager を 有効化する。「どの ID が、平常時に何回読むか」を先に測っておくことが前提になる。</div></li><li><div class=lp>リソースロックと削除保護を、重要資源の既定にする</div><div class=lw>本事案で実際に削除を止めたのはロックと削除保護だけである。 侵害された ID が広い管理権限を持っていても、これらは独立して効いた。</div><div class=la><b>取るべき行動</b> **ストレージアカウント・Key Vault・復旧資源に CanNotDelete のリソースロックと ストレージアカウント単位の削除保護を設定し、 Infrastructure as Code のテンプレートに既定として埋め込む。** ロックの有無を定期的に検査するポリシーを置く。</div></li><li><div class=lp>ストレージの共有キーを無効化し、ListKeys を監視対象にする</div><div class=lw>攻撃側は破壊の約30分後に30回以上の ListKeys を成功させ、 Site Recovery 関連を含むストレージのアクセスキーを取得した。 キーは失効させない限り有効であり続ける。</div><div class=la><b>取るべき行動</b> **共有キーによるアクセスを無効化して Entra ID 認証へ統一する。** やむを得ず残す場合は、ListKeys の短時間の多数回呼び出しをアラートにし、 キーの自動ローテーションを設定する。</div></li><li><div class=lp>ワークロード ID の認証を、秘密からフェデレーションへ移す</div><div class=lw>client secret は文字列であり、Issue・ログ・設定ファイル・チャットに 容易に貼られる。貼られた瞬間から、失効させるまで有効である。</div><div class=la><b>取るべき行動</b> **ワークロード ID フェデレーション（OIDC）へ移行し、 client secret を発行しない構成を既定にする。** 移行できない箇所については、秘密の有効期限を短くし、 コード・Issue・CI ログに対する秘密の走査を常時化する。</div></li><li><div class=lp>「グループ経由で付与された権限」を可視化する</div><div class=lw>ストレージの破壊を通したのは、グループ経由で付与された Storage Account Contributor だった。ID の直接付与だけを見ていると気づけない。</div><div class=la><b>取るべき行動</b> **権限の棚卸しを「実効権限（継承込み）」で出力する仕組みを作る。** 「この ID は何を削除できるか」という問いに、 1コマンドで答えられる状態にしておく。</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Azure のサービスプリンシパル（またはマネージド ID）に、サブスクリプション横断の Contributor 級の権限を与えている</td><td class=sm>本事案の破壊は、すべて既存のロール割り当ての範囲で通った。 権限昇格は観測されていない。広い権限を持つワークロード ID が1つ奪われれば、 同じ範囲がそのまま破壊の射程になる。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> ワークロード ID の認証に client secret（文字列の秘密）を使っており、有効期限が長い</td><td class=sm>侵害された ID の client secret は公開 GitHub Issue に平文で書かれ、 編集で消したあとも公開の編集履歴から読めた。 秘密は貼られた瞬間から、失効させるまで有効であり続ける。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 重要なストレージアカウント・Key Vault にリソースロックや削除保護を設定していない</td><td class=sm>本事案で実際に削除を止めたのはこの2つだけである。 権限設計は破壊を止めなかった。独立して働く層があるかどうかで結果が分かれた。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> バックアップ・復旧資源が、本番と同じサブスクリプション・同じ管理 ID の射程にある</td><td class=sm>攻撃側は Site Recovery と Backup の保護ロックを消しにかかった。 復旧手段が同じ ID で消せるなら、バックアップは保険にならない。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ワークロード ID による読み取り・列挙操作の平常値を記録しておらず、急増を検知できない</td><td class=sm>破壊は7分で終わるが、その前に約15時間30分・300回以上の列挙があった。 平常値が無ければ、この唯一の検知窓を使えない。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 公開の場に秘密が出たときの手順が「削除」までで、「失効・再発行」になっていない</td><td class=sm>Microsoft は「露出した資格情報は侵害されたものとして扱い、 速やかに失効または更新せよ。元の掲載を消すだけでは是正にならない」と明記している。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月25日 Microsoft Security Blog（Microsoft Security Research）</span> <a href="https://www.microsoft.com/en-us/security/blog/2026/09/25/storm-3168-agentic-driven-cloud-attacks-using-compromised-service-principals/" target="_blank" rel="noreferrer noopener nofollow">Storm-3168: Agentic-driven cloud attacks using compromised service principals</a> <span class="b kind">調査レポート</span><span class=sm>（(英語。**本記録の一次資料。** 本記録の事実関係はすべてこの1本に依拠している。 2つのサービスプリンシパルの侵害、約15時間30分・300回以上の読み取りによる列挙、 90分後の2つ目による5秒の列挙、16時間後の App Service 構成ストアの列挙、 存在しないストレージアカウントへの ListKey 失敗と1秒未満後の破壊開始、 **35分間で150回以上の操作・約7分間で100回以上のストレージアカウント削除試行**、 Key Vault・Function App・App Service プランの削除、 **サポートされない API バージョンのため全て失敗した SQL データベース削除**、 **リソースロックとストレージアカウント単位の削除保護による一部の拒否**、 Site Recovery / Backup の保護ロックへの削除試行、 破壊の約30分後の30回以上の ListKeys 成功、 **グループ経由の Storage Account Contributor・直接付与の Contributor・ SQL DB Contributor という権限の内訳**、 5つのトークン（4つが削除・1つが棚卸しとキー取得、削除用2つが同一70秒間に有効）、 **公開 GitHub Issue の編集履歴に残った client ID・client secret・tenant ID と、 それが本活動に使われたかは確認できなかったという留保**、 年初からの App Service への探索（WordPress 管理系・PHP-CGI・ LangFlow の `/api/v1/validate/code`）とそれが被害サブスクリプションと 重ならないこと、ユーザーエージェント `python-requests/2.34.2`、 身代金要求文が観測されずデータ持ち出しの成功も確認されていないこと、 Defender for Cloud 各プラン・秘密の保護・失効と更新・最小権限・ 復旧資源の保護という推奨事項——以上すべての出典。 本文は日次ニュースの保存分 〈output/articles/20260926/0043_microsoft-security-blog_storm-3168-agentic-driven-cloud-attacks-using-comp.md〉 で全文を確認した)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年9月26日 本プロジェクトの日次サマリー（カテゴリ7「インシデントレスポンス・フォレンジック」）</span> <a href="https://www.microsoft.com/en-us/security/blog/2026/09/25/storm-3168-agentic-driven-cloud-attacks-using-compromised-service-principals/" target="_blank" rel="noreferrer noopener nofollow">Microsoft、Storm-3168 の Azure 破壊工作を詳細公開——7分で100超のストレージ削除</a> <span class="b kind">記事</span><span class=sm>（(日本語。**本記録の起点**。2026年9月26日の日次ニュースで本件を認知した。 URL は参照先の一次資料と同じものを指す。 サマリーは一次資料の要約であり、**事実関係の確認は一次資料で行った**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月27日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月26日の日次ニュース（カテゴリ7）を起点に、 **Microsoft Security Blog の原文を一次資料として全文確認して裏を取った。** 日本の組織が当事者ではないが、 ①**破壊が約7分で終わり、人の対応手順が間に合わない速度になっている**ことが 具体的な数字で示された初の Azure 側の詳細観測であること、 ②**止めたのは権限設計ではなくリソースロックと削除保護という独立した層**であり、 投資の優先順位に直接効く知見であること、 ③**公開 GitHub Issue の編集履歴に残った client secret**という、 日本の組織でも同型が容易に起きる露出経路が示されたこと——の3点で 記録に値すると判断した。 **「エージェント型」については留保を置いた。** Microsoft の表題と本文の主張に対し、 示されている証拠は「自動化またはスクリプト化された実行」までであり、 LLM の関与を直接示す証拠は無い。本記録は両者を同一視せず、 authored_inference として食い違いに記録した。 **初期侵入の経路も未確定として扱った。** Microsoft 自身が 「GitHub Issue の秘密が本活動に使われたかは確認できなかった」と明記しているため、 root_causes に `misconfiguration` は置いたが、 本文・図ともに「経路は未確定」と明示している。 **被害側の時間軸（検知・封じ込め・復旧）が一次資料に一切無い**ため、 type を threat-campaign とし、response ブロックを持たせていない。 不在そのものは unknowns と discrepancies（source_silent）に記録した。 続報が出ていないため status は new とする。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Storm-3168</span><span class="b tag">JADEPUFFER</span><span class="b tag">Sysdig</span><span class="b tag">Microsoft</span><span class="b tag">Azure</span><span class="b tag">サービスプリンシパル</span><span class="b tag">ワークロードID</span><span class="b tag">クラウド破壊工作</span><span class="b tag">リソース削除</span><span class="b tag">ストレージアカウント</span><span class="b tag">Key Vault</span><span class="b tag">Function App</span><span class="b tag">Azure SQL</span><span class="b tag">リソースロック</span><span class="b tag">削除保護</span><span class="b tag">Site Recovery</span><span class="b tag">Azure Backup</span><span class="b tag">復旧資源の破壊</span><span class="b tag">ListKeys</span><span class="b tag">アクセスキー窃取</span><span class="b tag">最小権限</span><span class="b tag">グループ経由の権限付与</span><span class="b tag">client secret の露出</span><span class="b tag">GitHub Issue の編集履歴</span><span class="b tag">資格情報の失効</span><span class="b tag">python-requests</span><span class="b tag">LangFlow</span><span class="b tag">Defender for Cloud</span><span class="b tag">エージェント型攻撃</span><span class="b tag">自動化された攻撃</span><span class="b tag">7分の破壊</span><span class="b tag">海外事例</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-27 08:17 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
