@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>WAF を1文字で迂回 PeopleSoft 悪用再開 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0225</span>WAF を1文字で迂回 PeopleSoft 悪用再開</h1>
+<header class="site-header">
+  <p class="subtitle">Mandiant と Google Threat Intelligence Group が2026年9月25日、恐喝集団 ShinyHunters（UNC6240）による Oracle PeopleSoft の脆弱性 CVE-2026-35273（CVSS 9.8・未認証の遠隔コード実行）の大規模悪用が再開したと公表した——攻撃側は6月の防御ガイダンスに適応し、リクエストパスの1文字を URL エンコードして「/%50SEMHUB/」とするだけで、脆弱なエンドポイント /PSEMHUB/ を文字列一致で遮断していた WAF を迂回した。パッチを当てず WAF で塞いだつもりだった組織が破られ、5月27日〜6月9日のゼロデイ期に高等教育へ集中していた標的は、高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府の7業種へ世界規模で広がっている。Oracle は6月10日に定例外のパッチを出しているが、アラート本文は実際の悪用に一切触れていない</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">脆弱性</span><span class="b type2">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月25日</span>
+  <span>最終更新: 2026年9月26日</span>
+</div>
+
+<div class="lead"><p><strong>Mandiant</strong> と <strong>Google Threat Intelligence Group（GTIG）</strong> は <strong>2026年9月25日</strong>、恐喝集団 <strong>ShinyHunters</strong>（Mandiant の追跡名 <strong>UNC6240</strong>）によるOracle PeopleSoft の脆弱性 <strong>CVE-2026-35273</strong> の大規模悪用が再開したと公表しました。</p>
+<p>この脆弱性は、PeopleSoft Enterprise PeopleTools のEnvironment Management Hub（<strong>PSEMHUB</strong>）に対する<strong>認証不要・遠隔からのコード実行</strong>で、<strong>CVSS 3.1 基本値 9.8</strong> です。Oracle は <strong>2026年6月10日</strong>に定例外の Security Alert とパッチを出しています。</p>
+<p>今回のレポートの要点は、<strong>攻撃側が防御側のガイダンスに適応した</strong>ことです。</p>
+<p>6月時点で Mandiant は「すぐにパッチを当てられない場合は、境界で <code>/PSEMHUB/*</code> への外部アクセスを遮断せよ。<strong>WAF の本文検査ルールだけに頼るのは不十分である</strong>」（原文英語）と述べていました。攻撃者はこの3か月後、<strong>パスの1文字を URL エンコードする</strong>というただそれだけの変更で、その遮断をすり抜けています。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>リクエストパス</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>従来</td>
+<td><code>/PSEMHUB/hub</code></td>
+</tr>
+<tr>
+<td>今回</td>
+<td><code>/%50SEMHUB/hub</code> （<code>P</code> を <code>%50</code> に置換）</td>
+</tr>
+</tbody>
+</table>
+<p>多くの WAF・リバースプロキシは <strong>URL デコードする前の文字列</strong>で <code>/PSEMHUB</code> を照合します。一方 PeopleSoft を載せている WebLogic は<strong>デコードしてから</strong>脆弱なサーブレットへ振り分けます。結果として、<strong>「WAF でルールを入れたから塞がったはずだ」と考えていた組織が破られました。</strong></p>
+<p>被害の広がりも変わりました。ゼロデイ期（<strong>2026年5月27日〜6月9日</strong>）は高等教育に集中しており、Mandiant が通知した<strong>100を超える組織の68%が大学・カレッジ</strong>でした。今回は<strong>数十のシステム</strong>に web shell が仕掛けられ、業種は<strong>高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府</strong>の7つに広がっています。</p>
+<p>Mandiant の結論は一行です。「<strong>WAF ルールとパスによる遮断は、パッチの代わりにはならない</strong>」（原文英語）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>被害組織の名前・国名・国内の組織が含まれるか</span><span class="b rsn">公表されていない</span><div class=sm>Mandiant は業種（7業種）と「世界規模」としか述べておらず、国名も組織名も示していない。 6月の100超の通知先も米国中心とされるだけで内訳は無い。 **日本の組織が含まれるかどうかは、含まれるとも含まれないとも公表されていない。** 日本の当局（JPCERT/CC・IPA）による本件固有の注意喚起も、本記録の作成者は確認できなかった</div></li><li><span class=ui>実際にデータが持ち出された組織の数と、持ち出された量</span><span class="b rsn">調査中</span><div class=sm>9月のレポートは web shell の設置と侵入後の道具立てを示すが、 持ち出しが確定した件数・レコード数は示していない。 Mandiant は被害組織に対して「大容量のアーカイブ（.tar / .tar.gz / .zst）」や 「人事・給与・学生記録テーブルへの大量クエリ」を探すよう求めており、 **調査は各組織側で進行中の段階である**</div></li><li><span class=ui>Oracle がアラート本文で悪用に触れない理由</span><span class="b rsn">公表されていない</span><div class=sm>Oracle の Security Alert（Rev 1・2026年6月10日）は、定例外での緊急公開でありながら 「実際に悪用されている」という記述を含まない。同社は脆弱性の詳細な分析内容を 顧客に開示しない方針を明記しているが、悪用の事実に触れない理由の説明は無い。 **悪用の事実は Mandiant（6月11日）と CISA の KEV 収載（6月12日）から来ている**</div></li><li><span class=ui>侵入後のバックドアの署名に使われた EV 証明書の入手経路</span><span class="b rsn">公表されていない</span><div class=sm>Ple64.exe は、実在する開発元名義の有効な Extended Validation 証明書（Sectigo 発行）で 署名されていた。**盗用されたのか、虚偽の申請で取得されたのかは公表されていない。** Google は Sectigo に失効を申請したとされるが、失効が完了したかも示されていない</div></li><li><span class=ui>WAF による遮断だけで対処したまま残っている組織がどれだけあるか</span><span class="b rsn">公表されていない</span><div class=sm>今回破られたのは「パッチを当てずに WAF ルールで代替した」組織である。 その母数は誰も公表していない。インターネットに露出した PeopleSoft の台数や パッチ適用率の統計も、本記録の作成者は確認できなかった</div></li><li><span class=ui>6月に通知された100超の組織のその後</span><span class="b rsn">公表されていない</span><div class=sm>恐喝の連絡が届いたか、身代金を支払った組織があるか、 当局への報告や本人通知が行われたかは、いずれも追跡されていない。 2026年6月9日にリークサイトへ公開されたデータの規模も示されていない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>被害組織群（高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府。個別名は非公表）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Oracle PeopleSoft Enterprise PeopleTools 8.61 / 8.62 を運用し、 PSEMHUB のエンドポイントが外部から到達できる状態にあった組織。 6月のゼロデイ期には Mandiant が100を超える組織へ通知し、その68%が大学・カレッジだった</p><p class=org-p><span class=org-l>影響</span>9月の再開では数十のシステムに web shell が設置された。 Mandiant は、PeopleSoft のサービスアカウントから読める認証情報 （psappsrv.cfg のデータベース接続文字列・Integration Broker の認証情報・ ウェブ層から到達できるクラウドの認証情報）の総入れ替えを求めている。 個々の被害組織名・国名・データ持ち出しの確定件数はいずれも公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>Oracle</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>PeopleSoft Enterprise PeopleTools の提供元。2026年6月10日に定例外の Security Alert（Rev 1）とパッチを公開し、多サーバ構成では EMHub サービスの無効化、 単一サーバ構成では PSEMHUB アプリケーションの削除を案内している</p><p class=org-p><span class=org-l>影響</span>**Security Alert 本文は、実際の悪用が起きていることに一切触れていない。** 「この脆弱性は認証なしに遠隔から悪用可能であり、悪用に成功すると 遠隔コード実行に至りうる」（原文英語）という一般的な記述にとどまる。 謝辞に挙がっているのは報告者3名（Bobby Gould of TrendAI Zero Day Initiative、 Lucas Miller of TrendAI Research、Minh Giang of TrendAI Zero Day Initiative）で、 実際の悪用を観測した Mandiant / Google の名前は無い</p></div></div><div class=org><div class=org-h><span class=org-n>Mandiant / Google Threat Intelligence Group（GTIG）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>ゼロデイ期（5月27日〜6月9日）の悪用を検知して2026年6月11日に公表し、 100を超える組織へ通知した。9月25日に再開キャンペーンと WAF 迂回手法を公表した</p><p class=org-p><span class=org-l>影響</span>迂回手法・攻撃の進行・侵入後の道具立て（x.jsp / u.jsp / Ple64.exe＝SIDEEYE / Neo-reGeorg トンネル / MeshAgent）・IoC・検知の観点を公開した。 Ple64.exe の署名に使われた EV 証明書について、Google は Sectigo へ失効を申請している</p></div></div><div class=org><div class=org-h><span class=org-n>米国土安全保障省サイバーセキュリティ・インフラセキュリティ庁（CISA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年6月12日に CVE-2026-35273 を Known Exploited Vulnerabilities（KEV）カタログへ収載した</p><p class=org-p><span class=org-l>影響</span>連邦機関への対処期限を**2026年6月15日**（収載から3日）に設定し、 「ランサムウェアキャンペーンでの使用が知られている（Known）」と記載している。 分類は CWE-306（重要な機能に対する認証の欠如）で、 BOD 26-04 に沿った対処と、緩和策が無い場合は製品の利用停止まで求めている</p></div></div><div class=org><div class=org-h><span class=org-n>UNC6240 / ShinyHunters</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Mandiant が本キャンペーンの主体として追跡している金銭目的の恐喝集団。 6月のゼロデイ期には、公開状態にあった攻撃者のサーバの解析と、 2026年6月9日の同集団のリークサイトへのデータ公開の時系列の一致から帰属している</p><p class=org-p><span class=org-l>影響</span>データを盗んでリークサイトでの公開を材料に身代金を要求する、確立した手口を持つ。 Mandiant は被害組織に対し「恐喝の連絡が来る前提で準備せよ」と勧告している</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-35273 の CVSS 3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fa>2026年6月11日 時点</div><div class=fn>ベクタは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H（Oracle が採番元として提供した値）。 ネットワーク経由・攻撃条件が低い・権限不要・利用者の操作不要で、 機密性・完全性・可用性のすべてに高い影響がある。 **この値は被害の量ではなく深刻度の指標である**（集計時に件数と足し合わせない）</div></div><div class=fig><div class=fh><span class=fl>6月のゼロデイ期に Mandiant が通知した組織数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>100<span class=fu>組織</span></div><div class=fa>2026年6月11日 時点</div><div class=fn>「100を超える組織」。**通知した数であって、侵害が確定した数ではない。** 実際にデータを盗まれた組織の数は公表されていない</div></div><div class=fig><div class=fh><span class=fl>通知先に占める大学・カレッジの割合（6月）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>68<span class=fu>パーセント</span></div><div class=fa>2026年6月11日 時点</div><div class=fn>通知した100超の組織のうちの割合。米国の機関が中心である</div></div><div class=fig><div class=fh><span class=fl>9月の再開で web shell が設置されたシステムの数</span><span class="b conf">桁のみ</span><span class="b org">第三者調査</span></div><div class=fv>10<span class=fu>台</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>原文は「dozens of systems globally（世界中の数十のシステム）」で、 **正確な台数は公表されていない。** 値は桁のみを示すために10を置いている。 負荷分散の背後では全ノードに web shell が配られるため、 「台数」と「組織数」は一致しない（本記録の注記）</div></div><div class=fig><div class=fh><span class=fl>9月の再開で標的となった業種の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>7<span class=fu>業種</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府。 6月は高等教育にほぼ集中していた</div></div><div class=fig><div class=fh><span class=fl>ゼロデイ悪用の開始からパッチ公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fa>2026年6月10日 時点</div><div class=fn>2026年5月27日から6月10日まで。本記録の作成者が起点と終点の日付から算出した。 **この14日間、防御側には打つ手が「境界での遮断」しかなかった**</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から連邦機関の対処期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fa>2026年6月15日 時点</div><div class=fn>2026年6月12日収載・6月15日期限。KEV の標準的な期限（3週間）ではなく **3日**が設定されている。本記録の作成者が KEV カタログの dateAdded と dueDate から算出した</div></div><div class=fig><div class=fh><span class=fl>パッチ公開から WAF 迂回の公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>107<span class=fu>日</span></div><div class=fa>2026年9月25日 時点</div><div class=fn>2026年6月10日から9月25日まで。本記録の作成者が算出した。 **防御側のガイダンスが公開されてから、それを回避する手法が観測されるまでの時間**として読む。 実際の迂回の開始時期は公表されていないため、この値は上限である</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>インターネットに露出した Oracle PeopleSoft の Environment Management Hub（PSEMHUB）に対し、 CVE-2026-35273（認証不要の遠隔コード実行、CVSS 9.8）を悪用する大規模キャンペーン。 9月の再開では、リクエストパスの `P` を `%50` に URL エンコードすることで 文字列一致の WAF ルールを迂回し、パッチ未適用のまま境界で塞いでいた組織を破った。 侵入後は web shell 2種・Neo-reGeorg トンネル・MeshCentral エージェント・ EV 証明書で署名されたバックドア（SIDEEYE）を用い、データ窃取と恐喝へ進む。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>悪用の前に、標的サーバへ `/%50SEMHUB/hub` 宛ての POST を5〜15回送り、 直列化された Java オブジェクトを投げる。未修正のサーバはホストの OS 名を 応答として返すだけで、ファイルの書き込みもサービスの停止も起きない。 これで悪用可能かどうかを静かに確認する</div><div class=fn>根拠: Mandiant が観測した一連の挙動（2026年9月25日レポート）</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>リクエストパスの `P` を `%50` に置き換え、`/%50SEMHUB/hub` として要求する。 WAF・リバースプロキシは URL デコード前のリテラルな文字列で照合するため一致せず、 WebLogic はデコードしてから脆弱なサーブレットへ振り分ける</div><div class=fn>根拠: Mandiant が観測したリクエストパス（2026年9月25日レポート）</div></li><li><div class=stg><span class="b stage">3. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [3]</span></div><div>PSEMHUB の hub サーブレットにおける Java の直列化データの復元処理を悪用し、 認証なしに遠隔からコードを実行する（CVE-2026-35273・CVSS 9.8）。 パッチは2026年6月10日に提供されている</div><div class=fn>根拠: Oracle Security Alert（2026年6月10日）と Mandiant の解析</div></li><li><div class=stg><span class="b stage">4. 実行</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>2通りの実行方法が観測されている。①PSEMHUB.war ディレクトリに `x.jsp` や連番の JSP を 作って web shell とする（負荷分散の全ノードに配るため POST を連続送信する）。 ②ファイルを書かずに、POST の応答へコマンド出力を直接返させる</div><div class=fn>根拠: Mandiant の観測（2026年9月25日レポート）</div></li><li><div class=stg><span class="b stage">5. 永続化</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>`x.jsp`（16進エンコードしたコマンドを POST で受け取り実行）と `u.jsp` / `u2.jsp`（150KB ずつ Base64 で分割したファイルを書き出し、 結合後にコマンド実行）の2本の web shell を置く。 Windows 環境ではさらに Ple64.exe（SIDEEYE）を配置し、メモリ上で動く C++ バックドアを常駐させる</div><div class=fn>根拠: Mandiant によるコード解析と検体解析（2026年9月25日レポート）</div></li><li><div class=stg><span class="b stage">6. 検知回避</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>Ple64.exe はメディアプレイヤー Light Alloy の署名付きインストーラを装い、 **有効な Extended Validation 証明書（Sectigo 発行・実在する開発元名義）で署名**されていた。 3段階の実行チェーンで、2段目は商用の難読化保護、3段目のバックドアはメモリ上で展開される</div><div class=fn>根拠: Mandiant による検体解析。Google は Sectigo に失効を申請したとしている</div></li><li><div class=stg><span class="b stage">7. C2通信</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1]</span></div><div>Linux ホストでは `/tmp` 配下に MeshAgent（オープンソースの遠隔管理 MeshCentral の エージェント）を PeopleSoft のサービスアカウント権限で設置する。 C2 ドメインは Microsoft のサービス名を模した命名で、5月〜7月と9月で切り替えられている。 SIDEEYE は別系統で、生の TCP による制御用とデータ用の2ポートを使う</div><div class=fn>根拠: Mandiant が公開した IoC と解析（2026年9月25日レポート）</div></li><li><div class=stg><span class="b stage">8. 横展開</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>`tunnel.jsp` / `tunnel.jspx`（オープンソースの Neo-reGeorg）により、 HTTP/HTTPS 上に SOCKS5 トンネルを張って内部ネットワークへ到達する。 6月の波では、SSH の認証情報スプレー（sshpass を用いた総当たり的な試行）を行う スクリプトも使われていた</div><div class=fn>根拠: Mandiant の観測（2026年6月・9月の両レポート）</div></li><li><div class=stg><span class="b stage">9. 持ち出し</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>6月の波では、収集したデータを zstd で圧縮して持ち出し、 `README-IF-YOU-SEE-THIS-YOUVE-BEEN-HACKED.TXT` という恐喝文書を配置していた。 9月の再開について、Mandiant は持ち出しの痕跡（大容量アーカイブ、 人事・給与・学生記録テーブルへの大量クエリ、継続的な外向き転送）を探すよう求めている</div><div class=fn>根拠: Mandiant の観測（2026年6月レポート）および9月レポートのハンティング指針</div></li><li><div class=stg><span class="b stage">10. 影響（暗号化・破壊・改ざん）</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>UNC6240（ShinyHunters）は、盗んだデータのリークサイト公開を材料に身代金を要求する 手口を確立している。2026年6月9日には被害機関のデータが同集団のリークサイトへ公開された</div><div class=fn>根拠: Mandiant の帰属根拠および勧告（「恐喝の連絡に備えよ」）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>2</span></div><ul><li><span class=ui>権限昇格</span><div class=sm>WebLogic が root / SYSTEM で動いているホストを優先せよという勧告はあるが、 通常権限のホストでどのように昇格したかは公表されていない</div></li><li><span class=ui>標的の選定</span><div class=sm>インターネットに露出した PeopleSoft をどう列挙したか（スキャン・検索サービス・ 過去の侵害情報のいずれか）は公表されていない</div></li></ul></div></div>
+<section id="s5"><h2>「WAF で塞いだ」と思っていた組織が、パスの1文字を URL エンコードされただけで破られた<span class="b slot">概観</span></h2><p>今回のレポートの中心は、<strong>たった1文字の置き換え</strong>である。</p>
+<pre><code>従来:  POST /PSEMHUB/hub
+今回:  POST /%50SEMHUB/hub      ← &quot;P&quot; を &quot;%50&quot;（P の URL エンコード）に置換
+</code></pre>
+<p>なぜこれで通るのか。理由は<strong>2つの層で文字列の解釈が違う</strong>ことにある。</p>
+<ul>
+<li><strong>WAF・リバースプロキシ</strong> — 多くの実装は、<strong>URL デコードする前の</strong>リテラルなパス文字列に対してルールを照合する。<code>/PSEMHUB</code> という文字列は <code>/%50SEMHUB</code> には含まれないので、ルールに一致しない</li>
+<li><strong>WebLogic（PeopleSoft の実行基盤）</strong> — リクエストパスを<strong>デコードしてから</strong>アプリケーションへ振り分ける。<code>/%50SEMHUB/hub</code> は <code>/PSEMHUB/hub</code> として処理される</li>
+</ul>
+<p>Mandiant はこう書いている。「多くの WAF やリバースプロキシのルールは URL デコード前のリテラルなパスに一致させるが、PeopleSoft のアプリケーションサーバはリクエストをデコードして脆弱なサーブレットへ振り分ける。<strong>これにより、WAF ルールで露出を緩和できたと考えていたかもしれないシステムでも、攻撃者はエンドポイントへ到達できる</strong>」（原文英語）。</p>
+<p>同社はさらに、防御側は「<strong>パーセントエンコード・大文字小文字の混在・その他の非正規化された変種のいずれもが使われうると想定し、正規化したパスに対して遮断を強制すべきである</strong>」（原文英語）と付け加えている。</p>
+<p><strong>これは PeopleSoft に固有の話ではない。</strong>「境界機器が生の文字列で照合し、アプリケーションがデコード後の値で動く」という組み合わせは、あらゆる仮想パッチに共通する構造である（本記録の評価）。</p></section>
+<section id="s6"><h2>攻撃は3か月で高等教育向けから7業種へ広がり、標的の事前検証まで組み込まれている<span class="b slot">被害規模・影響範囲</span></h2><p>6月と9月で、キャンペーンの性格は次のように変わっている。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>2026年5〜6月（ゼロデイ期）</th>
+<th>2026年9月（再開）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>パッチの有無</td>
+<td>無し（6月10日に公開）</td>
+<td>有り（当てていない組織が標的）</td>
+</tr>
+<tr>
+<td>経路</td>
+<td><code>/PSEMHUB/hub</code></td>
+<td><code>/%50SEMHUB/hub</code>（WAF 迂回）</td>
+</tr>
+<tr>
+<td>標的</td>
+<td>高等教育に集中（通知100超の68%が大学・カレッジ）</td>
+<td>高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府の7業種</td>
+</tr>
+<tr>
+<td>地域</td>
+<td>米国中心</td>
+<td>世界規模（国名は非公表）</td>
+</tr>
+<tr>
+<td>規模</td>
+<td>通知は100超の組織</td>
+<td>数十のシステムに web shell</td>
+</tr>
+</tbody>
+</table>
+<p>進行にも手が入っている。攻撃者は<strong>いきなり侵入しない</strong>。まず <code>/%50SEMHUB/hub</code> へ<strong>5〜15回の POST リクエスト</strong>を送り、直列化された Java オブジェクトを投げる。未修正のサーバは<strong>ホストの OS 名を応答として返す</strong>だけで、ファイルは書かれずサービスも止まらない。これで「入れるかどうか」を静かに確認してから、あらためて実行に移る。</p>
+<p>Mandiant はここに注意を促している。<strong>検証されたが、まだ悪用されていないホストがある。</strong>そうした組織のログには、この POST だけが残っていて後続の活動が無い。「何も起きていない」ように見えるが、<strong>標的リストには載っている</strong>ということである。</p>
+<p>侵入の実行そのものにも2通りある。</p>
+<ol>
+<li><strong>web shell の設置</strong> — <code>/%50SEMHUB/hub</code> へ POST を連続して送り、PSEMHUB.war ディレクトリに <code>x.jsp</code> や連番の JSP ファイルを作る。連続して送るのは、<strong>負荷分散の背後にある全ノードに web shell を配るため</strong>である。Mandiant は「最初に見つかった1台だけでなく、<strong>全 WebLogic ノードを確認せよ</strong>」と述べている</li>
+<li><strong>ファイルを書かないコマンド実行</strong> — POST の応答にコマンドの出力を直接返させる方式。ディスクには何も残らず、ホスト側では<strong>WebLogic の Java プロセスが cmd.exe や /bin/sh を起動している</strong>ようにしか見えない。<strong>JSP ファイルの作成を条件にした検知では、この方式は引っかからない</strong></li>
+</ol></section>
+<section id="s7"><h2>Oracle のアラートは悪用に触れておらず、「実際に攻撃されている」という情報は Mandiant と CISA から来た<span class="b slot">発覚の端緒</span></h2><p>本件で、<strong>誰がどの事実を出したか</strong>は分けて読む必要がある。</p>
+<table>
+<thead>
+<tr>
+<th>出所</th>
+<th>日付</th>
+<th>述べたこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Oracle Security Alert（Rev 1）</td>
+<td>2026年6月10日</td>
+<td>脆弱性の存在・影響バージョン・パッチ・緩和策。<strong>悪用への言及は無い</strong></td>
+</tr>
+<tr>
+<td>Mandiant</td>
+<td>2026年6月11日</td>
+<td>5月27日〜6月9日の実際の悪用、100超の組織への通知、68%が高等教育</td>
+</tr>
+<tr>
+<td>NVD</td>
+<td>2026年6月11日</td>
+<td>CVSS 3.1 基本値 9.8、影響は PeopleTools 8.61 / 8.62</td>
+</tr>
+<tr>
+<td>CISA KEV</td>
+<td>2026年6月12日</td>
+<td>悪用確認として収載。<strong>対処期限は3日後の6月15日</strong>、ランサムウェアでの使用「Known」</td>
+</tr>
+<tr>
+<td>Mandiant</td>
+<td>2026年9月25日</td>
+<td>WAF 迂回と再開、7業種への拡大</td>
+</tr>
+</tbody>
+</table>
+<p>Oracle のアラート本文が述べているのは、「この脆弱性は認証なしに遠隔から悪用可能である。悪用に成功すると遠隔コード実行に至りうる。<strong>推奨する緩和策の実施を優先度の高いリスク低減策と考えており、特定された露出への対処を直ちに行うことを強く推奨する</strong>」（原文英語）まで、である。定例外で緊急にパッチを出すという行動自体が緊急性を語っているが、<strong>「いま攻撃されている」とは書いていない。</strong></p>
+<p>謝辞に並ぶのは報告者3名（Bobby Gould of TrendAI Zero Day Initiative、Lucas Miller of TrendAI Research、Minh Giang of TrendAI Zero Day Initiative。いずれも Oracle の表記のまま）で、実際の悪用を観測した Mandiant / Google の名前は無い。</p>
+<p>CISA 側の扱いは対照的である。<strong>期限を3日</strong>に切り、BOD 26-04 に沿った対処、緩和策が利用できない場合は<strong>製品の利用停止</strong>まで求めている。</p>
+<p><strong>ベンダーのアラートだけを見て緊急度を判断すると、判断を誤る。</strong>この事案は、脆弱性の緊急度を「ベンダーの言い回し」ではなく「KEV への収載と期限」「脅威インテリジェンスの観測」で測るべきことを示している（本記録の評価）。</p></section>
+<section id="s8"><h2>侵入後の道具立ては、有効な EV 証明書で署名されたバックドアまで揃っている<span class="b slot">原因・手口</span></h2><p>web shell を置いたあと、攻撃者が持ち込む道具は次のとおりである。</p>
+<p><strong>① 2つの web shell（いずれも PSEMHUB.war ディレクトリに設置）</strong></p>
+<ul>
+<li><code>x.jsp</code> — コマンド実行。<strong>コマンドは16進エンコードして POST</strong> で渡し、出力に <code>R:</code> を付けて返す。OS を自動判定し、Linux では<code>/bin/sh</code> という文字列を<strong>文字コードの配列から組み立てる</strong>。いずれも静的な文字列シグネチャを避けるためである</li>
+<li><code>u.jsp</code> / <code>u2.jsp</code> — 大きなバイナリを<strong>150KB ずつ Base64 で分割アップロード</strong>して結合する。HTTP のリクエストサイズ制限を避けつつ、PeopleSoft 本来のファイル分割機構を使わないことで検知も避けている</li>
+</ul>
+<p><strong>② トロイの木馬化されたインストーラ（Ple64.exe ＝ SIDEEYE）</strong></p>
+<p>5.2MB のバイナリで、メディアプレイヤー Light Alloy の署名付きインストーラを装う。中身は3段階の実行チェーンで、最終段の C++ 製バックドアはメモリ上で動く。機能はブラウザやデスクトップアプリからの認証情報の窃取、プロセス・ファイル操作、対話型のリバースシェル、リバースプロキシである。</p>
+<p><strong>問題は署名である。</strong> この検体は<strong>有効な Extended Validation（EV）証明書</strong>で署名されていた。発行は Sectigo、名義は実在する開発元の名前である。Google は Sectigo に失効を申請したとしている。<strong>「EV 証明書で署名されているから正規のものだ」という判定は、ここで破れている。</strong></p>
+<p><strong>③ トンネルと遠隔管理</strong></p>
+<ul>
+<li><code>tunnel.jsp</code> / <code>tunnel.jspx</code> — オープンソースの Neo-reGeorg によるHTTP/HTTPS 上の SOCKS5 トンネル。内部探索と横展開に使う</li>
+<li><strong>MeshAgent</strong>（オープンソースの遠隔管理 MeshCentral のエージェント）— Linux では <code>/tmp</code> 配下に、PeopleSoft のサービスアカウント権限で置かれる。<strong>正規の運用ツールであるため、エンドポイント製品では止まりにくい</strong></li>
+</ul>
+<p>C2 に使われたドメインは、<strong>Microsoft のサービス名を模した命名</strong>が特徴である（Azure NetApp Files や Entra、デバイス登録を思わせる名前が5月〜7月に、9月には遠隔管理を思わせる別の名前が使われた）。具体的な値は Mandiant のレポートの IoC 節にある。<strong>本記録はこれらの悪性を独自に検証していないため、ハッシュ値・IP アドレスは転記していない</strong>（記録上の注意を参照）。</p></section>
+<section id="s9"><h2>Mandiant が求めているのは「パッチ・EMHub の停止・ログの遡及・認証情報の総入れ替え」の4点である<span class="b slot">対策・注意喚起</span></h2><p>レポートが冒頭に置いている即時対応は次のとおりである（要約。原文英語）。</p>
+<ol>
+<li><strong>CVE-2026-35273 の Oracle パッチを当てる。</strong>「WAF ルールとパスによる遮断は、パッチの代わりにはならない」</li>
+<li><strong>Environment Management Hub を止める。</strong>多サーバ構成では EMHub サービスを無効化し、単一サーバ構成では PSEMHUB アプリケーションを削除する。EMHub と Integration Broker は管理・システム間通信用の部品であり、<strong>止めても PIA の利用者セッションには影響しない</strong></li>
+<li><strong>PIA WebLogic のアクセスログを遡って探す。</strong> <code>/PSEMHUB/</code> とそのパーセントエンコード変種（<code>/%50SEMHUB/</code> 等）、特に外部 IP からの <code>/hub</code> への POST と <code>.jsp</code> へのリクエスト</li>
+<li><strong>PSEMHUB.war ディレクトリを点検する。</strong>製品に含まれないファイル（<code>x.jsp</code>・<code>u.jsp</code>・<code>tunnel.jsp</code>・<code>tunnel.jspx</code>・<code>Ple64.exe</code> 等）</li>
+<li><strong>PeopleSoft のサービスアカウントから読める認証情報をすべて入れ替える。</strong> psappsrv.cfg のデータベース接続文字列、Integration Broker の認証情報、ウェブ層から到達できるクラウドの認証情報</li>
+<li><strong>外向き通信を監視し、想定外の MeshCentral エージェントが無いか確認する</strong></li>
+</ol>
+<p>持ち出しの痕跡を探す観点も具体的である。</p>
+<ul>
+<li>一時領域やウェブから到達できるディレクトリにある<strong>大容量のアーカイブ</strong>（.tar / .tar.gz / .zst）</li>
+<li>PeopleSoft / WebLogic のサービスアカウントが起動した<strong>tar・zstd・rsync・sshpass・curl</strong> のプロセス</li>
+<li>データベース監査ログの<strong>人事・給与・学生記録テーブルへの大量クエリやエクスポート</strong></li>
+<li>PeopleSoft 層からの<strong>継続的で大きな外向き転送</strong>（rsync の TCP 873、SSH、HTTP POST）</li>
+</ul>
+<p>ホスト側の検知では、<strong>WebLogic の Java プロセスが起動したシェル</strong>（cmd.exe・/bin/sh・bash）と、その配下での <code>base64 -d</code>・<code>curl</code>・<code>/dev/tcp</code>・<code>tasklist</code>・<code>start /b</code> の呼び出しが観点になる。</p>
+<p>web shell が見つかった場合の扱いも明示されている。<strong>そのホストは侵害済みとして扱い、証拠を保全し、PeopleSoft 層から到達できる認証情報をすべて入れ替える。</strong>特に WebLogic が root / SYSTEM で動いているホストを優先する。</p></section>
+<section id="s10"><h2>日本の組織にとっての要点は「仮想パッチをいつまで置いておくか」を決める仕組みがあるかどうかである<span class="b slot">評価・解釈</span></h2><p>日本の組織が名指しされた事案ではない。それでも本記録に残す理由は3つある（本記録の評価）。</p>
+<p><strong>第一に、破られたのは製品ではなく運用の判断である。</strong>パッチを当てた組織は今回の波の対象外である。破られたのは「基幹システムはすぐに止められないから、まず WAF で塞いで様子を見る」という、<strong>どの組織でも日常的に行われている判断</strong>をしたところである。PeopleSoft を使っていなくても、この判断は必ずどこかでしている。</p>
+<p><strong>第二に、仮想パッチには期限が要る。</strong> WAF ルールや境界での遮断は、パッチ適用までの時間を稼ぐためのものである。ところが実務では、<strong>いったん「遮断済み」と記録されると、そこで対応が完了したことになりやすい。</strong>本件では、その状態が3か月続いたところを突かれた。仮想パッチを入れたときに<strong>恒久対応の期限を同時に記録し、期限が来たら未適用として再び上がってくる</strong>仕組みがあるかどうかが分かれ目になる。</p>
+<p><strong>第三に、遮断の実装が正規化を行っているかは、確認しないと分からない。</strong>「<code>/PSEMHUB/*</code> を塞いだ」という記録があっても、それが URL デコード後の正規化されたパスに対する照合なのか、生の文字列に対する照合なのかは、ルールを見ないと判別できない。<strong>今回の迂回は、その違いだけで成立している。</strong></p>
+<p>加えて、PeopleSoft が持っているデータの性質も考慮に値する。人事・給与・学籍という、<strong>組織のほぼ全員分の個人データ</strong>が入っている基幹システムであり、6月の波で高等教育が68%を占めたのは、大学がこの製品を広く使っているからである。日本でも同じ構図が成り立つ（本記録の評価）。</p></section>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年5月27日</td><td class=nowrap><span class="b kind">発生</span></td><td>UNC6240 による CVE-2026-35273 のゼロデイ悪用が観測され始めた。 この時点でパッチは存在しない</td></tr><tr><td class="sm nowrap tw">2026年6月9日</td><td class=nowrap><span class="b kind">発生</span></td><td>ゼロデイ悪用の観測期間の終わり。同日、ShinyHunters のリークサイトに 被害機関のデータが公開された（Mandiant の帰属の根拠のひとつ）</td></tr><tr><td class="sm nowrap tw">2026年6月10日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Oracle が定例外の Security Alert（Rev 1 初版）を公開し、PeopleTools 8.61 / 8.62 向けの パッチを提供した。多サーバ構成では EMHub サービスの無効化、 単一サーバ構成では PSEMHUB アプリケーションの削除も案内している。 本文に実際の悪用への言及は無い</td></tr><tr><td class="sm nowrap tw">2026年6月11日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>Mandiant が最初のレポート「ShinyHunters Targets Education Sector with Oracle PeopleSoft Exploit」を公表。100を超える組織へ通知し、その68%が 大学・カレッジだったこと、WAF の本文検査ルールだけでは不十分であることを示した。 同日 NVD が CVE-2026-35273 を公開している（CVSS 3.1 基本値 9.8）</td></tr><tr><td class="sm nowrap tw">2026年6月12日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>CISA が KEV カタログへ収載。対処期限は6月15日、 「ランサムウェアキャンペーンでの使用が知られている」と付記されている。 同日 Rapid7 も注意喚起を公開した（7月1日に更新）</td></tr><tr><td class="sm nowrap tw">2026年7月</td><td class=nowrap><span class="b kind">発生</span></td><td>侵害済みホストの遠隔管理に MeshCentral が使われ、C2 には Microsoft のサービス名を 模したドメイン（Azure NetApp Files や Entra を思わせる名前）が用いられていた</td></tr><tr><td class="sm nowrap tw">2026年9月</td><td class=nowrap><span class="b kind">発生</span></td><td>UNC6240 が WAF 迂回（`/PSEMHUB/` を `/%50SEMHUB/` に置換）を組み込んだ 悪用を再開。数十のシステムに web shell を設置し、標的が7業種に広がった。 遠隔管理の C2 も別のドメインへ切り替えられている</td></tr><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>Mandiant / GTIG が再開キャンペーンを公表。WAF 迂回の手法、 攻撃の進行（事前検証 → web shell 設置またはファイルレス実行 → 侵入後の道具立て）、 IoC、検知と修復の手順を示した</td></tr><tr><td class="sm nowrap tw">2026年9月26日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が Mandiant の9月レポートと6月レポート、Oracle の Security Alert、 CISA KEV カタログ、NVD、Rapid7 の注意喚起を取得し、 CVSS・影響バージョン・パッチ公開日・KEV 収載日と期限・悪用観測期間・ 脆弱性分類の食い違いを確認した</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>脆弱性の技術的な分類が資料によって異なる</span><div class=sm>同じ CVE-2026-35273 について、資料ごとに違う分類が書かれている。 **NVD と CISA KEV は CWE-306（重要な機能に対する認証の欠如）**、 **Rapid7 は「サーバサイドリクエストフォージェリ（CWE-918）」**（Trend Micro による分類として紹介）、 **Mandiant は「PSEMHUB の hub サーブレットにおける Java の直列化データの復元の悪用」**と述べている。 Oracle 自身は分類を公表していない（同社は脆弱性の詳細な分析内容を開示しない方針を明記している）。 **これらは矛盾とは限らず、同じ欠陥の別の側面を指している可能性がある**が、 本記録では断定せず、各出所の表現をそのまま併記する</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Oracle の Security Alert が実際の悪用に触れていない</span><div class=sm>Oracle の Security Alert（Rev 1・2026年6月10日）は、定例外での緊急公開でありながら 「悪用が観測されている」旨の記述を含まない。 謝辞に挙がるのも報告者3名のみで、実際の悪用を観測した Mandiant / Google の名前は無い。 悪用の事実は Mandiant のレポート（6月11日）と CISA の KEV 収載（6月12日）に依っている。 なお Oracle 公式ブログ側の告知記事は、本記録の作成者が2026年9月26日に取得を試みたところ 403 で取得できず、確認できたのは Security Alert 本体のみである</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>9月の被害規模が「dozens（数十）」としか示されていない</span><div class=sm>Mandiant は「世界中の数十のシステムに web shell を展開した」としか述べておらず、 **正確な台数も、それが何組織に相当するかも公表されていない。** 負荷分散の背後では1組織で複数ノードに web shell が配られるため、 **システム数と組織数は一致しない。** 本記録の数値欄では、確定値ではなく桁のみを示す値として記録している</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>9月レポートの公表日の表記</span><div class=sm>本記録が起点とした RSS の配信時刻は2026年9月25日 14:00（協定世界時）だが、 ページ本文から読み取れる表示上の日付は2026年9月26日である。 時差または掲載処理の差によるものとみられる。 本記録は配信時刻に基づき**2026年9月25日**を公表日として扱う</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が確認した範囲と、確認していない範囲</span><div class=sm>本記録の作成者は2026年9月26日に、Mandiant の9月レポートと6月レポート（いずれも cloud.google.com）、Oracle の Security Alert 本体、CISA の KEV カタログ（JSON）、 NVD の API、Rapid7 の注意喚起を取得し、CVSS・ベクタ・影響バージョン・パッチ公開日・ KEV の収載日と期限・悪用の観測期間・謝辞・脆弱性分類の食い違いを確認した。 **一方で、Mandiant のレポート本文については取得結果が要約の形であり、 原文の一字一句を照合したものではない。** また、**公開された IoC（ハッシュ値・IP アドレス・ドメイン）の悪性を 本記録の作成者は独自に検証していない。** 照合先のテレメトリを持たないため、 本記録にはハッシュ値と IP アドレスを転記していない。 被害組織の特定やキャンペーンの帰属についても、独自の検証は行っていない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>パスの1文字を URL エンコードするだけで WAF を越え、PSEMHUB から基幹データへ至る</div><div class=svgwrap><svg viewBox="0 0 998 370" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,185.0 C193.0,185.0 193.0,134.0 220,134.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,134.0 C295.0,134.0 295.0,230.0 220,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,230.0 C397.0,230.0 397.0,134.0 424,134.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,134.0 C499.0,134.0 499.0,229.0 424,229.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,229.0 C601.0,229.0 601.0,95.0 628,95.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,95.0 C703.0,95.0 703.0,185.0 628,185.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,95.0 C703.0,95.0 703.0,275.0 628,275.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,185.0 C805.0,185.0 805.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,275.0 C805.0,275.0 805.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,53.0 C907.0,53.0 907.0,134.0 832,134.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,134.0 C907.0,134.0 907.0,222.0 832,222.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,222.0 C907.0,222.0 907.0,317.0 832,317.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="154.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">UNC6240 / Sh</text><text x="91.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">inyHunters</text><text x="91.0" y="203.0" text-anchor="middle" fill="#f48fb1" font-size="10">データ窃取型の恐喝集団</text><rect x="220" y="96.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="118.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">事前検証（/%50SEM</text><text x="295.0" y="132.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HUB/hub へ PO</text><text x="295.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ST 5〜15回）</text><text x="295.0" y="159.0" text-anchor="middle" fill="#f48fb1" font-size="10">OS 名が返れば未修正</text><rect x="220" y="186.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WAF / リバースプロ</text><text x="295.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">キシ（/PSEMHUB </text><text x="295.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を文字列一致で遮断）</text><text x="295.0" y="249.0" text-anchor="middle" fill="#64b5f6" font-size="10">デコード前で照合＝一致し</text><text x="295.0" y="261.0" text-anchor="middle" fill="#64b5f6" font-size="10">ない</text><rect x="424" y="97.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WebLogic（パスを</text><text x="499.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デコードして振り分け）</text><text x="499.0" y="146.0" text-anchor="middle" fill="#64b5f6" font-size="10">/%50SEMHUB/ </text><text x="499.0" y="158.0" text-anchor="middle" fill="#64b5f6" font-size="10">→ /PSEMHUB/</text><rect x="424" y="185.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="207.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-352</text><text x="499.0" y="221.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">73（PSEMHUB・認</text><text x="499.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">証不要 RCE・CVS…</text><text x="499.0" y="248.0" text-anchor="middle" fill="#f48fb1" font-size="10">パッチは2026年6月1</text><text x="499.0" y="260.0" text-anchor="middle" fill="#f48fb1" font-size="10">0日</text><rect x="628" y="57.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="79.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">web shell（x.</text><text x="703.0" y="93.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">jsp / u.jsp）</text><text x="703.0" y="107.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">またはファイルレス実行</text><text x="703.0" y="120.0" text-anchor="middle" fill="#f48fb1" font-size="10">全ノードに配布</text><rect x="628" y="147.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ple64.exe = </text><text x="703.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SIDEEYE（有効な </text><text x="703.0" y="197.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">EV 証明書で署名）</text><text x="703.0" y="210.0" text-anchor="middle" fill="#f48fb1" font-size="10">メモリ上で動作</text><rect x="628" y="237.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="259.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Neo-reGeorg </text><text x="703.0" y="273.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トンネル / MeshC</text><text x="703.0" y="287.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">entral エージェ…</text><text x="703.0" y="300.0" text-anchor="middle" fill="#f48fb1" font-size="10">正規ツールの悪用</text><rect x="832" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サービスアカウントから読</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">める認証情報</text><text x="907.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">DB 接続文字列・クラウ</text><text x="907.0" y="77.0" text-anchor="middle" fill="#ffcc80" font-size="10">ド鍵</text><rect x="832" y="104.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">人事・給与・学籍のデータ</text><text x="907.0" y="139.0" text-anchor="middle" fill="#ffcc80" font-size="10">持ち出しの確定件数は非公</text><text x="907.0" y="151.0" text-anchor="middle" fill="#ffcc80" font-size="10">表</text><rect x="832" y="178.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="200.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害組織（高等教育・IT</text><text x="907.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・医療・農業・運輸・政府</text><text x="907.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ほか7業種）</text><text x="907.0" y="241.0" text-anchor="middle" fill="#80cbc4" font-size="10">6月は通知100超の68</text><text x="907.0" y="253.0" text-anchor="middle" fill="#80cbc4" font-size="10">%が大学</text><rect x="832" y="280.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="302.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リークサイト公開を材料に</text><text x="907.0" y="316.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">した恐喝</text><text x="907.0" y="329.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026年6月9日に公開</text><text x="907.0" y="341.0" text-anchor="middle" fill="#80cbc4" font-size="10">実績</text></svg></div><div class=fn>layer 0 は攻撃者（UNC6240 / ShinyHunters）。 layer 1 は境界で、WAF は URL デコード前の文字列 `/PSEMHUB` で照合するため `/%50SEMHUB/` に一致せず素通しになる。 layer 2 は PeopleSoft の実行基盤で、WebLogic はデコードしてから脆弱なサーブレットへ振り分ける。 layer 3 は侵入後に設置される道具（2種の web shell・Neo-reGeorg トンネル・ MeshCentral エージェント・EV 証明書で署名されたバックドア SIDEEYE）。 layer 4 は到達先（サービスアカウントから読める認証情報・人事／給与／学籍のデータ）と 恐喝への帰結。パッチ（2026年6月10日）を当てていれば layer 2 で止まる。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>この POST は WebLogic のアクセスログに残る。検証だけされて未悪用のホストでは、 **このリクエストが唯一の痕跡**になる。 「後続の活動が無いから問題ない」ではなく「標的リストに載っている」と読むべきである（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>WebLogic アクセスログを遡り、`/PSEMHUB/` とそのパーセントエンコード変種への外部からの POST を洗い出す</div><div class=ctl><span class="b eff">侵入を防げた</span>EMHub / PSEMHUB を停止・削除して、そもそも応答しない状態にする</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>WAF が「遮断した」記録を出さないため、**防御側から見ると何も起きていないように見える。** 遮断ログだけを監視していると、迂回されたことに気づけない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>WAF のルールを、URL デコード後の正規化されたパスに対して照合するよう組み直す</div><div class=ctl><span class="b eff">侵入を防げた</span>大文字小文字の混在やパーセントエンコードを含む非正規化された変種も遮断対象に含める</div><div class=ctl><span class="b eff">侵入を防げた</span>境界の遮断ではなくネットワーク層で `/PSEMHUB/*` への到達自体を断つ（6月の Mandiant 勧告）</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>パッチを当てていれば成立しない段階である。 **9月の波で破られたのは、6月から3か月間パッチを当てずに WAF で代替していた組織である**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>CVE-2026-35273 の Oracle パッチを適用する（WAF ルールでは代替できない）</div><div class=ctl><span class="b eff">侵入を防げた</span>多サーバ構成では EMHub サービスを無効化、単一サーバ構成では PSEMHUB を削除する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>②の方式ではディスクに何も残らない。 **JSP ファイルの作成を条件にした検知は②を取り逃がす**とレポートが明記している</div></td><td><div class=ctl><span class="b eff">検知できた</span>WebLogic の Java プロセスが cmd.exe / /bin/sh / bash を起動した事象を検知条件にする</div><div class=ctl><span class="b eff">検知できた</span>PSEMHUB.war および PORTAL.war 配下に製品同梱でない .jsp / .jspx / .exe が増えていないか定期点検する</div><div class=ctl><span class="b eff">影響を限定できた</span>1台で web shell が見つかったら、負荷分散の背後の全 WebLogic ノードを確認する</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>いずれもシグネチャ回避が作り込まれている（16進エンコード・文字コード配列からの文字列組み立て・ 製品本来のファイル分割機構の不使用）。**内容の静的な特徴だけでは捉えにくい**</div></td><td><div class=ctl><span class="b eff">検知できた</span>ウェブアプリケーションの配備ディレクトリを改変検知の対象にし、ファイルの増減を通知する</div><div class=ctl><span class="b eff">影響を限定できた</span>ウェブ層のディレクトリからの実行可能ファイルの起動を禁止・監視する</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**「有効な EV 証明書で署名されている」ことを信頼の根拠にしている制御は、ここで無効化される**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>署名の有無ではなく、実行元のパス（ウェブアプリケーションの配備ディレクトリ等）と親プロセスで判断する</div><div class=ctl><span class="b eff">侵入を防げた</span>許可リスト方式の実行制御を、署名者ではなくハッシュまたは配置場所で運用する</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>MeshCentral は**正規の遠隔管理ツール**であり、エンドポイント製品では悪性と判定されにくい。 「資産台帳に無い遠隔管理エージェントが動いている」という観点でしか捉えられない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>組織が導入していない遠隔管理エージェント（MeshCentral 等）の存在を定期的に棚卸しする</div><div class=ctl><span class="b eff">影響を限定できた</span>サーバからの外向き通信を許可制にし、PeopleSoft ホストからの想定外の宛先を遮断する</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>トンネルは正規の HTTPS に見える。内部側から見た「ウェブサーバが内部ホストへ接続してくる」 という向きの通信でしか捉えにくい（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ウェブ層のサーバから内部ネットワークへの通信を必要な宛先・ポートに限定する</div><div class=ctl><span class="b eff">検知できた</span>PeopleSoft のサービスアカウントが sshpass・rsync 等を起動した事象を検知条件にする</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>9月の波で実際に持ち出しが確定した件数は公表されていない。 **各組織側の調査がこれから進む段階である**</div></td><td><div class=ctl><span class="b eff">検知できた</span>データベース監査ログで人事・給与・学生記録テーブルへの大量クエリ・エクスポートをアラート化する</div><div class=ctl><span class="b eff">検知できた</span>PeopleSoft 層からの大量の外向き転送（rsync／SSH／HTTP POST）を通信量で検知する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>この段階に至ってからの検知機会は無い。準備の対象は検知ではなく対応である</div></td><td><div class=ctl><span class="b eff">復旧を早められた</span>恐喝の連絡が来た場合の窓口・意思決定者・外部支援の連絡先をあらかじめ決めておく</div><div class=ctl><span class="b eff">影響を限定できた</span>リークサイトへの自組織名の掲載を監視し、公表の判断を先手で準備する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>仮想パッチには「いつまで」を必ず付ける。付けないと、それが恒久対応になる</div><div class=lw>今回破られたのは、6月10日のパッチを当てずに WAF ルールで代替した組織である。 WAF を入れた時点で対応済みとして台帳から消えると、**3か月後に迂回された時点で 誰も「未適用である」ことを把握していない**状態になる</div><div class=la><b>取るべき行動</b> 緩和策で一時対応した脆弱性に、恒久対応の期限を同じ台帳の項目として記録する運用にする。 期限を過ぎたものは自動的に未対応として再掲されるようにし、 「緩和済み」と「対応完了」を別の状態として区別する</div></li><li><div class=lp>脆弱性の緊急度を、ベンダーのアラートの言い回しだけで判断しない</div><div class=lw>Oracle の Security Alert は定例外の緊急公開でありながら、実際の悪用に触れていない。 「いま攻撃されている」という情報は Mandiant（6月11日）と CISA の KEV 収載（6月12日・ 期限3日・ランサムウェア使用 Known）から来ている</div><div class=la><b>取るべき行動</b> 脆弱性対応の優先度判定の入力に、ベンダーのアラートに加えて KEV への収載と期限、脅威インテリジェンスの観測を明示的に組み込む。 「ベンダーが悪用に触れていないこと」を、悪用されていない根拠として扱わない</div></li><li><div class=lp>基幹システムに「止められない」以外の選択肢を用意しておく</div><div class=lw>PeopleSoft のような人事・給与・学籍の基幹システムは、緊急パッチのために 止めることが難しい。その制約が「まず WAF で」という判断を生んでいる。 一方で Mandiant は、EMHub と Integration Broker は管理用の部品であり、 **止めても利用者のセッションには影響しない**と明記している</div><div class=la><b>取るべき行動</b> 基幹システムについて「業務を止めずに切り離せる部品」がどれかを、 平時のうちに製品ベンダーの資料で確認して一覧にしておく。 緊急時に「全体を止めるか、何もしないか」の二択にならないようにする</div></li><li><div class=lp>被害が出た前提での恐喝対応を、技術対応とは別に準備する</div><div class=lw>UNC6240（ShinyHunters）はデータを盗んでリークサイトでの公開を材料に 身代金を要求する集団であり、Mandiant は被害組織に「恐喝の連絡に備えよ」と勧告している。 2026年6月9日には実際に被害機関のデータが公開された</div><div class=la><b>取るべき行動</b> 恐喝の連絡を受けたときの一次窓口・意思決定者・外部の支援先（弁護士・当局・専門事業者）を あらかじめ決め、連絡先を技術チーム以外からも参照できる場所に置く。 支払いの可否についての組織の方針を、実際に迫られる前に決めておく</div></li><li><div class=lp>「うちの業種は狙われない」は、3か月で覆りうる</div><div class=lw>6月は通知先の68%が大学・カレッジで、実質的に高等教育向けのキャンペーンだった。 9月には高等教育・テクノロジー・IT サービス・医療・農業・運輸・政府の7業種に広がっている。 **標的を決めているのは業種ではなく、露出した製品とバージョンである**</div><div class=la><b>取るべき行動</b> 脅威情報を業種の一致で取捨選択せず、**自組織が使っている製品名とバージョンで** 引っかかるようにする。資産台帳の製品・バージョン情報の鮮度を、 脆弱性対応の前提条件として定期的に点検する</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>WAF のルールが「URL デコード後の正規化されたパス」に効いているかを実際に試す</div><div class=lw>今回の迂回は `P` を `%50` に置き換えただけで成立している。 WAF はデコード前の文字列で照合し、WebLogic はデコード後の経路で処理するという 解釈のずれが原因である</div><div class=la><b>取るべき行動</b> 遮断しているパスについて、パーセントエンコード変種・大文字小文字の混在・ 二重エンコードで実際にリクエストを送り、遮断されるかを検証する。 ルールは正規化後のパスに対して書き直す</div></li><li><div class=lp>WAF の「遮断ログ」だけを見ていると、迂回されたことに気づけない</div><div class=lw>迂回が成立すると WAF はルールに一致しないので、**遮断の記録が出ない。** 防御側から見ると何も起きていないのと区別がつかない</div><div class=la><b>取るべき行動</b> WAF の遮断ログに加えて、**保護対象のアプリケーション側のアクセスログ**で 当該エンドポイントへの到達を監視する。遮断しているはずのパスに アプリケーション側でリクエストが届いていたら異常として扱う</div></li><li><div class=lp>web shell の検知を「ファイルの作成」に依存させない</div><div class=lw>観測された実行方法の一方は、POST の応答にコマンド出力を直接返す方式で、 **ディスクに何も残らない。** レポートは 「JSP ファイルの作成に依存する検知ではこの方式を識別できない」と明記している</div><div class=la><b>取るべき行動</b> WebLogic（および同種のアプリケーションサーバ）の Java プロセスが cmd.exe / /bin/sh / bash を起動した事象を検知条件として登録する。 その配下での `base64 -d`・`curl`・`/dev/tcp`・`start /b` の実行も併せて見る</div></li><li><div class=lp>1台で web shell が見つかったら、負荷分散の背後の全ノードを調べる</div><div class=lw>攻撃者は POST を連続して送ることで、**負荷分散の全ノードに web shell が 配られるようにしている。** 最初に見つかった1台だけを直すと、残りが残る</div><div class=la><b>取るべき行動</b> 侵害対応の手順に「同一サービスを構成する全ノードの点検」を独立した工程として書く。 点検対象は `PSEMHUB.war` と `PORTAL.war` 配下の製品同梱でない .jsp / .jspx / .exe とする</div></li><li><div class=lp>「有効な署名がある」ことを信頼の根拠にしない</div><div class=lw>バックドアを載せたインストーラは、実在する開発元名義の**有効な EV 証明書**で 署名されていた。署名の有効性だけを見る制御はこれを通してしまう</div><div class=la><b>取るべき行動</b> 実行制御・許可リストを、署名者ではなくハッシュまたは配置場所で運用する。 少なくとも**ウェブアプリケーションの配備ディレクトリからの実行可能ファイルの起動**は、 署名の有無にかかわらず検知・遮断の対象にする</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Oracle PeopleSoft Enterprise PeopleTools 8.61 または 8.62 を運用している</td><td class=sm>CVE-2026-35273 の影響を受けるのはこの2バージョンである。 パッチは2026年6月10日に提供されており、適用済みであれば今回の波の対象外となる</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> PSEMHUB や Integration Broker のエンドポイントがインターネットから到達できる</td><td class=sm>悪用の入口は `/PSEMHUB/hub` である。EMHub と Integration Broker は 管理・システム間通信用の部品で、止めても利用者のセッションには影響しない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> パッチを当てられない脆弱性に WAF ルールや境界での遮断で対応した記録があるが、恒久対応の期限を管理していない</td><td class=sm>今回破られたのは、6月から3か月間パッチを当てずに WAF で代替していた組織である。 緩和策が「対応完了」として台帳から消えると、迂回された時点で誰も未適用だと知らない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> WAF のルールが URL デコード後の正規化されたパスに対して照合しているかを検証していない</td><td class=sm>迂回は `/PSEMHUB/` を `/%50SEMHUB/` にするだけで成立した。 生の文字列に対する照合であれば、同じ手が通る</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> web shell の検知が、公開ディレクトリへのファイル作成の監視に依存している</td><td class=sm>観測された実行方法の一方はファイルを書かず、POST の応答に出力を返す。 ファイル作成を条件にした検知では捉えられない</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> ウェブ層のサービスアカウントから、データベース接続文字列やクラウドの認証情報が読める</td><td class=sm>Mandiant は侵害時の対応として、psappsrv.cfg のデータベース接続文字列・ Integration Broker の認証情報・ウェブ層から到達できるクラウドの認証情報の 総入れ替えを求めている。読める範囲がそのまま被害の範囲になる</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年6月10日 Oracle</span> <a href="https://www.oracle.com/security-alerts/alert-cve-2026-35273.html" target="_blank" rel="noreferrer noopener nofollow">Oracle Security Alert Advisory - CVE-2026-35273</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(製品提供元による一次公表。本記録の作成者が2026年9月26日に取得して確認した。 影響製品（PeopleSoft Enterprise PeopleTools 8.61・8.62）、 認証不要で遠隔から悪用可能であること、遠隔コード実行に至りうること、 改訂履歴が「2026-June-10 Rev 1. Initial Release.」のみで以後の改訂が無いこと、 謝辞が Bobby Gould of TrendAI Zero Day Initiative／Lucas Miller of TrendAI Research／ Minh Giang of TrendAI Zero Day Initiative の3名であること、 **本文に実際の悪用への言及が無いこと**の出典。 なお WebFetch では 403 となり、通常のブラウザの User-Agent を用いた取得で確認した)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年6月12日 米国土安全保障省サイバーセキュリティ・インフラセキュリティ庁（CISA）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（CVE-2026-35273 の項）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(悪用の公的な確認。本記録の作成者が2026年9月26日にカタログの JSON 〈https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json〉を 取得して確認した（カタログ版 2026.09.25）。 収載日 2026-06-12、対処期限 2026-06-15、分類 CWE-306、 「ランサムウェアキャンペーンでの使用が知られている（Known）」、 BOD 26-04 に沿った対処と緩和策が無い場合の利用停止を求める記載の出典)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年6月11日 NIST National Vulnerability Database（NVD）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-35273" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-35273</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(採番情報。本記録の作成者が2026年9月26日に NVD の API を通じて取得して確認した。 公開 2026-06-11、最終更新 2026-07-23、影響は PeopleSoft Enterprise PeopleTools 8.61 と 8.62、 コンポーネントは Updates Environment Management、 CVSS 3.1 基本値 9.8（CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H・提供元は Oracle）、 分類 CWE-306 の出典)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月25日 Mandiant / Google Threat Intelligence Group</span> <a href="https://cloud.google.com/blog/topics/threat-intelligence/shinyhunters-renewed-mass-exploitation-campaign-targeting-oracle-peoplesoft/" target="_blank" rel="noreferrer noopener nofollow">ShinyHunters Renewed Mass Exploitation Campaign Targeting Oracle PeopleSoft</a> <span class="b kind">調査レポート</span><span class=sm>（(本記録の中心となる一次の調査レポート。本記録の作成者が2026年9月26日に取得して確認した。 WAF 迂回の手法（`/PSEMHUB/` → `/%50SEMHUB/`）とその成立理由、 事前検証（5〜15回の POST と OS 名の応答）、2通りの実行方法（web shell 設置と ファイルレス実行）、負荷分散の全ノードへの配布、web shell 2種（x.jsp の16進エンコード・ u.jsp の150KB 分割アップロード）、Ple64.exe＝SIDEEYE（5.2MB・Light Alloy を装う・ 3段階・有効な EV 証明書・Sectigo への失効申請）、Neo-reGeorg トンネル、 MeshCentral エージェントと C2 の命名、7業種への拡大、「数十のシステム」、 修復と強化の6項目、持ち出し痕跡のハンティング指針、 「WAF ルールとパスによる遮断はパッチの代わりにはならない」という結論の出典。 本文は保存分〈output/articles/20260926/0105_mandiant-blog_shinyhunters-renewed-mass-exploitation-campaign-ta.md〉 でも確認したが、保存分は本文上限で末尾が切れているため、原典を取得して補った)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年6月11日 Mandiant / Google Threat Intelligence Group</span> <a href="https://cloud.google.com/blog/topics/threat-intelligence/shinyhunters-targets-education-sector-oracle-exploit" target="_blank" rel="noreferrer noopener nofollow">ShinyHunters Targets Education Sector with Oracle PeopleSoft Exploit</a> <span class="b kind">調査レポート</span><span class=sm>（(第一波の一次レポート。本記録の作成者が2026年9月26日に取得して確認した。 ゼロデイ悪用の観測期間（2026年5月27日〜6月9日）、100を超える組織への通知と その68%が大学・カレッジであること、米国中心であること、 MeshCentral を用いた C2 と Microsoft を模したドメイン、 sshpass による SSH 認証情報スプレー、zstd による圧縮持ち出し、 恐喝文書の配置、2026年6月9日のリークサイトへのデータ公開、 および「WAF の本文検査ルールだけに頼るのは不十分である」という当時の勧告の出典)）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年6月12日 Rapid7</span> <a href="https://www.rapid7.com/blog/post/etr-active-exploitation-of-oracle-peoplesoft-zero-day-cve-2026-35273/" target="_blank" rel="noreferrer noopener nofollow">Active Exploitation of Oracle PeopleSoft Zero-Day (CVE-2026-35273)</a> <span class="b kind">ブログ</span><span class=sm>（(第三者ベンダーによる注意喚起。本記録の作成者が2026年9月26日に取得して確認した。 2026年7月1日に更新されている。脆弱性を 「サーバサイドリクエストフォージェリ（CWE-918）」と分類しており、 NVD / CISA の CWE-306 と異なる。この食い違いの出典として用いた。 緊急のパッチ適用・EMHub サービスの無効化・境界での遮断・ SMB の外向き通信の監視を推奨している)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月26日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月26日の日中の新着記事（Mandiant Blog）を起点に、 Mandiant の9月レポートと6月レポート、Oracle の Security Alert 本体、 CISA の KEV カタログ、NVD、Rapid7 の注意喚起を取得して裏取りした。 CVSS 9.8 とベクタ・影響バージョン（PeopleTools 8.61 / 8.62）・ パッチ公開日（2026年6月10日）・KEV 収載日と期限（6月12日・6月15日）・ 悪用観測期間（5月27日〜6月9日）はいずれも一次資料で確認している。 **日本の組織は当事者として挙がっていない**が、 ①破られたのが製品ではなく「パッチを当てずに WAF で代替する」という どの組織にもある運用判断であること、 ②迂回が URL の正規化のずれという他製品にも共通する構造に由来すること、 ③PeopleSoft が人事・給与・学籍という組織のほぼ全員分の個人データを持つ基幹システムで、 国内でも大学・大企業で使われていること——の3点で先例として価値があると判断して記録した。 脆弱性の技術的な分類が資料間で食い違う（CWE-306／CWE-918／Java の直列化データの復元）点、 Oracle のアラートが実際の悪用に触れていない点、 被害規模が「dozens」としか示されていない点は、いずれも食い違い・注意として記録した。 IoC の悪性を検証していないため、ハッシュ値と IP アドレスは転記していない。 同じ CVE を巡る ShinyHunters の主張として INC-2026-0189（FBI 採用システム）があるが、 **被害者も時期も異なる別事案**であるため、新規に立てたうえで相互に関連付けた。 キャンペーンは公表時点で継続中のため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">ShinyHunters</span><span class="b tag">UNC6240</span><span class="b tag">Oracle</span><span class="b tag">PeopleSoft</span><span class="b tag">PeopleTools</span><span class="b tag">PSEMHUB</span><span class="b tag">環境管理ハブ</span><span class="b tag">CVE-2026-35273</span><span class="b tag">CVSS9.8</span><span class="b tag">認証不要の遠隔コード実行</span><span class="b tag">ゼロデイ</span><span class="b tag">WAF迂回</span><span class="b tag">URLエンコード</span><span class="b tag">パス正規化</span><span class="b tag">仮想パッチ</span><span class="b tag">パッチ未適用</span><span class="b tag">WebLogic</span><span class="b tag">webshell</span><span class="b tag">ファイルレス実行</span><span class="b tag">SIDEEYE</span><span class="b tag">EV証明書の悪用</span><span class="b tag">コード署名</span><span class="b tag">Neo-reGeorg</span><span class="b tag">MeshCentral</span><span class="b tag">正規ツールの悪用</span><span class="b tag">CISA KEV</span><span class="b tag">BOD26-04</span><span class="b tag">高等教育</span><span class="b tag">人事給与システム</span><span class="b tag">データ窃取型恐喝</span><span class="b tag">リークサイト</span><span class="b tag">大規模悪用</span><span class="b tag">CWEの食い違い</span><span class="b tag">一次資料が悪用に触れない</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-26 17:21 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
