@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Apple CoreGraphics に悪用済みゼロデイ — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0248</span>Apple CoreGraphics に悪用済みゼロデイ</h1>
+<header class="site-header">
+  <p class="subtitle">Apple が2026年9月28日、CoreGraphics の境界外書き込み **CVE-2026-86950** を修正し「**iOS 27 より前の版で、特定の個人を狙った極めて高度な攻撃において悪用された可能性がある報告を承知している**」と認めた——報告したのは **Meta の製品セキュリティチーム**で、修正は iOS / iPadOS 26.7.1 と macOS Tahoe 26.7.1（報道では macOS Sequoia 15.8.1 も）に入った。CoreGraphics は 2D 描画と PDF の描画を OS 全体で担う部品のため、悪意ある「ファイル」の届き方は Web・メール添付・メッセージのプレビューなど多岐にわたりうるが、**Apple は届け方・標的・攻撃者・件数のいずれも公表していない。** CISA の KEV には本記録の確認時点（catalogVersion 2026.09.27）で収載が無い</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月28日</span>
+  <span>最終更新: 2026年9月29日</span>
+</div>
+
+<div class="lead"><p><strong>Apple</strong> は <strong>2026年9月28日</strong>、<strong>CoreGraphics</strong> の境界外書き込みの脆弱性<strong>CVE-2026-86950</strong> を修正しました。修正が入ったのは<strong>iOS 26.7.1 / iPadOS 26.7.1</strong> と <strong>macOS Tahoe 26.7.1</strong> です（報道は <strong>macOS Sequoia 15.8.1</strong> も挙げていますが、本記録は原文を確認できていません）。</p>
+<p>Apple の勧告には、次の1文が添えられています。</p>
+<blockquote>
+<p><strong>Apple は、本件が iOS 27 より前の版において、特定の標的とされた個人に対する極めて高度な攻撃で悪用された可能性があるという報告を承知している。</strong>（原文英語）</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CVE</strong></td>
+<td>CVE-2026-86950</td>
+</tr>
+<tr>
+<td><strong>部品</strong></td>
+<td>CoreGraphics（2D 描画・画像描画・PDF 描画を OS 全体で担う）</td>
+</tr>
+<tr>
+<td><strong>欠陥</strong></td>
+<td>境界外書き込み（out-of-bounds write）。<strong>境界チェックの改善</strong>で修正</td>
+</tr>
+<tr>
+<td><strong>影響</strong></td>
+<td>「<strong>悪意を持って作成されたファイルの処理により、任意コード実行に至る可能性がある</strong>」（原文英語）</td>
+</tr>
+<tr>
+<td><strong>報告者</strong></td>
+<td><strong>Meta Product Security</strong>（Apple の謝辞）</td>
+</tr>
+<tr>
+<td><strong>修正版</strong></td>
+<td>iOS 26.7.1 / iPadOS 26.7.1 / macOS Tahoe 26.7.1（報道では macOS Sequoia 15.8.1 も）</td>
+</tr>
+</tbody>
+</table>
+<p>この記録が扱うのは、<strong>規模ではなく「書かれていないことの多さ」</strong>です。</p>
+<ul>
+<li><strong>届け方が公表されていません。</strong> CoreGraphics は PDF と 2D 描画を OS 全体で担うため、Web ページ・メールの添付・メッセージアプリのいずれからも「ファイル」は届きえます。添付やリンクの<strong>自動プレビューが効く経路では、利用者の操作を要さない（ゼロクリック）成立もありうる</strong>——ただしこれは <strong>SecurityWeek の指摘であり、Apple は述べていません。</strong></li>
+<li><strong>標的も攻撃者も件数も公表されていません。</strong></li>
+<li><strong>KEV に入っていません。</strong> 本記録が CISA の KEV カタログ（catalogVersion 2026.09.27）を取得して確認した時点で、CVE-2026-86950 の収載はありません。<strong>「当局の期限が来ていない」ことは、危険が小さいことを意味しません。</strong></li>
+</ul>
+<p>日本の組織が当事者として挙がっているわけではありません。それでも記録するのは、<strong>日本は iOS の利用比率が高く、役員・記者・研究者の端末がこの型の攻撃の対象になりうる</strong>一方で、<strong>MDM で更新を管理している組織ほど「緊急の1件だけを今日当てる」動作が難しい</strong>ためです。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>悪意あるファイルがどう届くのか（攻撃の入口）</span><span class="b rsn">公表されていない</span><div class=sm>Apple は「悪意を持って作成されたファイルの処理」としか述べていない。 CoreGraphics は 2D 描画と PDF 描画を OS 全体で担う部品のため、 **Web ページ・メールの添付・メッセージアプリのいずれからも到達しうる。** 「添付やリンクの自動プレビューでゼロクリック成立もありうる」という整理は **SecurityWeek の指摘であり、Apple の記述ではない。** 入口が分からないため、**利用者側で「この経路だけ閉じる」という緩和が取れない**</div></li><li><span class=ui>WhatsApp や他のメッセージアプリが関係したのか</span><span class="b rsn">公表されていない</span><div class=sm>報告者が Meta Product Security であることから、 SecurityWeek は前年の WhatsApp の事案（CVE-2025-55177 と ImageIO の CVE-2025-43300 の組み合わせ）との類似を指摘し、Meta に確認を求めたと書いている。 **2026年9月29日時点で Meta の回答は公表されていない。** **報告者が誰かと、どのアプリが悪用されたかは別の問いである**</div></li><li><span class=ui>誰が狙われたのか（人数・属性・国）</span><span class="b rsn">公表されていない</span><div class=sm>Apple の表現は「特定の標的とされた個人」のみである。 **人数・属性（記者・活動家・外交官・企業役員など）・国・所属組織は いずれも公表されていない。** 日本の利用者が対象に含まれたかどうかも公表されていない</div></li><li><span class=ui>攻撃者は誰か（商用スパイウェア事業者の関与を含む）</span><span class="b rsn">公表されていない</span><div class=sm>Apple も Meta も攻撃者について何も述べていない。 **この型（「極めて高度な攻撃」「特定の標的とされた個人」）は 過去に商用スパイウェアの事案で使われてきた表現だが、 本件をそれと結びつける公表は無い。** 推測で帰属を書かない</div></li><li><span class=ui>悪用がいつから続いていたのか</span><span class="b rsn">公表されていない</span><div class=sm>「iOS 27 より前の版」という以外に時期の手がかりが無い。 **露出していた期間の長さが分からないため、 標的になりうる端末の持ち主が、いつからの痕跡を疑うべきかを決められない**</div></li><li><span class=ui>侵害の痕跡（IoC）と、利用者が自分の端末を確認する方法</span><span class="b rsn">公表されていない</span><div class=sm>Apple は IoC を公表していない。 **本件では「自分が踏まれたか」を利用者が判定する公開の手がかりが無い。** Apple は狙い撃ち攻撃を受けたとみられる利用者へ個別に通知する仕組みを 過去に運用しているが、**本件について通知を出したかどうかは公表されていない**</div></li><li><span class=ui>macOS Sequoia 15.8.1 の勧告の内容</span><span class="b rsn">公表されていない</span><div class=sm>SecurityWeek と BleepingComputer はいずれも修正版に **macOS Sequoia 15.8.1** を挙げているが、 **本記録の作成者はその勧告の原文を確認できていない** （確認できたのは iOS / iPadOS 26.7.1 と macOS Tahoe 26.7.1 の2本）。 **報道に依拠した部分として区別して扱う**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Apple Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>iOS 27 より前の iOS / iPadOS を使っていた個人（人数・属性・国いずれも非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Meta Product Security（Meta Platforms, Inc. の製品セキュリティチーム）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC・JVN</span><span class="b role">注意喚起主体</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>この更新で修正が公表された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1<span class=fu>件</span></div><div class=fa>2026年9月28日 時点</div><div class=fn>iOS / iPadOS 26.7.1 と macOS Tahoe 26.7.1 の勧告に掲載された CVE は **CVE-2026-86950 のみ**である。 **「1件だけの更新」は、当てる理由が弱いことを意味しない**—— 悪用が報告されている1件だけを直すために出された更新である</div></div><div class=fig><div class=fh><span class=fl>2026年に KEV へ収載された Apple 製品の脆弱性の件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>件</span></div><div class=fa>2026年9月29日（catalogVersion 2026.09.27） 時点</div><div class=fn>**本記録の作成者が KEV カタログ全1,728件を取得し、 vendorProject が Apple かつ dateAdded が2026年のものを数えた値**である。 **CVE-2026-86950 はこの8件に含まれていない。** SecurityWeek は「収載されれば本年9件目の Apple 製品の脆弱性になる」としており、 この数え方と整合する</div></div><div class=fig><div class=fh><span class=fl>先行事例（2025年8月・WhatsApp + Apple ImageIO）で狙われたとされる利用者数</span><span class="b conf">最大</span><span class="b org">報道値</span></div><div class=fv>200<span class=fu>人</span></div><div class=fa>2025年8月 時点</div><div class=fn>**「200人未満」という上限の表現**であり、確定値ではない。 **本事案の数値ではなく、同じ型（Meta 側からの報告・少数の狙い撃ち）の 先行事例の規模感**として置いている。 **本件の標的の人数は公表されていない**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>悪意を持って作成されたファイルを CoreGraphics が描画する過程で境界外書き込みが起き、 任意コード実行に至りうる。**Apple の記述によれば、iOS 27 より前の版で 特定の標的とされた個人に対する極めて高度な攻撃に悪用された可能性がある。** **届け方・後続の動作・持ち出しの有無はいずれも公表されていない。** 以下は、公表された1行の影響記述と部品の役割から書ける範囲に限る。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2] [5] [8]</span></div><div>**悪意を持って作成されたファイルが端末に届き、CoreGraphics が描画する。** Apple の記述は「悪意を持って作成されたファイルの処理により、 任意コード実行に至る可能性がある」（原文英語）のみで、 **ファイルの形式・届き方・利用者の操作の要否は示されていない。** SecurityWeek は、添付やリンクの自動プレビューが効く経路では **利用者の操作を要さない成立もありうる**と指摘している（**Apple の記述ではない**）</div><div class=fn>根拠: Apple の勧告（サポート文書 149226 / 149228・2026年9月28日）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>境界外書き込みにより**任意コード実行に至りうる**。 Apple は「境界チェックの改善により対処した」としている。 **実行後に何が行われたのか——永続化・情報の収集・持ち出し——は 一切公表されていない。** 「極めて高度な攻撃」という表現以上のことは書けない</div><div class=fn>根拠: Apple の勧告（影響の記述と対処の記述）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Apple は、**悪用の可能性・部品・影響・対処・報告者・対象機種**を公表した一方で、 **届け方・標的・件数・時期・攻撃者・IoC を公表しなかった。** 勧告に載せた CVE は1件のみで、他の修正内容は併記していない</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 手口と標的を伏せれば、模倣の悪用と標的の特定を避けられる。 商用スパイウェアの事案では、標的とされた個人の安全に直結する判断でもある。 一方で、**利用者側は「この経路だけ閉じる」という緩和を取れず、 自分が踏まれたかも判定できない。** 対処は「当てる」以外に残らない</div></li></ul></div>
+<section id="s6"><h2>1件だけの更新に「極めて高度な攻撃で悪用された」という一文が付いた<span class="b slot">概観</span></h2><p>2026年9月28日、Apple は <strong>iOS 26.7.1 / iPadOS 26.7.1</strong> と<strong>macOS Tahoe 26.7.1</strong> を公開しました。勧告に載っている CVE は<strong>1件だけ</strong>です。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容（すべて Apple の勧告による）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE</td>
+<td><strong>CVE-2026-86950</strong></td>
+</tr>
+<tr>
+<td>部品</td>
+<td><strong>CoreGraphics</strong></td>
+</tr>
+<tr>
+<td>欠陥</td>
+<td>境界外書き込み（out-of-bounds write）</td>
+</tr>
+<tr>
+<td>影響</td>
+<td>「悪意を持って作成されたファイルの処理により、任意コード実行に至る可能性がある」（原文英語）</td>
+</tr>
+<tr>
+<td>対処</td>
+<td>「境界チェックの改善により対処した」（原文英語）</td>
+</tr>
+<tr>
+<td>謝辞</td>
+<td><strong>Meta Product Security</strong></td>
+</tr>
+<tr>
+<td>対象機種</td>
+<td>iPhone 11 以降、iPad Pro 12.9 インチ第3世代以降、iPad Pro 11 インチ第1世代以降、iPad Air 第3世代以降、iPad 第8世代以降、iPad mini 第5世代以降</td>
+</tr>
+</tbody>
+</table>
+<p>そして次の一文が添えられています。</p>
+<blockquote>
+<p><strong>Apple は、本件が iOS 27 より前の版において、特定の標的とされた個人に対する極めて高度な攻撃で悪用された可能性があるという報告を承知している。</strong>（原文英語）</p>
+</blockquote>
+<p>読み方に注意が要る書き方です。Apple は「悪用された」と断定していません。<strong>「悪用された可能性がある」という「報告」を「承知している」</strong>という三重の留保です。本記録はこの表現をそのまま保存します。ただし、<strong>Apple がこの一文を添える更新は、実務上は「当てるまで待てない1件」として扱われてきました。</strong></p>
+<p>同じ日に公開された <strong>iOS 27.0.1・macOS Golden Gate 27.0.1・watchOS 27.0.1・visionOS 27.0.1</strong> については、Apple のセキュリティリリース一覧に「<strong>この更新に公開された CVE エントリはありません</strong>」と記されています。つまり <strong>27 系は本件の対象外</strong>という整理です。</p></section>
+<section id="s7"><h2>CoreGraphics が対象である以上、「どこから来るファイルか」を絞れない<span class="b slot">原因・手口</span></h2><p>CoreGraphics は、<strong>2D のベクタ描画・画像の描画・文字の描画・PDF の描画</strong>をOS 全体で担う基盤の部品です。アプリが独自に持っている機能ではなく、<strong>OS がファイルを「見せる」ときに通る場所</strong>にあります。</p>
+<p>ここに境界外書き込みがあるということは、<strong>「ファイルを描画しようとした瞬間」が攻撃の成立点</strong>になりうるという意味です。そして Apple は、<strong>そのファイルがどう届くのかを公表していません。</strong></p>
+<p>SecurityWeek は、CoreGraphics の役割から次のように指摘しています（<strong>Apple の記述ではありません</strong>）。</p>
+<blockquote>
+<p>CoreGraphics は OS 全体で 2D グラフィックスと PDF の描画を扱うため、<strong>Web ページ・メールの添付・メッセージアプリ経由で届きえ、添付やリンクの自動プレビューがゼロクリックの悪用を可能にしうる。</strong>（原文英語）</p>
+</blockquote>
+<p><strong>この「自動プレビュー」という点が、防御側にとっての要所です。</strong>利用者が何もタップしなくても、OS やアプリが受信物を先に描画してしまう経路があるならば、「怪しいものを開かない」という教育は効きません。</p>
+<p>裏を返すと、<strong>Apple 自身が「狙い撃ちされる少数の個人」向けに用意しているロックダウンモードが、まさにこの経路を閉じる作りになっています。</strong> Apple の説明では、ロックダウンモードは<strong>メッセージの添付の多く（特定の画像・動画・音声を除く）を遮断し、リンクのプレビューを無効にし、複雑な Web 技術を遮断</strong>します。<strong>ただし Apple は「ロックダウンモードが CVE-2026-86950 に効く」とは述べていません。</strong>本記録は、<strong>同じ型の攻撃経路に対する既存の機能として紹介</strong>します。</p></section>
+<section id="s8"><h2>報告者が Meta の製品セキュリティであることが、前年と同じ並びを作っている<span class="b slot">発覚の端緒</span></h2><p>Apple が謝辞に挙げているのは <strong>Meta Product Security</strong> です。OS の提供元ではなく、<strong>メッセージングを運ぶ側の企業のセキュリティチーム</strong>がOS のゼロデイを見つけて報告した形です。</p>
+<p>同じ並びは前年にもありました。2025年8月、WhatsApp は自社の iOS / macOS アプリの脆弱性 <strong>CVE-2025-55177</strong> が Apple の ImageIO のゼロデイ<strong>CVE-2025-43300</strong> と組み合わせて、<strong>200人未満</strong>の利用者を狙ったゼロクリック攻撃に使われたとみられると公表しています。</p>
+<p><strong>本件が WhatsApp 経由だったかどうかは公表されていません。</strong> SecurityWeek は Meta に確認を求めたと書いており、2026年9月29日時点で回答は公表されていません。<strong>報告者が誰かと、どのアプリが悪用されたかは別の問い</strong>です。混ぜて読むと、事実でないことを事実として持ってしまいます。</p>
+<p>それでも、この並びには実務上の意味があります。<strong>狙い撃ち攻撃の最初の観測者は、OS の提供元ではなく「運び手」の側であることが多い</strong>——メッセージの配送基盤には、異常な受信物の痕跡が集まるためです。</p></section>
+<section id="s9"><h2>KEV に入っていない——当局の期限は「危険の大きさ」ではない<span class="b slot">当局対応</span></h2><p>本記録の作成者は2026年9月29日、CISA の KEV カタログ（catalogVersion 2026.09.27・全1,728件）を取得して確認しました。</p>
+<ul>
+<li><strong>CVE-2026-86950 の収載はありません。</strong></li>
+<li>2026年に収載された Apple 製品の脆弱性は <strong>8件</strong>です。</li>
+<li>もっとも紛れやすいのが <strong>CVE-2026-20700</strong>（2026年2月12日収載・Apple Multiple Buffer Overflow・CWE-119・対処期限 2026年3月5日）で、<strong>これは本件とは別のもの</strong>です。</li>
+</ul>
+<p>KEV に入っていないことは、<strong>危険が小さいことを意味しません。</strong> KEV は米連邦民間行政機関に期限つきの対処を義務づける仕組みであり、収載の有無は運用上の都合や情報の確度に左右されます。<strong>本件は、ベンダー自身が「悪用された可能性の報告を承知している」と書いた案件です。</strong></p>
+<p>国内側では、<strong>JVN のフィード（2026-09-29 14:35 JST 更新）とJPCERT/CC の注意喚起一覧に、本件の掲載を見つけられませんでした。</strong>「発出されていない」と確定したわけではなく、<strong>探して見つからなかった</strong>という意味です。国内の注意喚起を待つ運用では、この型の更新には間に合いません。</p></section>
+<section id="s10"><h2>報道の CVE 番号が食い違っている——番号で管理している組織ほど危ない<span class="b slot">未確定事項</span></h2><p>同じ脆弱性について、報道の CVE 番号が一致していません。</p>
+<table>
+<thead>
+<tr>
+<th>出典</th>
+<th>記載された CVE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Apple（勧告 149226・149228）</strong></td>
+<td><strong>CVE-2026-86950</strong></td>
+</tr>
+<tr>
+<td>SecurityWeek（9月29日）</td>
+<td>CVE-2026-86950</td>
+</tr>
+<tr>
+<td>BleepingComputer（9月29日）</td>
+<td><strong>CVE-2026-20700</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Apple 自身の勧告が CVE-2026-86950 である以上、こちらが正です。</strong>そして <strong>CVE-2026-20700 は2026年2月12日に KEV へ収載済みの別件</strong>であることを、本記録は KEV カタログの原本で確認しました。BleepingComputer の記事は、本件の説明と、2月に修正された dyld のゼロデイの説明の<strong>両方に同じ CVE-2026-20700 を当てており、記事内で整合していません。</strong></p>
+<p>実務への影響は小さくありません。<strong>脆弱性管理を CVE 番号で回している組織では、「2月に対処済み」という記録と突き合わせて「対応不要」と判断しうる</strong>ためです。<strong>一次資料（ベンダーの勧告）で番号を確定させてから台帳に入れる</strong>、という順序が要ります。</p></section>
+<section id="s11"><h2>日本の組織にとっての意味は「少数の端末を先に上げられるか」にある<span class="b slot">評価・解釈</span></h2><p>本件は日本の組織が当事者として挙がった事案ではありません。それでも記録に値すると考えるのは、次の3点です（<strong>以下は本記録の評価です</strong>）。</p>
+<p><strong>1. 狙われるのは「組織」ではなく「人」である。</strong> Apple の表現は「特定の標的とされた個人」です。組織の防御が厚いかどうかではなく、<strong>役員・広報・経営企画・研究者・記者と接する立場の人の端末</strong>が対象になります。端末が私物（BYOD）であれば、組織の更新管理の外にあります。</p>
+<p><strong>2. 更新管理が整っている組織ほど、1件だけの緊急更新が通りにくい。</strong> MDM で OS 更新を段階的に配っている組織では、検証・段階配信・業務影響の確認に日数がかかります。<strong>平常時には正しい運用が、この型の更新では遅れの理由になります。</strong>「悪用が報告された1件だけの更新を、検証を飛ばして当てる」判断を誰が下せるのかを、事前に決めておく必要があります。</p>
+<p><strong>3. iOS 27 へ上げるという選択肢がある。</strong> Apple の整理では <strong>27 系は本件の対象外</strong>です。26 系に留まる方針の組織は、<strong>「留まる理由」と「留まる間に当てる更新」の両方を持っているか</strong>を点検する機会になります。</p>
+<p>なお、<strong>本記録は IoC を持ちません。</strong> Apple は公表しておらず、利用者が自分の端末を確認する公開の手がかりもありません。できるのは、<strong>当てることと、狙われうる少数の人の端末を先に上げること</strong>です。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>Apple の OS に含まれる **CoreGraphics**（2D ベクタ描画・画像描画・文字描画・ PDF 描画を担う基盤部品）。 **対象は iOS / iPadOS（iPhone 11 以降、iPad Pro 12.9 インチ第3世代以降、 iPad Pro 11 インチ第1世代以降、iPad Air 第3世代以降、iPad 第8世代以降、 iPad mini 第5世代以降）と macOS。** Apple の記述では、悪用の報告は **iOS 27 より前の iOS** に関するものである</td></tr><tr><th>affected_versions</th><td>**iOS / iPadOS は 26.7.1 より前、macOS Tahoe は 26.7.1 より前** （報道は **macOS Sequoia 15.8.1** も修正版に挙げるが、本記録は原文未確認）。 **iOS 27 / macOS Golden Gate 27 系は対象外**とされる</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年9月28日　<b>補足:</b> **Apple は「悪用された」と断定していない。** 「悪用された可能性があるという報告を承知している」という表現である。 一方で、**この表現を伴う更新を Apple が出すこと自体が、 実運用では「悪用の観測がある」ものとして扱われてきた。** 確定していないのは、時期・件数・標的・攻撃者・届け方である</td></tr><tr><th>ログの有無</th><td>**利用者側で「自分が踏まれたか」を判定する公開の手がかりが無い。** Apple は IoC を公表していない。 個人の端末では、そもそも詳細なログが利用者の手元に残らない。 **狙い撃ち攻撃の疑いがある場合、端末のログを自力で解析することは現実的でない**—— 専門機関（人権団体のセキュリティラボや商用のフォレンジック事業者）に 委ねる前提での判断が要る（**本記録の評価**）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> iOS / iPadOS 26.7.1・macOS Tahoe 26.7.1 以降へ更新する（報道では macOS Sequoia 15.8.1 も）　<b>状況:</b> Apple が修正版として公開　<b>副作用:</b> **MDM で段階配信している組織では、検証と配信の日数がそのまま露出期間になる。** 1件だけの更新であるため、通常の月次リリースと同じ扱いにすると遅れる</div><div class=sub><b>数え方:</b> iOS 27 系へ移行する（Apple の整理では 27 系は本件の対象外）　<b>状況:</b> 対象外とされる版への移行　<b>副作用:</b> メジャー更新のため、業務アプリの互換性検証・MDM 構成の見直しが必要になる。 **本件1件のために急ぐ判断としては重い**</div><div class=sub><b>数え方:</b> 狙い撃ちの対象になりうる少数の端末で、ロックダウンモードを有効にする　<b>状況:</b> **Apple は本件に効くとは述べていない。** Apple の説明では「その人が誰であるか、何をしているかによって、 最も高度なデジタル脅威に個人的に狙われうるごく少数の個人」向けの機能で、 **メッセージの添付の多くを遮断し、リンクのプレビューを無効にし、 複雑な Web 技術を遮断する**　<b>副作用:</b> **利便性を大きく損なう。** FaceTime は直近30日の連絡先以外から受けられず、 共有アルバムは削除され、Web フォントが表示されない。 **構成プロファイルの新規インストールと MDM への登録が遮断される**ため、 **組織の管理下に置く運用とは両立しない場面がある**</div><div class=sub><b>数え方:</b> 受信物の自動プレビューに依存する運用を、狙われうる人だけ見直す　<b>状況:</b> 本記録の評価（Apple の案内ではない）　<b>副作用:</b> メールやメッセージの使い勝手が落ちる。 **本件の入口は公表されていないため、この緩和が効く保証は無い**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年8月（背景）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**背景。** WhatsApp が、自社の iOS / macOS アプリの脆弱性 **CVE-2025-55177** が Apple の ImageIO のゼロデイ **CVE-2025-43300** と組み合わせて **200人未満**の利用者を狙ったゼロクリック攻撃に使われたとみられると公表した。 **報告元は本件と同じく Meta 側である。** 本記録はこれを**背景として扱い、本件との関係は公表されていない**ものとする</td></tr><tr><td class="sm nowrap tw">2026年2月12日（背景）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**背景。** CISA が **CVE-2026-20700**（Apple Multiple Buffer Overflow・CWE-119・ iOS / macOS / tvOS / watchOS / visionOS）を KEV へ収載した（対処期限 2026年3月5日）。 **この識別子が、後に本件の CVE として誤って報じられる**（discrepancies 参照）</td></tr><tr><td class="sm nowrap tw">時期不明（iOS 27 の公開前）</td><td class=nowrap><span class="b kind">発生</span></td><td>**悪用。** Apple の記述によれば、**iOS 27 より前の版**において、 **特定の標的とされた個人に対する極めて高度な攻撃**で本件が悪用された可能性がある という報告が Apple に届いている。 **時期・件数・標的・攻撃者・届け方のいずれも公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Apple が **iOS 26.7.1 / iPadOS 26.7.1**（サポート文書 149226）と **macOS Tahoe 26.7.1**（同 149228）のセキュリティ勧告を公開した。 掲載されている CVE は **CVE-2026-86950 の1件のみ**で、 部品は CoreGraphics、影響は「悪意を持って作成されたファイルの処理により 任意コード実行に至る可能性がある」、対処は「**境界チェックの改善**」、 謝辞は **Meta Product Security**。 **両方の勧告に、同じ「極めて高度な攻撃で悪用された可能性」の一文が付いている** （文中の対象は**いずれも「iOS 27 より前の iOS」**と書かれている）</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>同日、Apple は **iOS 27.0.1 / iPadOS 27.0.1・macOS Golden Gate 27.0.1・ watchOS 27.0.1・visionOS 27.0.1** も公開した。 **セキュリティリリースの一覧では、これら 27 系の更新はいずれも 「この更新に公開された CVE エントリはありません」と記されている**—— つまり **27 系は本件の対象外**という Apple の整理と整合する</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>報道が相次いだ。**SecurityWeek** は CVE 番号を **CVE-2026-86950** とし、 CoreGraphics が PDF と 2D 描画を担うことから 「**Web ページ・メールの添付・メッセージアプリ経由で届きえ、添付やリンクの 自動プレビューがゼロクリックの悪用を可能にしうる**」（原文英語）と指摘した。 一方 **BleepingComputer** は同じ脆弱性の CVE 番号を **CVE-2026-20700** と記しており、**両者は一致しない**</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者による観測。** Apple の勧告2本（149226・149228）と セキュリティリリース一覧（100100）、および CISA の KEV カタログ （catalogVersion 2026.09.27・全1,728件）を取得して確認した。 **CVE 番号は Apple 自身の勧告により CVE-2026-86950 で確定**し、 **CVE-2026-86950 は KEV に収載されていない**ことを確認した。 また **CVE-2026-20700 は2026年2月12日に収載済みの別件**であることを確認した。 JVN のフィード（2026-09-29 14:35 JST 更新）と JPCERT/CC の注意喚起一覧には 本件の掲載を見つけられなかった</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>同じ脆弱性の CVE 番号が、報道間で一致しない</span><div class=sm>**SecurityWeek は CVE-2026-86950、BleepingComputer は CVE-2026-20700 と 記している。** 本記録の作成者は Apple の勧告（サポート文書 149226・149228）を 取得し、**CoreGraphics の該当エントリが CVE-2026-86950 であることを確認した。** さらに CISA の KEV カタログ（catalogVersion 2026.09.27）を取得し、 **CVE-2026-20700 は2026年2月12日に収載された別件 （Apple Multiple Buffer Overflow・CWE-119・対処期限 2026年3月5日）**であることを 確認した。 **BleepingComputer の記事は、本件と、2026年2月に修正された dyld のゼロデイの 両方に同じ CVE-2026-20700 を当てており、記事内で整合していない。** 本記録は **CVE-2026-86950 を正とする。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>修正版に macOS Sequoia 15.8.1 が含まれるかを一次資料で確認できていない</span><div class=sm>SecurityWeek と BleepingComputer はいずれも修正版に **macOS Sequoia 15.8.1** を 挙げている。**本記録の作成者が原文を確認できたのは iOS / iPadOS 26.7.1（149226）と macOS Tahoe 26.7.1（149228）の2本のみ**であり、 Sequoia 15.8.1 の勧告は確認していない。 **報道に依拠した記述として区別する。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>「自動プレビューによるゼロクリックの成立」は Apple の記述ではない</span><div class=sm>**Apple は「悪意を持って作成されたファイルの処理により任意コード実行に至る 可能性がある」としか書いていない。** 「Web ページ・メールの添付・メッセージアプリ経由で届きえ、 添付やリンクの自動プレビューがゼロクリックの悪用を可能にしうる」は **SecurityWeek が CoreGraphics の役割から述べた整理**である。 本記録はこれを可能性として扱い、確認された経路としては扱わない。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>WhatsApp 経由だったかどうかについて、Meta は答えていない</span><div class=sm>報告者が Meta Product Security であることから、SecurityWeek は前年の WhatsApp の事案（CVE-2025-55177 と Apple ImageIO の CVE-2025-43300 の 組み合わせ・200人未満）との類似を指摘し、 **Meta に確認を求めたが回答は得られていない**と書いている。 2026年9月29日時点で Meta の公表は確認できていない。 **報告者が Meta であることは、悪用経路が Meta のアプリであることを意味しない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>国内の注意喚起を確認できていない</span><div class=sm>本記録の作成者は2026年9月29日、**JVN のフィード（最終更新 2026-09-29 14:35 JST）と JPCERT/CC の注意喚起一覧**を確認したが、 本件に関する掲載を見つけられなかった。 **「発出されていない」と確定したわけではなく、探して見つからなかった**という意味である。 JVN には同日付で PFU 製 Image Scanner Driver・Pgpool-II・Authlib の 掲載があり、フィード自体は更新されている。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ファイルを「描画した瞬間」が成立点で、届き方は公表されていない</div><div class=svgwrap><svg viewBox="0 0 1202 298" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,53.0 C193.0,53.0 193.0,149.0 220,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,149.0 C397.0,149.0 397.0,61.0 424,61.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,149.0 C397.0,149.0 397.0,149.0 424,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,149.0 C397.0,149.0 397.0,237.0 424,237.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,61.0 C601.0,61.0 601.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,149.0 C601.0,149.0 601.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,237.0 C601.0,237.0 601.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,104.0 C805.0,104.0 805.0,149.0 832,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,149.0 C1009.0,149.0 1009.0,149.0 1036,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,142.0 C397.0,142.0 397.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,200.0 C703.0,200.0 703.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,238.0 C397.0,238.0 397.0,200.0 628,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（特定されていない</text><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="91.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">帰属・時期・件数いずれも</text><text x="91.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">非公表</text><rect x="220" y="112.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪意を持って作成されたフ</text><text x="295.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ァイル（形式は非公表）</text><text x="295.0" y="161.0" text-anchor="middle" fill="#ffcc80" font-size="10">Apple の記述は「フ</text><text x="295.0" y="173.0" text-anchor="middle" fill="#ffcc80" font-size="10">ァイルの処理」のみ</text><rect x="424" y="24.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="46.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web ページ（可能性・</text><text x="499.0" y="60.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未確認）</text><text x="499.0" y="73.0" text-anchor="middle" fill="#64b5f6" font-size="10">SecurityWeek</text><text x="499.0" y="85.0" text-anchor="middle" fill="#64b5f6" font-size="10"> の指摘</text><rect x="424" y="112.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メールの添付（可能性・未</text><text x="499.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">確認）</text><text x="499.0" y="161.0" text-anchor="middle" fill="#64b5f6" font-size="10">自動プレビューでゼロクリ</text><text x="499.0" y="173.0" text-anchor="middle" fill="#64b5f6" font-size="10">ック成立の可能性</text><rect x="424" y="200.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メッセージアプリ（可能性</text><text x="499.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・未確認）</text><text x="499.0" y="249.0" text-anchor="middle" fill="#64b5f6" font-size="10">報告者が Meta のた</text><text x="499.0" y="261.0" text-anchor="middle" fill="#64b5f6" font-size="10">め注目されたが未確認</text><rect x="628" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CoreGraphics</text><text x="703.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（2D描画・画像描画・P</text><text x="703.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">DF描画）</text><text x="703.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE-2026-869</text><text x="703.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">50・境界外書き込み</text><rect x="832" y="105.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="127.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的とされた個人の iP</text><text x="907.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">hone / iPad（</text><text x="907.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">iOS 27 より前）</text><text x="907.0" y="168.0" text-anchor="middle" fill="#8892b0" font-size="10">人数・属性・国いずれも非</text><text x="907.0" y="180.0" text-anchor="middle" fill="#8892b0" font-size="10">公表</text><rect x="1036" y="119.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意コード実行</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#ffcc80" font-size="10">実行後の動作は一切公表さ</text><text x="1111.0" y="166.0" text-anchor="middle" fill="#ffcc80" font-size="10">れていない</text><rect x="16" y="104.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Meta Product</text><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Security（報告</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者）</text><text x="91.0" y="167.0" text-anchor="middle" fill="#80cbc4" font-size="10">Apple の謝辞</text><rect x="628" y="162.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">iOS / iPadOS</text><text x="703.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 26.7.1・macO</text><text x="703.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S Tahoe 26.…</text><text x="703.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">iOS 27 系は対象外</text><rect x="16" y="194.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（CVE</text><text x="91.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-2026-86950 </text><text x="91.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は未収載）</text><text x="91.0" y="257.0" text-anchor="middle" fill="#b0bec5" font-size="10">catalogVersi</text><text x="91.0" y="269.0" text-anchor="middle" fill="#b0bec5" font-size="10">on 2026.09.2</text></svg></div><div class=fn>CoreGraphics は 2D 描画・画像描画・PDF 描画を OS 全体で担う部品のため、 Web・メールの添付・メッセージのいずれからもファイルは届きうる。 **Apple はどの経路が使われたかを公表していない**（図の点線は SecurityWeek が可能性として挙げた経路であり、確認された経路ではない）。 報告したのは Meta Product Security で、修正は iOS / iPadOS 26.7.1 と macOS Tahoe 26.7.1 に入った。Apple の整理では iOS 27 系は対象外である。 **標的・件数・攻撃者・IoC・実行後の動作はいずれも公表されていない。**</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**IoC が公表されていないため、何を見れば検知できるのかが分からない。** 個人の端末では詳細なログが利用者の手元に残らず、 組織の EDR も iOS では観測できる範囲が限られる（**本記録の評価**）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>iOS / iPadOS 26.7.1・macOS Tahoe 26.7.1 以降へ更新する</div><div class=ctl><span class="b eff">侵入を防げた</span>iOS 27 系へ移行する（Apple の整理では対象外）</div><div class=ctl><span class="b eff">影響を限定できた</span>ロックダウンモードでメッセージの添付とリンクのプレビューを遮断する（本件への効果は公表されていない）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>公表された材料が無い。 **狙い撃ち攻撃の疑いがある端末は、利用者が触り続けるより、 専門機関へ渡す判断のほうが実務的である**（**本記録の評価**）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>更新の適用（実行の前提となる欠陥そのものを閉じる）</div><div class=ctl><span class="b eff">影響を限定できた</span>狙われうる人の端末を棚卸しし、更新の適用状況を個別に追う</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Apple は、**悪用の可能性・部品・影響・対処・報告者・対象機種**を公表した一方で、 **届け方・標的・件数・時期・攻撃者・IoC を公表しなかった。** 勧告に載せた CVE は1件のみで、他の修正内容は併記していない</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** 悪用の可能性を隠さず勧告に明記し、報告者を謝辞に挙げた点は評価できる。 1件だけの更新として切り出したことも、利用者が優先度を判断しやすい形である。 不十分なのは、**「この更新を急ぐべき利用者は誰か」の手がかりが無いこと**である。 「特定の標的とされた個人」という表現だけでは、 組織の管理者が**自組織の誰の端末を先に上げるべきか**を決められない。 属性を伏せたまま「狙い撃ちの対象になりうる職務の例」を示す余地はあったと考える</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「悪用が報告された1件だけの更新」を、通常の月次更新と別の扉で通す</div><div class=lw>本件の更新に載っている CVE は1件だけで、ベンダー自身が 「極めて高度な攻撃で悪用された可能性がある報告を承知している」と書いている。 MDM で検証と段階配信をしている組織では、この1件も通常の列に並び、 検証と配信の日数がそのまま露出期間になる。</div><div class=la><b>取るべき行動</b> **「ベンダーが悪用に言及した更新」だけを通す速い経路を、平時に作っておく。** 決めるのは技術ではなく、**検証を省く判断を誰が下せるか・何時間以内に配るか・ 業務影響が出たときに誰が受けるか**である。 年1回、実際に緊急配信を通して所要時間を測る。</div></li><li><div class=lp>狙われるのは組織ではなく人である——「その人の一覧」を持つ</div><div class=lw>Apple の表現は「特定の標的とされた個人」であり、組織の防御の厚さと無関係に 個人が狙われる型である。役員・広報・経営企画・研究者・ 外部の記者や活動家と接する職務の端末が対象になりうる。 私物端末であれば、組織の更新管理の外にある。</div><div class=la><b>取るべき行動</b> **「狙い撃ちされうる職務」の一覧を作り、その人の端末が管理下にあるかを確認する。** 管理外（BYOD・私物）なら、更新の督促と連絡経路を人ベースで持つ。 一覧は人事異動のたびに見直す。**長さは10〜20人程度で足りることが多い。**</div></li><li><div class=lp>CVE 番号は一次資料で確定してから台帳に入れる</div><div class=lw>本件では報道の CVE 番号が食い違い、片方（CVE-2026-20700）は 2026年2月に KEV へ収載済みの別件である。 番号で脆弱性管理を回していると、「2月に対処済み」という記録と突き合わせて 「対応不要」と誤判定しうる。</div><div class=la><b>取るべき行動</b> **脆弱性台帳への登録は、ベンダーの勧告か NVD を根拠として行う運用にする。** 報道を起点にしてよいが、**番号の出所を台帳に残す。** すでに登録済みの番号と一致したときは、**同一かどうかを勧告の本文で確認する。**</div></li><li><div class=lp>KEV に無いことを「待ってよい」の根拠にしない</div><div class=lw>本記録の確認時点で CVE-2026-86950 は KEV に収載されていない。 KEV は米連邦機関に期限を課す仕組みであり、収載の有無は 危険の大きさをそのまま表すものではない。国内の注意喚起も確認できていない。</div><div class=la><b>取るべき行動</b> **社内の優先度判定で「KEV 収載」を唯一の引き金にしていないかを点検する。** 「ベンダーが悪用に言及した」「境界に面している」「標的型の観測がある」を 独立した引き金として持つ。</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>今日、26 系に留まっている端末の台数と持ち主を数える</div><div class=lw>Apple の整理では iOS 27 系は本件の対象外で、悪用が報告されたのは 「iOS 27 より前の版」である。26 系に留まる方針の組織は、 留まる間に出る緊急更新を当て続ける前提に立っている。</div><div class=la><b>取るべき行動</b> MDM の在庫から **OS の版ごとの台数**を出し、 26.7.1 未満の端末と持ち主を一覧にする。 **対象機種（iPhone 11 以降、iPad Pro 12.9 インチ第3世代以降ほか）に 入らない古い端末は、そもそも更新が来ない**ため別枠で扱う。</div></li><li><div class=lp>「開かせる攻撃」ではなく「描画させる攻撃」として緩和を考える</div><div class=lw>CoreGraphics は OS がファイルを見せるときに通る部品である。 添付やリンクの自動プレビューが効く経路では、 利用者が何もしなくても描画が始まりうる（SecurityWeek の指摘）。 「怪しいものを開かない」という教育はこの型に効かない。</div><div class=la><b>取るべき行動</b> 狙われうる少数の端末について、**メッセージの添付とリンクのプレビューを 遮断する設定**（Apple のロックダウンモードはこれを含む）の適用可否を検討する。 **ただしロックダウンモードは構成プロファイルの新規インストールと MDM 登録を遮断するため、先に登録を済ませた端末で検証する。** **本件に効くとは Apple が述べていない**ことを前提に、費用対効果で判断する。</div></li><li><div class=lp>iOS の端末では「踏まれたか」を自力で判定しない前提を置く</div><div class=lw>Apple は IoC を公表しておらず、個人の端末には詳細なログが残らない。 EDR で iOS を観測できる範囲も限られる。 自力の解析に時間を使うと、端末を専門機関へ渡す機会を失う。</div><div class=la><b>取るべき行動</b> **狙い撃ちの疑いが生じたときの手順を1枚にする**—— 端末の使用を止める、機内モードにする、初期化しない、 バックアップを取る、相談先（人権団体のセキュリティラボ・ フォレンジック事業者・所轄の窓口）を決めておく。 **「初期化して様子を見る」は証拠を消す。**</div></li><li><div class=lp>26 系と 27 系が混在する前提で、更新の通知先を分ける</div><div class=lw>同じ日に 27 系の更新（CVE の掲載なし）と 26 系の更新（悪用の言及あり）が出た。 一律の「更新してください」では、急ぐべき人に急ぐ理由が届かない。</div><div class=la><b>取るべき行動</b> 配信と通知を**版ごとに分ける**。26 系には「悪用が報告された1件の修正である」 という理由を添え、27 系には通常の更新として案内する。 **理由を書かない通知は後回しにされる。**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> iOS 27 より前の iOS / iPadOS を使っている端末が業務で使われている</td><td class=sm>悪用が報告されたのは「iOS 27 より前の版」である。 26 系に留まる方針であれば、26.7.1 への更新が唯一の対処になる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> OS 更新を MDM で段階配信しており、緊急時に検証を省く判断者が決まっていない</td><td class=sm>本件は CVE 1件だけの更新で、通常の月次リリースと同じ列に並べると遅れる。 検証・段階配信の日数が、そのまま露出期間になる。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 役員・広報・研究者・記者と接する職務の端末を、個人ごとに把握していない</td><td class=sm>Apple の表現は「特定の標的とされた個人」であり、 組織単位ではなく人単位で狙われる型である。 私物端末（BYOD）は組織の更新管理の外にある。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の優先度判定を、KEV 収載や国内の注意喚起を引き金にして回している</td><td class=sm>CVE-2026-86950 は本記録の確認時点で KEV に無く、 JVN・JPCERT/CC の掲載も見つけられなかった。 引き金が外部の発出に依存していると、この型の更新に間に合わない。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 脆弱性台帳への登録を報道の CVE 番号で行っている</td><td class=sm>本件では報道の番号が食い違い、片方は2026年2月に KEV 収載済みの別件である。 番号の突き合わせだけで「対処済み」と判定すると取りこぼす。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 狙い撃ち攻撃の疑いが生じたときの端末の扱い（初期化の禁止・相談先）が決まっていない</td><td class=sm>IoC が公表されておらず、利用者が自力で判定する手がかりが無い。 初期化や再設定は、専門機関が調べられる材料を先に消す。</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月28日 Apple</span> <a href="https://support.apple.com/en-us/149226" target="_blank" rel="noreferrer noopener nofollow">About the security content of iOS 26.7.1 and iPadOS 26.7.1</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**当事者の公式勧告。本記録の一次資料。本記録の作成者が原文を取得して確認した。** 公開日 2026年9月28日、対象機種（iPhone 11 以降、iPad Pro 12.9 インチ第3世代以降、 iPad Pro 11 インチ第1世代以降、iPad Air 第3世代以降、iPad 第8世代以降、 iPad mini 第5世代以降）、**掲載 CVE は CVE-2026-86950 の1件のみ**、 部品は CoreGraphics、影響「悪意を持って作成されたファイルの処理により、 任意コード実行に至る可能性がある」、対処「境界チェックの改善により対処した」、 謝辞「Meta Product Security」、および 「**Apple は、本件が iOS 27 より前の版において、特定の標的とされた個人に対する 極めて高度な攻撃で悪用された可能性があるという報告を承知している**」の一文は すべてこの文書で確認した)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年9月28日 Apple</span> <a href="https://support.apple.com/en-us/149228" target="_blank" rel="noreferrer noopener nofollow">About the security content of macOS Tahoe 26.7.1</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**当事者の公式勧告。本記録の作成者が原文を取得して確認した。** macOS 側も掲載 CVE は CVE-2026-86950 のみで、影響の記述は iOS 版と同じ。 **悪用の可能性に関する一文も同じ文言で付いており、その対象は 「iOS 27 より前の iOS」と書かれている**—— macOS での悪用が観測されたとは書かれていない)）</span></li><li><span class=rid>[3]</span> <span class=sm>取得日 2026年9月29日 Apple</span> <a href="https://support.apple.com/en-us/100100" target="_blank" rel="noreferrer noopener nofollow">Apple security releases</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(英語。**本記録の作成者が取得して確認した。** 2026年9月28日付で **iOS 27.0.1 / iPadOS 27.0.1・macOS Golden Gate 27.0.1・ watchOS 27.0.1・visionOS 27.0.1** が公開され、いずれにも 「**この更新に公開された CVE エントリはありません**」と記されていることを確認した。 **27 系が本件の対象外であるという Apple の整理と整合する**)）</span></li><li><span class=rid>[8]</span> <span class=sm>取得日 2026年9月29日 Apple</span> <a href="https://support.apple.com/en-us/105120" target="_blank" rel="noreferrer noopener nofollow">About Lockdown Mode</a> <span class="b kind">FAQ・よくあるご質問</span><span class=sm>（(英語。**背景資料。本記録の作成者が取得して確認した。** Apple はロックダウンモードを「**その人が誰であるか、何をしているかによって、 最も高度なデジタル脅威に個人的に狙われうるごく少数の個人**」向けの 任意の保護と説明している。 有効時は**メッセージの添付の多く（特定の画像・動画・音声を除く）を遮断**し、 **リンクのプレビューを無効**にし、**複雑な Web 技術を遮断**する。 FaceTime は直近30日の連絡先以外から受けられず、共有アルバムは削除され、 **構成プロファイルの新規インストールと MDM への登録が遮断される。** **Apple は本機能が CVE-2026-86950 に効くとは述べていない**—— 本記録は同じ型の攻撃経路に対する既存の機能として参照している)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>catalogVersion 2026.09.27（取得日 2026年9月29日） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**本記録の作成者が JSON 全1,728件を取得して確認した。** ①**CVE-2026-86950 の収載は無い。** ②vendorProject が Apple かつ dateAdded が2026年のエントリは**8件**。 ③そのうち **CVE-2026-20700 は2026年2月12日収載**で、 vulnerabilityName は &quot;Apple Multiple Buffer Overflow Vulnerability&quot;、 cwes は CWE-119、dueDate は 2026-03-05、forensicTriage は No。 **BleepingComputer が本件の CVE として記した番号は、この別件と一致する**)）</span></li><li><span class=rid>[7]</span> <span class=sm>取得日 2026年9月29日（フィード最終更新 2026-09-29 14:35 JST） JPCERT/CC・JVN</span> <a href="https://jvn.jp/rss/jvn.rdf" target="_blank" rel="noreferrer noopener nofollow">JVNRSS Feed - Update Entry / JPCERT/CC 注意喚起一覧</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(日本語。**本記録の作成者が取得して確認した。** **本件（CVE-2026-86950・Apple CoreGraphics）に関する掲載は見つけられなかった。** 同フィードには2026年9月29日付で「PFU製 Image Scanner Driver for Linux における 複数の脆弱性」「Pgpool-II における複数の脆弱性」「Authlib ライブラリにおける 署名検証が回避される脆弱性」が掲載されており、フィード自体は更新されている。 **「発出されていない」と確定したわけではなく、探して見つからなかったという意味である**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年9月29日 SecurityWeek</span> <a href="https://www.securityweek.com/apple-patches-meta-reported-zero-day-linked-to-extremely-sophisticated-attack/" target="_blank" rel="noreferrer noopener nofollow">Apple Patches Meta-Reported Zero-Day Linked to ‘Extremely Sophisticated Attack’</a> <span class="b kind">記事</span><span class=sm>（(英語。**報道。本記録の起点にあたる記事の1本。** 勧告では確認できていない次の点はこの記事に依拠している—— **修正版に macOS Sequoia 15.8.1 が含まれること**、 **CoreGraphics の役割から Web・メール添付・メッセージ経由の到達と 自動プレビューによるゼロクリック成立がありうるという整理**、 **2025年8月の WhatsApp（CVE-2025-55177）と Apple ImageIO（CVE-2025-43300）の 組み合わせによる200人未満への攻撃**、 **Meta へ確認を求めたが回答が得られていないこと**、 **KEV へ収載されれば本年9件目の Apple 製品の脆弱性になること**、 **iOS 27 / macOS Golden Gate 27 は影響を受けないとみられること**)）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年9月29日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/apple-patches-coregraphics-zero-day-flaw-exploited-in-attacks/" target="_blank" rel="noreferrer noopener nofollow">Apple patches CoreGraphics zero-day flaw exploited in attacks</a> <span class="b kind">記事</span><span class=sm>（(英語。**報道。ただし CVE 番号を CVE-2026-20700 と記しており、 Apple の勧告（CVE-2026-86950）と一致しない。** 同記事は2026年2月に修正された dyld のゼロデイにも同じ CVE-2026-20700 を 当てているため、記事内でも整合していない。 対象機種の一覧、Meta Product Security による発見、 「境界チェックの改善で対処した」という記述は Apple の勧告と一致する。 **本記録は CVE 番号についてこの記事を採らない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月29日（日中）</span> <span class="b rev">新規作成</span> 新規作成。2026年9月29日の日中の新着記事（SecurityWeek・BleepingComputer の2本）を 起点に、**Apple の勧告2本（iOS / iPadOS 26.7.1＝149226、macOS Tahoe 26.7.1＝149228）・ Apple のセキュリティリリース一覧（100100）・CISA の KEV カタログ （catalogVersion 2026.09.27・全1,728件）・Apple のロックダウンモードの説明・ JVN のフィード**を取得して裏を取った。 **その結果、報道間で食い違っていた CVE 番号を一次資料で確定させた**—— 正は **CVE-2026-86950**（Apple の勧告）であり、 BleepingComputer が記した **CVE-2026-20700 は2026年2月12日に KEV へ収載済みの 別件**である（KEV の原本で確認）。この食い違いは discrepancies に記録した。 **CVE-2026-86950 が KEV に収載されていないこと**、 **2026年に収載された Apple 製品の脆弱性が8件であること**も同じ原本から確認している。 悪用については、**Apple が「悪用された」と断定していない**（「悪用された可能性が あるという報告を承知している」）点をそのまま保存し、 misuse.status は `not_confirmed` としたうえで、 root_causes には `zero-day` を置いた（**修正の公開前の悪用が報告されているため**）。 **「自動プレビューによるゼロクリックの成立」は SecurityWeek の整理であり Apple の記述ではない**ため、unverified_claim として区別した。 修正版に macOS Sequoia 15.8.1 が含まれるかは原文を確認できておらず、 self_unverified として明示した。 日本の組織は当事者として挙がっていないが、 ①**狙われるのが「組織」ではなく「特定の個人」であり、役員・広報・研究者の端末 （私物を含む）が対象になりうる**こと、 ②**CVE 1件だけの緊急更新が、MDM で段階配信する組織ほど通りにくい**という 運用上の論点が明確であること、 ③**KEV にも JVN にも掲載が無い状態で優先度を判断しなければならない**こと、 ④**報道の CVE 番号の食い違いが、番号で脆弱性管理を回す組織に誤判定を生じさせうる**こと ——の4点で先例として価値があると判断して記録した。 **本記録は IoC を一切持たない**（Apple が公表していない）。 標的・件数・攻撃者・届け方・悪用の時期がいずれも未公表で続報の余地が大きいため、 status は new とする。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">Apple</span><span class="b tag">iOS</span><span class="b tag">iPadOS</span><span class="b tag">macOS</span><span class="b tag">CoreGraphics</span><span class="b tag">CVE-2026-86950</span><span class="b tag">ゼロデイ</span><span class="b tag">悪用済み</span><span class="b tag">境界外書き込み</span><span class="b tag">任意コード実行</span><span class="b tag">標的型</span><span class="b tag">商用スパイウェア型</span><span class="b tag">Meta Product Security</span><span class="b tag">WhatsApp</span><span class="b tag">CVE-2025-43300</span><span class="b tag">iOS 26.7.1</span><span class="b tag">macOS Tahoe 26.7.1</span><span class="b tag">ロックダウンモード</span><span class="b tag">ゼロクリック</span><span class="b tag">PDF描画</span><span class="b tag">KEV未収載</span><span class="b tag">CVE番号の食い違い</span><span class="b tag">MDM</span><span class="b tag">段階配信</span><span class="b tag">JVN未掲載</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-29 17:55 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
