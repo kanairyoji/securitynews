@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Pgpool-II の watchdog に脆弱性7件 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0251</span>Pgpool-II の watchdog に脆弱性7件</h1>
+<header class="site-header">
+  <p class="subtitle">JPCERT/CC の JVN が2026年9月29日、PostgreSQL 用ミドルウェア **Pgpool-II** の脆弱性 **7件**（CVE-2026-92867〜CVE-2026-92873）を公表した——**うち6件は高可用性のための watchdog のメッセージ処理**にあり、最も重いものは不正なフェイルオーバー要求で**任意のメモリアドレスに32ビット値を書き込める**（CVSS 4.0 で 8.7・CVSS 3.0 で 8.8）。残る1件はクライアント証明書の Common Name に **NUL バイト**を仕込むと**パスワードなしで別のユーザーとして接続できる**認証迂回である。修正は 4.7.3 / 4.6.8 / 4.5.13 / 4.4.18 / 4.3.21 で、**3.5系から4.2系はサポート終了のため修正版が出ない**。開発者は「watchdog を止める」「watchdog への到達を信頼できる網に限る」等の回避策をリリースノートに書いているが、**JVN 側には回避策の記載が無い**。悪用の報告は無く、本記録の確認時点で **NVD への登録も CISA KEV への収載も無い**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月29日</span>
+  <span>最終更新: 2026年9月29日</span>
+</div>
+
+<div class="lead"><p><strong>2026年9月29日</strong>、JPCERT/CC が運営する <strong>JVN</strong>（JVN#22475874）と<strong>JVN iPedia</strong>（JVNDB-2026-000140）に、<strong>Pgpool-II</strong> の脆弱性 <strong>7件</strong> が公表されました。同日、開発者（Pgpool Global Development Group）が修正版<strong>4.7.3 / 4.6.8 / 4.5.13 / 4.4.18 / 4.3.21</strong> を公開しています。</p>
+<p>Pgpool-II は PostgreSQL の前段に置くミドルウェアで、接続プーリング・負荷分散・高可用性を担います。<strong>7件のうち6件は、その高可用性のための watchdog（ノード間の死活監視とリーダー選定）のメッセージ処理にあります。</strong></p>
+<table>
+<thead>
+<tr>
+<th>CVE</th>
+<th>種類（CWE）</th>
+<th>CVSS 4.0 / 3.0</th>
+<th>想定される影響</th>
+<th>成立の条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CVE-2026-92867</strong></td>
+<td>境界外書き込み（CWE-787）</td>
+<td><strong>8.7 / 8.8</strong></td>
+<td>プロセスの異常終了、<strong>任意コード実行</strong></td>
+<td>watchdog が有効</td>
+</tr>
+<tr>
+<td>CVE-2026-92868</td>
+<td>不適切な証明書検証（CWE-295）</td>
+<td>6.9 / 6.5</td>
+<td><strong>クライアント証明書の認証を迂回</strong></td>
+<td>証明書認証を使用</td>
+</tr>
+<tr>
+<td>CVE-2026-92869</td>
+<td>境界外書き込み（CWE-787）</td>
+<td>7.1 / 6.5</td>
+<td>プロセスの異常終了</td>
+<td>watchdog が有効</td>
+</tr>
+<tr>
+<td>CVE-2026-92870</td>
+<td>スタックベースのバッファオーバーフロー（CWE-121）</td>
+<td>8.7 / 7.5</td>
+<td>プロセスの異常終了</td>
+<td>watchdog が有効・認証鍵の未設定時</td>
+</tr>
+<tr>
+<td>CVE-2026-92871</td>
+<td>NULL ポインタ参照（CWE-476）</td>
+<td>8.7 / 7.5</td>
+<td>watchdog プロセスの異常終了</td>
+<td>watchdog が有効・認証鍵の設定時</td>
+</tr>
+<tr>
+<td>CVE-2026-92872</td>
+<td>ログファイルからの情報漏えい（CWE-532）</td>
+<td>5.3 / 4.3</td>
+<td>クラスタに関する情報の漏えい</td>
+<td>watchdog が有効</td>
+</tr>
+<tr>
+<td>CVE-2026-92873</td>
+<td>認証アルゴリズムの不適切な実装（CWE-303）</td>
+<td>6.9 / 7.3</td>
+<td><strong>任意の watchdog ノードがリーダーへ昇格</strong></td>
+<td>watchdog が有効</td>
+</tr>
+</tbody>
+</table>
+<p>最も重い CVE-2026-92867 について、開発者は次のように書いています。</p>
+<blockquote>
+<p><strong>攻撃者は Pgpool-II の watchdog に不正な形式のフェイルオーバー要求メッセージを送ることができ、意図しないメモリアドレスへ値が書き込まれ、メモリ破壊に至る。</strong>（原文英語）</p>
+</blockquote>
+<p>この記録が扱う要点は4つです。</p>
+<ul>
+<li><strong>該否は版番号だけでは決まりません。</strong> 6件は watchdog を有効にしている場合に限られ、watchdog は<strong>既定では無効</strong>です。1件は証明書認証を使っている場合だけです。</li>
+<li><strong>watchdog の待ち受けは管理系のポートです</strong>（既定で <strong>TCP 9000</strong>、ハートビートは <strong>UDP 9694</strong>）。しかも<strong>認証鍵は既定で空＝認証無効</strong>で、設定していても CVE-2026-92873 では検査を迂回されます。</li>
+<li><strong>3.5系から4.2系には修正版が出ません。</strong> JVN は「サポートが終了しているため、修正版がリリースされません」と明記し、4.3 より前を使っている場合は最新版へのアップグレードを求めています。</li>
+<li><strong>回避策は JVN には書かれていません。</strong> 「watchdog を止める」「watchdog への到達を信頼できる網に限る」「証明書認証以外の認証方式に変える」は<strong>開発者のリリースノート側</strong>にあります。</li>
+</ul></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（8件）">公表・報道からわかったこと（8件）</a></li><li><a href="#s14" title="事案の詳細">事案の詳細</a></li><li><a href="#s15" title="経過">経過</a></li><li><a href="#s16" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s17" title="波及の構造">波及の構造</a></li><li><a href="#s18" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s19" title="対応の評価">対応の評価</a></li><li><a href="#s20" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s21" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s22" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s23" title="出典">出典</a></li><li><a href="#s24" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s25" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>悪用された事例があるか</span><span class="b rsn">探索したが未発見</span><div class=sm>**JVN・JVN iPedia・開発者の告知・リリースノートのいずれも、 実際の攻撃に触れていない。** 本記録の作成者も KEV に収載が無いことを確認した。 **ただし watchdog へ不正なメッセージを送って落とす攻撃は、 被害側から見れば「プロセスが落ちた」という障害としてしか現れない。** 障害として処理された事例が過去に無いとは言えず、 **観測されていないことを「起きていない」と読むことはできない**（本記録の評価）</div></li><li><span class=ui>欠陥がいつ導入され、どれだけの期間露出していたのか</span><span class="b rsn">公表されていない</span><div class=sm>影響範囲は版番号で示されるだけで、**各版の公開日が書かれていない。** 対象が **3.5系まで遡る**ことから長期にわたるとみられるが、 **本記録は年数を算出しない。** 「いつから疑うべきか」を利用者が決められない</div></li><li><span class=ui>報告から公表までにどれだけかかったのか</span><span class="b rsn">公表されていない</span><div class=sm>JVN は「製品開発者に直接報告し、製品開発者との調整を経て」と書くだけで、 **報告日も調整期間も示していない。** **7件すべてが同一の報告によるものかどうかも公表されていない。** 修正版の公開と JVN の公表は同日である</div></li><li><span class=ui>影響を受ける環境がどれだけあるのか</span><span class="b rsn">公表されていない</span><div class=sm>**利用組織数・watchdog を有効にしている割合・ watchdog の待ち受けが外部から到達可能な環境の数は、 誰も示していない。** 本記録も外部からの探索や推計は行っていない。 **該否は各組織が自分の構成を見るしかない**</div></li><li><span class=ui>メモリ破壊から任意コード実行に至る具体的な条件</span><span class="b rsn">公表されていない</span><div class=sm>CVE-2026-92867 の想定される影響には**任意コード実行**が挙がっているが、 **どのような条件で実行まで至るのか、実証コードが存在するのかは公表されていない。** 開発者の記述は「意図しないメモリアドレスへ値が書き込まれ、メモリ破壊に至る」 （原文英語）にとどまる。 **協調開示の作法として詳細を出さない判断はありうる**（本記録の評価）</div></li><li><span class=ui>サポート終了した3.5系から4.2系の利用者がどれだけ残っているか</span><span class="b rsn">公表されていない</span><div class=sm>**修正版が出ない版を使い続けている環境の数は公表されていない。** JVN は最新版へのアップグレードを求めているが、 **系列をまたぐアップグレードは設定の互換性の確認が要る**ため、 「上げられないまま残る」環境が生じうる（本記録の評価）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Pgpool Global Development Group</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Pgpool-II を運用している組織（名称は公表されていない）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Topicus Security（報告者 Emond Papegaaij 氏）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC・IPA（JVN / JVN iPedia）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>公表された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>件</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>CVE-2026-92867・92868・92869・92870・92871・92872・92873。 **JVN と JVN iPedia の双方で7件である。** なお本記録の起点にした収集記事の本文抽出では、 冒頭の CVE 一覧に **CVE-2026-92868 が現れていなかった**—— 同 CVE だけ影響を受けるバージョンの範囲が違い（4.0系から4.2系）、 ページ上で別立てになっているためとみられる（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>watchdog のメッセージ処理に起因する件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>6<span class=fu>件</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>**本記録の作成者が開発者のリリースノートの記述から数えた値。** CVE-2026-92867・92869・92870・92871・92872・92873 が watchdog 側 （フェイルオーバー要求の処理・ハートビート受信・昇格処理）に属し、 **残る CVE-2026-92868 だけがクライアント証明書認証の側**である。 **watchdog は既定で無効**なので、この6件は該否が構成に依存する</div></div><div class=fig><div class=fh><span class=fl>7件中で最も高い CVSS 4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.7<span class=fu>点</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>CVE-2026-92867（ベクタは `CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N`）。 **同じ 8.7 は CVE-2026-92870 と CVE-2026-92871 にも付いており、 こちらは影響が可用性のみ**（プロセスの異常終了）で、 **必要な権限が無し**（`PR:N`）である点が異なる。 **CVSS 4.0 では「権限不要で落とせる」ものが、 「低権限で任意コード実行に至りうる」ものと同じ点数に並ぶ**</div></div><div class=fig><div class=fh><span class=fl>7件中で最も高い CVSS 3.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.8<span class=fu>点</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>CVE-2026-92867（ベクタは `CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H`）。 **4.0 と 3.0 で順位が入れ替わる件がある**——CVE-2026-92873 は 4.0 で 6.9・3.0 で 7.3、CVE-2026-92869 は 4.0 で 7.1・3.0 で 6.5 である。 **どちらの版で並べるかによって「上位3件」の顔ぶれが変わる**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>同日に公開された修正版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>4.7.3・4.6.8・4.5.13・4.4.18・4.3.21。 **維持されている5系列すべてに同時に修正が出た**。 **3.5系から4.2系には出ない**（JVN が明記）</div></div><div class=fig><div class=fh><span class=fl>7件のうち NVD に登録されていた件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>0<span class=fu>件</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>**本記録の作成者が NVD の照会機能で7件を1件ずつ確認した値**で、 いずれも該当0件だった。 **CVE 番号は割り当てられているが、公表当日には NVD 側の記載が無い。** 国内の情報（JVN・JVN iPedia）と開発者のリリースノートが、 この時点で唯一の一次資料である</div></div><div class=fig><div class=fh><span class=fl>7件のうち CISA の KEV に収載されていた件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>0<span class=fu>件</span></div><div class=fa>2026年9月29日 時点</div><div class=fn>**本記録の作成者が KEV のカタログ（版 2026.09.27・収載1,728件）を取得して 確認した値。** Pgpool-II の項目も本件の CVE も無い。 **悪用が観測されていないことと整合する**が、 **KEV は米国当局が悪用を確認した分だけを載せるもので、 「悪用されていない」ことの証明ではない**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**watchdog の待ち受け（既定 TCP 9000）またはハートビートの受信（既定 UDP 9694）へ 到達できる位置から、不正な形式のメッセージを送る。** メッセージの処理でメモリが破壊され（任意アドレスへの32ビット書き込み・ 任意長データのスタックへの書き込み・固定長配列の越境）、 プロセスの異常終了、または任意コード実行に至りうる。 認証鍵の検査を迂回すれば**任意のノードをリーダーへ昇格**させられ、 ハートビート処理の不備では**スタックメモリの内容がログへ出る**。 別経路として、**X.509 証明書の Common Name に NUL バイトを仕込むと、 パスワードなしで別のユーザーとして接続できる**。 **以下は公表資料から読み取れる成立経路であり、現実の攻撃は報告されていない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[5]</span></div><div>**watchdog が待ち受けているかを探す。** 既定は TCP 9000（watchdog）と UDP 9694（ハートビート受信）である。 **この段階は本件に固有のものではなく、一般的なポートの探索で足りる。** 実際にそのような探索が観測されたという公表は無い</div><div class=fn>根拠: 設定項目の説明（既定の待ち受けポート）。攻撃の観測は公表されていない</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[2] [3]</span></div><div>**watchdog へ不正な形式のメッセージを送る。** **認証鍵は既定で空＝認証無効**であり、 鍵を設定していても **CVE-2026-92873 では認証鍵の検査を迂回される。** 開発者は CVE-2026-92871 について 「**watchdog のポートへ接続できる攻撃者は、 対象ノードの watchdog プロセスをクラッシュさせられる**」（原文英語）と書いている</div><div class=fn>根拠: 開発者のリリースノートの記述（各 CVE の成立条件）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs>[2] [3]</span></div><div>**メッセージの処理でメモリが破壊される。** フェイルオーバー要求の処理では 「**意図しないメモリアドレスへ値が書き込まれ、メモリ破壊に至る**」 （CVE-2026-92867・原文英語）、 「**任意の長さのデータをスタックへ書き込む**」（CVE-2026-92870・原文英語）。 watchdog メッセージの処理では 「**作り込まれたメッセージの処理により固定長の配列を越えた書き込みが起こりうる。 これを悪用すると Pgpool-II のプロセスがクラッシュするか、 メモリが破壊される**」（CVE-2026-92869・原文英語）</div><div class=fn>根拠: 開発者のリリースノートの記述</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [3]</span></div><div>**認証の判断をずらす。** 2つの経路がある。 ①**CVE-2026-92873**——「**攻撃者は認証鍵の検査を迂回し、 自分が選んだ watchdog ノードをリーダーへ昇格させられる**」（原文英語）。 ②**CVE-2026-92868**——X.509 証明書の Common Name の NUL バイトの扱いの不備により 「**悪意あるクライアントが、パスワードなしで別のユーザーとして Pgpool-II サーバへ接続できる**」（原文英語）。 **②は watchdog を使っていない環境でも成立する**</div><div class=fn>根拠: 開発者のリリースノートと JVN の想定される影響</div></li><li><div class=stg><span class="b stage">5. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [3]</span></div><div>**想定される影響は JVN が挙げている。** Pgpool-II のプロセスが異常終了したり任意のコードを実行されたりする （CVE-2026-92867）、クライアント証明書の認証が回避される（CVE-2026-92868）、 プロセスが異常終了する（CVE-2026-92869・92870）、 watchdog プロセスが異常終了する（CVE-2026-92871）、 クラスタに関する情報が漏えいする（CVE-2026-92872）、 任意の watchdog ノードがリーダーノードに昇格する（CVE-2026-92873）。 **Pgpool-II は PostgreSQL の前段に置く中継役であるため、 プロセスが落ちればその先のデータベースへの経路が途絶える**（本記録の評価）</div><div class=fn>根拠: JVN の想定される影響と開発者のリリースノート</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**修正版5本の公開と、JVN・JVN iPedia の公表を同日（2026年9月29日）に行った。** 報告は開発者への直接報告と調整を経ている</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 修正が出る前に公表すれば利用者は無防備なまま危険を知る。 同日にすれば直せる状態で知らせられるが、 **報告から公表までの期間は誰にも見えなくなる。** 本件では報告日が公表されていないため、 **調整に何か月かかったのかを外から検証できない**</div></li><li><div class=ui>**開発者はリリースノートに CVE ごとの成立条件と回避策を書いた**が、 **JVN 側には回避策の節が無く、対策は「アップデートする」のみ**である。 また **7件のうち6件の影響範囲に、修正版が出ない 3.5系から4.2系が含まれる**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> JVN が回避策を載せないのは、開発者情報への案内を主にする作法とも読める。 一方で、**上げられない環境にとっては回避策こそが唯一の手**である。 国内の注意喚起だけを見て動く組織は、 **watchdog を止める・到達を制限する、という選択肢を知らないまま終わる**</div></li></ul></div>
+<section id="s6"><h2>7件のうち6件は、高可用性のための watchdog にある<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3] [5]</span></h2><p>Pgpool-II は PostgreSQL の前段に置くミドルウェアで、接続プーリング・負荷分散・高可用性を担います。公式サイトの説明は「PostgreSQL のための接続プーリング・ロードバランシング・高可用性の機能を備えたオープンソースのミドルウェア」です。</p>
+<p>2026年9月29日に公表された7件のうち、<strong>6件は watchdog のメッセージ処理</strong>にあります。watchdog は複数の Pgpool-II ノードが互いの生死を見張り、<strong>どのノードがリーダーになるかを決める</strong>機能です。内訳は次のとおりです。</p>
+<ul>
+<li><strong>フェイルオーバー要求メッセージの処理</strong>——CVE-2026-92867（任意アドレスへの32ビット書き込み）・CVE-2026-92870（任意長データのスタックへの書き込み）</li>
+<li><strong>watchdog メッセージ全般の処理</strong>——CVE-2026-92869（配列の上限検査の不備による境界外書き込み）</li>
+<li><strong>ノード間の認証</strong>——CVE-2026-92871（認証情報を欠いたメッセージでNULL ポインタ参照）・CVE-2026-92873（認証鍵の検査の迂回）</li>
+<li><strong>ハートビート受信</strong>——CVE-2026-92872（スタックメモリの内容がログへ出る）</li>
+</ul>
+<p>残る1件、<strong>CVE-2026-92868 だけがクライアント証明書認証の側</strong>にあります。</p>
+<p>ここから、実務上の順序が決まります。<strong>まず見るのは版番号ではなく構成です。</strong> watchdog は<strong>既定で無効</strong>（<code>use_watchdog = off</code>）なので、単体構成で接続プーリングと負荷分散だけに使っている環境は、6件の対象外です。逆に、<strong>冗長化のために watchdog を入れている環境が、その冗長化の部品で狙われる</strong>という形になっています。</p></section>
+<section id="s7"><h2>最も重いのは、不正なフェイルオーバー要求で任意のアドレスに書き込めるもの<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p><strong>CVE-2026-92867</strong>（CVSS 4.0 で 8.7・CVSS 3.0 で 8.8）について、開発者はこう書いています。</p>
+<blockquote>
+<p><strong>攻撃者は Pgpool-II の watchdog に不正な形式のフェイルオーバー要求メッセージを送ることができ、意図しないメモリアドレスへ値が書き込まれ、メモリ破壊に至る。</strong>（原文英語）</p>
+</blockquote>
+<p>JVN が挙げる想定される影響は「Pgpool-II のプロセスが異常終了したり、<strong>任意のコードを実行されたりする</strong>」です。書き込めるのは<strong>任意のアドレスへの32ビット値</strong>であり、<strong>これが任意コード実行へ至る条件は公表されていません。</strong></p>
+<p>同じ「フェイルオーバー要求の処理」には <strong>CVE-2026-92870</strong> もあります。開発者の記述は「攻撃者は Pgpool-II の watchdog に不正な形式のフェイルオーバーメッセージを送り、<strong>任意の長さのデータをスタックへ書き込める</strong>」（原文英語）です。こちらの想定される影響はプロセスの異常終了にとどまりますが、<strong>CVSS 4.0 では 8.7</strong> で、必要な権限が<strong>無し</strong>（<code>PR:N</code>）と採点されています。</p>
+<p>注意すべきは、<strong>CVSS の版によって順位が入れ替わる</strong>ことです。</p>
+<ul>
+<li>CVE-2026-92867 は 4.0 で <strong>8.7</strong>・3.0 で <strong>8.8</strong>（権限は「低」）</li>
+<li>CVE-2026-92870 と CVE-2026-92871 は 4.0 で <strong>8.7</strong>・3.0 で <strong>7.5</strong>（権限は「無し」）</li>
+<li>CVE-2026-92873 は 4.0 で <strong>6.9</strong>・3.0 で <strong>7.3</strong></li>
+<li>CVE-2026-92869 は 4.0 で <strong>7.1</strong>・3.0 で <strong>6.5</strong></li>
+</ul>
+<p><strong>どちらの版で並べるかで「上から3件」の顔ぶれが変わります。</strong>台帳に片方だけを入れている組織は、<strong>社内の優先順位が外の勧告の並びと食い違うことを知っておく必要があります</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>証明書の Common Name に NUL バイトを仕込むと、別人として通る<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>7件のうち<strong>唯一 watchdog に依らない</strong>のが <strong>CVE-2026-92868</strong>（不適切な証明書検証・CWE-295・CVSS 4.0 で 6.9・3.0 で 6.5）です。</p>
+<p>開発者の記述は、X.509 証明書の <strong>Common Name フィールドに含まれる NUL バイトの扱いが不適切</strong>であるために、証明書認証を使っているとき「<strong>悪意あるクライアントが、パスワードなしで別のユーザーとしてPgpool-II サーバへ接続できる</strong>」（原文英語）というものです。あわせて「<strong>そのような証明書を提示することで、本来は拒否されるべき認証が正規の利用者として通ってしまう可能性がある</strong>」（原文英語）とも書かれています。</p>
+<p>これは<strong>古典的な落とし穴</strong>です。証明書の中の文字列を、NUL バイトで終わる文字列として扱う実装と、長さを持った文字列として扱う実装が混在すると、<strong>「どこまでが名前か」の解釈がずれます。</strong>認証の判断がその名前に依存していれば、<strong>判断そのものがずれます。</strong></p>
+<p>対象は<strong>クライアント証明書認証を使っている環境に限られます。</strong>開発者が挙げる回避策は「<strong>クライアント証明書認証以外の認証方式を使う</strong>」（原文英語）です。ただし証明書認証は<strong>パスワードを配らないために選ばれている</strong>ことが多く、「他の方式に変える」は<strong>運用としては軽い作業ではありません</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>認証鍵は既定で空——設定していても、昇格の検査は迂回される<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [4] [5]</span></h2><p>watchdog のノード間通信には認証鍵（<code>wd_authkey</code>）があります。本記録の作成者が設定項目の説明で確認したところ、<strong>既定値は空で、その場合 watchdog の認証は無効</strong>になります。説明は「すべての watchdog の通信に使う認証鍵を指定する。すべての Pgpool-II が同じ鍵を持たなければならない。<strong>異なる鍵を持つ watchdog からのパケットは拒否される</strong>」（原文英語）です。</p>
+<p>この既定値が、今回の7件の読み方を変えます。</p>
+<ul>
+<li><strong>CVE-2026-92870</strong>（スタックへの任意長書き込み）は、開発者の記述では<strong>認証鍵が設定されていないとき</strong>に成立します。<strong>つまり既定のまま watchdog を有効にした環境が対象です。</strong></li>
+<li><strong>CVE-2026-92871</strong>（NULL ポインタ参照）は逆に、<strong>認証鍵を設定しているとき</strong>に、認証情報を欠いたメッセージで成立します。</li>
+<li><strong>CVE-2026-92873</strong> は<strong>認証鍵の検査自体を迂回</strong>して、「<strong>攻撃者が選んだ watchdog ノードをリーダーへ昇格させられる</strong>」（原文英語）ものです。</li>
+</ul>
+<p>並べると、<strong>鍵を設定していない環境と設定した環境の双方に、それぞれの当たり方がある</strong>ことになります。「認証鍵を入れたから watchdog の通信は守られている」という前提は、<strong>本件では成り立ちません</strong>（本記録の評価）。</p>
+<p>リーダーの昇格が攻撃者の思い通りになると何が起きるかは、構成次第です。watchdog のリーダーは<strong>仮想IPの保持やフェイルオーバーの指示</strong>に関わるため、<strong>昇格の操作は「どのノードにトラフィックを向けるか」の操作になりえます。</strong> <strong>ただし本件でそこまでの影響が公表されているわけではありません</strong>—— JVN の記述は「任意のウォッチドッグノードがリーダーノードに昇格する」まで、JVN iPedia は「ノード間通信の改ざん」までです。</p></section>
+<section id="s10"><h2>3.5系から4.2系には、修正版が出ない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3] [5]</span></h2><p>JVN の対策の節は、修正版5本を挙げたうえでこう書いています。</p>
+<blockquote>
+<p><strong>Pgpool-II 3.5系から4.2系まではサポートが終了しているため、修正版がリリースされません。4.3より前のバージョンを利用している場合は、上記最新バージョンへアップグレードしてください。</strong></p>
+</blockquote>
+<p><strong>7件のうち6件の影響範囲は「3.5系から4.2系までのすべてのバージョン」を含みます</strong>（CVE-2026-92868 は 4.0系から4.2系）。つまり<strong>古い版を使っている環境は、当たっているのに直せません。</strong>選べるのは次の3つだけです。</p>
+<ol>
+<li><strong>系列をまたいでアップグレードする</strong>（4.3.21 以降へ）</li>
+<li><strong>watchdog を止める</strong>（<code>use_watchdog = off</code>）——冗長化を手放す</li>
+<li><strong>watchdog への到達を信頼できる網に限る</strong>——設定ではなくネットワーク側の作業</li>
+</ol>
+<p>2 と 3 は開発者が挙げる回避策で、<strong>古い版でも取れる手</strong>です。ただし 2 は<strong>高可用性そのものを捨てる</strong>ことになります。3 は<strong>到達範囲を管理側の網に閉じる</strong>話で、<strong>watchdog の待ち受けは既定で TCP 9000、ハートビートは既定で UDP 9694</strong> です（本記録の作成者が設定項目の説明で確認）。</p>
+<p>CVE-2026-92868（証明書認証）については、回避策は<strong>他の認証方式への変更</strong>だけです。<strong>古い版で証明書認証を続ける選択は、この1件を抱え続けることを意味します。</strong></p></section>
+<section id="s11"><h2>回避策は JVN には無く、開発者のリリースノートにある<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>本記録の作成者が確認した限り、<strong>JVN のページには回避策の節がありません。</strong>対策は「アップデートする」だけです。一方、<strong>開発者のリリースノートには CVE ごとに回避策が書かれています。</strong></p>
+<table>
+<thead>
+<tr>
+<th>対象</th>
+<th>開発者が挙げる回避策（原文英語を訳出）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE-2026-92867・92869・92870・92871・92873</td>
+<td><strong>watchdog を無効にする</strong>（<code>use_watchdog = off</code>）、または <strong>watchdog への到達を信頼できるネットワークのみに制限する</strong></td>
+</tr>
+<tr>
+<td>CVE-2026-92872</td>
+<td><strong>watchdog を無効にする</strong>、または<strong>死活監視をハートビートではなく問い合わせ方式にする</strong>（<code>wd_lifecheck_method = 'query'</code>）</td>
+</tr>
+<tr>
+<td>CVE-2026-92868</td>
+<td><strong>クライアント証明書認証以外の認証方式を使う</strong></td>
+</tr>
+</tbody>
+</table>
+<p>この差は実務に効きます。<strong>国内の注意喚起だけを見て動く組織は、「上げる」以外の手段を知らないまま、上げられない環境を放置する</strong>ことになりかねません（本記録の評価）。</p>
+<p><strong>JVN の役目は開発者情報への案内でもある</strong>ため、回避策を書かないこと自体が誤りとは言えません。ただ読者の立場では、<strong>一次資料を1枚で済ませず、開発者のリリースノートまで開く</strong>必要がある——というのが本件の教訓です。</p></section>
+<section id="s12"><h2>CVE 番号はあるのに、NVD にも KEV にも無い<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [4] [6] [7]</span></h2><p>本記録の作成者は2026年9月29日、<strong>7件の CVE を1件ずつ NVD へ照会し、いずれも該当0件</strong>であることを確認しました。<strong>CISA の KEV</strong>（カタログ版 2026.09.27・収載1,728件）にも本件はありません。</p>
+<p>つまり公表当日の時点で、<strong>この7件について読める一次資料はJVN・JVN iPedia・開発者のリリースノートだけ</strong>です。ここから次のことが言えます（本記録の評価）。</p>
+<ul>
+<li><strong>CVE 番号を鍵に、NVD からの取り込みだけで脆弱性を拾っている仕組みでは、本件は当日には現れません。</strong> 現れるのは NVD 側の登録が済んだ後です。</li>
+<li><strong>JVN のフィードを購読しているかどうかで、気づく日が変わります。</strong> 国内の公表が先に立つ事案は本件のように実在します。</li>
+<li><strong>KEV に無いことは「悪用されていない」の証明ではありません。</strong> KEV は米国当局が悪用を確認した分だけを載せる目録です。</li>
+</ul>
+<p>なお、<strong>Pgpool-II のような「前段に置く中継役」は、資産台帳で漏れやすい位置にあります。</strong>データベースの台帳には PostgreSQL が載り、<strong>その手前のプーラーは「ミドルウェア」として別扱いになる</strong>ことがあります。<strong>本件の該否を確かめるには、まず台帳に載っているかを見ることになります</strong>（本記録の評価）。</p></section>
+<section id="s13"><h2>悪用の報告は無いが、狙われるのは管理系のポートである<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [5]</span></h2><p><strong>実際の攻撃はどこにも報告されていません。</strong>修正版の公開と公表は同日で、報告は開発者との調整を経ています。その意味で、本件は<strong>協調開示が期待どおりに運んだ事案</strong>です。</p>
+<p>それでも、次の2点は残ります（いずれも本記録の評価）。</p>
+<p><strong>1つ目。watchdog の待ち受けは「管理系だから守られている」と暗黙に扱われがちな位置にあります。</strong>既定で TCP 9000 と UDP 9694、認証鍵は既定で空。冗長化のために複数拠点・複数サブネットへノードを分けると、<strong>その間の経路をどこまで閉じられているかは構成ごとに違います。</strong>クラウドのセキュリティグループや仮想網の設定で「サブネット内は全許可」にしている環境では、<strong>同じ網に入れた他のワークロードから到達できます。</strong></p>
+<p><strong>2つ目。攻撃の結果が「障害」と見分けづらいことです。</strong> 6件のうち4件の想定される影響はプロセスの異常終了です。<strong>不正なメッセージで落とされたのか、別の理由で落ちたのかは、ログを見て初めて分かります。</strong> watchdog のログを取っていない環境では、<strong>後から区別する手がかりが残りません。</strong></p>
+<p>この2つは、<strong>悪用が報告されていない今のうちに手を打てる</strong>ものです。到達範囲を閉じることと、watchdog のログを残すこと—— <strong>どちらも版を上げるかどうかとは独立にできます。</strong></p></section>
+<div class="blk " id="s14"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>**Pgpool-II**（PostgreSQL の前段に置く接続プーリング・負荷分散・高可用性の ミドルウェア）。7件のうち**6件は watchdog** （ノード間の死活監視とリーダー選定）のメッセージ処理—— フェイルオーバー要求の処理・watchdog メッセージ全般の処理・ノード間の認証・ ハートビート受信——に属し、**1件（CVE-2026-92868）はクライアント証明書認証**に属する。 **watchdog は既定で無効**（`use_watchdog = off`）であるため、 単体構成で使っている環境は6件の対象外である</td></tr><tr><th>バージョン</th><td>**影響を受ける版**（7件のうち6件）: 4.7.0〜4.7.2／4.6.0〜4.6.7／4.5.0〜4.5.12／ 4.4.0〜4.4.17／4.3.0〜4.3.20／**3.5系から4.2系までのすべての版**。 **CVE-2026-92868 のみ** 4.7.0〜4.7.2／4.6.0〜4.6.7／4.5.0〜4.5.12／4.4.0〜4.4.17／ 4.3.0〜4.3.20／**4.0系から4.2系までのすべての版**。 **修正版**: 4.7.3／4.6.8／4.5.13／4.4.18／4.3.21。 **3.5系から4.2系はサポートが終了しているため修正版がリリースされない**（JVN が明記）</td></tr><tr><th>外部からの到達性</th><td>**watchdog の待ち受けは既定で TCP 9000**、 **ハートビートの受信は既定で UDP 9694** （本記録の作成者が設定項目の説明で確認）。 **認証鍵は既定で空＝watchdog の認証は無効**である。 開発者は回避策として**到達を信頼できるネットワークのみに制限する**ことを挙げている。 **クライアント証明書認証（CVE-2026-92868）の側は、 通常の接続を受ける経路そのもの**であり、到達性を絞る余地は小さい</td></tr><tr><th>手法</th><td>**不正な形式のメッセージを watchdog へ送る**（6件）。 フェイルオーバー要求メッセージで意図しないアドレスへ値を書き込む （CVE-2026-92867）、任意長のデータをスタックへ書き込む（CVE-2026-92870）、 JSON 配列の上限検査の不備で固定長の配列を越えて書き込む（CVE-2026-92869）、 認証情報を欠いたメッセージで NULL ポインタ参照を起こす（CVE-2026-92871）、 不正な形式のメッセージでハートビート受信処理にスタックメモリの内容を出させる （CVE-2026-92872）、認証鍵の検査を迂回して任意のノードをリーダーへ昇格させる （CVE-2026-92873）。 **残る1件は X.509 証明書の Common Name に NUL バイトを含めて提示する** （CVE-2026-92868）</td></tr><tr><th>露出した項目</th><td><ul class=cl><li>スタックメモリの内容（CVE-2026-92872。開発者の記述では**ログファイル経由で**外に出る）</li><li>クラスタに関する情報（JVN の記述。JVN iPedia は「クラスタ接続情報」と表現）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>影響しなかった範囲</th><td>**watchdog を無効にしている環境**（既定）は、7件のうち6件の対象外である。 **クライアント証明書認証を使っていない環境**は CVE-2026-92868 の対象外である。 **4.7.3／4.6.8／4.5.13／4.4.18／4.3.21 以降**は修正済み。 **PostgreSQL 本体の脆弱性ではない**——本件は前段のミドルウェアの欠陥である</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年9月29日　<b>補足:</b> **JVN・JVN iPedia・開発者の告知・リリースノートのいずれも実際の攻撃に触れていない。** 本記録の作成者は **CISA の KEV**（カタログ版 2026.09.27）にも 収載が無いことを確認した。 **ただし6件のうち4件の影響はプロセスの異常終了であり、 被害側からは「障害」として見える。** 観測されていないことを「起きていない」と読むことはできない（本記録の評価）</td></tr><tr><th>ログの有無</th><td>**判定の手がかりは watchdog のログにある。** 不正な形式のメッセージによる異常終了と、 それ以外の理由による異常終了を区別するには、 **異常終了の前後のログ**が要る。 CVE-2026-92872 は**ログファイルにスタックメモリの内容が出る**ものなので、 **ログ自体が漏えいの経路になる**点にも注意が要る （ログの配布先・保管先が広いほど影響が広がる。本記録の評価）。 **到達の記録という意味では、watchdog の待ち受け（既定 TCP 9000）と ハートビート（既定 UDP 9694）へ誰が到達できたかは、 ネットワーク側のログでしか追えない**</td></tr><tr><th>関連する勧告</th><td>JVN#22475874（JPCERT/CC）／JVNDB-2026-000140（JVN iPedia）／ 開発者のリリース告知およびリリースノート 4.7.3。 **NVD には7件いずれも登録が無く、CISA の KEV にも収載が無い** （いずれも2026年9月29日時点・本記録の作成者が確認）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 4.7.3／4.6.8／4.5.13／4.4.18／4.3.21 以降へ上げる　<b>状況:</b> JVN と開発者が示す第一の対処　<b>副作用:</b> **3.5系から4.2系を使っている場合は系列をまたぐアップグレードになる。** 設定項目の互換性の確認が要り、検証期間が必要になる。 「上げられないまま残る」環境が生じうる</div><div class=sub><b>数え方:</b> watchdog を無効にする（`use_watchdog = off`）　<b>状況:</b> 開発者が挙げる回避策（6件のうち5件に対して）　<b>副作用:</b> **高可用性そのものを失う。** 自動フェイルオーバーと仮想IPの保持に依存している構成では、 **単一障害点を作ることになる。** 止めている間の可用性をどう担保するかを先に決める必要がある</div><div class=sub><b>数え方:</b> watchdog への到達を信頼できるネットワークのみに制限する　<b>状況:</b> 開発者が挙げる回避策　<b>副作用:</b> ネットワーク側の作業で、アプリケーションの停止を伴わずに打てる。 一方で**ノードが複数の網や拠点にまたがる構成では経路の洗い出しが要る**。 絞りすぎるとノード間の通信が途絶え、**意図しないフェイルオーバーを招く**</div><div class=sub><b>数え方:</b> 死活監視をハートビートではなく問い合わせ方式にする（`wd_lifecheck_method = &#x27;query&#x27;`）　<b>状況:</b> 開発者が挙げる回避策（CVE-2026-92872 に対して）　<b>副作用:</b> **死活監視の特性が変わる。** 問い合わせ方式はデータベースへの接続を通じて確認するため、 検知の速さと負荷の性質がハートビートとは異なる。 フェイルオーバーの挙動を検証環境で確かめてから入れる必要がある</div><div class=sub><b>数え方:</b> クライアント証明書認証以外の認証方式に変える（CVE-2026-92868 に対して）　<b>状況:</b> 開発者が挙げる回避策　<b>副作用:</b> **証明書認証はパスワードを配らないために選ばれていることが多い。** 他の方式へ移すと認証情報の配布と管理が増え、 **接続するアプリケーション側の設定変更も必要になる**</div><div class=sub><b>数え方:</b> watchdog のログを残し、異常終了の前後を後から追えるようにする　<b>状況:</b> 本記録の評価（開発者の指示ではない）　<b>副作用:</b> ログ量が増え、保管の費用がかかる。 **CVE-2026-92872 はログにスタックメモリの内容が出るものなので、 ログの保管先と配布先の管理が甘いと、そこが次の漏えい元になる**</div><div class=sub><b>数え方:</b> 資産台帳に「PostgreSQL の前段の中継役」を項目として持つ　<b>状況:</b> 本記録の評価（開発者の指示ではない）　<b>副作用:</b> 台帳の項目が増え、棚卸しの手間が増える。 **ただし台帳に無いものは、次の公表でも同じように見落とす**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期不明（3.5系以前から）</td><td class=nowrap><span class="b kind">発生</span></td><td>**欠陥の存在。** 影響を受ける版は 4.7.0〜4.7.2・4.6.0〜4.6.7・4.5.0〜4.5.12・ 4.4.0〜4.4.17・4.3.0〜4.3.20 と、**3.5系から4.2系までのすべての版** （CVE-2026-92868 のみ 4.0系から4.2系までのすべての版）。 **各版の公開日は JVN にも開発者の告知にも書かれていない**ため、 **いつ導入された欠陥で、何年露出していたのかは算出できない**</td></tr><tr><td class="sm nowrap tw">日付は公表されていない</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>報告者（Topicus Security の Emond Papegaaij 氏）が**製品開発者へ直接報告**し、 **開発者との調整**を経た。 **報告日・調整期間はいずれも公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>開発者が**修正版5本（4.7.3 / 4.6.8 / 4.5.13 / 4.4.18 / 4.3.21）を公開**し、 7件の脆弱性（CVE-2026-92867〜CVE-2026-92873）を告知した。 リリースノートには**成立の条件（watchdog が有効・認証鍵の有無・証明書認証の使用）と 回避策（watchdog の停止、到達範囲の制限、認証方式の変更、 死活監視をハートビートから問い合わせ方式へ変更）**が書かれている。 **3.5系から4.2系には修正版を出さない**</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**JVN#22475874「Pgpool-II における複数の脆弱性」が公開された**（同日最終更新）。 7件の CVE ごとに CWE・CVSS 4.0 と 3.0 の基本値・想定される影響を示し、 対策として最新版へのアップデートを挙げ、 **「Pgpool-II 3.5系から4.2系まではサポートが終了しているため、 修正版がリリースされません」**と明記している。 **回避策の節は無い**</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**JVN iPedia に JVNDB-2026-000140 が登録された**（同日最終更新）。 同じ7件を扱うが、**CVE-2026-92873 の影響を「ノード間通信の改ざん」と表現**しており、 JVN 本体の「任意のウォッチドッグノードがリーダーノードに昇格する」とは 言い方が異なる</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者による観測。** JVN・JVN iPedia・開発者のリリース告知・リリースノート（4.7.3）・ watchdog の設定項目の説明を取得して確認した。あわせて、 **7件の CVE すべてが NVD に登録されていないこと**（照会はいずれも0件）と、 **CISA の KEV に収載が無いこと**（カタログ版 2026.09.27・登録1,728件）を確認した。 watchdog の既定値も文書で確認している—— **watchdog は既定で無効、待ち受けは既定で TCP 9000、 ハートビートは既定で UDP 9694、認証鍵は既定で空（＝認証無効）、 死活監視の方式は既定でハートビート**</td></tr></tbody></table></div></div>
+<div id="s16"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">参照先が変更された</span><span class=ui>収集記事の本文抽出では、冒頭の CVE 一覧に CVE-2026-92868 が現れていなかった</span><div class=sm>本記録の起点にした収集記事（JVN の本文を取得したもの）では、 冒頭に並ぶ CVE が **6件**（92867・92869・92870・92871・92872・92873）で、 **CVE-2026-92868 が欠けていた。** **本記録の作成者が JVN の原文を取得して確認したところ、7件である。** CVE-2026-92868 だけ影響を受けるバージョンの範囲が異なる（4.0系から4.2系）ため、 ページ上で別立てになっており、本文の抽出でその並びが落ちたとみられる（本記録の評価）。 **件数の数え方は7件とする。** JVN iPedia も7件で一致する。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>CVE-2026-92873 の影響の表現が JVN と JVN iPedia で違う</span><div class=sm>**JVN は「任意のウォッチドッグノードがリーダーノードに昇格する」**とし、 **JVN iPedia は「ノード間通信の改ざん」**とする。 開発者の記述は「**攻撃者は認証鍵の検査を迂回し、 自分が選んだ watchdog ノードをリーダーへ昇格させられる**」（原文英語）である。 **本記録は開発者の記述に沿って「リーダーへの昇格」を主に採る。** どちらも否定しない——**昇格を起こすためにノード間の通信を細工するのだから、 同じ事象を別の面から述べたものと読める**（本記録の評価）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CVSS 4.0 と 3.0 で件ごとの順位が入れ替わる</span><div class=sm>CVE-2026-92873 は **4.0 で 6.9・3.0 で 7.3**、 CVE-2026-92869 は **4.0 で 7.1・3.0 で 6.5** である。 また **8.7 という同じ 4.0 の値が、 「低権限で任意コード実行に至りうる」CVE-2026-92867 と 「権限不要でプロセスを落とせる」CVE-2026-92870・92871 の双方に付いている。** **社内の台帳に片方の版だけを入れている組織は、 優先順位が外の勧告の並びと食い違う**（本記録の評価）。 どちらが正しいという話ではなく、**並べ方が2つある**という記録である。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>成立条件のうち、認証鍵の有無に関する記述は逐語の引用を保持していない</span><div class=sm>**CVE-2026-92870 は認証鍵が設定されていないとき、 CVE-2026-92871 は認証鍵が設定されているとき**に成立する、という条件は、 **本記録の作成者が開発者のリリースノートを読み取って要約したもの**である。 **該当箇所の英語原文を逐語で保持していない。** 他の記述（メモリ破壊・スタックへの書き込み・昇格・情報の露出・ 証明書の名前の扱い・各回避策）は原文を引用して確認している。 **条件の向き（有無どちらで成立するか）を実務判断の根拠にする場合は、 リリースノートの原文を各自で確認されたい。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>JVN に回避策の記載が無い</span><div class=sm>**JVN の対策の節は「アップデートする」のみで、回避策の節が無い。** 一方、開発者のリリースノートには CVE ごとに **watchdog の停止・到達範囲の制限・死活監視の方式変更・認証方式の変更**が 書かれている（本記録の作成者が双方を取得して確認）。 **修正版が出ない 3.5系から4.2系の利用者にとっては、 回避策こそが唯一の手である。** JVN が開発者情報への案内を主とする作法は理解できるが、 **国内の注意喚起だけを読んで動くと選択肢を取り落とす**（本記録の評価）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>開発の中心となる組織・国を確認できなかった</span><div class=sm>**本記録の作成者は公式サイトで開発体制の記載を探したが、 「The Pgpool Global Development Group」という著作権表示のほかに、 中心となる企業・国・コミッタの記載を見つけられなかった。** 本件は **JPCERT/CC が開発者と調整して JVN で公表**した案件であり、 国内の利用環境への周知を目的としているが、 **当事者（開発主体）が日本の組織であるとは確認できていない。** そのため日本関連度は「日本に波及した海外事案」として扱っている。 **「日本の組織ではない」と確定したわけではなく、探して確認できなかった**という意味である。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s17"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>watchdog の通信路へ届けば足りる——6件はノード間の管理通信、1件は証明書の名前の解釈</div><div class=svgwrap><svg viewBox="0 0 1202 374" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,143.0 C193.0,143.0 193.0,187.0 220,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,187.0 C397.0,187.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,187.0 C397.0,187.0 397.0,149.0 424,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,136.0 628,136.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,149.0 C601.0,149.0 601.0,136.0 628,136.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,231.0 C295.0,231.0 295.0,231.0 424,231.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,231.0 C601.0,231.0 601.0,136.0 628,136.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,136.0 C805.0,136.0 805.0,61.0 832,61.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,136.0 C805.0,136.0 805.0,143.0 832,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,136.0 C805.0,136.0 805.0,225.0 832,225.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,231.0 C703.0,231.0 703.0,313.0 832,313.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,61.0 C1009.0,61.0 1009.0,187.0 1036,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,313.0 C1009.0,313.0 1009.0,187.0 1036,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,238.0 C703.0,238.0 703.0,136.0 628,136.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,320.0 C397.0,320.0 397.0,187.0 220,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="106.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（watchdog</text><text x="91.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> の網へ到達できる位置）</text><text x="91.0" y="155.0" text-anchor="middle" fill="#f48fb1" font-size="10">現実の攻撃は報告されてい</text><text x="91.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">ない</text><rect x="220" y="150.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="172.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ノード間通信の網（管理系</text><text x="295.0" y="186.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="295.0" y="199.0" text-anchor="middle" fill="#64b5f6" font-size="10">認証鍵は既定で空＝認証無</text><text x="295.0" y="211.0" text-anchor="middle" fill="#64b5f6" font-size="10">効</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">watchdog の待ち</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">受け（既定 TCP 90</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">00）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">フェイルオーバー要求・昇</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">格処理</text><rect x="424" y="118.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ハートビート受信（既定 </text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">UDP 9694）</text><text x="499.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">死活監視の既定方式</text><rect x="628" y="92.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Pgpool-II（4.</text><text x="703.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">7.2 以前・3.5系ま</text><text x="703.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で）</text><text x="703.0" y="155.0" text-anchor="middle" fill="#64b5f6" font-size="10">PostgreSQL の</text><text x="703.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">前段の中継役</text><rect x="16" y="194.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪性のクライアント（証明</text><text x="91.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">書を提示）</text><text x="91.0" y="243.0" text-anchor="middle" fill="#f48fb1" font-size="10">watchdog を使わ</text><text x="91.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">ない環境でも成立</text><rect x="424" y="194.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クライアント証明書認証の</text><text x="499.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">経路</text><text x="499.0" y="243.0" text-anchor="middle" fill="#f48fb1" font-size="10">名前に NUL バイトを</text><text x="499.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">仕込む</text><rect x="832" y="24.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="46.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プロセスの異常終了・任意</text><text x="907.0" y="60.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コード実行の可能性</text><text x="907.0" y="73.0" text-anchor="middle" fill="#ffcc80" font-size="10">4件は異常終了・1件は実</text><text x="907.0" y="85.0" text-anchor="middle" fill="#ffcc80" font-size="10">行の可能性</text><rect x="832" y="112.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意のノードがリーダーへ</text><text x="907.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">昇格</text><text x="907.0" y="161.0" text-anchor="middle" fill="#ffcc80" font-size="10">認証鍵の検査を迂回</text><rect x="832" y="188.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="210.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スタックメモリの内容がロ</text><text x="907.0" y="224.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グへ</text><text x="907.0" y="237.0" text-anchor="middle" fill="#ffcc80" font-size="10">ログの配布先が広いほど影</text><text x="907.0" y="249.0" text-anchor="middle" fill="#ffcc80" font-size="10">響が広がる</text><rect x="832" y="276.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="298.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">別のユーザーとしてパスワ</text><text x="907.0" y="312.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ードなしで接続</text><text x="907.0" y="325.0" text-anchor="middle" fill="#ffcc80" font-size="10">接続ログには正規の利用者</text><text x="907.0" y="337.0" text-anchor="middle" fill="#ffcc80" font-size="10">として現れる</text><rect x="1036" y="156.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PostgreSQL（バ</text><text x="1111.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ックエンド）</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#64b5f6" font-size="10">本体の脆弱性ではない</text><rect x="628" y="194.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 4.7.3 / </text><text x="703.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4.6.8 / 4.5.</text><text x="703.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">13 / 4.4.18…</text><text x="703.0" y="257.0" text-anchor="middle" fill="#f48fb1" font-size="10">3.5系から4.2系には</text><text x="703.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">出ない</text><rect x="424" y="282.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">watchdog の停止</text><text x="499.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・到達範囲の制限・認証方</text><text x="499.0" y="332.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">式の変更</text><text x="499.0" y="345.0" text-anchor="middle" fill="#f48fb1" font-size="10">開発者が挙げる回避策</text></svg></div><div class=fn>7件のうち6件は watchdog の待ち受け（既定 TCP 9000）とハートビート受信 （既定 UDP 9694）へ不正な形式のメッセージを送ることで成立する。 認証鍵は既定で空＝認証無効であり、設定していても昇格の検査は迂回される。 結果はプロセスの異常終了・任意コード実行の可能性・リーダーの不正な昇格・ スタックメモリの内容のログへの露出。 残る1件は、クライアント証明書の名前に NUL バイトを仕込んで別人として通る経路で、 **watchdog を使っていない環境でも成立する。** Pgpool-II は PostgreSQL の前段の中継役なので、落ちれば先の経路が途絶える。 **公表資料から読み取れる成立経路であり、現実の攻撃は報告されていない。**</div></div></div>
+<div class="blk " id="s18"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**管理系の網に対する探索を見ているかどうかで変わる。** 外向きのサービスの探索は見ていても、 **ノード間通信の網は監視の対象外にしている環境が多い**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>watchdog の待ち受けを管理側の網に閉じ、他のワークロードから到達させない</div><div class=ctl><span class="b eff">検知できた</span>ノード間通信の網でも接続の試行を記録し、想定外の送信元を見つける</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**正規のノードからのメッセージと区別しにくい。** 認証が既定で無効であるため、 **「鍵が違うので拒否した」という記録すら残らない**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>watchdog への到達を信頼できるネットワークのみに制限する</div><div class=ctl><span class="b eff">侵入を防げた</span>watchdog を無効にする（高可用性を手放す判断を伴う）</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ上げる</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**プロセスの異常終了は分かるが、原因は分からない。** watchdog のログと異常終了の記録を残していなければ、 **不正なメッセージによるものか別の理由かを後から区別できない**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>watchdog のログと異常終了の記録を残し、前後を追えるようにする</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ上げる（境界検査と上限検査が入る）</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>**リーダーの交代は正常な運用でも起きる。** 「昇格が起きたこと」だけでは異常と判断できないため、 **交代の記録を残し、理由と突き合わせられるようにしておく必要がある。** 証明書認証の迂回は、**接続ログには正規の利用者として現れる**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>watchdog のリーダー交代を記録し、想定外の交代を調べる運用にする</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ上げる</div><div class=ctl><span class="b eff">侵入を防げた</span>証明書認証以外の認証方式へ切り替える（CVE-2026-92868 への回避策）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**異常終了そのものは監視で分かる。** 高可用性の構成であれば自動でフェイルオーバーするため、 **利用者からは一時的な障害としてしか見えないことがある。** 「落ちた回数」を集計していれば繰り返しの攻撃には気づける（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>プロセスの異常終了を件数として集計し、繰り返しを異常として扱う</div><div class=ctl><span class="b eff">影響を限定できた</span>ログの保管先と配布先を絞る（情報漏えいがログ経由で起こるため）</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ上げる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**修正版5本の公開と、JVN・JVN iPedia の公表を同日（2026年9月29日）に行った。** 報告は開発者への直接報告と調整を経ている</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** 修正版が維持されている5系列すべてに同時に出ており、 利用者は公表を知った時点で上げられる。 **7件をまとめて1つの公表にした**ことも、 1件ずつ小出しにするより実務では扱いやすい。 減点材料は**報告日が示されていない**ことだけで、 これは協調開示では珍しくない</td></tr><tr><td>**開発者はリリースノートに CVE ごとの成立条件と回避策を書いた**が、 **JVN 側には回避策の節が無く、対策は「アップデートする」のみ**である。 また **7件のうち6件の影響範囲に、修正版が出ない 3.5系から4.2系が含まれる**</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** JVN は**サポート終了した系列に修正版が出ないことを明記**しており、 この一文は重要である（これが無いと「最新版へ」の意味が伝わらない）。 不十分なのは**回避策への導線**で、 開発者のリリースノートに当たらなければ、 watchdog の停止・到達範囲の制限・死活監視の方式変更のいずれも読者に届かない。 **成立条件（watchdog の有効・認証鍵の有無・証明書認証の使用）も同じで、 これが無いと該否の判定が版番号だけの当てずっぽうになる**</td></tr></tbody></table></div></div>
+<div id="s20"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>該否の判定を「版番号」ではなく「構成」から始める仕組みにする</div><div class=lw>本件の7件のうち6件は watchdog を有効にしている環境だけ、 1件はクライアント証明書認証を使っている環境だけで成立する。 watchdog は既定で無効である。 **版番号だけで並べると、当たっていない環境に作業を割り振り、 当たっている環境を見落とす。**</div><div class=la><b>取るべき行動</b> **脆弱性の受け入れ手順に「成立条件の欄」を作り、 版の一致と条件の一致を別に記録する。** 条件は勧告の本文ではなく**開発者のリリースノート**に書かれることがあるため、 **一次資料を2枚（注意喚起と開発者の告知）読むことを手順に入れる。**</div></li><li><div class=lp>サポート終了した版を抱えている資産を、先に名指しで把握する</div><div class=lw>本件では 3.5系から4.2系に修正版が出ない。 影響範囲にはその古い版が含まれている。 **上げられない資産は、公表のたびに「対処不能」の側に積み上がる。**</div><div class=la><b>取るべき行動</b> **サポート終了した版で動いている資産の一覧を、脆弱性が出る前に作る。** 一覧の各行に「上げるための障害（設定の互換性・停止時間・依存アプリ）」を書き、 **公表が出た日ではなく、公表が出ていない平時に解消の順番を決める。** 解消できないものは、**到達範囲を絞る**という別の手で押さえる。</div></li><li><div class=lp>冗長化のための部品が、そのまま攻撃面になることを前提に置く</div><div class=lw>本件で狙われるのは高可用性のための watchdog である。 可用性を上げるために入れた部品が、ノード間の通信という新しい入口を作る。 watchdog の認証鍵は既定で空であり、 設定していても CVE-2026-92873 では検査を迂回される。</div><div class=la><b>取るべき行動</b> **冗長化・クラスタ化の構成を入れるときに、 「ノード間の通信路がどこまで届くか」を設計の項目として残す。** 既存の構成については、**ノード間通信の網に他のワークロードが同居していないか**を 確認する。**同居しているなら、そこを分ける作業を版上げと同じ優先度で扱う。**</div></li><li><div class=lp>国内の注意喚起（JVN）を購読する経路を、NVD 起点の仕組みと別に持つ</div><div class=lw>本記録の確認時点で、7件はいずれも NVD に登録されておらず、 読める一次資料は JVN・JVN iPedia・開発者のリリースノートだけだった。 **CVE 番号を鍵に NVD からの取り込みだけで拾う仕組みでは、 公表当日には現れない。**</div><div class=la><b>取るべき行動</b> **JVN のフィードを購読し、自社が使っている製品名で引っかける経路を用意する。** あわせて、**利用している主要な製品については開発者の告知そのものを購読する。** 取り込みの遅れが何日あるかを一度測り、**社内の対応期限をその実測に合わせる。**</div></li></ul></div></div>
+<div id="s21"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>今日、watchdog を使っているかどうかと版を突き合わせる</div><div class=lw>該否は「4.7.2 以前である」ことと 「watchdog が有効である／証明書認証を使っている」ことの両方で決まる。 watchdog は既定で無効なので、単体構成の環境は6件の対象外である。</div><div class=la><b>取るべき行動</b> 設定ファイルで **`use_watchdog` の値**と**認証方式（証明書認証かどうか）**を確認し、 版（4.7.0〜4.7.2／4.6.0〜4.6.7／4.5.0〜4.5.12／4.4.0〜4.4.17／4.3.0〜4.3.20／ 4.2系以前）と突き合わせる。 **有効な環境だけを対象の一覧にまとめ、そこから作業する。**</div></li><li><div class=lp>watchdog の待ち受けに、どこから届くのかを実際に確かめる</div><div class=lw>待ち受けは既定で TCP 9000、ハートビートは既定で UDP 9694 である。 認証鍵は既定で空＝認証無効で、 設定していても昇格の検査は迂回されうる。 **「管理系の網だから届かない」は、設定を見るまで前提にできない。**</div><div class=la><b>取るべき行動</b> **ノード以外の機器から、その2つのポートへ到達できるかを実際に試す。** クラウドであればセキュリティグループ・ネットワークACL の許可範囲を読み、 **「サブネット内は全許可」になっていないかを確認する。** 到達できるなら、**版上げより先に到達範囲を絞る**（停止を伴わずに打てる手である）。</div></li><li><div class=lp>回避策を打つ前に、その副作用を検証環境で確かめる</div><div class=lw>開発者が挙げる回避策は watchdog の停止・到達範囲の制限・ 死活監視の方式変更・認証方式の変更である。 **いずれも可用性か認証の作りに触る。** 到達範囲を絞りすぎればノード間の通信が途絶え、意図しないフェイルオーバーを招く。</div><div class=la><b>取るべき行動</b> **回避策は「打つ前に検証環境でフェイルオーバーを一度起こしてみる」** ことを条件にする。 死活監視の方式を変える場合は、**検知の速さが変わることを前提に フェイルオーバーの閾値を見直す。** watchdog を止める判断をするなら、**止めている期間の可用性の担保を先に決める。**</div></li><li><div class=lp>watchdog のログを残し、異常終了を件数で見る</div><div class=lw>6件のうち4件の影響はプロセスの異常終了である。 自動でフェイルオーバーする構成では、 **攻撃も障害も「一時的な切り替え」として同じに見える。** ログが無ければ後から区別できない。</div><div class=la><b>取るべき行動</b> **watchdog のログを残し、プロセスの異常終了を件数として集計する。** 繰り返し落ちているノードを異常として扱う。 ただし **CVE-2026-92872 はログにスタックメモリの内容が出る**ものなので、 **ログの保管先と配布先（監視基盤・外部への転送）を同時に見直す。**</div></li><li><div class=lp>資産台帳に「データベースの前段の中継役」を独立した項目として持つ</div><div class=lw>Pgpool-II は PostgreSQL の前段に置くミドルウェアで、 データベースの台帳にも、アプリケーションの台帳にも載りにくい位置にある。 **台帳に無ければ、次に同じ層で公表が出ても同じように見落とす。**</div><div class=la><b>取るべき行動</b> **接続プーラー・負荷分散・プロキシといった中継役を、 台帳の独立した行として登録する。** 各行に**版・待ち受けているポート・有効にしている機能**を書く。 本件の該否の判定に必要だった情報は、ちょうどこの3つである。</div></li></ul></div></div>
+<div class="blk " id="s22"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> PostgreSQL の前段に Pgpool-II を置いており、版が 4.7.2 以前である</td><td class=sm>影響を受ける版の範囲である（4.7.0〜4.7.2／4.6.0〜4.6.7／4.5.0〜4.5.12／ 4.4.0〜4.4.17／4.3.0〜4.3.20／4.2系以前）。 ただし版だけでは該否が決まらず、有効にしている機能を併せて見る必要がある。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 高可用性のために watchdog を有効にしている（既定は無効）</td><td class=sm>7件のうち6件は watchdog のメッセージ処理にあり、 watchdog を使っていない環境はその6件の対象外である。 **該否を分ける最大の分岐がここにある。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> クライアント証明書認証を使って Pgpool-II への接続を認証している</td><td class=sm>CVE-2026-92868（証明書の Common Name の NUL バイトの扱い）はこの場合にだけ成立し、 **watchdog を使っていない環境でも当たる。** 回避策は他の認証方式への変更しかない。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> watchdog の待ち受け（既定 TCP 9000）とハートビート（既定 UDP 9694）へ、ノード以外から到達できる</td><td class=sm>認証鍵は既定で空＝認証無効であり、設定していても昇格の検査は迂回されうる。 **到達できる範囲がそのまま攻撃可能な範囲になる。** クラウドで「サブネット内は全許可」にしている構成はとくに確認が要る。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> Pgpool-II のようなデータベースの前段の中継役が、資産台帳に載っていない</td><td class=sm>台帳に無ければ、版・待ち受けポート・有効な機能のいずれも即答できない。 **本件の該否の判定に必要な情報がちょうどその3つである。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の検知を NVD からの取り込み（CVE 番号起点）だけで行っている</td><td class=sm>本記録の確認時点で7件はいずれも NVD に登録がなく、 読めるのは JVN・JVN iPedia・開発者のリリースノートだけだった。 **国内の公表が先に立つ事案は実在する。**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> サポートが終了した Pgpool-II 3.5系から4.2系を使い続けている</td><td class=sm>**修正版がリリースされない。** 残る手は系列をまたぐアップグレードか、 watchdog の停止・到達範囲の制限といった回避策だけになる。</td></tr></tbody></table></div></div>
+<div class="blk " id="s23"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年9月29日 Pgpool Global Development Group</span> <a href="https://pgpool.net/news/2026-09-29/" target="_blank" rel="noreferrer noopener nofollow">Pgpool-II 4.7.3, 4.6.8, 4.5.13, 4.4.18 and 4.3.21 officially released</a> <span class="b kind">ニュースリリース</span><span class=sm>（(英語。**開発者の公式告知。本記録の作成者が取得して確認した。** 修正版5本の公開と、7件の脆弱性それぞれの説明。 CVE-2026-92867 の「不正な形式のメッセージ送信による任意メモリアドレスへの 32ビット値の書き込み」、CVE-2026-92868 の「X.509 証明書の Common Name の NUL バイトの扱いの不備によりパスワードなしで別のユーザーとして接続できる」、 CVE-2026-92869 の境界外書き込み、CVE-2026-92870 のスタック破壊、 CVE-2026-92871 の NULL ポインタ参照、CVE-2026-92872 の ハートビート受信処理での情報の露出、CVE-2026-92873 の 昇格処理における認証鍵の検査の迂回はこの文書による。 **謝辞・成立条件の詳細・アップグレード手順の記載は見つけられなかった**)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年9月29日 Pgpool Global Development Group</span> <a href="https://www.pgpool.net/docs/latest/en/html/release-4-7-3.html" target="_blank" rel="noreferrer noopener nofollow">Pgpool-II 4.7.3 Release Notes</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(英語。**開発者のリリースノート。本記録の作成者が取得して確認した。 成立条件と回避策の出所はこの文書である。** CVE ごとの回避策——**watchdog の無効化と到達範囲の制限**（92867・92869・92870・ 92871・92873）、**watchdog の無効化または死活監視の問い合わせ方式への変更** （92872）、**クライアント証明書認証以外の認証方式の使用**（92868）——を確認した。 各 CVE の説明文（メモリ破壊・任意長データのスタックへの書き込み・ 固定長配列を越える書き込み・watchdog のポートへ接続できる攻撃者による クラッシュ・ログファイル経由でのスタックメモリの露出・ 自分が選んだノードのリーダーへの昇格・本来拒否されるべき認証が通ること）も原文で確認した。 **認証鍵の有無による条件の向きは要約から読み取ったもので、 逐語の引用は保持していない。** あわせて PostgreSQL 19 対応などの不具合修正が並ぶ。 **系列をまたぐ移行手順の節は見つけられなかった**)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月29日（同日最終更新） JPCERT/CC・IPA（JVN）</span> <a href="https://jvn.jp/jp/JVN22475874/" target="_blank" rel="noreferrer noopener nofollow">JVN#22475874 Pgpool-II における複数の脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(日本語。**国内の一次資料。本記録の作成者が原文を取得して確認した。** 7件の CVE（CVE-2026-92867〜92873）、CWE と CVSS 4.0 / 3.0 の基本値、 影響を受けるバージョン（CVE-2026-92868 のみ 4.0系から4.2系で範囲が違う）、 想定される影響、対策（4.7.3 / 4.6.8 / 4.5.13 / 4.4.18 / 4.3.21 へのアップデート）、 **「Pgpool-II 3.5系から4.2系まではサポートが終了しているため、 修正版がリリースされません」という記述**、報告者 （Topicus Security Emond Papegaaij 氏）と 「製品開発者に直接報告し、製品開発者との調整を経て」という経緯、 **回避策の節が無いこと**はすべてこの文書で確認した)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年9月29日（同日最終更新） JPCERT/CC・IPA（JVN iPedia）</span> <a href="https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000140.html" target="_blank" rel="noreferrer noopener nofollow">JVNDB-2026-000140 Pgpool-II における複数の脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(日本語。**本記録の作成者が取得して確認した。** 7件であること、CVSS 4.0 / 3.0 の基本値、影響を受けるシステム、 対策（修正版5本）、報告者、参照先（JVN#22475874）を確認した。 **CVE-2026-92873 の影響を「ノード間通信の改ざん」と表現**しており、 JVN 本体の「任意のウォッチドッグノードがリーダーノードに昇格する」とは 言い方が異なる)）</span></li><li><span class=rid>[6]</span> <span class=sm>照会日 2026年9月29日 NIST（NVD）</span> <a href="https://services.nvd.nist.gov/rest/json/cves/2.0" target="_blank" rel="noreferrer noopener nofollow">NVD CVE API（CVE-2026-92867〜CVE-2026-92873 の照会）</a> <span class="b kind">統計・集計資料</span><span class=sm>（(英語。**本記録の作成者が7件を1件ずつ照会し、 いずれも該当0件であることを確認した。** **CVE 番号は割り当てられているが、公表当日には NVD 側の記載が無い。** 「登録されていない」ことの確認であり、今後登録される可能性は否定しない)）</span></li><li><span class=rid>[7]</span> <span class=sm>取得日 2026年9月29日（カタログ版 2026.09.27） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog</a> <span class="b kind">統計・集計資料</span><span class=sm>（(英語。**本記録の作成者が取得して確認した。** カタログ版 2026.09.27・収載1,728件のうち、 **Pgpool-II の項目も本件の7件の CVE も無い。** **KEV は米国当局が悪用を確認した分だけを載せる目録であり、 収載が無いことは悪用されていないことの証明ではない**)）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[5]</span> <span class=sm>取得日 2026年9月29日 Pgpool Global Development Group</span> <a href="https://www.pgpool.net/docs/latest/en/html/runtime-watchdog-config.html" target="_blank" rel="noreferrer noopener nofollow">Pgpool-II Documentation: Watchdog Configuration</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(英語。**技術的背景。本記録の作成者が取得して確認した。** **watchdog は既定で無効**、**待ち受けは既定で 9000 番**、 **ハートビートの受信は既定で 9694 番**、 **認証鍵の既定値は空でその場合 watchdog の認証は無効** （「異なる鍵を持つ watchdog からのパケットは拒否される」という説明つき）、 **死活監視の既定の方式はハートビートで、問い合わせ方式と外部方式も選べる** ——本記録が述べる既定値はすべてこの文書による。 **本件の勧告ではなく、該否と回避策を読むための背景資料である**)）</span></li><li><span class=rid>[8]</span> <span class=sm>取得日 2026年9月29日 Pgpool Global Development Group</span> <a href="https://www.pgpool.net/mediawiki/index.php/Main_Page" target="_blank" rel="noreferrer noopener nofollow">Pgpool-II Official Site（Main Page / Development）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(英語。**本記録の作成者が取得して確認した。** Pgpool-II が「PostgreSQL のための接続プーリング・ロードバランシング・ 高可用性の機能を備えたオープンソースのミドルウェア」であること、 2026年9月29日の修正版公開の告知が載っていることを確認した。 **開発の中心となる企業・国・コミッタの記載は見つけられなかった**—— 著作権表示「The Pgpool Global Development Group」のみである)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s24"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月29日（日中）</span> <span class="b rev">新規作成</span> 新規作成。2026年9月29日の収集記事（JVN の「Pgpool-II における複数の脆弱性」）を 起点に、**JVN の原文・JVN iPedia・開発者のリリース告知・リリースノート（4.7.3）・ watchdog の設定項目の説明**を取得して裏を取り、あわせて **NVD への7件の照会（いずれも0件）と CISA の KEV（カタログ版 2026.09.27）**を 確認した。 **7件の CVE・CWE・CVSS 4.0 と 3.0 の基本値・影響を受けるバージョン・ 修正版5本・「3.5系から4.2系はサポート終了のため修正版が出ない」という記述・ 報告者と調整の経緯**は JVN の原文で確認している。 **各 CVE の技術的な説明と回避策（watchdog の停止・到達範囲の制限・ 死活監視の方式変更・認証方式の変更）は開発者のリリースノートによる。** **watchdog の既定値（既定で無効・待ち受け 9000・ハートビート 9694・ 認証鍵は既定で空＝認証無効・死活監視は既定でハートビート）は 設定項目の説明で確認した**——該否の判定と回避策の読み方がこれに依存するため、 背景資料として出典に立てた。 起点の収集記事では**冒頭の CVE 一覧から CVE-2026-92868 が落ちていた**ため、 原文で7件であることを確かめ、齟齬として記録した。 root_causes は `design-flaw` のみとした—— **`zero-day` は置かない**（悪用の報告が無く、修正と公表が同日）、 **`patch-management` も置かない**（本記録の時点で利用者側に放置の事実は無い）、 **`misconfiguration` も置かない**（認証鍵が空なのは既定の姿であり不備ではない）。 日本関連度は **`domestic-impact`** とした。 **開発主体が日本の組織であるとは確認できなかった**（公式サイトに開発体制の記載を 見つけられず、齟齬として明示した）が、 **JPCERT/CC が開発者と調整して JVN で日本語の公表を出した案件**であり、 国内の PostgreSQL 利用環境に直接かかる。 先例として価値があると判断した理由は4点である—— ①**該否が版番号ではなく構成（watchdog の有効・証明書認証の使用）で決まる**、 ②**成立条件と回避策が国内の注意喚起には無く、開発者のリリースノート側にある**、 ③**サポート終了した系列（3.5系から4.2系）が影響範囲に含まれるのに修正版が出ない**、 ④**公表当日に NVD へ登録が無く、CVE 番号起点の取り込みだけでは当日拾えない**。 **悪用の報告は無い**ため悪用の有無は「確認されていない」とし、 **6件のうち4件の影響がプロセスの異常終了で、被害側からは障害として見える** という判定の難しさをログの項に明記した。 NVD への登録・KEV への収載・国内の追加の注意喚起はいずれも動く余地があるため status は new とする。</li></ul></div></div>
+<div class="blk " id="s25"><h3>タグ</h3><span class="b tag">Pgpool-II</span><span class="b tag">PostgreSQL</span><span class="b tag">watchdog</span><span class="b tag">JVN</span><span class="b tag">JPCERT/CC</span><span class="b tag">Pgpool</span><span class="b tag">Topicus Security</span><span class="b tag">CVE-2026-92867</span><span class="b tag">CVE-2026-92868</span><span class="b tag">CVE-2026-92873</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-29 22:09 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
