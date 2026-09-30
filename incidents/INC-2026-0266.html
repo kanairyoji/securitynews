@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Linux cBPF に Spectre-v2 の新変種 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0266</span>Linux cBPF に Spectre-v2 の新変種</h1>
+<header class="site-header">
+  <p class="subtitle">Spectre-v2 の新変種「Branch Target Reuse（BTR）」が VUSec（アムステルダム自由大学）と Scuola Superiore Sant&#x27;Anna から2026年9月29日に公表された。JIT エンジンが解放したコード領域を再利用しても CPU が古い分岐先の予測（BTB エントリ）を無効化しないため、投機的な use-after-free が成立する。Linux カーネルの cBPF JIT を的にした実証では、既定の緩和策を有効にしたままの Intel 機から root のパスワードハッシュを平均3分（Raptor Cove）・5分（Lion Cove）で読み出した。Linux は CVE-2026-64507・CVE-2026-64508 として IBPB のフラッシュを取り込み、Oracle は GraalVM のコードキャッシュ配置の無作為化を投入した。挙動は Intel・AMD・Arm の試験した全 CPU で確認されている</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月29日</span>
+  <span>最終更新: 2026年9月30日</span>
+</div>
+
+<div class="lead"><p>2026年<strong>9月29日</strong>、<strong>VUSec</strong>（アムステルダム自由大学）と <strong>Scuola Superiore Sant'Anna</strong>の研究者が、Spectre-v2 の新変種<strong>「Branch Target Reuse（BTR、分岐先の再利用）」</strong>を公表しました。的になるのは <strong>JIT エンジン</strong>——ブラウザ・言語ランタイム・OS カーネルが実行時に機械語を生成し、使い終わったら領域を解放して作り直す仕組みです。</p>
+<p>仕掛けは1点に尽きます。<strong>JIT がコードを解放して同じ番地に別のコードを置いても、CPU は古い分岐先の予測（BTB エントリ）を捨てていない。</strong>研究者の記述は「現代の CPU は自己書き換えの後にアーキテクチャ上のコードの一貫性を回復するが、古い間接分岐の予測エントリを必ずしも無効化しない」（原文英語）。その結果、<strong>投機実行だけが古い入口へ飛ぶ</strong>——研究者はこれを<strong>「投機的な execute-after-free」</strong>と呼んでいます。飛び先は<strong>新しいコードの、本来は入口ではない途中の位置</strong>になるため、<strong>ソフトウェア側の防御（Spectre 対策の命令列）を飛び越え、命令の境界をずらした読み方（misaligned）で別の意味の命令列を作れます。</strong></p>
+<p>実証は <strong>Linux カーネルの cBPF JIT</strong> に対して2本です。cBPF は eBPF と違って<strong>非特権の利用者が使える</strong>ため、攻撃面として価値があります（seccomp・ソケットフィルタ・Docker や Chrome のパケットフィルタが依存しています）。<strong>完全に更新された既定設定の Intel 機から、動作中の <code>su</code> プロセスのメモリを追ってroot のパスワードハッシュを読み出しました。</strong> 速度は <strong>毎秒8バイト</strong>、所要は平均 <strong>3分（Raptor Cove）・5分（Lion Cove）</strong>。<strong>cBPF の constant blinding（定数の目隠し）を有効にした環境でも、攻撃者が制御する命令をジャンプのオフセットに埋め込む形に作り替えて、5分で同じ結果</strong>に到達しています。</p>
+<p><strong>ハッシュは平文のパスワードではありません。</strong> 攻撃者はこれを offline やクラウドの計算資源で解く必要があり、成否はハッシュのアルゴリズムとパスワードの強度に左右されます。</p>
+<p><strong>他の JIT エンジンも無傷ではありません。</strong> Firefox の <strong>SpiderMonkey</strong> ではIntel の CPU で古い予測が平均6〜7件生き残り、<strong>毎秒36バイト（Raptor Cove）・62バイト（Lion Cove）</strong>の読み出し速度が見積られました（ブラウザでの完全な実証には至っていません）。Oracle の <strong>GraalVM</strong> では、サンドボックスの最も厳しいモードを守るメモリマスクの処理を投機的に飛び越えられましたが、GC と再コンパイルが古い予測を消すため実験では完遂していません（研究者は「この制約は本質的なものではないと思われる」としています）。</p>
+<p><strong>修正はソフトウェア側です。</strong> Linux カーネルは<strong>CVE-2026-64507</strong>（<code>x86/bugs: Enable IBPB flush on BPF JIT allocation</code>）と<strong>CVE-2026-64508</strong>（<code>bpf: Support for hardening against JIT spraying</code>）として、cBPF プログラムが過去に実行された領域を再利用するときに<strong>全コアで IBPB（間接分岐予測器のバリア）を発行する</strong>緩和策を取り込みました（公開は<strong>2026年7月25日</strong>）。Oracle は GraalVM の<strong>コードキャッシュの配置を無作為化</strong>する変更を2026年8月19日に取り込みました。<strong>Mozilla は IBPB ベースの緩和策を検討したうえで、サイト分離の完成と展開を優先</strong>しています。Arm は「整列した cBPF の実行で BTR を悪用する複雑さは、新たなカーネルの緩和策を正当化しない」と回答しました（原文英語）。AMD は SecurityWeek に対し「論文は自社製品における新たな脆弱性を明らかにしていない」「記述された手法は既存の Spectre-v2 の指針で緩和される」と述べています（原文英語）。</p>
+<p><strong>挙動そのものは試験した全 CPU で確認されています</strong>——Intel・AMD・Arm。VUSec は「間接分岐予測は現代の CPU に固有のものであり、BTR は予測器とコードの実際の状態との非同期を突く。<strong>予測器とコードを同期させる仕組みを持つ CPU は現時点で存在しないので、ベンダーがそれを追加するまで、あなたの CPU は脆弱である</strong>」（原文英語）としています。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>影響を受ける CPU の型番の網羅的な一覧</span><span class="b rsn">公表されていない</span><div class=sm>研究者が確認したのは5つのマイクロアーキテクチャである。 「間接分岐予測は現代の CPU に固有のもの」であり 「予測器とコードを同期させる仕組みを持つ CPU は現時点で存在しない」 （いずれも原文英語）という説明からは広範な影響が読み取れるが、 **どの世代・どの型番が実証可能かという一覧はどこにも存在しない。** Intel も Arm も自社名義の一覧を公表していない。 CPU ベンダー側に CVE も割り当てられていない</div></li><li><span class=ui>現実の攻撃での使用</span><span class="b rsn">探索したが未発見</span><div class=sm>研究による発見であり、悪用の観測が発見の契機になったことを示す記述は 論文・VUSec のページ・報道のいずれにも無い。 **実証コードの公開状況**も本記録の作成時点で確認していない （論文は付録に開示ガジェットと実証の構成を載せているが、 完全な実証コードの公開の有無は確認できていない）</div></li><li><span class=ui>Linux の緩和策の性能への影響</span><span class="b rsn">公表されていない</span><div class=sm>緩和策は「cBPF プログラムが過去に実行された cBPF/eBPF の領域を再利用するときに **全コアで IBPB を発行する**」ものである。論文は 「JIT のコードの削除が高速な経路（fast path）に無い限り、 性能への影響は許容できるだろう。cBPF についてはそれが当てはまる」（原文英語）と 述べるにとどまり、**実測値は示されていない。** seccomp を頻繁に張り直す実装での影響は不明である</div></li><li><span class=ui>SpiderMonkey・GraalVM 経路の実際の危険度</span><span class="b rsn">調査したが確定せず</span><div class=sm>SpiderMonkey では古い予測が生き残ることは実証されたが、 **ブラウザでの完全な実証には至っていない**（投機実行の窓を延ばす技術と、 Firefox における秘密の通信路が別途必要）。 GraalVM ではサンドボックスのマスク処理を飛び越えられるが、 GC と再コンパイルが古い予測を消すため実験では完遂しなかった。 研究者は後者について「**この制約は本質的なものではないと思われる**」（原文英語）と 述べており、**将来変わりうる**ことを示している</div></li><li><span class=ui>Intel・Arm の公式見解</span><span class="b rsn">公表されていない</span><div class=sm>論文は「接触した全ての当事者がわれわれの発見を認めた」 「ハードウェアベンダーは IBPB 等の緩和する仕組みが存在し、 BTR の緩和はソフトウェア側で展開されるべきだと述べた」（いずれも原文英語）と 記しているが、**Intel・Arm の自社名義の勧告は確認できていない。** SecurityWeek の取材にも両社は回答していない。 Arm については「整列した cBPF の実行で BTR を悪用する複雑さは、 新たなカーネルの緩和策を正当化しない」という回答が論文に記されている</div></li><li><span class=ui>日本国内の組織への影響と注意喚起</span><span class="b rsn">探索したが未発見</span><div class=sm>JPCERT/CC・IPA その他の日本語での注意喚起は本記録の作成時点で確認していない。 日本の組織が影響を受けたという報告も無い</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>VUSec（アムステルダム自由大学 システム・ネットワークセキュリティグループ）</span><span class="b role">発見・通報した主体</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Scuola Superiore Sant&#x27;Anna（イタリア・ピサ）</span><span class="b role">発見・通報した主体</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Linux カーネル開発コミュニティ</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Intel Corporation</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Advanced Micro Devices, Inc.（AMD）</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Arm Limited</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Oracle Corporation</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Mozilla Foundation</span><span class="b role">製品・部品の供給元</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Linux cBPF に対する end-to-end 実証の読み出し速度</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>8<span class=fu>バイト/秒</span></div><div class=fn>論文の記述は「われわれの攻撃を評価し、Raptor Cove と Lion Cove の双方で 平均して毎秒8バイトの読み出し速度を達成した」（原文英語）。 研究者は「毎秒わずか数バイトの読み出しでも、 注意深いポインタ追跡によって秘密に到達するのに必要なデータ量は少なくて済むため、 数分で完結する end-to-end の実証が作れる」としている</div></div><div class=fig><div class=fh><span class=fl>root のパスワードハッシュの読み出しに要した時間（Raptor Cove・既定設定）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>3<span class=fu>分</span></div><div class=fn>平均値。Core i9-14900K（Raptor Cove）。 既定の緩和策を有効にしたまま完全に更新された Ubuntu 上での実証である。 動作中の `su` プロセスを見つけ、そのメモリからハッシュを取り出す手順を含む</div></div><div class=fig><div class=fh><span class=fl>root のパスワードハッシュの読み出しに要した時間（Lion Cove・既定設定）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>分</span></div><div class=fn>平均値。Core Ultra 9 285K（Lion Cove）。 論文の記述は「end-to-end の実証を Raptor Cove と Lion Cove の双方で評価し、 それぞれ平均3分と5分でパスワードを読み出した」（原文英語）</div></div><div class=fig><div class=fh><span class=fl>constant blinding を有効にした環境での読み出しに要した時間</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>分</span></div><div class=fn>2本目の実証。攻撃者が制御する命令をジャンプのオフセットに埋め込む形に作り替え、 **Raptor Cove と Lion Cove の双方で5分以内**にハッシュを回収した。 constant blinding は JIT spraying に対する主要な緩和策だが、 **ジャンプのオフセットという暗黙の定数を使うことで迂回された**</div></div><div class=fig><div class=fh><span class=fl>SpiderMonkey での読み出し速度の見積り（Raptor Cove）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>36<span class=fu>バイト/秒</span></div><div class=fn>**見積り値であり実証された速度ではない。** 再利用の活動の後に Intel の CPU で平均6〜7件の BTB エントリが生き残ったことから、 論文の読み出し速度の式を用いて算出されている。 実際に攻撃を成立させるには、被害側の分岐の投機実行の窓を延ばす技術と、 Firefox における（不正確なタイマーを迂回する）秘密の通信路が別途必要である</div></div><div class=fig><div class=fh><span class=fl>SpiderMonkey での読み出し速度の見積り（Lion Cove）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>62<span class=fu>バイト/秒</span></div><div class=fn>同じく見積り値。**Zen 4・Cortex-A76・Cortex-X3 では、 再利用の活動の後に BTB エントリは生き残らなかった**—— SpiderMonkey の経路で影響が見積られたのは Intel の CPU のみである</div></div><div class=fig><div class=fh><span class=fl>SpiderMonkey での再利用の活動後に生き残った BTB エントリの数（Intel）</span><span class="b conf">範囲</span><span class="b org">第三者調査</span></div><div class=fv>6<span class=fu>件</span></div><div class=fn>論文の記述は平均6〜7件（原文 &quot;an average of 6–7 surviving BTB entries&quot;）。 範囲の下端を value に置いた。上端は7件である。 Zen 4・Cortex-A76・Cortex-X3 では0件だった</div></div><div class=fig><div class=fh><span class=fl>挙動を確認したマイクロアーキテクチャの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>種類</span></div><div class=fn>Intel Core i9-14900K（Raptor Cove）／Intel Core Ultra 9 285K（Lion Cove）／ AMD Ryzen 9 7950X（Zen 4）／Broadcom BCM2712・Raspberry Pi 5（Cortex-A76）／ Google Tensor G3（Cortex-X3）。Intel と Arm の2つは高性能コアである。 **「古い BTB エントリが無効化されない」という基礎的な挙動自体は 試験した全 CPU で確認された**が、**実証が成立したのは Intel の2つだけ**である</div></div><div class=fig><div class=fh><span class=fl>割り当てられた CVE の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>CVE-2026-64507（x86/bugs: Enable IBPB flush on BPF JIT allocation）と CVE-2026-64508（bpf: Support for hardening against JIT spraying）。 **いずれも CNA は Linux であり、対象は Linux カーネルである。** CPU ベンダー側に CVE は割り当てられていない。 CVSS 基本値は CVE レコードに記載が無い</div></div><div class=fig><div class=fh><span class=fl>ベンダーへの最初の開示から公表までの期間</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>17<span class=fu>か月</span></div><div class=fn>2025年4月の最初の開示から2026年9月29日の公表まで。 本記録の作成者が月数を計算した（端数は切り捨て）。 **この期間の大半は「費用のかかる緩和策を正当化するための 完全な実証を作る」ことに費やされた**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**JIT が解放したコード領域を CPU の分岐先バッファ（BTB）が覚えたままにする**性質を突く。 攻撃者は非特権の cBPF プログラム（訓練用）を入れて対象の間接分岐をそこへ飛ばし、 **BTB にエントリを作る。** 次に**それを解放し、同じ番地に別のプログラム（標的用）を置く。** 間接分岐をもう一度踏ませると、CPU は**古い BTB エントリ**を使って **「もう存在しない入口」へ投機的に飛ぶ**（投機的な execute-after-free）。 飛び先は新しいコードの**本来の入口ではない位置**になるため、 **Spectre 対策の命令列を飛び越え、境界をずらした命令列として実行される。** 触れたデータの痕跡は **Flush+Reload** でキャッシュの時間差から読み取る。 **既定設定の Intel 機で毎秒8バイト・3〜5分で root のパスワードハッシュに到達した。** **これは研究による実証であり、現実の攻撃は報告されていない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**KASLR を破り、カーネルのアドレスを求める。** end-to-end の実証では、この後にモジュール領域の穴を埋め、 プロセスのページテーブルを辿って `su` プロセスのメモリの位置を特定する。 **読み出しが毎秒8バイトと遅いため、「どこを読むか」を先に絞る工程が要る**</div><div class=fn>根拠: 論文の end-to-end 実証の記述（KASLR の破壊とポインタ追跡）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**非特権の cBPF プログラム（訓練用）を登録し、対象の間接分岐をそこへ飛ばして BTB にエントリを作る。** 実証ではカーネルの cBPF のディスパッチャの 間接分岐を使っており、**訓練と悪用が同じ分岐（自己訓練）である**ため、 領域をまたいだ訓練を防ぐ既存の仕組み（eIBRS・BHI_NO）が効かない</div><div class=fn>根拠: 論文の第5節・第7節（自己訓練であることの明記）</div></li><li><div class=stg><span class="b stage">3. 検知回避</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**訓練用のプログラムを解放し、同じ番地（の一部が重なる位置）に 標的用のプログラムを置く。** BPF JIT のアロケータは 小さなプログラムを大きな割り当てにまとめて**空間を使い回す**ため、 これが成立する。**CPU は命令キャッシュを同期するが BTB は同期しない**ので、 古いエントリが残る。実証では**x86-64 で対象プールの大半、 ARM64 で97.6%**の再利用率を得ている</div><div class=fn>根拠: 論文の第5節・第7節（BPF JIT アロケータの空間再利用と再利用率）</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**間接分岐をもう一度踏ませると、CPU が古い BTB エントリを選び、 標的用のコードの「古い入口」へ投機的に飛ぶ。** 飛び先は本来の入口ではないため、 **Spectre 対策として先頭に置かれた命令列を飛び越え、 命令の境界をずらした命令列（misaligned）として実行される。** constant blinding を有効にした環境では、 **攻撃者が制御する命令をジャンプのオフセットに埋め込む**形で同じことを行った ——**「暗黙の定数」は目隠しの対象外だった**</div><div class=fn>根拠: 論文の第7節（既定設定と constant blinding 有効時の2本の実証）</div></li><li><div class=stg><span class="b stage">5. 収集</span><span class="b conf">確認済</span><span class=srcs>[1] [5]</span></div><div>**投機実行中にアクセスした秘密のデータの痕跡を、 Flush+Reload でキャッシュの時間差から1バイトずつ読み取る。** 速度は**毎秒8バイト**。実証では動作中の `su` プロセスのメモリから **root のパスワードハッシュ**を回収した。 SpiderMonkey では Intel で平均6〜7件のエントリが生き残り、 **毎秒36バイト（Raptor Cove）・62バイト（Lion Cove）**という速度が見積られた （こちらは完全な実証に至っていない）</div><div class=fn>根拠: 論文の第6節・第7節と BleepingComputer の記述</div></li><li><div class=stg><span class="b stage">6. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [5] [6]</span></div><div>**root のパスワードハッシュが非特権の利用者に渡る。** 所要は既定設定で平均3分（Raptor Cove）・5分（Lion Cove）、 constant blinding を有効にした環境でも5分。 **得られるのはハッシュであり平文のパスワードではない**—— 攻撃者は offline またはクラウドの計算資源で解く必要があり、 成否はハッシュのアルゴリズムとパスワードの強度に左右される。 GraalVM ではサンドボックスの arena の外へ到達しうることが示された （実験では完遂せず）</div><div class=fn>根拠: 論文の第7節・第6.3節と BleepingComputer・SecurityWeek の記述</div></li></ol></div>
+<section id="s5"><h2>命令キャッシュは同期されるのに、分岐先の予測は同期されないという非対称が残っていた<span class="b slot">概観</span><span class=srcs>出典 [1] [4] [5] [6]</span></h2><p><strong>JIT エンジン</strong>は、実行時に機械語を作っては捨てる仕組みです。ブラウザの JavaScript エンジン、言語ランタイム、そして Linux カーネルのBPF も同じことをします。作ったコードを置く領域は<strong>使い終わったら解放され、別のコードに使い回されます。</strong></p>
+<p>CPU の側から見ると、これは<strong>自己書き換えコード（SMC）</strong>です。データとして書いた領域を、後から命令として読む。そのため CPU には<strong>一貫性を回復する仕組み</strong>があります。x86 では命令キャッシュとデータキャッシュを自動的に再同期し、ARM ではソフトウェアがキャッシュ管理の命令を発行します。<strong>これがあるから JIT は成り立ちます。</strong></p>
+<p>BTR が突いたのは、<strong>この一貫性の回復に含まれていなかったもの</strong>です。</p>
+<blockquote>
+<p>現代の CPU は自己書き換えの後にアーキテクチャ上のコードの一貫性を回復するが、<strong>古い間接分岐の予測エントリ（すなわち分岐先）を必ずしも無効化しない</strong>（原文英語）</p>
+</blockquote>
+<p>つまり、<strong>命令キャッシュは同期されるのに、分岐先バッファ（BTB）は同期されない。</strong>解放されたコードの入口を指す予測が、<strong>そのコードより長生きします。</strong>新しいコードが同じ番地に置かれた後で、CPU がその古い予測を選ぶと、<strong>投機実行だけが「もう存在しない入口」へ飛びます。</strong></p>
+<p>研究者はこれを<strong>投機的な execute-after-free</strong> と呼んでいます。ソフトウェアの use-after-free とよく似た形ですが、<strong>原因となるソフトウェアのバグは一つも要りません。</strong></p>
+<p>飛び先が「本来の入口ではない位置」であることが効きます。</p>
+<ul>
+<li><strong>Spectre 対策としてコードの先頭に置いた命令列を飛び越えられる</strong></li>
+<li><strong>命令の境界をずらして読むと、別の意味の命令列になる</strong>（misaligned）</li>
+</ul>
+<p>研究者は論文の要旨で「<strong>この前提を覆す</strong>」と書いています。2018年以降、<strong>SMC を使った投機実行攻撃は現実的でないと考えられてきました</strong> ——先行研究（SCSB）の攻撃の窓が極端に短かったためです。BTR はその窓を<strong>BTB の古さ</strong>に置き換えました。</p></section>
+<section id="s6"><h2>非特権で使える cBPF が、既定設定の Intel 機から root のハッシュを3分で渡した<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [4] [5] [6]</span></h2><p>実証の的は <strong>Linux カーネルの cBPF JIT</strong> です。選んだ理由が重要です。</p>
+<p><strong>eBPF は特権が要りますが、cBPF は非特権の利用者が使えます。</strong>そして cBPF は今も広く使われています——<strong>seccomp</strong>（システムコールの制限）、<strong>ソケットフィルタ</strong>、<strong>Docker や Chrome のパケットフィルタ</strong>です。つまり<strong>攻撃者がローカルで非特権のコードを走らせられるなら、JIT エンジンへの入口がある</strong>ということです。</p>
+<p>手順は次の形です。</p>
+<ol>
+<li>攻撃者が <strong>cBPF プログラム（訓練用）</strong>を入れ、対象の間接分岐をそこへ飛ばして<strong>BTB にエントリを作る</strong></li>
+<li>訓練用を<strong>解放</strong>し、<strong>同じ番地に別のプログラム（標的用）</strong>を入れる</li>
+<li>間接分岐をもう一度踏ませる。CPU は<strong>古い BTB エントリ</strong>を使い、<strong>標的用のコードの「古い入口」へ投機的に飛ぶ</strong></li>
+<li><strong>境界をずらした命令列</strong>として実行され、秘密のデータに触れる。触れた痕跡は <strong>Flush+Reload</strong> でキャッシュの時間差から読み取る</li>
+</ol>
+<p>結果は、<strong>完全に更新された既定設定の Intel 機から毎秒8バイト</strong>です。速度は遅いのですが、研究者の指摘が的を射ています——「毎秒わずか数バイトの読み出しでも、<strong>注意深いポインタ追跡</strong>によって秘密に到達するのに必要なデータ量は少なくて済む」（原文英語）。</p>
+<p>実際の手順は、カーネルのアドレスを求めてプロセスのページテーブルを辿り、<strong>動作中の <code>su</code> プロセス</strong>を見つけ、そのメモリから root のパスワードハッシュを読み出すものです。所要は<strong>平均3分（Raptor Cove）・5分（Lion Cove）</strong>。</p>
+<p><strong>2本目の実証がさらに重い意味を持ちます。</strong> cBPF には<strong>constant blinding</strong>（JIT spraying 対策として定数を目隠しする機能）があります。研究者はこれを有効にした環境でも、<strong>攻撃者が制御する命令をジャンプのオフセットに埋め込む</strong>形に作り替え、<strong>5分でハッシュに到達</strong>しました。論文の言い方では、<strong>「暗黙の定数」を使えば目隠しは迂回できる</strong>ということです。</p>
+<p><strong>なお得られるのはハッシュであり平文のパスワードではありません。</strong>攻撃者はこれを offline またはクラウドの計算資源で解く必要があり、成否はハッシュのアルゴリズムとパスワードの強度に左右されます（BleepingComputer の指摘）。</p></section>
+<section id="s7"><h2>ブラウザとサンドボックスは「まだ完遂していない」段階にある<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [5] [6]</span></h2><p>cBPF 以外の2つは、<strong>危険度が違います。</strong> ここを混ぜると誤解します。</p>
+<p><strong>Firefox（SpiderMonkey）。</strong> 古い予測が領域の再利用を越えて生き残ることは実証されました。Intel の CPU で<strong>平均6〜7件</strong>が残り、そこから<strong>毎秒36バイト（Raptor Cove）・62バイト（Lion Cove）</strong>という読み出し速度が<strong>見積られました。</strong>ただし<strong>完全なブラウザの実証には至っていません</strong>——被害側の分岐の投機実行の窓を延ばす技術と、Firefox の不正確なタイマーを迂回する秘密の通信路が別途必要です。<strong>Zen 4・Cortex-A76・Cortex-X3ではエントリが1件も生き残りませんでした。</strong></p>
+<p>ここで効いてくるのが<strong>サイト分離（site isolation）</strong>です。Mozilla はまだ展開を完了していないため、<strong>他のタブの内容が攻撃者と同じアドレス空間に載りうる</strong>状態にあります（SecurityWeek）。Mozilla が IBPB ベースの緩和策より<strong>サイト分離の完成を優先している</strong>のは、これが根本的な手当てだからです。</p>
+<p><strong>GraalVM（GraalPy）。</strong> こちらは<strong>サンドボックスの検査を飛び越えられる</strong>ことが示されました。GraalVM は最も厳しいサンドボックスのモードで<strong>ソフトウェアによる分離（SFI）</strong>を使い、メモリアクセスを arena という領域内に<strong>マスク</strong>して閉じ込めます。BTR は<strong>このマスク処理を投機的に飛び越えてarena の外を読めます。</strong></p>
+<p>ただし実験では完遂しませんでした——<strong>GraalVM 自身のコンパイルと GC が、使う前に古い予測を消してしまった</strong>ためです。研究者の評価は「<strong>この制約は本質的なものではないと思われる</strong>」（原文英語）。<strong>つまり今できないだけで、設計上できないのではありません。</strong></p>
+<p>整理すると、危険度の順は次のようになります（本記録の評価）。</p>
+<ul>
+<li><strong>cBPF</strong>: 既定設定の Intel 機で end-to-end の実証あり。<strong>いま対処すべき</strong></li>
+<li><strong>SpiderMonkey</strong>: 部品は揃っているが完成していない。<strong>サイト分離の進捗に依存</strong></li>
+<li><strong>GraalVM</strong>: 経路は示されたが GC に阻まれている。<strong>緩和策は既に投入済み</strong></li>
+</ul></section>
+<section id="s8"><h2>ベンダーは「実証を見せろ」と言い、研究者は17か月かけて2本作った<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [6]</span></h2><p>開示の経過は、脆弱性の内容そのものと同じくらい読む価値があります。</p>
+<p><strong>2025年4月</strong>、研究者は Intel・AMD・Arm と Linux カーネルのセキュリティチームへBTR を開示しました。この時点で示したのは<strong>JIT エンジンに対する予備的な攻撃面の分析</strong>と<strong>推奨する緩和策</strong>です。</p>
+<p>各者の反応を論文はこう記しています。</p>
+<blockquote>
+<p>影響を受ける当事者は問題を認め、内容を非公開期間に置いたが、<strong>cBPF の constant blinding のような費用のかかる緩和策を展開する必要を正当化するために、完全な end-to-end の実証を要求した</strong>（原文英語）</p>
+</blockquote>
+<p>研究者は応じました。<strong>2本の end-to-end の実証</strong>（うち1本は constant blinding も迂回する）を作り、他の JIT エンジンへ分析を広げ、<strong>2026年5月</strong>に共有しました。<strong>その後に Linux カーネルと Oracle が緩和策を投入しています。</strong></p>
+<p>緩和策の中身は次のとおりです。</p>
+<ul>
+<li><strong>Linux</strong>: x86 向けに、<strong>cBPF プログラムが過去に実行された cBPF/eBPF の領域を再利用するときに全コアで IBPB を発行する</strong>。CVE-2026-64507・CVE-2026-64508 として2026年7月25日に公開。IBT の有無に関わらず適用される（復帰経路のガジェットのため）</li>
+<li><strong>Oracle</strong>: GraalVM の<strong>コードキャッシュの配置を無作為化</strong>して領域の再利用を妨げる（プルリクエスト #14261・2026年8月19日）</li>
+<li><strong>Mozilla</strong>: IBPB ベースの緩和策を検討したが、<strong>サイト分離の完成と展開を優先</strong></li>
+<li><strong>Arm</strong>: 「整列した cBPF の実行で BTR を悪用する複雑さは、新たなカーネルの緩和策を正当化しない」（原文英語）</li>
+<li><strong>ハードウェアベンダー全体</strong>: IBPB 等の緩和する仕組みは既に存在し、<strong>BTR の緩和はソフトウェア側で展開されるべき</strong></li>
+</ul>
+<p>AMD は公表後、SecurityWeek に対して「<strong>論文は自社製品における新たな脆弱性を明らかにしていない</strong>」「記述された手法は既存の Spectre-v2 の攻撃に対する指針で緩和される」と回答しました（原文英語）。Intel と Arm は同社の取材に回答していません。</p>
+<p><strong>最初の開示から公表まで約17か月です。</strong> その大半は「<strong>費用のかかる対策を正当化するための実証を作る</strong>」ことに費やされました。これは<strong>研究者に立証責任が置かれた</strong>という構図であり、<strong>研究者がそこまでやらなければ緩和策は入らなかった</strong>ということでもあります（本記録の評価）。</p></section>
+<section id="s9"><h2>この種の欠陥は CVE を追っても見えず、ハードウェアの更新でも消えない<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [5] [6]</span></h2><p>読者の実務に落とすとき、本件には扱いにくい性質が3つあります。</p>
+<p><strong>①CVE が指しているのは CPU ではなく Linux である。</strong> CVE-2026-64507・CVE-2026-64508 はいずれも <strong>CNA が Linux</strong> で、対象は Linux カーネルです。<strong>CPU ベンダー側に CVE はありません。</strong>したがって「影響を受ける CPU の一覧」も存在しません。<strong>CVE の記述を読んでも「自社のどの機器が危ないか」は分かりません。</strong>分かるのは「<strong>カーネルを上げれば緩和策が入る</strong>」ということだけです。</p>
+<p><strong>②ハードウェアを新しくしても解決しない。</strong>研究者の結論は明快です——「予測器とコードを同期させる仕組みを持つ CPU は現時点で存在しないので、ベンダーがそれを追加するまで、あなたの CPU は脆弱である」（原文英語）。<strong>Lion Cove は IBT に競合状態が無い最初の Intel 世代</strong>であり、その点では進歩していますが、<strong>BTR そのものが消えたわけではありません</strong>（cBPF では endbr64 を JIT コードに埋め込めないため IBT は障壁を上げるものの、復帰経路を使う迂回が残ります）。</p>
+<p><strong>③「遅い読み出し」を軽視できない。</strong> 毎秒8バイトという数字は、1秒あたりの量としては小さいものです。しかし<strong>ポインタを辿って必要な場所だけ読む</strong>という手順と組み合わせると、<strong>3分でハッシュに届きます。</strong> <strong>速度で危険度を測る判断は、この事案では外れます</strong>（本記録の評価）。</p>
+<p>では実務として何を見るべきか。<strong>答えは「誰が非特権のコードを走らせられるか」です。</strong></p>
+<p>BTR は<strong>攻撃者がローカルで非特権のコードを実行できること</strong>を前提にします。裏を返せば、<strong>それができない環境では成立しません。</strong>共用サーバー、マルチテナントのホスト、CI のランナー、利用者がスクリプトを持ち込める解析環境—— <strong>「同じカーネルの上に、信頼の度合いが違うものが同居しているか」</strong>が判定条件です。</p>
+<p>投機実行の脆弱性は2017年以来、<strong>「結局のところ分離しかない」</strong>という同じ結論に戻ってきています。Mozilla がサイト分離を優先しているのも、Oracle が配置の無作為化を選んだのも、同じ方向です。<strong>細かな緩和策の積み上げではなく、境界そのものを引き直すこと</strong>が効く対策である、というのが本件から読み取れる一貫した含意です（本記録の評価）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-64507　<b>概要:</b> Linux カーネル。`x86/bugs: Enable IBPB flush on BPF JIT allocation`。 レコードの記述は「Spectre-v2 の緩和策が使われているときに JIT spraying に対する ハードニングを有効にする。具体的には、BPF JIT のメモリの再利用時に IBPB の フラッシュを発行する。BPF ディスパッチャが既に retpoline の命令列を使っている場合は IBPB のフラッシュの有効化を省く」（原文英語）。 対象ファイルは `arch/x86/include/asm/nospec-branch.h` と `arch/x86/kernel/cpu/bugs.c`。CNA は Linux、予約は2026年7月19日、 公開は2026年7月25日。CVSS 基本値の記載は無い　<b>exploited:</b> いいえ</div><div class=sub><b>id:</b> CVE-2026-64508　<b>概要:</b> Linux カーネル。`bpf: Support for hardening against JIT spraying`。 レコードの記述は「BPF JIT のアロケータは多数の小さなプログラムを より大きな実行可能な割り当てにまとめ、プログラムの読み込みと解放に伴って その割り当ての中の空間を再利用する。以前のプログラムが占めていた空間に 新しいコードが書かれると、**新しいプログラムへの間接ジャンプが、 古いプログラムが残した分岐予測を再利用しうる**」（原文英語）。 対策として JIT メモリの再利用前に間接分岐予測器をフラッシュする。 `bpf_arch_pred_flush_enabled` の static key と `bpf_arch_pred_flush` の static call を導入し、既定では NOP とする。 **パックより大きい割り当てはフラッシュの対象外**だが、 非特権の攻撃面である cBPF プログラムはパックのサイズを十分下回るため安全であるとし、 この前提が破られた場合は警告を出す。 対象ファイルは `include/linux/filter.h` と `kernel/bpf/core.c`。 CNA は Linux、公開は2026年7月25日。CVSS 基本値の記載は無い　<b>exploited:</b> いいえ</div></td></tr><tr><th>affected_versions</th><td>【CPU】挙動を確認したのは Intel Core i9-14900K（Raptor Cove）／ Intel Core Ultra 9 285K（Lion Cove）／AMD Ryzen 9 7950X（Zen 4）／ Broadcom BCM2712・Raspberry Pi 5（Cortex-A76）／Google Tensor G3（Cortex-X3）。 **「古い BTB エントリが無効化されない」挙動は試験した全 CPU で確認され**、 **end-to-end の実証が成立したのは Intel の2つ**である。 影響を受ける型番の網羅的な一覧は公表されていない。 【Linux カーネル】BPF JIT を有効にした x86 系。 CVE レコードは修正コミットのハッシュで範囲を示しており、版番号での指定は無い。 修正は stable の各系列へ取り込まれている（6系統のコミットが列挙されている）。 利用者向けの案内は「OS とファームウェアの更新を適用し、 Linux では最新のカーネルへ上げる」である。 【GraalVM】Oracle がプルリクエスト #14261（2026年8月19日取り込み）で コードキャッシュの配置を無作為化した。対象の版番号は本記録では確認していない。 【Firefox】Mozilla は IBPB ベースの緩和策を投入せず、サイト分離の完成を優先している。 **本記録の作成時点で Firefox 側の修正は入っていない**</td></tr><tr><th>exploitation_status</th><td>研究による発見であり、現実の攻撃は報告されていない。 論文・VUSec のプロジェクトページ・報道のいずれにも、 悪用の観測が発見の契機になったことを示す記述は無い。 米 CISA の KEV への収載は本記録の作成時点で確認していない。 論文は付録に開示ガジェットと実証の構成を載せているが、 完全な実証コードが公開されているかは確認できていない。 **実証は「完全に更新された既定設定の Intel 機」で成立している**点に注意が要る ——更新の遅れが前提条件ではない</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> Linux カーネルを、CVE-2026-64507・CVE-2026-64508 の修正が入った版へ上げる（cBPF の JIT メモリ再利用時に全コアで IBPB を発行する）　<b>副作用:</b> **IBPB は全コアに対して発行されるため性能への影響が生じる。** 論文は「JIT のコードの削除が高速な経路に無い限り許容できるだろう」とするが **実測値は示されていない。** seccomp のフィルタを頻繁に張り直す実装（コンテナの大量起動・短命なプロセス）では 影響を測ってから展開する必要がある</div><div class=sub><b>item:</b> 非特権の利用者による cBPF の利用を、必要な範囲に絞る（信頼できないコードを走らせる環境を分ける）　<b>副作用:</b> **seccomp・ソケットフィルタ・Docker や Chrome のパケットフィルタが cBPF に依存しているため、単純に無効化すると動かなくなるものがある。** とくに seccomp を止めることは、別のより大きな危険を招く</div><div class=sub><b>item:</b> 信頼の度合いが違うワークロードを、同じ物理ホスト・同じカーネルに同居させない　<b>副作用:</b> **集約率が下がり費用が増える。** 共用ホストで成り立っていた 事業のモデル（安価な共用サーバー・共用の CI ランナー）を変える判断になる</div><div class=sub><b>item:</b> OS とファームウェアの更新を適用する（マイクロコードの更新を含む）　<b>副作用:</b> 投機実行の緩和策は一般に性能を下げる。 再起動が要るため停止時間の調整が必要になる</div><div class=sub><b>item:</b> Firefox の利用について、サイト分離の展開状況を前提に扱う（機微な業務と一般の閲覧を分ける）　<b>副作用:</b> ブラウザを用途で分ける運用は利用者の手間を増やし、 端末の管理対象が増える。 **Mozilla 側の修正が入らない限り、利用者側でできるのは分けることだけである**</div><div class=sub><b>item:</b> GraalVM を、コードキャッシュの配置の無作為化が入った版へ上げる　<b>副作用:</b> 無作為化は再利用を「妨げる」ものであり**成立を不可能にするものではない。** 版を上げること自体のアプリケーションへの影響は別に検証が要る</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> 非特権の利用者が cBPF プログラムを繰り返し登録・解放している痕跡　<b>補足:</b> 攻撃の第1段（訓練用チャンクの挿入と解放）に対応する。 **通常の利用でも seccomp のフィルタ登録は発生する**ため、 単純な発生の有無ではなく**反復の回数と頻度**で見る必要がある。 カーネル側でこれを記録・監査する仕組みが既定で有効かは環境による</div><div class=sub><b>item:</b> 共用ホスト・マルチテナント環境で、利用者が持ち込んだコードを実行できる経路　<b>補足:</b> 指標というより**前提条件の点検項目**である。 BTR は攻撃者が非特権のコードをローカルで実行できることを前提にするため、 この経路が無ければ成立しない</div><div class=sub><b>item:</b> キャッシュのタイミングを大量に測る挙動（Flush+Reload の前提となる操作）　<b>補足:</b> **一般に検知は難しい。** 投機実行の側チャネルは正常な命令列だけで構成され、 異常なシステムコールも権限昇格も伴わない。 **本件は「検知で捕まえる」類の脆弱性ではない**（本記録の評価）</div><div class=sub><b>item:</b> カーネルの版と BPF JIT の有効・無効の設定（`net.core.bpf_jit_enable` 等）の棚卸し　<b>補足:</b> 緩和策は CONFIG_BPF_JIT が有効な環境に適用される。 自社の機器がどの状態にあるかを把握することが、 対処の前に必要な確認である</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年4月</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>研究者が主要なハードウェアベンダー（Intel・AMD・Arm）と Linux カーネルの セキュリティチームへ BTR を開示した。JIT エンジンに対する予備的な攻撃面の分析 （cBPF を中心とする）を示し、緩和策を推奨した</td></tr><tr><td class="sm nowrap tw">2025年4月以降（正確な時期は公表されていない）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>開示を受けた各者は問題を認め、内容を非公開期間（embargo）に置いたうえで、 **cBPF の constant blinding のような費用のかかる緩和策を展開する必要を 正当化するために、完全な end-to-end の実証を要求した**（原文英語）</td></tr><tr><td class="sm nowrap tw">2026年5月</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>研究者が更新した成果を関係各者へ共有した。cBPF に対する end-to-end の実証2本 （うち1本は constant blinding も迂回する）を作り、 他の JIT エンジンへ分析を広げたものである。 この後 Linux カーネルと Oracle が緩和策を投入した</td></tr><tr><td class="sm nowrap tw">2026年7月25日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Linux カーネルの CNA が CVE-2026-64507（`x86/bugs: Enable IBPB flush on BPF JIT allocation`）と CVE-2026-64508（`bpf: Support for hardening against JIT spraying`）を公表した。Greg Kroah-Hartman による linux-cve-announce への投稿。 予約は同年7月19日</td></tr><tr><td class="sm nowrap tw">2026年8月19日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Oracle が GraalVM のプルリクエスト #14261 「Randomize Runtime Code Cache Mappings with Allocator Hints」を取り込んだ。 JIT のコードキャッシュの配置を無作為化することで領域の再利用を妨げる緩和策である</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">公表</span></td><td>VUSec が BTR を公表した（プロジェクトページと論文）。 同日、The Hacker News・BleepingComputer・SecurityWeek が報じた。 論文は ACM CCS &#x27;26 に採録されている</td></tr><tr><td class="sm nowrap tw">2026年9月29日ごろ</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>AMD が SecurityWeek に対し「論文は自社製品における新たな脆弱性を明らかにしていない」 「記述された手法は既存の Spectre-v2 の攻撃に対する指針で緩和される」と回答した （原文英語）。Intel と Arm は同社の取材に回答していない</td></tr><tr><td class="sm nowrap tw">2026年11月15日〜19日（予定）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>論文「Branch Target Reuse: Practical Spectre-v2 Attacks in JIT Engines via Stale Branch Prediction Entries」が ACM CCS &#x27;26（オランダ・ハーグ）で発表される予定。 DOI は 10.1145/3830454.3846672</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が論文本体（PDF）と2件の CVE レコード（CVE プログラムの API 経由）を 取得した。読み出し速度（毎秒8バイト）・所要時間（3分・5分）・ SpiderMonkey の見積り（毎秒36バイト・62バイト）・試験した5つのマイクロアーキテクチャ・ 開示の経過（2025年4月／2026年5月）・ベンダーの回答・ Lion Cove が IBT に競合状態の無い最初の Intel 世代であることを確認した</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>BleepingComputer は「**ほとんどの現代のハードウェアがこの新しい BTR 攻撃に対して 脆弱である**」「Intel・AMD・Arm を含む、テストした全ての CPU でこの挙動を確認した」 （いずれも原文英語）と VUSec の説明を引いている。 一方 SecurityWeek は同じ研究について、**実証が成立したのは Intel の CPU であり、 AMD は「論文は自社製品における新たな脆弱性を明らかにしていない」と回答した**ことを 併記している。論文の実測では **Zen 4・Cortex-A76・Cortex-X3 では 再利用の活動後に BTB エントリが生き残らなかった。** **「基礎的な挙動は全 CPU で確認された」と「実証が成立したのは Intel の2つ」は 両立する**——前者は BTB が無効化されないこと、 後者は攻撃を完遂できることを指している（本記録の整理）</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>CVE-2026-64507・CVE-2026-64508 は2026年7月19日に予約され、 **同年7月25日に公開されている**（Greg Kroah-Hartman による linux-cve-announce への投稿）。研究の公表は2026年9月29日である。 **修正とその CVE は研究の公表より2か月早く公開の場に出ていた**—— Linux カーネルの CVE の運用（修正コミットに対して CVE を振る）によるもので、 矛盾ではない。**ただしカーネルの更新を追っていた組織は、 研究の公表を待たずに緩和策を得ていたことになる**（本記録の整理）</div></li><li><span class="b dk">本記録による推定</span><div class=sm>論文は3つの JIT エンジンについて「悪用可能性の特徴と読み出し速度は 著しく異なる」（原文英語）と述べ、cBPF を「最も脆弱な対象」と位置づけているが、 3者を序列として並べてはいない。 **本記録は「end-to-end の実証があるか」「緩和策が入ったか」を基準に 優先順位として整理した**。GraalVM を最後に置いたのは、 経路が示されたものの実験で完遂せず、かつ Oracle の緩和策が既に入っているためである</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>論文は「接触した全ての当事者がわれわれの発見を認めた」 「ハードウェアベンダーは IBPB 等の緩和する仕組みが存在し、BTR の緩和は ソフトウェア側で展開されるべきだと述べた」（いずれも原文英語）と記すが、 **Intel・Arm の自社名義のセキュリティ勧告は本記録の作成時点で確認できていない。** SecurityWeek は両社に取材を申し入れたが回答を得ていない。 **影響を受ける型番の一覧が存在しないのは、この沈黙の直接の結果である**（本記録の整理）</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>CVE レコードは修正を**コミットのハッシュ**で示しており、版番号での指定がない （6系統のコミットが列挙されている）。 本記録の作成者は各コミットがどの安定版に含まれるかを追っていない。 **自組織の判定には、使っているディストリビューションのセキュリティ告知を 併せて確認する必要がある。** GraalVM・Firefox についても、対象・修正の版番号は確認していない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>JIT が解放した番地を CPU の予測器だけが覚えており、投機実行がそこへ飛ぶ</div><div class=svgwrap><svg viewBox="0 0 2018 386" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,155.0 C193.0,155.0 193.0,193.0 220,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,193.0 C397.0,193.0 397.0,193.0 424,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,193.0 C499.0,193.0 499.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C805.0,53.0 805.0,193.0 832,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C703.0,53.0 703.0,135.0 628,135.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,193.0 C805.0,193.0 805.0,193.0 1036,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,193.0 C1213.0,193.0 1213.0,148.0 1240,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,193.0 C1213.0,193.0 1213.0,193.0 1444,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,148.0 C1417.0,148.0 1417.0,193.0 1444,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,193.0 C1621.0,193.0 1621.0,238.0 1648,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,193.0 C1621.0,193.0 1621.0,155.0 1648,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,238.0 C1825.0,238.0 1825.0,193.0 1852,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,155.0 C1825.0,155.0 1825.0,193.0 1852,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,224.0 C601.0,224.0 601.0,193.0 424,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,326.0 C703.0,326.0 703.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,237.0 C91.0,237.0 91.0,155.0 16,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,148.0 C1315.0,148.0 1315.0,238.0 1240,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非特権の利用者（ローカル</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="91.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">リモート無認証の経路は示</text><text x="91.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">されていない</text><rect x="220" y="156.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">訓練用の cBPF プロ</text><text x="295.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グラム</text><text x="295.0" y="205.0" text-anchor="middle" fill="#f48fb1" font-size="10">cBPF は非特権で使え</text><text x="295.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">る</text><rect x="424" y="162.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">分岐先バッファ（BTB）</text><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のエントリ</text><text x="499.0" y="211.0" text-anchor="middle" fill="#f48fb1" font-size="10">古い入口を指したまま残る</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">訓練用の解放と番地の再利</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用</text><text x="703.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">JIT アロケータの正常</text><text x="703.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">な動作</text><rect x="832" y="162.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的用の cBPF プロ</text><text x="907.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グラム（同じ番地）</text><text x="907.0" y="211.0" text-anchor="middle" fill="#f48fb1" font-size="10">攻撃者が中身を決める</text><rect x="628" y="104.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">命令キャッシュ（同期され</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る）</text><text x="703.0" y="153.0" text-anchor="middle" fill="#f48fb1" font-size="10">ここだけ一貫性が回復する</text><rect x="1036" y="156.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">cBPF ディスパッチャ</text><text x="1111.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の間接分岐</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#f48fb1" font-size="10">訓練と悪用が同じ分岐＝自</text><text x="1111.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">己訓練</text><rect x="1240" y="110.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="132.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">古い入口への投機実行（e</text><text x="1315.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">xecute-after</text><text x="1315.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-free）</text><text x="1315.0" y="173.0" text-anchor="middle" fill="#f48fb1" font-size="10">ソフトウェアのバグは不要</text><rect x="1444" y="149.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="171.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">境界をずらした命令列（S</text><text x="1519.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">pectre 対策を飛び</text><text x="1519.0" y="199.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">越える）</text><text x="1519.0" y="212.0" text-anchor="middle" fill="#f48fb1" font-size="10">constant bli</text><text x="1519.0" y="224.0" text-anchor="middle" fill="#f48fb1" font-size="10">nding も迂回された</text><rect x="1648" y="117.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1723.0" y="139.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Flush+Reload</text><text x="1723.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> によるキャッシュの時間</text><text x="1723.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">差の測定</text><text x="1723.0" y="180.0" text-anchor="middle" fill="#f48fb1" font-size="10">毎秒8バイト</text><rect x="1648" y="207.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="229.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">動作中の su プロセス</text><text x="1723.0" y="243.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のメモリ</text><text x="1723.0" y="256.0" text-anchor="middle" fill="#ffcc80" font-size="10">ポインタ追跡で位置を特定</text><rect x="1852" y="162.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1927.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">root のパスワードハ</text><text x="1927.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッシュ</text><text x="1927.0" y="211.0" text-anchor="middle" fill="#ffcc80" font-size="10">平文ではない・3〜5分</text><rect x="628" y="180.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JIT メモリ再利用時の</text><text x="703.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> IBPB フラッシュ（</text><text x="703.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-64…</text><text x="703.0" y="243.0" text-anchor="middle" fill="#f48fb1" font-size="10">Linux が取り込んだ</text><text x="703.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">緩和策</text><rect x="628" y="282.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コードキャッシュの配置の</text><text x="703.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">無作為化（GraalVM</text><text x="703.0" y="332.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="703.0" y="345.0" text-anchor="middle" fill="#f48fb1" font-size="10">再利用を妨げる・不可能に</text><text x="703.0" y="357.0" text-anchor="middle" fill="#f48fb1" font-size="10">はしない</text><rect x="16" y="206.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">信頼の度合いが違うものを</text><text x="91.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同居させない</text><text x="91.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">入口そのものを無くす</text><rect x="1240" y="200.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SpiderMonkey</text><text x="1315.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・GraalVM（完全な</text><text x="1315.0" y="250.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実証には至っていない）</text><text x="1315.0" y="263.0" text-anchor="middle" fill="#64b5f6" font-size="10">サイト分離の完成が本筋</text></svg></div><div class=fn>非特権の利用者が **cBPF の訓練用プログラム**を入れ、 対象の間接分岐をそこへ飛ばして **BTB にエントリを作る。** **訓練用を解放し、同じ番地に標的用のプログラムを置く**と、 **命令キャッシュは同期されるが BTB は同期されない**ため古いエントリが残る。 間接分岐をもう一度踏ませると、CPU は古いエントリを使って **「もう存在しない入口」へ投機的に飛ぶ**（投機的な execute-after-free）。 飛び先は本来の入口ではないので、 **Spectre 対策の命令列を飛び越え、境界をずらした命令列として実行される。** 痕跡は **Flush+Reload** でキャッシュの時間差から読み取り、 **毎秒8バイト・3〜5分で root のパスワードハッシュに到達する。** **constant blinding はジャンプのオフセットに命令を埋め込む形で迂回された。** **研究による実証であり、現実の攻撃は報告されていない。**</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**正常な命令列と正常なシステムコールだけで構成される。** 権限昇格も異常な操作も伴わないため、 通常の監視で区別できる手がかりが無い（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>非特権の利用者が信頼できないコードを実行できる環境を分離する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**cBPF の登録自体は正当な操作**であり、seccomp の利用で日常的に起きる。 反復の回数と頻度で見るほかないが、 カーネル側の監査の仕組みが既定で有効かは環境による（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>非特権の cBPF の利用を必要な範囲に絞る</div><div class=ctl><span class="b eff">検知できた</span>cBPF プログラムの登録・解放の反復を記録する</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**アロケータの正常な動作そのものである。** ソフトウェアのバグを必要としないため、 検知の手がかりになる異常が発生しない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>JIT メモリの再利用時に間接分岐予測器をフラッシュする（CVE-2026-64508 の対策）</div><div class=ctl><span class="b eff">影響を限定できた</span>JIT のコードキャッシュの配置を無作為化して再利用を妨げる（GraalVM の方式）</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**投機実行の結果はアーキテクチャ上は破棄される。** 例外も記録も残らないため、この段を観測する手段が無い（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>IBT（x86）／BTI（Arm）で投機の飛び先を制限する</div><div class=ctl><span class="b eff">影響を限定できた</span>競合状態の無い IBT と constant blinding を組み合わせる</div><div class=ctl><span class="b eff">侵入を防げた</span>間接分岐予測を無効化する（IPRED_DIS）／retpoline で分岐を守る</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**キャッシュの時間差を測る操作は、正常な命令の実行にしか見えない。** 本件は検知で捕まえる類の脆弱性ではなく、 **緩和策と分離で成立を止めるほかない**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>カーネルを CVE-2026-64507・CVE-2026-64508 の修正が入った版へ上げる</div><div class=ctl><span class="b eff">侵入を防げた</span>信頼の度合いが違うワークロードを同じカーネルに同居させない</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**ハッシュが持ち出されたこと自体を検知する手段は示されていない。** その後の解読は攻撃者の手元で行われ、 解読後の認証の成功は正規のログインとして記録される（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>パスワードのハッシュアルゴリズムを解読に強いものにし、パスワードの強度を上げる</div><div class=ctl><span class="b eff">影響を限定できた</span>root の直接のパスワード認証を使わない（鍵認証・sudo の限定）</div><div class=ctl><span class="b eff">侵入を防げた</span>カーネルの緩和策を適用して読み出しそのものを止める</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>投機実行の脆弱性の判定条件は「誰が自社の機器で非特権のコードを走らせられるか」に尽きる</div><div class=lw>BTR は**攻撃者がローカルで非特権のコードを実行できること**を前提にする。 リモートから無認証で成立する経路は示されていない。 つまり**共用ホスト・マルチテナント・CI のランナー・利用者がスクリプトを 持ち込める解析環境**が判定の対象であり、 **CPU の型番の一覧を待つ必要はない。**</div><div class=la><b>取るべき行動</b> **「同じカーネルの上に、信頼の度合いが違うものが同居している箇所」を 棚卸しして一覧にする。** これを投機実行の脆弱性が出るたびに 使い回す判定の台帳にする。新しい変種が出たときに読むのは CPU の一覧ではなく この台帳であり、**対処の優先順位はここから決まる。**</div></li><li><div class=lp>ハードウェアの脆弱性は CVE を追っていても見えない</div><div class=lw>本件の CVE 2件は**いずれも CNA が Linux で、対象は Linux カーネル**である。 **CPU ベンダー側に CVE は無く、影響を受ける型番の一覧も存在しない。** CVSS の基本値も CVE レコードに記載が無い。 **「CVE と CVSS で優先順位を決める」運用では、本件は評価すらできない。**</div><div class=la><b>取るべき行動</b> **ハードウェア・マイクロアーキテクチャの脆弱性を、CVE とは別の経路で拾う。** 情報源として研究機関の公表（VUSec 等）とベンダーのセキュリティ情報ページを指定し、 担当と巡回の頻度を決める。判断は CVSS ではなく **「自社に非特権のコードが入る箇所があるか」**で行うと決めておく。</div></li><li><div class=lp>緩和策の適用は「入れるか」ではなく「性能の代償を誰が決めるか」の問題になる</div><div class=lw>Linux の緩和策は**全コアに対して IBPB を発行する**ものであり、 **実測の性能影響は公表されていない。** しかも本件では**ベンダー自身が「費用のかかる緩和策を展開する必要を 正当化するために完全な実証を要求した」**—— 費用と危険の秤にかける判断が、当事者の側にも存在したということである。</div><div class=la><b>取るべき行動</b> **投機実行の緩和策について、「性能が落ちても入れる系統」と 「測ってから決める系統」を平時に分けておく。** 分ける基準は上記の「信頼の度合いが違うものの同居」である。 seccomp のフィルタを頻繁に張り直す系（コンテナの大量起動）は **測る側**に入れ、測定の手順を先に用意する。</div></li><li><div class=lp>「攻撃が遅い」ことを危険度の低さと読み替えない</div><div class=lw>毎秒8バイトという読み出し速度は、数字としては小さい。 しかし**ポインタを辿って必要な場所だけを読む**手順と組み合わせると、 **3分で root のパスワードハッシュに届いた。** 研究者自身が「毎秒わずか数バイトの読み出しでも end-to-end の実証が作れる」と 述べている（原文英語）。</div><div class=la><b>取るべき行動</b> **報道の「毎秒○バイト」という数字を、そのまま経営への報告に使わない。** 報告する数字は**「目的の達成までの時間」**にする。 本件では3〜5分であり、**これは攻撃者が1回のセッションで完了できる時間**である。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>JIT が解放した領域を再利用するとき、CPU の予測器は同期されていないと前提する</div><div class=lw>BTR の根は「**命令キャッシュは同期されるが BTB は同期されない**」という 非対称である。研究者は「予測器とコードを同期させる仕組みを持つ CPU は 現時点で存在しない」（原文英語）と述べている。 **ソフトウェアのバグを一つも必要としない**ため、 コードレビューでは見つからない。</div><div class=la><b>取るべき行動</b> **自前で実行時にコードを生成・解放する仕組みを持っている場合 （JIT・動的なトランポリン・実行可能領域の使い回し）、 「解放した領域を同じ番地に使い回すか」を確かめる。** 使い回す設計なら、**再利用の前に予測器をフラッシュする**か、 **配置を無作為化して再利用を妨げる**（GraalVM の方式）。 領域を使い回さないことがいちばん簡単な対処である。</div></li><li><div class=lp>constant blinding のような「定数を隠す」対策は、暗黙の定数で迂回される</div><div class=lw>cBPF の constant blinding は JIT spraying に対する主要な緩和策だが、 研究者は**ジャンプのオフセット**という暗黙の定数に 攻撃者が制御する命令を埋め込み、**5分で同じ結果**に到達した。 論文は同じ考え方が**配列添字のマスク**にも当てはまるとしている。</div><div class=la><b>取るべき行動</b> **「攻撃者が値を制御できる場所」を、明示的な定数だけで数えない。** JIT が生成するコードでは**ジャンプのオフセット・アラインメントの詰め物・ 即値の一部**も攻撃者の制御下に入りうる。 自前のハードニングを設計するときは、 **生成されたバイト列全体を攻撃者が影響を与えられる入力として扱う。**</div></li><li><div class=lp>IBT／BTI は障壁を上げるが、投機の窓を消すわけではない</div><div class=lw>研究者の評価では、**Lion Cove が IBT に競合状態の無い最初の Intel 世代**であり、 それ以前の世代は **endbr64 の検査の前に1命令を投機実行できる。** その1命令で BTB にエントリを注入でき、別の間接分岐を訓練できる。 競合状態が無い世代でも、**JIT コードに endbr64 を埋め込めれば迂回が残る。**</div><div class=la><b>取るべき行動</b> **IBT／BTI を「有効にしたから済んだ」とは扱わない。** 既定で無効な環境（Ubuntu は既定で無効）ではまず有効化を検討し、 そのうえで**競合状態の無い IBT と constant blinding の併用**を目標にする。 どちらも「本質的な対策ではない」と論文が明記していることを前提に、 **分離（サイト分離・ホストの分離）を本筋の対策として計画する。**</div></li><li><div class=lp>cBPF を「古い仕組み」として視界から外さない</div><div class=lw>eBPF は特権が要るが、**cBPF は非特権の利用者が使える。** しかも **seccomp・ソケットフィルタ・Docker や Chrome のパケットフィルタ**が 今も cBPF に依存している。 **本件で最も危険な経路が cBPF だったのは、 「古い」ことと「攻撃面として現役」であることが両立していたため**である。</div><div class=la><b>取るべき行動</b> **自社の機器で BPF JIT が有効かどうか（`net.core.bpf_jit_enable` 等）を棚卸しし、 カーネルの版と併せて記録する。** そのうえで CVE-2026-64507・CVE-2026-64508 の修正が入った版へ上げる。 **seccomp を止める形の回避は選ばない**—— より大きな危険を招く。</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 同じ物理ホスト・同じカーネルの上に、信頼の度合いが違うワークロードが同居しているか</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Linux で BPF JIT が有効になっており、非特権の利用者が cBPF を使えるか</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 該当する機器の CPU が Intel の Raptor Cove／Lion Cove 世代を含むか</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 投機実行の緩和策による性能低下を、測ってから展開する手順を持っているか</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> root や特権アカウントのパスワードのハッシュが、メモリ上に載る運用になっているか</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> ハードウェア・マイクロアーキテクチャの脆弱性を、CVE 以外の経路で拾う仕組みがあるか</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年7月25日 Linux カーネル CNA（kernel.org）／Greg Kroah-Hartman</span> <a href="https://lore.kernel.org/linux-cve-announce/2026072554-CVE-2026-64507-5288@gregkh/" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-64507: x86/bugs: Enable IBPB flush on BPF JIT allocation</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(開発元の一次資料。本記録の作成者が2026年9月30日に CVE プログラムの API （cveawg.mitre.org）から CVE レコードを取得し、記述を直接読み取った。 URL は論文の参考文献[20]が示す linux-cve-announce の投稿である。 CNA が Linux であること、予約が2026年7月19日・公開が2026年7月25日であること、 「Spectre-v2 の緩和策が使われているときに JIT spraying に対するハードニングを 有効にする。具体的には BPF JIT のメモリの再利用時に IBPB のフラッシュを発行する。 BPF ディスパッチャが既に retpoline の命令列を使っている場合は省く」（原文英語）、 対象ファイル（arch/x86/include/asm/nospec-branch.h・ arch/x86/kernel/cpu/bugs.c）、CONFIG_BPF_JIT の下で有効化を切ること、 修正がコミットのハッシュで示され版番号の指定が無いこと、 CVSS 基本値の記載が無いことの出典)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年7月25日 Linux カーネル CNA（kernel.org）／Greg Kroah-Hartman</span> <a href="https://lore.kernel.org/linux-cve-announce/2026072554-CVE-2026-64508-8b2b@gregkh/" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-64508: bpf: Support for hardening against JIT spraying</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(開発元の一次資料。本記録の作成者が2026年9月30日に CVE プログラムの API から レコードを取得し、記述を直接読み取った。URL の形式は論文の参考文献[21]に基づく （末尾の識別子は取得した資料では確認していない）。 「BPF JIT のアロケータは多数の小さなプログラムをより大きな実行可能な割り当てに まとめ、プログラムの読み込みと解放に伴ってその割り当ての中の空間を再利用する。 以前のプログラムが占めていた空間に新しいコードが書かれると、 新しいプログラムへの間接ジャンプが、古いプログラムが残した分岐予測を 再利用しうる」（原文英語）、JIT メモリの再利用前に間接分岐予測器をフラッシュすること、 bpf_arch_pred_flush_enabled の static key と bpf_arch_pred_flush の static call、 パックより大きい割り当てが対象外でも cBPF はパックのサイズを十分下回るため 安全であるという説明と前提が破られた場合の警告、 対象ファイル（include/linux/filter.h・kernel/bpf/core.c）の出典)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月29日 VUSec（アムステルダム自由大学）／Scuola Superiore Sant&#x27;Anna</span> <a href="https://www.vusec.net/projects/btr/" target="_blank" rel="noreferrer noopener nofollow">Branch Target Reuse: Practical Spectre-v2 Attacks in JIT Engines via Stale Branch Prediction Entries（ACM CCS &#x27;26）</a> <span class="b kind">調査レポート</span><span class=sm>（(発見者による一次資料。本記録の作成者が2026年9月30日にプロジェクトページと 論文本体（PDF・15ページ）を取得し、本文を直接読み取った。 著者は Sander Wiebing（VU Amsterdam）・Yuhui Zhu（Scuola Superiore Sant&#x27;Anna／ Scuola IMT Alti Studi Lucca）・Alessandro Biondi（同・ピサ）・ Cristiano Giuffrida（VU Amsterdam）。Wiebing と Zhu が共同第一著者。 発表は ACM CCS &#x27;26（2026年11月15〜19日・オランダ ハーグ）、 DOI 10.1145/3830454.3846672、CC BY 4.0。 要旨の「現代の CPU は自己書き換えの後にアーキテクチャ上のコードの一貫性を回復するが、 古い間接分岐の予測エントリを必ずしも無効化しない」、 試験した5つのマイクロアーキテクチャ（表1）、 cBPF の end-to-end 実証2本と読み出し速度（毎秒8バイト）・ 所要時間（平均3分・5分／constant blinding 有効時は双方5分）、 SpiderMonkey での生存エントリ数（平均6〜7件）と見積り速度 （毎秒36バイト・62バイト）、Zen 4・Cortex-A76・Cortex-X3 では エントリが生き残らなかったこと、GraalVM（GraalPy）での SFI のマスクの飛び越えと GC による妨げ、第8節「緩和策」とベンダーの回答（Linux の IBPB・ Oracle の配置の無作為化・Arm の「複雑さが正当化しない」・ Mozilla のサイト分離優先・Apple の WebKit についての同様の方針）、 Lion Cove が IBT に競合状態の無い最初の Intel 世代であること、 付録 B「倫理的配慮」の開示の経過（2025年4月の開示／ベンダーによる 完全な実証の要求／2026年5月の更新の共有／CVE-2026-64507・64508 の割り当て）、 Oracle の GraalVM プルリクエスト #14261 が2026年8月19日に取り込まれたことの出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年9月29日 The Hacker News</span> <a href="https://thehackernews.com/2026/09/new-spectre-v2-btr-attack-leaks-linux.html" target="_blank" rel="noreferrer noopener nofollow">New Spectre-v2 BTR Attack Leaks Linux Memory Despite Existing Defenses</a> <span class="b kind">記事</span><span class=sm>（(本記録の日次収集の起点の1本。本記録の作成者は保存分 〈output/articles/20260930/0098_the-hacker-news_new-spectre-v2-btr-attack-leaks-linux-memory-despi.md〉で 内容を確認した。攻撃の4段の手順の整理、CVE-2026-64507・64508 が Linux カーネルに取り込まれたこと、GraalVM の配置の無作為化、 Mozilla がサイト分離を優先していること、 2か月前に MIT CSAIL が公表した Interrupt Injection との並びの出典)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年9月29日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/new-spectre-v2-attack-variant-leaks-linux-root-password-hash-in-minutes/" target="_blank" rel="noreferrer noopener nofollow">New Spectre v2 attack variant leaks Linux root password hash in minutes</a> <span class="b kind">記事</span><span class=sm>（(本記録の日次収集の起点の1本。保存分 〈output/articles/20260930/0101_bleepingcomputer_new-spectre-v2-attack-variant-leaks-linux-root-pas.md〉で 確認した。VUSec の Cristiano Giuffrida による 「2018年以降、自己書き換えコードを基礎とするこの種の攻撃は現実的でないと 考えられてきた」という説明、`su` プロセスからのハッシュ回収と毎秒8バイト、 「3分と5分で平均してパスワードを読み出した」という研究者の記述、 **ハッシュは平文のパスワードと同じではなく offline やクラウドの計算資源で 解く必要があるという留保**、「予測器とコードを同期させる仕組みを持つ CPU は 現時点で存在しないので、ベンダーがそれを追加するまであなたの CPU は脆弱である」 「Intel・AMD・Arm を含むテストした全ての CPU でこの挙動を確認した」 （いずれも原文英語）、利用者への案内（OS とファームウェアの更新・ 最新のカーネルへの更新）の出典)）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年9月29日 SecurityWeek</span> <a href="https://www.securityweek.com/new-spectre-v2-variant-exposes-intel-amd-arm-cpus-to-data-leaks/" target="_blank" rel="noreferrer noopener nofollow">New Spectre v2 Variant Exposes Intel, AMD, Arm CPUs to Data Leaks</a> <span class="b kind">記事</span><span class=sm>（(本記録の日次収集の起点の1本。保存分 〈output/articles/20260930/0103_securityweek_new-spectre-v2-variant-exposes-intel-amd-arm-cpus-.md〉で 確認した。**cBPF が非特権で使えることと、seccomp・ソケットフィルタ・ Docker や Chrome のパケットフィルタが依存していること**、 Firefox でサイト分離が未完のため他のタブの内容が同じアドレス空間に載りうること、 GraalVM でマスク処理を投機的に飛び越えられるが GC が予測を消すこと （研究者は「この制約は本質的なものではないと思われる」とする）、 Linux の緩和策の内容（cBPF プログラムが既に使われた領域に置かれるときに 全コアで IBPB を発行する）、Lion Cove が競合状態の無い最初の Intel 世代であること、 **AMD の回答**（「論文は自社製品における新たな脆弱性を明らかにしていない」 「記述された手法は既存の Spectre-v2 の指針で緩和される」・原文英語）、 **Intel と Arm が取材に回答していないこと**の出典)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月30日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月30日の日次収集（The Hacker News・BleepingComputer・ SecurityWeek の3本）を起点に、**研究者の一次資料（VUSec のプロジェクトページと 論文本体の PDF・15ページ）と2件の CVE レコード（CVE プログラムの API 経由）を 取得して裏取りした。** 読み出し速度・所要時間・試験したマイクロアーキテクチャ・生存した BTB エントリ数・ constant blinding の迂回・IBT の競合状態・ベンダーの回答・ 付録 B の開示の経過（2025年4月の開示、ベンダーが「費用のかかる緩和策を 正当化するために完全な実証を要求した」こと、2026年5月の更新の共有）は いずれも論文本文から直接読み取った。 CVE 2件の記述・CNA・公開日・対象ファイルは CVE レコードで確認した。 **「基礎的な挙動は全 CPU で確認された」（BleepingComputer）と 「実証が成立したのは Intel の2つ」（論文の実測）が両立することを 齟齬として整理し**、CVE の公開（7月25日）が研究の公表（9月29日）より 2か月早かったことも記録した。 Intel・Arm の自社名義の見解、影響を受ける CPU の型番の一覧、 Linux の緩和策の性能影響の実測値、緩和策が入った安定版の版番号は いずれも確認できていないため未確定事項および self_unverified として記録した。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Spectre-v2</span><span class="b tag">BTR</span><span class="b tag">Branch Target Reuse</span><span class="b tag">投機実行</span><span class="b tag">サイドチャネル</span><span class="b tag">JIT</span><span class="b tag">cBPF</span><span class="b tag">eBPF</span><span class="b tag">Linux カーネル</span><span class="b tag">IBPB</span><span class="b tag">SpiderMonkey</span><span class="b tag">GraalVM</span><span class="b tag">VUSec</span><span class="b tag">Intel</span><span class="b tag">AMD</span><span class="b tag">Arm</span><span class="b tag">CVE-2026-64507</span><span class="b tag">CVE-2026-64508</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-30 15:11 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

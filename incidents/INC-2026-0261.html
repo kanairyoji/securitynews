@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>手間いらずの予約基盤に不正アクセス — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0261</span>手間いらずの予約基盤に不正アクセス</h1>
+<header class="site-header">
+  <p class="subtitle">宿泊予約の一括管理システム（サイトコントローラー）「TEMAIRAZU」シリーズを提供する手間いらずが、2026年9月21日に自社システムへの不正アクセスを受け、宿泊者情報の一部が第三者に閲覧または取得された可能性を否定できないと9月28日に公表した。端緒は基盤側の検知ではなく、同日深夜から複数の宿泊施設に寄せられた「予約内容を把握したとみられる不審なメッセージが予約者へ届いている」という連絡であり、WhatsApp・電子メール・SMS でクレジットカード情報の再入力や緊急の支払いを求めるフィッシングに予約情報が使われていた。原因は「過去に提供されていたインストール型サービスを構成する機能の一部にあったセキュリティ上の問題」で、9月26日に対策を完了したと利用施設向けに説明されている</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月28日</span>
+  <span>最終更新: 2026年9月29日</span>
+</div>
+
+<div class="lead"><p><strong>手間いらず株式会社</strong>は、宿泊施設が複数の宿泊予約サイト（OTA）の在庫・料金・予約を一括管理するために使う<strong>サイトコントローラー「TEMAIRAZU」シリーズ</strong>を提供しています。2026年<strong>9月28日</strong>、同社は自社システムへの不正アクセスを確認し、<strong>宿泊者情報の一部が第三者に閲覧または取得された可能性を否定できない</strong>と公表しました。</p>
+<p>発覚の順序が本件の要点です。<strong>基盤側が侵入を検知したのではありません。</strong> <strong>9月21日（月）深夜頃</strong>から、複数の宿泊施設が「予約者に WhatsApp 等のメッセージアプリ・電子メール・SMS で不審なメッセージが届いている」という連絡を受け、施設から同社へ伝わりました。同社は「本件に関する調査の過程で、当社システムへの不正アクセスがあったことを確認いたしました」と記しています。<strong>漏れた情報が使われている現場が先に見え、そこから侵入がたどられた</strong>という順序です。</p>
+<p>メッセージには<strong>宿泊予約に関する情報を把握しているとみられる内容</strong>が含まれ、予約の確認・確定、<strong>クレジットカード情報の再入力</strong>、緊急の支払い等を求めて不審なウェブサイトへ誘導するものがありました。スーパーホテルは送信元が<strong>海外の番号（+351 など）</strong>である例を挙げ、9月29日には「<strong>予約がキャンセルされた</strong>」と称するメッセージも確認されたと追記しています。</p>
+<p>原因は、あなぶきホテルズを運営する穴吹エンタープライズが手間いらずからの報告として公表しています。<strong>「過去に提供されていたインストール型サービスを構成する機能の一部にセキュリティ上の問題があった」</strong>というものです。確認された不正アクセスは<strong>9月21日に発生したものに限られ</strong>、<strong>9月26日</strong>に原因箇所を特定して対策を完了したとされています。</p>
+<p>手間いらずは<strong>クレジットカード情報を取り扱っておらずデータを保有していない</strong>と明記し、個人情報保護委員会への報告・警察への通報・外部専門機関への調査依頼を進めているとしています。一方で、<strong>閲覧または取得された可能性がある情報の項目・件数・人数、影響を受けた施設数はいずれも公表されておらず、調査中</strong>です。不正アクセスと不審なメッセージの因果関係についても、同社は「起因する可能性があると考えております」と述べるにとどめ、確認中としています。</p>
+<p>本記録は、手間いらずの公表（一次資料）と穴吹エンタープライズ・スーパーホテル・7garden の公表を取得して裏を取り、事実と評価を分けて整理します。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（7件）">公表・報道からわかったこと（7件）</a></li><li><a href="#s13" title="事案の詳細">事案の詳細</a></li><li><a href="#s14" title="経過">経過</a></li><li><a href="#s15" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s16" title="波及の構造">波及の構造</a></li><li><a href="#s17" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s18" title="対応の評価">対応の評価</a></li><li><a href="#s19" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s20" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s21" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s22" title="出典">出典</a></li><li><a href="#s23" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s24" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>閲覧または取得された可能性がある宿泊者情報の項目・件数・人数</span><span class="b rsn">調査中</span><div class=sm>手間いらずは「宿泊者情報の一部が第三者に閲覧または取得された可能性を否定できない状況であり、 現在、その影響範囲等の確認を進めております」とするのみで、項目も規模も示していない。 穴吹エンタープライズも「影響を受けた可能性のあるお客様の範囲および情報の詳細については、 引き続き確認が進められております」としている。不審なメッセージの内容から氏名・宿泊日・ 予約内容が攻撃者に把握されているとみられるが、これは公表された項目一覧ではない</div></li><li><span class=ui>不正アクセスの具体的な手法と、実施した対策の詳細</span><span class="b rsn">意図的に非開示</span><div class=sm>手間いらずは「セキュリティ上の理由から、不正アクセスの具体的な手法および実施した対策の 詳細については、公表を控えさせていただきます」と、非開示の理由を明示している。 利用施設側の公表からは「過去に提供されていたインストール型サービスを構成する機能の一部に セキュリティ上の問題があった」ことまでが分かるが、機能名・脆弱性の種別・ 認証を突破したのか認証を経ずに到達できたのかは示されていない</div></li><li><span class=ui>「過去に提供されていたインストール型サービス」の名称・提供期間・現行基盤との接続関係</span><span class="b rsn">公表されていない</span><div class=sm>提供を終えたサービスの構成要素が、なぜ現行の TEMAIRAZU から到達可能で、 かつ宿泊者情報に届く位置にあったのかは説明されていない。 利用施設のうち当該サービスを使っていた（あるいは使っていなかった）施設が 区別されるのかも示されていない</div></li><li><span class=ui>不正アクセスと不審なメッセージの因果関係</span><span class="b rsn">調査中</span><div class=sm>手間いらずは「不審なメッセージについては、本件不正アクセスに起因する可能性があると 考えておりますが、両者の関係については引き続き確認を進めております」としている。 予約情報を把握したメッセージが実際に送信されている事実と、その情報源が本件不正アクセスで あることは、公表の上では別の論点として扱われている</div></li><li><span class=ui>不正アクセスを確認した日時と、確認に至った経路</span><span class="b rsn">公表されていない</span><div class=sm>端緒が施設からの連絡（9月21日深夜以降）であることは公表されているが、 不正アクセス自体を確認した日は示されていない。このため「侵入から検知まで」は算出できず、 本記録は「発生から対策完了まで」「発生から公表まで」で代替している</div></li><li><span class=ui>攻撃者の帰属・目的、および不審なメッセージによる金銭被害の有無</span><span class="b rsn">公表されていない</span><div class=sm>送信元として海外の番号（+351 など）が挙げられている以外、攻撃者に関する情報はない。 不審なメッセージの送信件数、クレジットカード情報を入力した人の数、実際の金銭被害も 公表されていない</div></li><li><span class=ui>個人情報保護委員会への報告日と、外部専門機関の名称・調査範囲</span><span class="b rsn">公表されていない</span><div class=sm>手間いらずは報告と外部機関への協力依頼を「進めている」と記すのみで、 報告日・機関名・調査の範囲・調査報告書を公表する予定があるかは示されていない</div></li><li><span class=ui>影響を受けた宿泊施設の数と、TEMAIRAZU の利用施設数</span><span class="b rsn">公表されていない</span><div class=sm>手間いらずは影響を受けた施設数も利用施設の総数も公表していない。 本記録が数えた「告知を出した9組織」は piyolog が確認した範囲の下限値であり、 影響範囲を示す値ではない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>手間いらず株式会社</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>サイトコントローラー「TEMAIRAZU」シリーズの開発・提供元。宿泊施設が複数の宿泊予約サイトの 在庫・料金・予約を一括管理するために使う基盤であり、宿泊者の予約情報が集まる位置にある</p><p class=org-p><span class=org-l>影響</span>自社システムへの不正アクセスを受け、宿泊者情報の一部が第三者に閲覧または取得された 可能性を否定できない状況となった。安全確保と調査のため一部機能を一時停止し、 対策を講じたうえで再開している</p></div></div><div class=org><div class=org-h><span class=org-n>穴吹エンタープライズ株式会社（あなぶきホテルズ）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU のサイトコントローラーを導入している宿泊事業者</p><p class=org-p><span class=org-l>影響</span>宿泊者情報の一部が第三者に閲覧または取得された可能性を否定できないと公表した。 手間いらずから受けた報告として、原因（過去に提供されていたインストール型サービスを 構成する機能の一部のセキュリティ上の問題）・不正アクセスが9月21日に限られること・ 9月26日の対策完了・実施した対策の内容を、当事者の公表より詳しく開示した</p></div></div><div class=org><div class=org-h><span class=org-n>スーパーホテル</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU を予約コントロールシステムとして利用している宿泊チェーン</p><p class=org-p><span class=org-l>影響</span>予約者へ海外の送信元番号（+351 など）から WhatsApp 等で不審なメッセージが届いている ことを告知し、名前や宿泊日などの予約情報が記載されている場合があると注意喚起した。 9月29日には「予約がキャンセルされた」と称するメッセージも確認されたと追記した</p></div></div><div class=org><div class=org-h><span class=org-n>株式会社7garden</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月29日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU を利用している宿泊事業者</p><p class=org-p><span class=org-l>影響</span>「弊社が管理するシステムへの不正アクセスは確認されておりません」として、 自社システムの侵害は否定した。影響範囲は手間いらずと連携して確認中としている</p></div></div><div class=org><div class=org-h><span class=org-n>センチュリオンホテル（株式会社センチュリオンインターナショナル）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU シリーズを利用している宿泊チェーン</p><p class=org-p><span class=org-l>影響</span>手間いらずから不正アクセスの報告を受けたと公表し、不審なメッセージが確認されている 予約の3条件を記載した。在庫・料金・予約連携等のシステムは正常に稼働しているとの 報告を受けたとしている</p></div></div><div class=org><div class=org-h><span class=org-n>葉山ホテル音羽ノ森</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>予約管理システム「手間いらず」を使用している宿泊施設</p><p class=org-p><span class=org-l>影響</span>個人情報が外部に漏洩した可能性があることが判明したと公表した。 対象システムはクレジットカード情報を扱っていないと記載している。 不審なメッセージの条件は「9月21日までに成立した予約」「9月21日以降の宿泊日の予約」の 2条件で記載し、WhatsApp 利用の条件は記載していない</p></div></div><div class=org><div class=org-h><span class=org-n>OF HOTEL sendai／tohoku（COMMONS. inc.）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU シリーズを利用している宿泊施設</p><p class=org-p><span class=org-l>影響</span>不審なメッセージが確認されている予約の3条件を公表し、該当してもすべての予約者に 送信されているものではないとした。予約・宿泊サービスは通常どおり利用できると記載している</p></div></div><div class=org><div class=org-h><span class=org-n>農園リゾート THE FARM</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月28日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU シリーズを利用している宿泊施設</p><p class=org-p><span class=org-l>影響</span>第三者による不正アクセスが確認されたとして、なりすましメッセージへの注意を案内した</p></div></div><div class=org><div class=org-h><span class=org-n>ファーストキャビン（FIRST CABIN HD）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月29日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU を利用している宿泊事業者</p><p class=org-p><span class=org-l>影響</span>9月24日に自館・予約サイトを装ったフィッシング詐欺への注意を公表しており、 9月29日の追記で、予約コントロールシステムへの不正アクセスにより宿泊者情報の一部が 閲覧または取得された可能性があるとの発表があったと記載した</p></div></div><div class=org><div class=org-h><span class=org-n>春蘭の宿さかえや</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月27日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU を利用している宿泊施設</p><p class=org-p><span class=org-l>影響</span>宿泊者から自館を装った不審なメッセージの報告を受けたと公表した。 手間いらずの公表（9月28日）より1日早い。侵害されたシステムはクレジットカード情報を 扱わないと報告を受けたと記載している</p></div></div><div class=org><div class=org-h><span class=org-n>個人情報保護委員会</span><span class="b role">監督官庁</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>個人情報保護法にもとづく報告先</p><p class=org-p><span class=org-l>影響</span>手間いらずは「個人情報保護法その他の関係法令に基づき、個人情報保護委員会への報告を含む 必要な対応を進めております」としている。報告日・委員会側の対応は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>警察（所管は公表されていない）</span><span class="b role">捜査機関</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>手間いらずが通報・相談を行った先</p><p class=org-p><span class=org-l>影響</span>手間いらずは「警察への通報・相談を行っており、必要な情報提供および捜査への協力を 進めてまいります」としている。捜査の状況は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>外部機関（情報セキュリティを専門とする機関。名称は公表されていない）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>手間いらずが必要な確認について協力を依頼した先</p><p class=org-p><span class=org-l>影響</span>手間いらずは「必要な確認について、情報セキュリティを専門とする外部機関にも 協力を依頼しております」としている。機関名・調査の範囲・報告書の公表予定はいずれも示されていない</p></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（帰属は公表されていない）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>TEMAIRAZU シリーズへ不正アクセスし、取得したとみられる予約情報をフィッシングに用いた主体</p><p class=org-p><span class=org-l>影響</span>予約者の氏名・宿泊日等を含むメッセージを WhatsApp 等で送信し、クレジットカード情報の 再入力や緊急の支払いを求めて不審なウェブサイトへ誘導した。帰属・目的は公表されていない</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>現時点までの調査で確認されている不正アクセスの発生日数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1<span class=fu>日</span></div><div class=fn>2026年9月21日（月）に発生したものに限られ、その他の日時に同様の不正アクセスは 確認されていないと、穴吹エンタープライズが手間いらずからの報告として公表した。 手間いらず自身の公表には日数の記載がない。調査は継続中であり確定値ではない</div></div><div class=fig><div class=fh><span class=fl>不正アクセスの発生（9月21日）から原因箇所の特定・対策完了（9月26日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>日</span></div><div class=fn>本記録の作成者が穴吹エンタープライズの公表にある2つの日付から算出した。 手間いらずは不正アクセスを確認した日を公表していないため、 「検知から封じ込めまで」ではなく「発生から対策完了まで」である</div></div><div class=fig><div class=fh><span class=fl>不正アクセスの発生（9月21日）から手間いらずの公表（9月28日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>7<span class=fu>日</span></div><div class=fn>本記録の作成者による算出。施設からの連絡が入り始めた9月21日深夜から数えても7日である。 対策完了（9月26日）から公表までは2日</div></div><div class=fig><div class=fh><span class=fl>手間いらずとの関係を示して告知を出した宿泊関係組織の数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>9<span class=fu>組織</span></div><div class=fn>piyolog が2026年9月29日時点で確認した範囲（春蘭の宿さかえや・穴吹エンタープライズ・ OF HOTEL sendai／tohoku・葉山ホテル音羽ノ森・農園リゾート THE FARM・スーパーホテル・ センチュリオンホテル・7garden・ファーストキャビン）を本記録の作成者が数えた下限値。 TEMAIRAZU の利用施設数は公表されていないため母数は不明であり、 影響を受けた施設の数を表す値ではない</div></div><div class=fig><div class=fh><span class=fl>穴吹エンタープライズが同一の告知を掲載した施設の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>8<span class=fu>施設</span></div><div class=fn>ロイヤルパークホテル倉敷・UDON na HOTEL 琴平・じゃこ丸パーク津田・高松国際ホテル・ ロイヤル パーク ホテル高松・リーガホテルゼスト高松・琴平パーク ホテル・高松パークホテル。 piyolog が確認した掲載先を本記録の作成者が数えた。1社の導入で複数施設に及ぶ構造を示す値であり、 被害の規模を表す値ではない</div></div><div class=fig><div class=fh><span class=fl>不審なメッセージの送信が確認されている予約の条件の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>「2026年9月21日までに成立した予約」「2026年9月21日以降の宿泊日の予約」 「予約者が WhatsApp を利用されている予約」の3条件すべてに該当する予約の一部である。 条件に該当してもすべての予約者に送信されているものではないと OF HOTEL は記載している。 なお葉山ホテル音羽ノ森の告知は WhatsApp の条件を欠く2条件で記載している</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>2026年9月21日、過去に提供されていたインストール型サービスを構成する機能の一部にあった セキュリティ上の問題を突かれ、第三者が TEMAIRAZU シリーズへ不正アクセスした。 宿泊者情報の一部が閲覧または取得された可能性が否定できず、 予約内容を把握したとみられる不審なメッセージが同日深夜から予約者へ送信された。 検知は基盤側ではなく、予約者からの問い合わせを受けた宿泊施設からの連絡による。 具体的な手法はセキュリティ上の理由から公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[3]</span></div><div>第三者が、過去に提供されていたインストール型サービスを構成する機能の一部にあった セキュリティ上の問題を突いて、TEMAIRAZU シリーズへ不正アクセスした。 確認されている不正アクセスは2026年9月21日（月）に発生したものに限られる。 機能名・脆弱性の種別・認証を突破したのかどうかは公表されていない</div><div class=fn>根拠: 穴吹エンタープライズが手間いらずからの報告として公表した内容</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1] [3]</span></div><div>本件不正アクセスにより、宿泊者情報の一部が第三者に閲覧または取得された可能性を 否定できない状況となった。項目・件数・人数は公表されておらず調査中である。 クレジットカード情報は手間いらずが取り扱っておらずデータを保有していない</div><div class=fn>根拠: 手間いらずの公表および穴吹エンタープライズの告知</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1] [3] [4] [5]</span></div><div>2026年9月21日（月）深夜頃から、予約者に対し WhatsApp 等のメッセージアプリ・ 電子メール・SMS 等を通じて、宿泊予約に関する情報を把握しているとみられる 不審なメッセージが送信された。予約の確認・確定、クレジットカード情報の再入力、 緊急の支払い等を求め、不審なウェブサイトへ誘導するものがあった。 送信元には海外の番号（+351 など）が含まれる。9月29日には 「予約がキャンセルされた」と称するものも確認された。 送信が確認されているのは「9月21日までに成立した予約」「9月21日以降の宿泊日の予約」 「予約者が WhatsApp を利用している予約」の3条件すべてに該当する予約の一部である</div><div class=fn>根拠: 手間いらず・穴吹エンタープライズ・スーパーホテル・7garden の公表</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>4</span></div><ul><li><span class=ui>偵察</span><div class=sm>攻撃者が「過去に提供されていたインストール型サービス」の存在をどう把握したかは公表されていない</div></li><li><span class=ui>権限昇格・永続化・横展開</span><div class=sm>不正アクセスが9月21日の1日に限られるとされている一方、 権限の取得経路、永続化の有無、他システムへの横展開の有無は公表されていない</div></li><li><span class=ui>持ち出し</span><div class=sm>データが外部へ送出された事実は確認されておらず、経路・量も公表されていない</div></li><li><span class=ui>認証情報の窃取</span><div class=sm>手間いらずは利用施設へログインパスワードの変更を依頼し、OTA・パートナーへも 管理画面の点検を要請しているが、認証情報が取得されたと公表したものではない</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>不正アクセスの発生（9月21日）から原因箇所の特定・対策完了（9月26日）まで</div><div class=mv>5日。不正アクセスを確認した日が公表されていないため、「検知から封じ込めまで」ではなく 「発生から対策完了まで」である。なお確認後に直ちにアクセスの遮断を含む 被害拡大防止措置を講じたとされており、実質の遮断はこれより早い可能性がある</div></div><div class=met><div class=ml>不正アクセスの発生（9月21日）から手間いらずの公表（9月28日）まで</div><div class=mv>7日。施設からの連絡が入り始めた9月21日深夜から数えても7日。 対策完了（9月26日）から公表までは2日である。 ただし利用施設は9月24日・27日の時点で予約者向けの注意喚起を出しており、 予約者に情報が届き始めたのは当事者の公表より早い</div></div><div class=met><div class=ml>発生（9月21日）から利用施設を通じた予約者への注意喚起まで</div><div class=mv>算出できない。手間いらずは「ご利用施設様を通じた予約者様への注意喚起」を行ったと 記すのみで実施日を示していない。施設側の公表としては9月24日（ファーストキャビン。 ただし当初は手間いらずへの言及なし）・9月27日（春蘭の宿さかえや）が確認できる。 予約者本人への個別通知は行われておらず、予定も公表されていない</div></div><div class=met><div class=ml>侵入から検知まで</div><div class=mv>算出できない。不正アクセスを確認した日が公表されていない。 端緒は9月21日深夜からの施設からの連絡だが、そこから不正アクセスの確認までの 日数は示されていない</div></div><div class=met><div class=ml>一時停止した機能の再開</div><div class=mv>9月28日時点で再開済み。TEMAIRAZU は正常に稼働しており通常どおり利用できる状態とされている。 停止していた機能の名称と停止期間は公表されていない</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>原因箇所の特定と対策完了（9月26日）を待ち、その2日後の9月28日に公表した。 影響を受けた可能性のある情報の項目・件数は確定しないまま公表している</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 対策完了を待てば「すでに直っている」と言える一方、その間も予約情報を使った フィッシングは進行する。項目・件数を待たずに出せば予約者は早く警戒できるが、 自分が対象かを判断する材料は得られない</div></li><li><div class=ui>不正アクセスの具体的な手法および実施した対策の詳細を、 「セキュリティ上の理由から」公表しないと明示した</div><div class=fn><b>トレードオフ:</b> 手法を伏せれば類似の攻撃を誘発しにくい一方、同種の基盤を運営する組織が 自社の点検に使える情報が失われる。本件では原因の骨格 （過去に提供されていたインストール型サービスを構成する機能の問題）が 波及先の公表から明らかになっており、非開示の線引きが結果として一貫していない</div></li><li><div class=ui>利用施設に対し、念のため TEMAIRAZU のログインパスワードの変更を依頼した。 強制変更・無効化ではなく依頼である。あわせて OTA 各社・システム接続先の パートナーに対しても、身に覚えのないログイン、アカウント・権限設定の変更、 送金先口座その他の登録情報の変更、不審な操作履歴の有無の確認を要請した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 強制リセットは確実だが、多数の施設の業務が一斉に止まる。 依頼にとどめれば業務は続くが、変更しない施設が残る。 認証情報が取得されたと公表されていない段階では強制の根拠も弱い</div></li><li><div class=ui>安全確保および調査のため一部機能を一時的に停止し、必要な対策を講じたうえで再開した。 在庫・料金・予約連携等のシステムは稼働を維持した</div><div class=fn><b>トレードオフ:</b> 基盤を全面停止すれば侵害の拡大は確実に止まるが、 利用施設の予約受付が OTA 横断で止まり宿泊事業そのものが動かなくなる。 部分停止にとどめれば業務は続くが、残した機能が安全である確証は調査中である</div></li></ul></div>
+<section id="s6"><h2>侵入は基盤側が検知したのではなく、漏れた情報が使われている現場から見つかった<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [6]</span></h2><p>手間いらずの公表は、発覚の順序をはっきり書いている。</p>
+<blockquote>
+<p>2026 年 9 月 21 日（月）深夜頃より、複数の宿泊施設から、予約者様に対し、WhatsApp 等のメッセージアプリ、電子メール、SMS 等を通じて不審なメッセージが届いているとのご連絡をいただいております。（中略）また、本件に関する調査の過程で、当社システムへの不正アクセスがあったことを確認いたしました。</p>
+</blockquote>
+<p>つまり、<strong>検知したのは基盤の提供元ではなく、予約者からの問い合わせを受けた宿泊施設</strong>である。施設から手間いらずへ伝わり、その調査の副産物として不正アクセスが見つかった。</p>
+<p>この順序は、公表の順序にも現れている。手間いらずの公表は<strong>9月28日</strong>だが、春蘭の宿さかえやは<strong>9月27日</strong>に「当館を装ったなりすましメッセージ」への注意喚起を出しており、ファーストキャビンは<strong>9月24日</strong>の時点で「当ホテルや予約サイトを装ったフィッシング詐欺」として告知していた（ただし当初は手間いらずへの言及はなく、9月29日の追記で触れている）。<strong>利用施設が先に、原因を知らないまま表に出ていた</strong>ことになる。</p></section>
+<section id="s7"><h2>原因は「過去に提供されていたインストール型サービスを構成する機能の一部」——当事者の公表より利用施設の公表が詳しい<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p>手間いらず自身は原因を書いていない。</p>
+<blockquote>
+<p>なお、セキュリティ上の理由から、不正アクセスの具体的な手法および実施した対策の詳細につきましては、公表を控えさせていただきます。</p>
+</blockquote>
+<p>一方、あなぶきホテルズを運営する穴吹エンタープライズは、手間いらずから受けた報告として次のように公表している。</p>
+<blockquote>
+<p>その結果、過去に提供されていたインストール型サービスを構成する機能の一部にセキュリティ上の問題があり、第三者による「TEMAIRAZU」シリーズへの不正アクセスが行われたことが確認されました。</p>
+</blockquote>
+<p>同じ告知から、以下も分かる。</p>
+<ul>
+<li>確認されている不正アクセスは<strong>2026年9月21日（月）に発生したものに限られる</strong>。その他の日時に同様の不正アクセスは確認されていない</li>
+<li><strong>9月26日（土）</strong>に原因となった箇所を特定し、当該箇所への対策を完了した</li>
+<li>実施した対策は、<strong>管理ツールのパスワード変更／サーバーへの接続制限および認証方法の強化／不正アクセスの検知・防御および監視体制の強化／類似箇所の点検</strong></li>
+<li><strong>在庫・料金・予約連携等のシステムは正常に稼働</strong>している</li>
+</ul>
+<p><strong>一次公表（当事者）より、波及先の公表のほうが原因に踏み込んでいる。</strong>読者がこの事案の輪郭をつかめるのは、手間いらずが伏せた部分を利用施設が書いたからである。なお「インストール型サービス」の名称・提供期間、その機能がなぜ現行の基盤から到達可能だったのかは、どの公表にも書かれていない。</p></section>
+<section id="s8"><h2>盗まれた予約情報は、翌日以降の宿泊予定者を狙うフィッシングに直接使われた<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [3] [4] [6]</span></h2><p>不審なメッセージの内容は、手間いらずの公表に記載がある。</p>
+<blockquote>
+<p>確認されているメッセージには、宿泊予約に関する情報を把握しているとみられる内容が含まれており、予約の確認・確定、クレジットカード情報の再入力、緊急の支払い等を求め、不審なウェブサイトへ誘導するものがあります。</p>
+</blockquote>
+<p>送信の対象は、穴吹エンタープライズ・センチュリオンホテル・OF HOTEL が同じ3条件で公表している。</p>
+<ol>
+<li><strong>2026年9月21日（月）までに成立した予約</strong></li>
+<li><strong>2026年9月21日（月）以降の宿泊日の予約</strong></li>
+<li><strong>予約者が WhatsApp を利用されている予約</strong></li>
+</ol>
+<p>条件に該当してもすべての予約者に送信されているものではない、と OF HOTEL は付記している。</p>
+<p>注目すべきは2番目の条件である。<strong>「これから泊まる人」に絞られている。</strong>予約の確認や支払いを求めるメッセージは、宿泊が先にある人にとって自然に見える。攻撃者は、盗んだデータベースのうち<strong>騙されやすい部分集合だけを選んで</strong>使っている（本記録の評価）。</p>
+<p>スーパーホテルは、送信元が<strong>海外の番号（+351 など）</strong>であること、メッセージに<strong>名前や宿泊日などの予約情報が記載されている場合がある</strong>ことを告知した。9月29日には、一部に「<strong>予約がキャンセルされた</strong>」と称するものが確認されたと追記し、メッセージアプリ等で一方的にキャンセルを通知することはないと案内している。</p>
+<p>情報の項目・件数・人数はいずれも公表されていない。手間いらずが明示しているのは<strong>クレジットカード情報を取り扱っておらずデータを保有していない</strong>という点だけである（葉山ホテル音羽ノ森・春蘭の宿さかえや・ファーストキャビンも同旨の報告を受けたと記載している）。</p></section>
+<section id="s9"><h2>1つの基盤の侵害が、系列・チェーン単位で一斉に波及した<span class="b slot">波及・関係先</span><span class=srcs>出典 [3] [5] [6]</span></h2><p>サイトコントローラーは、宿泊施設が複数の宿泊予約サイト（OTA）の在庫・料金・予約を一括管理するための基盤である。<strong>予約情報は施設ごとではなく基盤に集まる。</strong></p>
+<p>piyolog が2026年9月29日時点で確認した範囲では、手間いらずとの関係を示して告知を出した宿泊関係組織は<strong>9組織</strong>にのぼる。うち穴吹エンタープライズは、ロイヤルパークホテル倉敷・UDON na HOTEL 琴平・じゃこ丸パーク津田・高松国際ホテル・ロイヤル パーク ホテル高松・リーガホテルゼスト高松・琴平パーク ホテル・高松パークホテルの<strong>8施設</strong>に同一の告知を掲載した。<strong>1社の導入判断が、そのまま複数施設に及ぶ。</strong></p>
+<p>施設側の公表の温度差も記録に値する。</p>
+<ul>
+<li><strong>7garden</strong> は「弊社が管理するシステムへの不正アクセスは確認されておりません」と自社の侵害を明確に否定し、影響範囲は手間いらずと連携して確認中とした</li>
+<li><strong>葉山ホテル音羽ノ森</strong>は「個人情報が外部に漏洩した可能性があることが判明した」と、漏洩の可能性を前面に置いた</li>
+<li><strong>農園リゾート THE FARM</strong> は「なりすましメッセージ」への注意を主とし、情報漏えいの可能性には踏み込んでいない</li>
+</ul>
+<p><strong>同じ基盤の同じ侵害でも、予約者が受け取る説明の強さは施設によって違う。</strong>利用施設は自ら調べる手段を持たないため、基盤提供元の説明をそのまま流すか、抑えて書くかしかない。手間いらずが項目・件数を出していない段階では、施設が独自に補える余地もない（本記録の評価）。</p>
+<p>なお、被害が確認されなかった利用施設の扱いは公表されていない。7garden の否定は「自社システムへの不正アクセス」についてのものであり、同社の予約者が影響を受けていないという意味ではない。</p></section>
+<section id="s10"><h2>対策完了から公表まで2日、発生から公表まで7日<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [3]</span></h2><p>公表されている日付を並べると次のようになる。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9月21日（月）</td>
+<td>不正アクセスが発生（確認されているのはこの日のみ）</td>
+</tr>
+<tr>
+<td>9月21日（月）深夜頃</td>
+<td>複数施設から不審なメッセージの連絡が入り始める</td>
+</tr>
+<tr>
+<td>日付非公表</td>
+<td>調査の過程で不正アクセスを確認。直ちにアクセスの遮断を含む被害拡大防止措置</td>
+</tr>
+<tr>
+<td>9月26日（土）</td>
+<td>原因箇所を特定し対策を完了。再発防止策も実施</td>
+</tr>
+<tr>
+<td>9月28日（月）</td>
+<td>手間いらずが公表。利用施設も相次いで公表</td>
+</tr>
+<tr>
+<td>9月29日（火）</td>
+<td>英語版を公開</td>
+</tr>
+</tbody>
+</table>
+<p><strong>発生から対策完了まで5日、発生から公表まで7日、対策完了から公表まで2日</strong>である。</p>
+<p>「侵入から検知まで」は算出できない。<strong>不正アクセスを確認した日が公表されていない</strong>ためである。端緒（施設からの連絡）は9月21日深夜だが、そこから不正アクセスの確認までに何日かかったかは分からない。</p>
+<p>対応の内容として公表されているのは以下である。</p>
+<ul>
+<li>確認後、<strong>直ちにアクセスの遮断</strong>を含む被害拡大防止措置を講じ、原因の調査を開始</li>
+<li>安全確保および調査のため<strong>一時的に機能を停止</strong>し、対策を講じたうえで再開</li>
+<li><strong>アクセス制御および監視体制の強化</strong>を含むセキュリティ対策を実施し、監視を継続</li>
+<li>利用施設へ<strong>TEMAIRAZU のログインパスワードの変更</strong>を依頼し、管理画面上で身に覚えのないログインや意図しない登録内容の変更があれば連絡するよう要請</li>
+<li><strong>OTA 各社・システム接続先のパートナー</strong>に対しても、身に覚えのないログイン、アカウント・権限設定の意図しない変更、<strong>送金先口座その他の登録情報の意図しない変更</strong>、不審なメッセージまたは操作履歴の有無を確認するよう要請</li>
+<li>個人情報保護委員会への報告、警察への通報・相談、外部専門機関への協力依頼</li>
+</ul>
+<p>最後の2点は、本件の対応で特に見るべき部分である。<strong>基盤の提供元が、自社の復旧だけでなく接続先の点検項目まで具体的に列挙している。</strong>「送金先口座の意図しない変更」を挙げているのは、予約情報の窃取にとどまらない悪用を想定した確認依頼である（本記録の評価）。</p></section>
+<section id="s11"><h2>情報の項目・件数、手法、そして「メッセージは不正アクセスに起因するのか」はいずれも確定していない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [3]</span></h2><p>2026年9月30日時点で、次の点は公表されていない。</p>
+<ul>
+<li>閲覧または取得された可能性がある<strong>宿泊者情報の項目・件数・人数</strong>（調査中）</li>
+<li><strong>不正アクセスの具体的な手法</strong>と実施した対策の詳細（セキュリティ上の理由から非開示と明示されている）</li>
+<li>「<strong>過去に提供されていたインストール型サービス</strong>」の名称・提供期間・現行の TEMAIRAZU との接続関係</li>
+<li><strong>不正アクセスと不審なメッセージの因果関係</strong>（手間いらずは「起因する可能性がある」と述べるにとどめ、両者の関係を確認中としている）</li>
+<li><strong>不正アクセスを確認した日時</strong>と確認に至った経路</li>
+<li><strong>攻撃者の帰属・目的</strong>、不審なメッセージの送信件数、<strong>金銭被害の有無</strong></li>
+<li><strong>個人情報保護委員会への報告日</strong>、外部専門機関の名称・調査範囲</li>
+<li><strong>影響を受けた宿泊施設の数</strong>と TEMAIRAZU の利用施設数</li>
+</ul></section>
+<section id="s12"><h2>予約情報は「漏れて終わり」ではなく、宿泊日までに換金される——共有基盤の棚卸しと連絡の設計が問われる（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [3] [4] [5] [6]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p><strong>第一に、宿泊予約情報は漏えいから悪用までの距離がきわめて短い。</strong>氏名・宿泊日・予約内容がそろえば、「これから泊まる人」に対して自然に見える支払い要求を作れる。本件で送信対象が「9月21日以降の宿泊日の予約」に絞られていたのは、攻撃者が<strong>有効期限のあるデータ</strong>として扱っていたことを示す。調査が終わって項目と件数が確定するのを待つ設計では、換金に間に合わない。<strong>項目が未確定の段階でも、対象者への注意喚起を先に出す</strong>判断が要る。本件では利用施設がこれを担い、手間いらず自身の公表（9月28日）より前に春蘭の宿さかえや（9月27日）が出している。</p>
+<p><strong>第二に、原因が「過去に提供されていたインストール型サービス」だった点が重い。</strong>提供を終えたサービスの構成要素が、現行の基盤から到達可能で、しかも宿泊者情報に届く位置に残っていた。<strong>「使っていない機能」は資産台帳から落ちやすく、脆弱性管理の対象にも入らない。</strong> サービスを終了させるときに、コードとエンドポイントと権限をどこまで撤去したかを記録した組織は少ない。自社の棚卸しで探すべきは、動いている機能ではなく<strong>止めたつもりの機能</strong>である。</p>
+<p><strong>第三に、検知したのが利用者だった構造を軽く見てはいけない。</strong>基盤側は侵入を検知しておらず、施設が予約者からの問い合わせを受けて初めて動いた。手間いらずは事後に「不正アクセスの検知・防御および監視体制の強化」を実施したと説明しているが、<strong>強化されたのは事後である。</strong> マルチテナントの基盤で、1日分の不正アクセスが自前の監視に映らなかったという事実は、同種の基盤を運営する組織にとって直接の教材になる。</p>
+<p><strong>第四に、委託元は「うちのシステムは大丈夫」で終われない。</strong> 7garden は自社システムへの不正アクセスを否定したが、それは予約者が影響を受けていないことを意味しない。<strong>予約情報は自社のシステムにではなく基盤に集まっている。</strong>サイトコントローラー・PMS・OTA 連携のような共有基盤を使う組織は、自社の侵害の有無とは独立に、<strong>基盤側の事故で自社の顧客が狙われる</strong>経路を持つ。契約時に確認すべきは、基盤提供元が事故時に何をどの速さで施設へ伝えるか、施設が予約者へ出す告知の内容をどこまで基盤提供元が支援するか、である。</p>
+<p><strong>第五に、説明の粒度が施設によってばらつくのは構造的な問題である。</strong>本件では、原因に踏み込んだ穴吹エンタープライズの告知が、当事者の公表を補う一次資料として機能した。<strong>基盤提供元が伏せた情報が、波及先の公表から漏れ出す</strong>という形になっている。共有基盤の事故では、提供元と利用組織が出す説明の整合をとる作業まで対応計画に含めるべきである。</p></section>
+<div class="blk " id="s13"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>発覚の端緒</th><td>過去に提供されていたインストール型サービスを構成する機能の一部にあったセキュリティ上の問題 （穴吹エンタープライズが手間いらずからの報告として公表）。機能名・脆弱性の種別・ 認証を突破したのか認証を経ずに到達できたのかは公表されていない<span class="b rsn">stated</span><div class=fn>手間いらず自身は「セキュリティ上の理由から」手法を非開示としている。 「過去に提供されていた」という表現から、提供を終えたサービスの構成要素が 現行の TEMAIRAZU から到達可能なまま残っていたと読めるが、 現行基盤との接続関係は説明されていない</div></td></tr><tr><th>影響を受けたシステム</th><td><div class=sub><b>item:</b> TEMAIRAZU シリーズ（サイトコントローラー。宿泊施設が複数の宿泊予約サイトの在庫・料金・予約を一括管理する基盤）　<b>補足:</b> 安全確保および調査のため一時的に機能を停止し、必要な対策を講じたうえで再開した。 2026年9月28日時点で正常に稼働しているとされる</div><div class=sub><b>item:</b> 在庫・料金・予約連携等のシステム　<b>補足:</b> 穴吹エンタープライズの告知およびセンチュリオンホテルの告知で「正常に稼働」と報告されている</div><span class="b rsn">stated</span></td></tr><tr><th>漏えいした情報項目</th><td><div class=sub><b>item:</b> 宿泊者情報の一部（項目は公表されていない）　<b>補足:</b> 「第三者に閲覧または取得された可能性を否定できない」という表現であり、 流出が確認されたものではない。影響範囲は確認中</div><span class="b rsn">調査中</span></td></tr><tr><th>含まれていない情報</th><td><div class=sub><b>item:</b> クレジットカード情報　<b>補足:</b> 手間いらずは「当社ではクレジットカード情報を取り扱っておらず、データを保有しておりません」 と明記している。葉山ホテル音羽ノ森・春蘭の宿さかえや・ファーストキャビン・ センチュリオンホテルも同旨の報告を受けたと記載している。 なお不審なメッセージはクレジットカード情報の再入力を求めており、 入力してしまった場合の被害は本件の漏えい範囲とは別に生じる</div><span class="b rsn">stated</span></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> partially_confirmed　<b>時点:</b> 2026年9月30日　<b>補足:</b> 予約内容を把握したとみられるメッセージが実際に予約者へ送信されている事実は、 手間いらず・穴吹エンタープライズ・スーパーホテル・7garden のいずれも公表している。 一方、その情報源が本件不正アクセスであることは確認中である （手間いらずは「起因する可能性があると考えております」と記載）。 したがって「漏えいした情報の悪用」としては確定しておらず、 「予約情報を用いたフィッシングの発生」としては確認されている状態である。 クレジットカード情報の入力や送金に至った被害の有無は公表されていない</td></tr><tr><th>ログの有無</th><td>ログの取得状況・保持期間は公表されていない。 「現時点までの調査において、確認されている不正アクセスは2026年9月21日に発生したものに限られ、 その他の日時に同様の不正アクセスは確認されていない」（穴吹エンタープライズが手間いらずからの 報告として公表）という記述は、一定期間を遡って確認できるログが存在することを示唆するが、 遡れる範囲は示されていない。閲覧・取得の有無を確定できないことから、 データの参照そのものを追跡できるログがあるかは不明である</td></tr><tr><th>サービス停止</th><td><div class=sub><b>item:</b> 安全確保および調査のため、TEMAIRAZU の一部機能を一時的に停止した　<b>補足:</b> 停止した機能の名称・停止していた期間は公表されていない。 必要な対策を講じたうえで再開し、2026年9月28日時点で正常に稼働しているとされる</div></td></tr><tr><th>復旧状況</th><td>2026年9月28日時点で TEMAIRAZU は正常に稼働しており、通常どおり利用できる状態とされている。 在庫・料金・予約連携等のシステムも正常に稼働している。 ただし影響範囲の確認は継続中である</td></tr><tr><th>通知</th><td><div class=sub><b>item:</b> 利用施設を通じた予約者への注意喚起　<b>補足:</b> 手間いらずは「ご利用施設様を通じた予約者様への注意喚起」を行ったとしている</div><div class=sub><b>item:</b> 利用施設および関係各社への情報共有　<b>補足:</b> OTA 各社・システム接続先のパートナーを含む</div><div class=sub><b>item:</b> 利用施設への TEMAIRAZU ログインパスワードの変更依頼　<b>補足:</b> あわせて、管理画面上で身に覚えのないログインや意図しない登録内容の変更を 確認した場合は速やかに連絡するよう要請している</div><div class=sub><b>item:</b> OTA 各社・パートナーへの管理画面の点検依頼　<b>補足:</b> 身に覚えのないログインの有無／アカウントまたは権限設定の意図しない変更／ 送金先口座その他の登録情報の意図しない変更／不審なメッセージまたは操作履歴の有無</div><span class="b rsn">stated</span><div class=fn>予約者本人への直接通知は行われていない。手間いらずは予約者と直接の接点を持たないため、 通知は利用施設を経由する構造になっている。 影響を受けた可能性のある予約者への個別通知の予定は公表されていない</div></td></tr><tr><th>利用者への行動案内</th><td><div class=sub><b>item:</b> メッセージに記載された URL やリンクを開かない</div><div class=sub><b>item:</b> クレジットカード情報や個人情報を入力しない</div><div class=sub><b>item:</b> メッセージに返信しない</div><div class=sub><b>item:</b> メッセージの指示に従って支払いや送金を行わない</div><div class=sub><b>item:</b> 予約内容を確認する場合は、予約した宿泊施設または宿泊予約サイトの公式窓口へ問い合わせる</div><div class=sub><b>item:</b> 不審なウェブサイトにクレジットカード情報等を入力した場合は、速やかにクレジットカード会社へ相談する</div><span class="b rsn">stated</span><div class=fn>スーパーホテルは、メッセージアプリ等で一方的に予約のキャンセルを通知することはないと 9月29日に追記した。「キャンセルされた」という切り口は、予約者に確認の動機を与えて 偽サイトへ誘導する手口である（本記録の評価）</div></td></tr><tr><th>再発防止策</th><td><div class=sub><b>item:</b> 不正アクセスの原因となった箇所への対策（9月26日に完了）</div><div class=sub><b>item:</b> 管理ツールのパスワード変更</div><div class=sub><b>item:</b> サーバーへの接続制限および認証方法の強化</div><div class=sub><b>item:</b> 不正アクセスの検知・防御および監視体制の強化</div><div class=sub><b>item:</b> 類似箇所の点検</div><div class=sub><b>item:</b> アクセス制御および監視体制の強化を含むセキュリティ対策の実施と、システム監視の継続</div><span class="b rsn">stated</span><div class=fn>先の5項目は穴吹エンタープライズが手間いらずからの報告として公表したもの、 最後の1項目は手間いらずの公表による。「類似箇所の点検」は、 原因が過去に提供されていたサービスの構成要素だったことに対応する措置とみられる（本記録の推定）</div></td></tr><tr><th>criminal</th><td><div class=sub><b>item:</b> 警察への通報・相談を行い、必要な情報提供および捜査への協力を進めるとしている　<b>補足:</b> 所管の警察・受理の状況・捜査の進展はいずれも公表されていない</div><span class="b rsn">stated</span></td></tr><tr><th>当局対応</th><td><div class=sub><b>item:</b> 個人情報保護法その他の関係法令にもとづき、個人情報保護委員会への報告を含む必要な対応を進めている　<b>補足:</b> 報告日・報告の内容・委員会側の対応は公表されていない</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月21日（月）</td><td class=nowrap><span class="b kind">発生</span></td><td>手間いらずのシステムに対する第三者からの不正アクセスが発生した。 穴吹エンタープライズが手間いらずからの報告として公表した内容では、 現時点までの調査で確認されている不正アクセスはこの日に発生したものに限られ、 その他の日時に同様の不正アクセスは確認されていないとされている</td></tr><tr><td class="sm nowrap tw">2026年9月21日（月）深夜頃</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>複数の宿泊施設から、予約者に WhatsApp 等のメッセージアプリ・電子メール・SMS 等を通じて 不審なメッセージが届いているとの連絡を手間いらずが受け始めた。 メッセージには宿泊予約に関する情報を把握しているとみられる内容が含まれていた</td></tr><tr><td class="sm nowrap tw">2026年9月21日（月）深夜以降（日付は公表されていない）</td><td class=nowrap><span class="b kind">検知</span></td><td>手間いらずが、不審なメッセージに関する調査の過程で自社システムへの不正アクセスを確認した。 確認後は直ちにアクセスの遮断を含む被害拡大防止措置を講じ、原因の調査を開始した。 安全確保と調査のため一部機能を一時停止した。不正アクセスを確認した日は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年9月24日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>ファーストキャビンが「当ホテルや予約サイトを装ったフィッシング詐欺に関しまして」を公表した。 この時点では手間いらずへの言及はなく、9月29日の追記で予約コントロールシステムへの 不正アクセスに触れている</td></tr><tr><td class="sm nowrap tw">2026年9月26日（土）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>手間いらずが原因となった箇所を特定し、当該箇所への対策を完了した。 あわせて再発防止および安全性向上に向けたセキュリティ対策（管理ツールのパスワード変更、 サーバーへの接続制限および認証方法の強化、不正アクセスの検知・防御および監視体制の強化、 類似箇所の点検等）を実施した</td></tr><tr><td class="sm nowrap tw">2026年9月27日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>春蘭の宿さかえやが「当館を装ったなりすましメッセージ」への注意喚起を公表した。 手間いらず自身の公表より1日早く、利用施設側から先に外部へ出ている</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">公表</span></td><td>手間いらずが「不審なメッセージおよび当社システムへの不正アクセスに関するお詫びとお知らせ」を 公表した。宿泊者情報の一部が第三者に閲覧または取得された可能性を否定できないこと、 不審なメッセージが本件不正アクセスに起因する可能性があると考えていること、 一時停止していた機能を再開し TEMAIRAZU は正常に稼働していること、 クレジットカード情報を取り扱っておらずデータを保有していないことを示した。 不正アクセスの具体的な手法と対策の詳細は「セキュリティ上の理由から」非公表とした</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">公表</span></td><td>穴吹エンタープライズ・OF HOTEL sendai／tohoku・葉山ホテル音羽ノ森・農園リゾート THE FARM・ スーパーホテル・センチュリオンホテルが相次いで告知を公表した。穴吹エンタープライズは 手間いらずからの報告として原因（過去に提供されていたインストール型サービスを構成する 機能の一部のセキュリティ上の問題）と9月26日の対策完了を開示し、不審なメッセージが 確認されている予約の3条件（9月21日までに成立した予約／9月21日以降の宿泊日の予約／ 予約者が WhatsApp を利用している予約）を示した</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">公表</span></td><td>手間いらずが英語版「Notice and Apology Regarding Suspicious Messages and Unauthorized Access to TEMAIRAZU」を公開した。訪日外国人の予約者が WhatsApp を通じて狙われている 構図に対応したものとみられる（本記録の推定）</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>スーパーホテルが、不審なメッセージの一部に「予約がキャンセルされた」という内容のものが 確認されたと追記し、メッセージアプリ等で一方的にキャンセルを通知することはないと案内した。 同日、7garden が自社が管理するシステムへの不正アクセスは確認されていないと公表し、 影響範囲は手間いらずと連携して確認中とした</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が、手間いらずの公表（PDF）・穴吹エンタープライズの告知（PDF）・ スーパーホテルの告知・7garden の告知を取得して内容を確認した。 新たな公表は確認できなかった</td></tr></tbody></table></div></div>
+<div id="s15"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>不審なメッセージの送信が確認されている予約の条件</span><div class=sm>穴吹エンタープライズ・センチュリオンホテル・OF HOTEL sendai／tohoku は 「9月21日までに成立した予約」「9月21日以降の宿泊日の予約」「予約者が WhatsApp を 利用している予約」の3条件で記載している。一方、葉山ホテル音羽ノ森の告知は 前2条件のみで、WhatsApp 利用の条件を記載していない（piyolog が注記している）。 本記録は、原文を取得できた穴吹エンタープライズの3条件を採り、 葉山ホテル音羽ノ森の差異を併記した。手間いらず自身の公表には条件の記載がない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>原因の説明が当事者の公表に存在しないこと</span><div class=sm>手間いらずの公表は原因を記載せず、「セキュリティ上の理由から、不正アクセスの 具体的な手法および実施した対策の詳細については、公表を控えさせていただきます」と している。本記録が原因として記載した「過去に提供されていたインストール型サービスを 構成する機能の一部にあったセキュリティ上の問題」は、穴吹エンタープライズが 手間いらずからの報告として公表した内容である。手間いらず自身がこの説明を 対外的に認めているかは確認できていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>不正アクセスが9月21日の1日に限られるという記述の出所</span><div class=sm>「確認されている不正アクセスは2026年9月21日に発生したものに限られる」という 記述は穴吹エンタープライズの告知にあり、手間いらずの公表には日数の記載がない。 調査は継続中であり、確定値ではない</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>不審なメッセージの送信経路</span><div class=sm>手間いらずは「WhatsApp 等のメッセージアプリ、電子メール、SMS 等」を挙げ、 予約者への注意では WeChat も列挙している。一方、穴吹エンタープライズは 「現時点で確認されているのは WhatsApp を通じたもの」としており、 実際に送信が確認された経路と、注意喚起として列挙された経路が混在している。 経路別の件数はどの公表にもない</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>一部の利用施設の告知を原文で確認できていないこと</span><div class=sm>本記録が取得して内容を確認した一次公表は、手間いらずの公表（PDF）・ 穴吹エンタープライズの告知（PDF）・スーパーホテルの告知・7garden の告知の4件である。 センチュリオンホテル・葉山ホテル音羽ノ森・OF HOTEL sendai／tohoku・ 農園リゾート THE FARM・ファーストキャビン・春蘭の宿さかえやの告知内容は、 piyolog のまとめを通じて把握したものであり、原文の逐語確認は行っていない</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「宿泊者情報の一部」という表現の範囲</span><div class=sm>どの公表も「宿泊者情報の一部」という表現にとどまり、項目・件数・人数を示していない。 「件」（予約）と「人／名」（予約者）の区別もつかない。 不審なメッセージに氏名や宿泊日が含まれていたことは施設の告知から分かるが、 それが漏えいの項目一覧として公表されたものではない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s16"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>1つのサイトコントローラーの侵害が、施設を越えて予約者へ届くまで</div><div class=svgwrap><svg viewBox="0 0 794 332" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,115.0 C91.0,115.0 91.0,198.0 16,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,198.0 C193.0,198.0 193.0,122.0 220,122.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,122.0 C295.0,122.0 295.0,217.0 220,217.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,217.0 C499.0,217.0 499.0,198.0 628,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,115.0 C397.0,115.0 397.0,198.0 628,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,198.0 C703.0,198.0 703.0,115.0 628,115.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,122.0 C397.0,122.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,115.0 C601.0,115.0 601.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C397.0,60.0 397.0,122.0 220,122.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,122.0 C397.0,122.0 397.0,155.0 424,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,122.0 C397.0,122.0 397.0,230.0 424,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,122.0 C397.0,122.0 397.0,292.0 424,292.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="90.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属は公表されて</text><text x="91.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いない）</text><rect x="16" y="154.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">過去に提供されていたイン</text><text x="91.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ストール型サービスの機能</text><text x="91.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の一部</text><text x="91.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">セキュリティ上の問題。9</text><text x="91.0" y="229.0" text-anchor="middle" fill="#f48fb1" font-size="10">/26 に対策完了</text><rect x="220" y="78.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="100.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TEMAIRAZU シリ</text><text x="295.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーズ（サイトコントローラ</text><text x="295.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ー）</text><text x="295.0" y="141.0" text-anchor="middle" fill="#64b5f6" font-size="10">手間いらず株式会社。9/</text><text x="295.0" y="153.0" text-anchor="middle" fill="#64b5f6" font-size="10">21 に不正アクセス</text><rect x="220" y="180.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">宿泊者情報（項目・件数は</text><text x="295.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非公表）</text><text x="295.0" y="229.0" text-anchor="middle" fill="#ffcc80" font-size="10">閲覧または取得の可能性を</text><text x="295.0" y="241.0" text-anchor="middle" fill="#ffcc80" font-size="10">否定できない。カード情報</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TEMAIRAZU 利用</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">施設（告知を出したのは9</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">組織）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#80cbc4" font-size="10">穴吹エンタープライズは8</text><text x="499.0" y="91.0" text-anchor="middle" fill="#80cbc4" font-size="10">施設に同一告知</text><rect x="424" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OTA 各社・システム接</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">続先のパートナー</text><text x="499.0" y="167.0" text-anchor="middle" fill="#80cbc4" font-size="10">管理画面の点検を要請され</text><text x="499.0" y="179.0" text-anchor="middle" fill="#80cbc4" font-size="10">た</text><rect x="628" y="90.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">予約者（9/21 以降の</text><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">宿泊日の予約者）</text><rect x="628" y="154.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WhatsApp・電子メ</text><text x="703.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ール・SMS による偽メ</text><text x="703.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッセージ</text><text x="703.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">送信元に +351 等。</text><text x="703.0" y="229.0" text-anchor="middle" fill="#f48fb1" font-size="10">カード情報の再入力・緊急</text><rect x="424" y="206.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="499.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報保護委員会</text><text x="499.0" y="241.0" text-anchor="middle" fill="#b0bec5" font-size="10">報告を進めているとされる</text><rect x="424" y="268.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="499.0" y="290.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">警察</text><text x="499.0" y="303.0" text-anchor="middle" fill="#b0bec5" font-size="10">通報・相談済み</text></svg></div><div class=fn>layer 0 は攻撃者と入口（過去に提供されていたインストール型サービスを構成する機能）。 layer 1 は侵害された TEMAIRAZU シリーズと、そこに集まる宿泊者情報。 layer 2 は基盤を利用する宿泊施設（告知を出した9組織。穴吹エンタープライズは8施設に同一告知）。 layer 3 は予約者と、予約情報を使ったフィッシングの経路。右側は報告先。 予約情報は施設ごとではなく基盤に集まるため、施設側のシステムが無事でも予約者に被害が及ぶ。</div></div></div>
+<div class="blk " id="s17"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>不正アクセスを確認した日時も、確認に至った経路も公表されていない。 手間いらずは事後に「不正アクセスの検知・防御および監視体制の強化」を実施したと 説明しており、発生時点で当該経路が監視の対象になっていたかは示されていない</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>提供を終えたサービスの構成要素（エンドポイント・管理機能・権限）を、終了時に撤去・無効化したことを記録で確認する</div><div class=ctl><span class="b eff">侵入を防げた</span>外部から到達可能な資産の棚卸しを、稼働中の機能ではなく「止めたつもりの機能」を対象に実施する</div><div class=ctl><span class="b eff">侵入を防げた</span>サーバーへの接続制限と認証方法の強化（手間いらずが事後に実施した措置と同じもの）</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>予約情報の参照が監視されていたか、閲覧・取得を追跡できるログがあるかは公表されていない。 「閲覧または取得された可能性を否定できない」という表現は、 参照の有無をログから確定できていないことを示唆する（本記録の推定）</div></td><td><div class=ctl><span class="b eff">検知できた</span>予約情報の大量参照・通常と異なる範囲の参照をアラートにする</div><div class=ctl><span class="b eff">影響を限定できた</span>施設（テナント）をまたいだ参照を既定で禁止し、必要な場合のみ記録つきで許可する</div><div class=ctl><span class="b eff">影響を限定できた</span>クレジットカード情報を基盤で保持しない設計（本件で結果的に被害範囲を限定した）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>検知したのは基盤の提供元ではなく、予約者からの問い合わせを受けた宿泊施設である。 複数施設からの連絡が同時期に集まったことで、個々の施設の問題ではなく 基盤側の事象として認識された。施設から基盤提供元へ上がる経路が機能した例である （本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>予約者への連絡に使う公式チャネルを限定し、予約時とリマインド時に明示する</div><div class=ctl><span class="b eff">影響を限定できた</span>「メッセージアプリで支払い・カード情報の再入力を求めることはない」を予約完了通知に定型で入れる</div><div class=ctl><span class="b eff">復旧を早められた</span>施設に寄せられた不審な連絡を基盤提供元へ集約する窓口と様式を平時に用意する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>原因箇所の特定と対策完了（9月26日）を待ち、その2日後の9月28日に公表した。 影響を受けた可能性のある情報の項目・件数は確定しないまま公表している</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。項目・件数が未確定でも公表に踏み切り、 利用施設・予約者・OTA・接続パートナーのそれぞれに具体的な確認事項を示した点は妥当である。 一方、不審なメッセージが9月21日深夜から現に送信されていた事案で、 当事者の公表が7日後になったことは遅い。実際には利用施設が先に注意喚起を出しており、 基盤提供元より波及先が前に立つ形になった</td></tr><tr><td>不正アクセスの具体的な手法および実施した対策の詳細を、 「セキュリティ上の理由から」公表しないと明示した</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>本記録の作成者の評価である。非開示の理由を明示したこと自体は誠実である。 ただし当事者が伏せた原因が、利用施設の告知に書かれて外へ出ている。 共有基盤の事故では、提供元と利用組織が出す説明の整合をとる作業が対応計画に含まれる必要がある。 また「過去に提供されていたサービスの機能」という程度の説明は、 手法の再現には足りず、同業の点検には役立つ粒度である</td></tr><tr><td>利用施設に対し、念のため TEMAIRAZU のログインパスワードの変更を依頼した。 強制変更・無効化ではなく依頼である。あわせて OTA 各社・システム接続先の パートナーに対しても、身に覚えのないログイン、アカウント・権限設定の変更、 送金先口座その他の登録情報の変更、不審な操作履歴の有無の確認を要請した</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。接続先に対して点検項目を具体的に列挙した点、 とくに「送金先口座その他の登録情報の意図しない変更」まで挙げた点は、 予約情報の窃取にとどまらない悪用を想定した設計として評価できる。 一方、パスワード変更が「お願い」である以上、実施率は把握できない。 認証情報の取得の有無が公表されていないため、依頼の強さが適切かを外から判断する材料はない</td></tr><tr><td>安全確保および調査のため一部機能を一時的に停止し、必要な対策を講じたうえで再開した。 在庫・料金・予約連携等のシステムは稼働を維持した</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>本記録の作成者の評価である。停止した機能の名称・停止期間・ 稼働を維持した機能の安全性をどう判断したかがいずれも公表されておらず、 判断の妥当性を評価する材料がない</td></tr></tbody></table></div></div>
+<div id="s19"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>サービスを終了させるときの「撤去の完了条件」を定義し、記録を残す</div><div class=lw>本件の原因は「過去に提供されていたインストール型サービスを構成する機能の一部に あったセキュリティ上の問題」である。使われていない機能は資産台帳から落ち、 脆弱性管理の対象にも入らない</div><div class=la><b>取るべき行動</b> 提供終了・移行完了の判定条件に「エンドポイントの停止」「コードの撤去」 「権限とアカウントの削除」「疎通の確認」を含め、完了を記録で残す運用にする。 過去5年に終了・移行したサービスを一覧化し、残存を実地で確認する棚卸しを1回実施する</div></li><li><div class=lp>共有基盤の事故は「自社システムの無事」とは独立に自社の顧客を襲うと理解する</div><div class=lw>7garden は自社が管理するシステムへの不正アクセスを否定したが、 予約情報はサイトコントローラーに集まっており、予約者には不審なメッセージが届いている</div><div class=la><b>取るべき行動</b> 自社の顧客情報が集まる外部基盤（サイトコントローラー・PMS・予約連携・SaaS）を 一覧化し、それぞれについて「基盤側の事故で自社の顧客が直接狙われるか」を判定する。 該当する基盤には、事故時の通知の速さ・内容・顧客向け告知の支援範囲を契約で定める</div></li><li><div class=lp>漏えいの項目が確定する前に顧客へ注意喚起を出す判断基準を、平時に決めておく</div><div class=lw>本件では発生当日の深夜から予約情報を使ったフィッシングが始まり、 送信対象は「9月21日以降の宿泊日の予約」に絞られていた。 調査の完了を待つ設計では悪用に間に合わない</div><div class=la><b>取るべき行動</b> 「項目・件数が未確定でも、悪用が現に観測されていれば注意喚起を先に出す」という 判断基準と決定者を規程に書く。顧客向け注意喚起の文面を、 漏えい項目が空欄のまま出せる雛形として用意しておく</div></li><li><div class=lp>委託元・利用組織として出す説明の粒度を、基盤提供元と事前に合わせる</div><div class=lw>本件では、当事者が「セキュリティ上の理由から」伏せた原因が、 波及先である穴吹エンタープライズの告知に記載されて外部に出た。 施設ごとに説明の強さも異なり、予約者が受け取る情報がばらついた</div><div class=la><b>取るべき行動</b> 共有基盤の提供元との契約・運用取り決めに、事故時に「提供元が公表する内容」 「利用組織へ提供する説明資料」「利用組織が独自に書いてよい範囲」を含める。 自社が波及先になった場合に出す告知の雛形も、あらかじめ用意する</div></li><li><div class=lp>顧客への連絡に使う公式チャネルを限定し、それを顧客に繰り返し伝える</div><div class=lw>本件の攻撃者は WhatsApp・電子メール・SMS を使い、予約の確認・確定、 クレジットカード情報の再入力、緊急の支払いを求めた。 「予約がキャンセルされた」と称して確認の動機を作る手口も確認されている</div><div class=la><b>取るべき行動</b> 「支払い・カード情報の再入力をメッセージアプリや SMS で求めることはない」を、 予約完了通知・リマインド・宿泊案内の定型文に入れる。 自社の公式チャネルの一覧を顧客向けページに常設し、事故時に参照先として使う</div></li></ul></div></div>
+<div id="s20"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>「止めたつもりの機能」を対象にした外部到達性の棚卸しを実施する</div><div class=lw>本件の入口は、過去に提供されていたインストール型サービスを構成する機能の一部である。 稼働中のサービスを対象にした脆弱性管理では、この種の残存は見つからない</div><div class=la><b>取るべき行動</b> 外部公開の資産一覧を、稼働中の一覧ではなく実測（ポートスキャン・ リバースプロキシの設定・DNS レコード・ロードバランサのルール）から作り直し、 現行サービスの一覧と差分をとる。差分に出たものは所有者を特定するまで閉じる</div></li><li><div class=lp>マルチテナント基盤で、テナントをまたいだデータ参照を検知できるようにする</div><div class=lw>サイトコントローラーには複数の宿泊施設の予約情報が集まる。 本件では「宿泊者情報の一部が閲覧または取得された可能性を否定できない」とされ、 参照の有無をログから確定できていないとみられる</div><div class=la><b>取るべき行動</b> 予約情報の参照に、テナント識別子・件数・参照元を記録するログを実装し、 通常の業務では起こらない範囲・量の参照をアラートにする。 ログの保持期間を、侵害が発覚するまでの想定期間（少なくとも数か月）以上に設定する</div></li><li><div class=lp>接続先（OTA・パートナー）の管理画面の点検項目を、平時に様式化しておく</div><div class=lw>手間いらずは接続先に対し、身に覚えのないログイン／アカウントまたは権限設定の 意図しない変更／送金先口座その他の登録情報の意図しない変更／ 不審なメッセージまたは操作履歴の有無の確認を要請した</div><div class=la><b>取るべき行動</b> 自社が基盤側であれば、この4項目を含む点検チェックリストと報告様式を あらかじめ作り、接続先へ配れる状態にしておく。 自社が接続先であれば、同じ項目を自分で確認できるログ・画面の場所を特定しておく</div></li><li><div class=lp>認証情報の変更依頼を「お願い」で終わらせず、実施状況を測る</div><div class=lw>手間いらずは利用施設へ TEMAIRAZU のログインパスワードの変更を依頼した。 依頼である以上、変更しない施設が残る</div><div class=la><b>取るべき行動</b> 自社が基盤側であれば、最終パスワード変更日をテナント単位で集計し、 未変更のテナントを追跡する（必要なら期限後に強制失効させる）。 自社が利用側であれば、依頼を受けた時点で変更し、 管理画面のログイン履歴と登録内容の変更履歴を遡って確認する</div></li><li><div class=lp>顧客向けの偽メッセージの特徴を、受け取る側が判別できる形で整理して渡す</div><div class=lw>スーパーホテルは送信元が海外の番号（+351 など）であること、 メッセージに名前や宿泊日が記載されている場合があること、 「予約がキャンセルされた」と称するものがあることを具体的に示した</div><div class=la><b>取るべき行動</b> 観測された偽メッセージの送信元の形・文面の類型・誘導先の特徴を収集し、 顧客向け告知に「本物と偽物の見分け方」として具体例つきで載せる。 誘導先のドメインは把握した範囲で共有し、自社の従業員向けにも周知する</div></li></ul></div></div>
+<div class="blk " id="s21"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 顧客の個人情報が集まる外部基盤（サイトコントローラー・PMS・予約連携・ 顧客管理 SaaS 等）を利用しており、その基盤の侵害が自社の顧客へ直接及ぶ構造にある</td><td class=sm>本件では宿泊施設側のシステムは侵害されていないが、予約者には予約情報を含む フィッシングが届いた。自社システムの無事は顧客の安全を意味しない</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 過去に提供を終えた、あるいは移行を終えたサービス・機能・エンドポイントが、 撤去されたことを記録で確認できていない</td><td class=sm>本件の入口は「過去に提供されていたインストール型サービスを構成する機能の一部」である。 止めたつもりの機能は資産台帳と脆弱性管理の双方から漏れる</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自社の基盤・システムの侵害を、顧客や取引先からの問い合わせ以外の手段で 検知できる仕組みを持っていない</td><td class=sm>本件の端緒は予約者からの問い合わせを受けた宿泊施設からの連絡であり、 基盤側は侵入を検知していない。監視体制の強化は事後の措置である</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 複数の顧客組織（テナント）のデータを1つの基盤に集約しており、 テナントをまたいだ参照を記録・検知していない</td><td class=sm>「閲覧または取得された可能性を否定できない」という表現は、 参照の有無をログから確定できていないことを示唆する。 参照の記録がなければ影響範囲の確定に時間がかかり、顧客への通知も遅れる</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 漏えいの項目・件数が確定する前に顧客へ注意喚起を出す判断基準と決定者を 文書で定めていない</td><td class=sm>本件では発生当日の深夜から悪用が始まり、送信対象は今後の宿泊予定者に絞られていた。 調査の完了を待つ設計では悪用に間に合わない</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 基盤の管理画面の認証情報を顧客組織ごとに配布しており、 最終変更日や異常なログインをテナント単位で把握できていない</td><td class=sm>本件では利用施設へのパスワード変更が「お願い」で行われ、 OTA・パートナーへも管理画面の点検が要請された。実施状況を測る手段がなければ残存を把握できない</td></tr></tbody></table></div></div>
+<div class="blk " id="s22"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月28日 手間いらず株式会社</span> <a href="https://www.temairazu.co.jp/pdf/1206/news-update" target="_blank" rel="noreferrer noopener nofollow">不審なメッセージおよび当社システムへの不正アクセスに関するお詫びとお知らせ</a> <span class="b kind">ニュースリリース</span><span class=sm>（(一次資料。本記録の作成者が2026年9月30日に PDF を取得し全文を確認した。 9月21日深夜からの施設からの連絡、調査の過程での不正アクセスの確認、 宿泊者情報の一部が閲覧または取得された可能性を否定できないこと、 アクセスの遮断を含む被害拡大防止措置、アクセス制御および監視体制の強化、 一時停止した機能の再開と正常稼働、手法と対策の詳細の非公表、 個人情報保護委員会への報告・警察への通報・外部専門機関への協力依頼、 予約者・利用施設・OTA およびパートナーへの依頼事項、 クレジットカード情報を取り扱っておらずデータを保有していないことの出典)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年9月29日 手間いらず株式会社</span> <a href="https://www.temairazu.co.jp/pdf/1207/news-update" target="_blank" rel="noreferrer noopener nofollow">Notice and Apology Regarding Suspicious Messages and Unauthorized Access to TEMAIRAZU</a> <span class="b kind">ニュースリリース</span><span class=sm>（(一次資料の英語版。本記録の作成者が2026年9月30日に同社のお知らせ一覧で 存在と日付・URL を確認した。本文の逐語確認は行っていない。原文英語)）</span></li></ol></div><div class=rg><div class=rgt>波及先組織の公表</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月28日 穴吹エンタープライズ株式会社（あなぶきホテルズ）</span> <a href="https://anabuki-hotels.com/_wp/wp-content/uploads/2026/09/%E3%80%90%E9%87%8D%E8%A6%81%E3%80%91%E3%82%B5%E3%82%A4%E3%83%88%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AD%E3%83%BC%E3%83%A9%E3%83%BC%E3%81%B8%E3%81%AE%E4%B8%8D%E6%AD%A3%E3%82%A2%E3%82%AF%E3%82%BB%E3%82%B9%E3%81%AB%E9%96%A2%E3%81%99%E3%82%8B-%E3%81%8A%E8%A9%AB%E3%81%B3%E3%81%A8%E3%81%94%E6%B3%A8%E6%84%8F%E3%81%AE%E3%81%8A%E9%A1%98%E3%81%84.pdf" target="_blank" rel="noreferrer noopener nofollow">【重要】サイトコントローラーへの不正アクセスに関するお詫びとご注意のお願い</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(波及先の公表だが、原因に関しては当事者の公表より詳しい。本記録の作成者が 2026年9月30日に PDF を取得し全文を確認した。「過去に提供されていたインストール型 サービスを構成する機能の一部にセキュリティ上の問題があった」こと、 確認されている不正アクセスが9月21日に限られること、9月26日の原因箇所の特定と 対策完了、管理ツールのパスワード変更・サーバーへの接続制限および認証方法の強化・ 不正アクセスの検知・防御および監視体制の強化・類似箇所の点検、 在庫・料金・予約連携等のシステムの正常稼働、不審なメッセージの3条件、 警察への通報・外部専門機関への調査依頼・個人情報保護委員会への報告の出典)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年9月28日（9月29日追記） スーパーホテル</span> <a href="https://www.superhotel.co.jp/top_information/" target="_blank" rel="noreferrer noopener nofollow">WhatsApp等からの不審なメッセージにご注意ください（9/29追記）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(波及先の公表。本記録の作成者が2026年9月30日に取得した。 海外の送信元番号（+351 など）からの WhatsApp 等によるメッセージ、 名前や宿泊日などの予約情報が記載されている場合があること、 予約コントロールシステムへの不正アクセスにより宿泊者情報の一部が閲覧または 取得された可能性があるとの発表、当該システムがクレジットカード情報を扱わないこと、 9月29日追記の「予約がキャンセルされた」と称するメッセージと 一方的なキャンセル通知は行わない旨の出典。取得結果は要約された形であり、 全文の逐語確認は行っていない)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年9月29日 株式会社7garden</span> <a href="https://www.7garden.co.jp/news/04v6grg278/" target="_blank" rel="noreferrer noopener nofollow">宿泊予約システム提供会社への不正アクセスに関するお知らせと不審なメッセージへのご注意のお願い</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(波及先の公表。本記録の作成者が2026年9月30日に取得した。 「弊社が管理するシステムへの不正アクセスは確認されておりません」、 影響範囲は手間いらず側で調査が進められていること、 TEMAIRAZU を利用する複数の宿泊施設の予約者に予約内容を把握しているとみられる 不審なメッセージが届いていること、自社および運営施設がメッセージアプリや SMS で クレジットカード情報の入力や支払いを求めることはないことの出典。 取得結果は要約された形であり、全文の逐語確認は行っていない)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年9月29日 piyolog</span> <a href="https://piyolog.hatenadiary.jp/entry/2026/09/30/013735" target="_blank" rel="noreferrer noopener nofollow">手間いらずの「TEMAIRAZU」シリーズへの不正アクセスについてまとめてみた</a> <span class="b kind">ブログ</span><span class=sm>（(本記録の起点。告知を出した宿泊関係組織9組織の一覧と公表日、 穴吹エンタープライズが同一告知を掲載した8施設、葉山ホテル音羽ノ森が WhatsApp の条件を欠く2条件で記載していること、センチュリオンホテル・ OF HOTEL sendai／tohoku・農園リゾート THE FARM・ファーストキャビン・ 春蘭の宿さかえやの告知内容、手間いらずの英語版公開の出典。 本文は保存分〈output/articles/20260930/0106_piyolog_temairazu.md〉で確認した。 これらの施設の告知は原文の逐語確認を行っていない)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s23"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年9月30日</span> <span class="b rev">新規作成</span> 新規作成。2026年9月30日の日次収集（piyolog のまとめ）を起点に、 手間いらずの公表 PDF・穴吹エンタープライズの告知 PDF・スーパーホテルの告知・ 7garden の告知を取得して裏取りした。発覚の順序（施設からの連絡が先、 不正アクセスの確認が後）、宿泊者情報の一部の閲覧・取得の可能性、 手法の非開示とその理由、報告先は手間いらずの公表で直接確認した。 原因（過去に提供されていたインストール型サービスを構成する機能の一部の セキュリティ上の問題）・不正アクセスが9月21日に限られること・9月26日の対策完了・ 実施した対策の内容・不審なメッセージの3条件は、穴吹エンタープライズの告知 PDF の 全文で確認した。当事者の公表に原因の記載が無いことは齟齬として記録した。 その他の利用施設の告知は piyolog のまとめによるもので、原文の逐語確認は 行っていないため self_unverified として記録した。 閲覧・取得された情報の項目・件数・人数は調査中のため未確定事項とした。</li></ul></div></div>
+<div class="blk " id="s24"><h3>タグ</h3><span class="b tag">手間いらず</span><span class="b tag">TEMAIRAZU</span><span class="b tag">サイトコントローラー</span><span class="b tag">宿泊予約</span><span class="b tag">宿泊業</span><span class="b tag">共有基盤</span><span class="b tag">マルチテナント</span><span class="b tag">不正アクセス</span><span class="b tag">個人情報漏えいの可能性</span><span class="b tag">フィッシング</span><span class="b tag">WhatsApp</span><span class="b tag">スミッシング</span><span class="b tag">予約情報の悪用</span><span class="b tag">提供終了サービスの残存</span><span class="b tag">資産棚卸し</span><span class="b tag">利用者からの発覚</span><span class="b tag">OTA</span><span class="b tag">波及先による公表</span><span class="b tag">個人情報保護委員会</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-09-30 15:11 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
