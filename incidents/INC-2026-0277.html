@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Zimbra の SNMP 注入で認証秘密値まで — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0277</span>Zimbra の SNMP 注入で認証秘密値まで</h1>
+<header class="site-header">
+  <p class="subtitle">Microsoft Threat Intelligence が2026年9月30日、Zimbra Collaboration Suite の SNMP 通知経路の未認証コマンド注入（CVE-2026-73570／CVSS v3.1 8.9・CWE-78）を悪用する実地の攻撃連鎖を公表した——細工したメール（SMTP 要求）1通で zimbra サービスアカウントとしてコマンドが実行でき、攻撃者は Jetty と mailboxd の複数の経路に JSP ウェブシェルを多重に置き、PAM 設定を symlink で差し替えて root を取り、zimlog.service という正規に見える systemd ユニットで永続化し、`zmlocalconfig -s` と LDAP 照会でサーバが一か所に集めている認証秘密値——事前認証キー・認証トークン署名鍵・二要素認証の秘密値——を抜き、Zimbra 自身の SSH 鍵でクラスタ内の他ノードへ広がっていた。狙われたのは個々の利用者のメールボックスのパスワードではなく、サーバ側の秘密値である。修正は2026年7月20日の 10.1.20 で出ており、公開（8月13日）より前の7月28日〜8月7日に2種類のスキャナが注入点を探っていた。CISA は8月21日に KEV へ収載し、期限は3日後の8月24日だった。被害組織名・件数・帰属はいずれも公表されていない。Zimbra 自身の Security Center は 10.1.20 の SNMP コマンド注入の修正を「TBD」と記すだけで CVE 番号を載せていない</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">脆弱性</span><span class="b type2">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月30日</span>
+  <span>最終更新: 2026年10月1日</span>
+</div>
+
+<div class="lead"><p><strong>何が起きたか。</strong> Microsoft Threat Intelligence が2026年9月30日、<strong>Zimbra Collaboration Suite（ZCS）の未認証コマンド注入 CVE-2026-73570 を悪用した実地の攻撃連鎖</strong>を公表した。<strong>細工したメール1通（SMTP 要求）で、認証も利用者の操作も要らずに <code>zimbra</code> サービスアカウントとしてコマンドが実行できる。</strong>成立条件は、任意パッケージ <code>zimbra-snmp</code> が入っていて SNMP 通知が有効なことである。</p>
+<p><strong>どこが重いか。</strong> 攻撃者が狙ったのは<strong>個々の利用者のメールボックスのパスワードではなく、サーバが一か所に集めている秘密値</strong>だった。<code>zmlocalconfig -s</code> でLDAP・MySQL・Postfix・Amavis・複製の各サービスの資格情報を取り、得た LDAP 資格情報で<strong>事前認証キー（<code>zimbraPreAuthKey</code>）・認証トークンの署名鍵（<code>zimbraAuthTokenKey</code>）・二要素認証の秘密値（<code>zimbraTwoFactorAuthSecret</code>）</strong>を引き出している。Microsoft は、<code>zimbraAuthTokenKey</code> が<strong>「Zimbra が基盤全体で利用者のセッショントークンに署名するための鍵材料であり、この値にアクセスできれば任意のアカウントのセッショントークンを生成できる」</strong>（原文英語）と明記した。<strong>パスワードを変えても、二要素認証を入れていても、この鍵が出た時点でセッションを偽造されうる。</strong></p>
+<p><strong>永続化と広がり。</strong> JSP ウェブシェルは Jetty と mailboxd の<strong>複数の経路に多重に</strong>置かれ、1つ消されても残るようにしてあった。公開ディレクトリへの書き込み権限を<strong>一時的に開けて置いたあと元に戻す</strong>ことで、権限の点検では見えにくくしている。権限昇格は <strong><code>/etc/pam.d/sudo</code> を退避し、<code>zmmailboxd.out</code> のログをPAM 設定への symlink に置き換えて特権部品 <code>zmmailboxdmgr</code> を呼ぶ</strong>という手順で、最終的に zimbra アカウントに <code>NOPASSWD: ALL</code> を与えている。再起動後も残るように <strong><code>zimlog.service</code> という正規のログ部品に見える systemd ユニット</strong>を<code>/etc/systemd/system/</code> に置き、<strong>時刻を既存のユニットに合わせて改竄</strong>していた。横展開は <strong>Zimbra 自身の SSH 鍵（<code>/opt/zimbra/.ssh/zimbra_identity</code>）</strong>を使い、ホスト鍵の検証を切った非対話 SSH でクラスタ内の他ノードへ入っている。</p>
+<p><strong>持ち出しは未完了とされている。</strong> メールボックスのバックアップを固め、AzCopy を取って Azure Blob Storage へ送ろうとした形跡があるが、Microsoft は<strong>「利用できる証拠では転送が完了したことを確認できない」</strong>（原文英語）と述べた。</p>
+<p><strong>時間の並びが本件の読みどころである。</strong> 修正（10.1.20）は <strong>2026年7月20日</strong>に出た。<strong>公開は8月13日</strong>だが、<strong>2種類のスキャナが注入点を探っていたのは7月28日〜8月7日</strong>—— <strong>公開より前</strong>である。CISA は<strong>8月21日に KEV へ収載し、期限を3日後の8月24日</strong>に置いた。それでも9月30日の公表時点で、複数の地域・業種の組織で侵害が観測されている。</p>
+<p><strong>公表されていないこと。</strong> 被害組織の名前・件数・具体的な業種と地域・帰属。<strong>そして、Zimbra 自身の Security Center は 10.1.20 の「SNMP 監視部品のコマンド注入」の修正を「TBD」と記すだけで CVE 番号を載せていない</strong>（本記録の作成者が2026年10月1日に確認した）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（7件）">公表・報道からわかったこと（7件）</a></li><li><a href="#s13" title="事案の詳細">事案の詳細</a></li><li><a href="#s14" title="経過">経過</a></li><li><a href="#s15" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s16" title="波及の構造">波及の構造</a></li><li><a href="#s17" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s18" title="対応の評価">対応の評価</a></li><li><a href="#s19" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s20" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s21" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s22" title="出典">出典</a></li><li><a href="#s23" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s24" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>侵害された組織の名前・件数</span><span class="b rsn">公表されていない</span><div class=sm>Microsoft は「複数の地域・複数の業種」とのみ述べ、 **件数も組織名も示していない。** **したがって本件は「規模が分からない campaign」として記録するしかない。** **9月30日の時点で、自分の組織が含まれるかを外部から知る方法は無い**</div></li><li><span class=ui>具体的な業種と地域の内訳</span><span class="b rsn">公表されていない</span><div class=sm>**「単一の業種・地域に限られていなかった」という否定形でしか示されていない。** **日本が含まれるかどうかも分からない**—— 含まれないという記述も無いため、本記録は日本との関係を 「有名事象として記録」の扱いにとどめつつ、この点を未確定として残す</div></li><li><span class=ui>攻撃者の帰属</span><span class="b rsn">公表されていない</span><div class=sm>Microsoft は国家背景にも犯罪集団にも触れず、 **自社の命名（Storm-#### 等）も付けていない。** **複数の攻撃者が同じ脆弱性を使っていた可能性も否定されていない**—— 探索の段階で「2種類の異なるスキャナ」が観測されており、 **後段の侵害がそのどちらかの主体によるものかも述べられていない**</div></li><li><span class=ui>メールボックスデータが実際に外へ出たのか</span><span class="b rsn">調査したが確定せず</span><div class=sm>**Microsoft は「利用できる証拠では転送が完了したことを確認できない」**（原文英語）と 明記している。固めた書庫（`/opt/zimbra/final.tar.gz`）と、 AzCopy の取得、操作者が用意した Azure Blob の SAS URL への実行までは確認されている。 **つまり「準備は完了し、実行は確認できない」状態である。** **本記録は「持ち出された」と書かない。** **一方で、実務上は「出たものとして扱う」ほかない**—— 完了を否定する証拠も示されていない</div></li><li><span class=ui>攻撃者がどのようにして脆弱性を知ったのか</span><span class="b rsn">公表されていない</span><div class=sm>探索が始まったのは修正公開の8日後・脆弱性公開の16日前である。 **修正の差分から見つけたのか、独立に発見していたのか、 第三者から得たのかは、どの資料も述べていない。** **本記録は推測しない**</div></li><li><span class=ui>日本国内の組織・機関からの注意喚起の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の作成者は、本件について日本国内の注意喚起を探索していない。** 日本語の記事も保存分には無く、起点は韓国の boannews である。 **「無い」ことを確認したわけではないので、 「国内で注意喚起が出ていない」とは書かない**</div></li><li><span class=ui>Zimbra 自身が本件の実地悪用についてどう述べているか</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の作成者が取得できた Zimbra の資料は Security Center だけで、 そこには 10.1.20 の SNMP コマンド注入の修正が「TBD」として載っているのみである。** **実地悪用への言及・利用者向けの追加の案内・認証秘密値の入れ替えの指示は 確認できなかった**（discrepancies に記録）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Zimbra（Synacor）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Zimbra Collaboration Suite（ZCS）の提供元。 2026年7月20日に 10.1.20 を公開して本脆弱性を修正した。 **CISA の KEV は本製品のベンダーを「Synacor」として収載している**</p><p class=org-p><span class=org-l>影響</span>**製品の SNMP 通知経路の実装不備（CWE-78）が、未認証の遠隔コマンド実行に至った。** **Security Center には 10.1.20 の SNMP コマンド注入の修正が CVE 番号無しの「TBD」として載っており、本記録の作成者が2026年10月1日に確認した時点でも CVE-2026-73570 の記載を見つけられなかった**（discrepancies に記録）</p></div></div><div class=org><div class=org-h><span class=org-n>公表されていない複数の組織（複数の地域・複数の業種）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Microsoft が調査した環境の利用組織。 **「影響を受けた組織は複数の地域・複数の業種にまたがる」 「調査した環境から見るに、悪用は単一の業種・地域に限られていなかった」** （原文英語）とのみ記されている</p><p class=org-p><span class=org-l>影響</span>**ウェブシェルの設置・root 権限の取得・サーバ側の認証秘密値の窃取・ クラスタ内他ノードへの横展開・メールボックスデータの収集まで観測された。** **ただしすべての段階がすべてのサーバで現れたわけではない**と Microsoft は述べている。 **組織名・件数・業種・地域の内訳は公表されていない**</p></div></div><div class=org><div class=org-h><span class=org-n>Microsoft Threat Intelligence</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本攻撃連鎖を観測・解析して2026年9月30日に公表した主体。 テレメトリと調査した環境にもとづく</p><p class=org-p><span class=org-l>影響</span>**本記録の中核の一次資料。** 探索の時期・攻撃連鎖の全段階・ 永続化の手口・窃取された LDAP 属性名・使われた道具・持ち出しの試みと その未完了・検知の着眼点・緩和策を示した</p></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年8月21日に CVE-2026-73570 を KEV（既知の悪用脆弱性カタログ）へ収載し、 連邦民間機関に **2026年8月24日**までの対処を課した</p><p class=org-p><span class=org-l>影響</span>**期限は収載から3日**である。 要求される行動は BOD 26-04（リスクに基づく更新の優先順位付け）および **「フォレンジック・トリアージ要件」**に従うこととされ、 **緩和策が無い場合は製品の利用中止**まで含む</p></div></div><div class=org><div class=org-h><span class=org-n>CERT Polska（ポーランド CERT）</span><span class="b role">注意喚起主体</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>2026年8月に本脆弱性の実地悪用を最初に注意喚起した主体とされる。 **NVD の参照一覧にも「Polish CERT Communication」が第三者勧告として載っている**</p><p class=org-p><span class=org-l>影響</span>**実地悪用の最初の公的な指摘にあたる。** **ただし本記録の作成者は CERT Polska の原典を取得しておらず、 日付（二次情報では8月17日とされる）を確認していない**（discrepancies に記録）</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-73570 の CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.9<span class=fu>点（HIGH）</span></div><div class=fa>2026年8月13日 時点</div><div class=fn>ベクタは `AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:L`。 **`AC:H`（攻撃の複雑さが高い）が入っているのは任意パッケージと SNMP 通知という 成立条件があるためで、満たしている環境では認証も利用者操作も要らない。** **`S:C`（スコープの変更）は、注入が別の権限境界を越えることを示す**</div></div><div class=fig><div class=fh><span class=fl>修正の公開から、注入点の探索が始まるまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>日</span></div><div class=fn>2026年7月20日の 10.1.20 公開（T1）から、2026年7月28日の探索開始（T2）まで。 **脆弱性の公開（8月13日）より16日前である。** **本記録は「攻撃者が修正の差分から脆弱性を見つけた」とは断定しない** （Microsoft はそう述べていない）。 **記録する意味は、「公表していないから攻撃者も知らない」が成り立たないことにある**</div></div><div class=fig><div class=fh><span class=fl>2種類のスキャナによる探索が観測された期間</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>11<span class=fu>日</span></div><div class=fn>2026年7月28日から8月7日まで。この期間は確認のみで、ペイロードは落とされていない</div></div><div class=fig><div class=fh><span class=fl>修正の公開から、脆弱性が公開されるまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>24<span class=fu>日</span></div><div class=fn>2026年7月20日（T1）から2026年8月13日（T4）まで。 **この24日間、利用組織は「10.1.20 を当てる理由」を知らされていなかった。** **そして攻撃者側の探索は、この期間の内側（7月28日）で始まっている**</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から連邦機関の対処期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年8月21日の収載（T6）から2026年8月24日の期限（T7）まで。 **BOD 26-04 の体制下での短い期限であり、 INC-2026-0229（NetScaler）の「同日収載・3日後期限」と同じ運用である**</div></div><div class=fig><div class=fh><span class=fl>脆弱性の公開から、攻撃連鎖の詳細が公表されるまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>48<span class=fu>日</span></div><div class=fn>2026年8月13日の公開（T4）から2026年9月30日の Microsoft の公表（T8）まで。 **KEV の期限（8月24日）の時点では、防御側は「何を探せばよいか」を持っていなかった。** **CISA が求めた「フォレンジック・トリアージ」を、材料なしで行う期間が 37日あったことになる**</div></div><div class=fig><div class=fh><span class=fl>窃取が確認された高価値の LDAP 属性の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>種</span></div><div class=fa>2026年9月30日 時点</div><div class=fn>`zimbraPreAuthKey`（事前認証キー）・`zimbraAuthTokenKey`（セッショントークンの署名鍵）・ `zimbraTwoFactorAuthSecret`（二要素認証の秘密値）。 **件数そのものより、「3つのうち1つで基盤全体のセッションを偽造できる」ことが重い**</div></div><div class=fig><div class=fh><span class=fl>JSP ウェブシェルが置かれたアプリケーション経路の種類</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>種</span></div><div class=fn>本記録の作成者が Microsoft の記述から数えた値。 Jetty 側の2経路（`/jetty_base/webapps/`・`/jetty/webapps/`）と mailboxd 側の2経路（`/mailboxd/webapps/`・`/work/zimbra/jsp/`）。 **多重化は意図的で、1つ消されても残るようにしてある**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**細工したメール1通で `zimbra` サービスアカウントとしてコマンドを実行し、 JSP ウェブシェルを4経路に多重に置き、製品自身の特権部品と PAM を使って root を取り、 正規に見える systemd ユニットで永続化し、サーバが一か所に集めていた サービス資格情報と認証秘密値を抜き、Zimbra 自身の SSH 鍵でクラスタ内へ広がり、 メールボックスデータを固めてクラウドストレージへ送ろうとした**（転送の完了は未確認）。 **もっとも重い段階にマルウェアは関与していない**—— Microsoft は「素の対話シェルだけで行われた」と述べている</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**2種類の異なる帯域外スキャナが、注入点の存在だけを確かめていた** （2026年7月28日〜8月7日）。 実行されたのは `curl` / `wget` / `ping` / `nslookup` / `id` にとどまり、 **後続のペイロードは落とされていない。** コールバック先は帯域外検査の公開サービスだった</div><div class=fn>根拠: Microsoft Threat Intelligence（2026年9月30日）。 **日付の範囲が示されているのはこの段階だけである**</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**細工した SMTP 要求（メール）が、SNMP 通知の処理に信頼できない入力を持ち込み、 `swatchdog` の `snmptrap` 呼び出しを書き換える。** 結果として **`zimbra` サービスアカウントとして直接コマンドが実行できる。** 認証も利用者の操作も要らない</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **「Zimbra の脆弱性の悪用により、攻撃者は `zimbra` サービスアカウントとして 直接コマンドを実行できた」**（原文英語）</div></li><li><div class=stg><span class="b stage">3. 永続化</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**JSP ウェブシェルを Jetty 側の2経路（`/jetty_base/webapps/`・`/jetty/webapps/`）と mailboxd 側の2経路（`/mailboxd/webapps/`・`/work/zimbra/jsp/`）に多重に置いた。** **1つ消されても残るようにしてある。** 置く際に**公開ディレクトリの書き込み権限を一時的に開け、置いた後で元に戻している**</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **「公開ディレクトリへの書き込みを一時的に有効にしてウェブシェルを置き、 その後ディレクトリの権限を元に戻すことで、 基本的な権限の点検では変更が見えにくくなっていた」**（原文英語）</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**製品自身の特権部品を踏み台にして root を取った。** ①必要な Zimbra の補助部品の存在とログディレクトリの書き込み可否を確認、 ②`/etc/pam.d/sudo` を退避、 ③**`zmmailboxd.out` のログを PAM 設定への symlink に置き換える**、 ④**特権部品 `zmmailboxdmgr` を呼ぶ**（ログ書き込みが PAM 設定の書き換えになる）、 ⑤**PAM のセッションフック（`pam_exec`）を足してローカルのスクリプトを呼ばせる**、 ⑥**正規の補助部品 `zmstat-fd` を通じて sudo セッションを起こす**—— フックが root で走り、**zimbra アカウントに `NOPASSWD: ALL` を与える**</div><div class=fn>根拠: Microsoft（2026年9月30日）。手順が段ごとに示されている。 **外部のエクスプロイトは使われていない**</div></li><li><div class=stg><span class="b stage">5. 永続化</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**再起動後も残る仕掛けを多重に置いた。** 中核は **`zimlog.service` という systemd ユニット**で、 **Zimbra のログ部品に見える名前だが、置き場は `/etc/systemd/system/` で Zimbra のアプリケーションディレクトリの外**である。 `/tmp` から sudo で移したうえで、**時刻を既存の systemd ユニットに合わせて改竄**した。 併用されたのは、`* * * * *` と `@reboot` の cron、 SSH の `authorized_keys` への追記、`useradd` / `adduser` による局所アカウント、 OpenRC の init.d スクリプト、シェル起動ファイル（`.bash_profile` / `.zprofile`）、 そして **`memfd_create` によるメモリ上の実行**である</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **「その名前は Zimbra のログ部品と整合していたが、 ペイロードは手作業で `/etc/systemd/system/` に設置されており、 Zimbra のアプリケーションディレクトリの外だった」**（原文英語）</div></li><li><div class=stg><span class="b stage">6. 認証情報アクセス</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**サーバが一か所に集めていた秘密値を抜いた。** ①**`zmlocalconfig -s`** で LDAP・MySQL・Postfix・Amavis・複製の各サービスの 資格情報を取得する。 ②得た LDAP 資格情報で**認証済みの照会**を行い、 **`zimbraPreAuthKey`（事前認証キー）・ `zimbraAuthTokenKey`（`cn=config,cn=zimbra` から取得。 基盤全体で利用者のセッショントークンに署名する鍵材料）・ `zimbraTwoFactorAuthSecret`（二要素認証の秘密値）**を引き出す。 **個々の利用者のメールボックスのパスワードは標的になっていない**</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **「`cn=config,cn=zimbra` から取得される `zimbraAuthTokenKey` 属性は、 Zimbra が基盤全体で利用者のセッショントークンに署名するために使う鍵材料であり、 この値にアクセスできれば任意のアカウントのセッショントークンを生成できる」** （原文英語）</div></li><li><div class=stg><span class="b stage">7. 横展開</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**Zimbra 自身の SSH 鍵（`/opt/zimbra/.ssh/zimbra_identity`）で、 クラスタ内の他の信頼ノードへ入った。** SSH は**非対話モードで、ホスト鍵の検証を無効にして**呼ばれており、 ノード間の自動接続が成立する。 **`rsync` で、退避したペイロードの断片・補助スクリプト・JSP ウェブシェルを ノード間で運んでいる**</div><div class=fn>根拠: Microsoft（2026年9月30日）。鍵のパスまで示されている</div></li><li><div class=stg><span class="b stage">8. C2通信</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**遠隔操作の常駐を段階的に入れた。** `agent2.sh` を起点に、Go 製の設置部品 `zimdown2` が 遠隔操作エージェント **`zimclient2`** を配置する。 `zimclient2` は**対話シェル・双方向のファイル送受信・SOCKS5 プロキシ**に対応し、 **WebSocket・TLS・生の TCP の3つの輸送**を使える。 **SOCKS5 プロキシを備えるため、侵害したサーバを他の網へ渡る足場として使える**</div><div class=fn>根拠: Microsoft（2026年9月30日）。多段の構成と機能が示されている</div></li><li><div class=stg><span class="b stage">9. 収集</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**Zimbra 専用の収集道具が使われた。** Go 製の実行ファイル（`zimbra-exfil` / `client-dump`）が **`/opt/zimbra/conf/localconfig.xml` から資格情報を取り出して MySQL と LDAP に接続し**、 **MySQL のメールボックス関連テーブル（mailbox / metadata / mobile_devices / out_of_office）と、zimbra の名前空間のテーブル一式を丸ごと書き出す。** あわせて **SSL 証明書・Postfix の設定・LDAP の秘密値・ メールの振り分け規則・認証に関する材料**も集めている</div><div class=fn>根拠: Microsoft（2026年9月30日）。対象テーブル名まで示されている</div></li><li><div class=stg><span class="b stage">10. 持ち出し</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**メールボックスのバックアップ内容を `/opt/zimbra/final.tar.gz` に固めたうえで、 AzCopy を公式の配布 URL から取得し、 操作者が用意した Azure Blob の SAS URL へ送ろうとした。** **Microsoft は「利用できる証拠では転送が完了したことを確認できない」** （原文英語）と明記している</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **書庫のパス・AzCopy の取得元・宛先の形まで示されているが、 完了は確認されていない**</div></li><li><div class=stg><span class="b stage">11. 検知回避</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[3]</span></div><div>**痕跡を減らす動作が複数まとめて入っていた。** ①**公開ディレクトリの書き込み権限を一時的に開け、置いた後で元に戻す** （権限の点検で見えにくくする）、 ②**systemd ユニットの名前を正規のログ部品に似せる**（`zimlog.service`）、 ③**そのユニットの時刻を既存のユニットに合わせて改竄する**、 ④**`memfd_create` でメモリ上から実行する**（ディスクに残らない）、 ⑤**永続化を多重化する**（1つ消されても残る）。 **そして、もっとも重い段階ではマルウェアを一切使っていない**</div><div class=fn>根拠: Microsoft（2026年9月30日）。 **「本キャンペーンでもっとも重い帰結のいくつか、たとえば 持ち出しに向けたメールストア全体の退避は、 マルウェアファミリを一切伴わず、素の対話シェルだけで行われた」**（原文英語）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Microsoft は**攻撃連鎖の全段階・永続化の手口・窃取された LDAP 属性名・ 使われた道具・検知の着眼点**を公開し、 **被害組織の名前・件数・業種と地域の内訳・帰属は公開しなかった**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **防御に使える情報は最大化され、規模の情報は失われた。** 読者は「自分の環境で何を探すか」を決められるが、 **「どれだけ広がっているのか」「自分の業種が狙われているのか」は判断できない**</div></li><li><div class=ui>Zimbra は**2026年7月20日に修正を出し、脆弱性の公開は8月13日**だった （24日の間がある）</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **静かに直す**ことで悪用の引き金を引かないという狙いがありうる一方、 **利用組織は「急いで当てる理由」を知らされない。** **実際には、この24日間の内側（8日後）で攻撃者側の探索が始まっていた**</div></li><li><div class=ui>**CISA は KEV 収載時に「フォレンジック・トリアージ要件」への適合を求めた** （2026年8月21日・期限8月24日）</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **侵害の有無を確認させる方向は正しいが、 確認の材料（何を探すか）は37日後まで公開されなかった。** 期限の時点で実行できるのは「更新と一般的な点検」までである</div></li></ul></div>
+<section id="s6"><h2>狙われたのは利用者のメールボックスではなく、サーバが一か所に集めていた鍵である<span class="b slot">概観</span></h2><p>Microsoft Threat Intelligence の公表（2026年9月30日）によれば、起きたことは次である。</p>
+<ul>
+<li><strong>CVE-2026-73570</strong> は、Zimbra Collaboration Suite（ZCS）の<strong>SNMP 通知の処理に、SMTP で受け取った信頼できない入力が入る</strong>不備である。<strong>細工したメール1通で、認証も利用者の操作も要らずに<code>zimbra</code> サービスアカウントとしてコマンドが実行できる。</strong></li>
+<li>成立条件は、<strong>任意パッケージ <code>zimbra-snmp</code> が入っていて SNMP 通知が有効なこと。</strong>これは監視のために入れる正当な構成である</li>
+<li><strong>CVSS v3.1 は 8.9（HIGH）・CWE-78。</strong> 修正は <strong>2026年7月20日の 10.1.20</strong></li>
+<li>攻撃者は <strong>JSP ウェブシェルを Jetty と mailboxd の4つの経路に多重に</strong>置き、<strong>PAM 設定を symlink で差し替えて root を取り</strong>、<strong><code>zimlog.service</code> という正規に見える systemd ユニット</strong>で再起動後も生き残るようにした</li>
+<li><strong>窃取されたのは、サーバ側の秘密値である。</strong> <code>zmlocalconfig -s</code> で LDAP・MySQL・Postfix・Amavis・複製の資格情報を取り、LDAP 照会で<strong>事前認証キー・セッショントークンの署名鍵・二要素認証の秘密値</strong>を抜いた</li>
+<li><strong>横展開は Zimbra 自身の SSH 鍵</strong>（<code>/opt/zimbra/.ssh/zimbra_identity</code>）で行われ、ホスト鍵の検証を切った非対話 SSH でクラスタ内の他ノードへ入り、<code>rsync</code> でウェブシェルや部品を運んでいる</li>
+<li><strong>メールボックスの持ち出しは「準備完了・実行未確認」。</strong>書庫を作り、AzCopy を取り、Azure Blob の SAS URL へ実行したところまでは確認されたが、<strong>Microsoft は転送の完了を確認できないと明記している</strong></li>
+<li><strong>影響を受けた組織は複数の地域・複数の業種にまたがる</strong>が、<strong>名前・件数・業種と地域の内訳・帰属はいずれも公表されていない</strong></li>
+<li><strong>すべての段階がすべてのサーバで現れたわけではない</strong>と Microsoft は述べている</li>
+</ul>
+<p><strong>読者にとっての要点は、「パスワードを変えても終わらない」ことである。</strong> Microsoft は <code>zimbraAuthTokenKey</code> について<strong>「Zimbra が基盤全体で利用者のセッショントークンに署名するための鍵材料であり、この値にアクセスできれば任意のアカウントのセッショントークンを生成できる」</strong>（原文英語）と明記した。<strong>この鍵が出た時点で、全アカウントのパスワード変更も二要素認証も、セッションの偽造を止めない。</strong></p></section>
+<section id="s7"><h2>修正は公開の24日前に出ており、攻撃者の探索はその内側で始まっていた<span class="b slot">原因・手口</span></h2><p>時間の並びを押さえると、本件は「パッチを放置した話」だけでは読めない。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年7月20日</td>
+<td><strong>Zimbra が 10.1.20 を公開</strong>（CVE 番号も内容も未公表）</td>
+</tr>
+<tr>
+<td>2026年7月28日</td>
+<td><strong>2種類の異なるスキャナが注入点の探索を開始</strong></td>
+</tr>
+<tr>
+<td>2026年8月7日</td>
+<td>探索の確認期間の終わり（11日間）</td>
+</tr>
+<tr>
+<td>2026年8月13日</td>
+<td><strong>CVE-2026-73570 が公開</strong>（CVSS 8.9・CWE-78）</td>
+</tr>
+<tr>
+<td>2026年8月（二次情報では17日）</td>
+<td>CERT Polska が実地悪用を注意喚起</td>
+</tr>
+<tr>
+<td>2026年8月21日</td>
+<td><strong>CISA が KEV へ収載</strong></td>
+</tr>
+<tr>
+<td>2026年8月24日</td>
+<td><strong>KEV の対処期限（収載から3日）</strong></td>
+</tr>
+<tr>
+<td>2026年9月30日</td>
+<td><strong>Microsoft が攻撃連鎖の詳細を公表</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>読める事実は3つある。</strong></p>
+<p><strong>①修正は公開の24日前に出ていた。</strong> つまり利用組織は、24日間「10.1.20 を当てる理由」を知らされていなかった。<strong>②探索はその24日間の内側（8日後）で始まっている。</strong> <strong>本記録は「攻撃者が修正の差分から脆弱性を見つけた」とは書かない</strong>—— Microsoft はそう述べていないし、独立の発見や第三者からの入手の可能性も残る。<strong>記録する意味は、「公表していないから攻撃者も知らない」が成り立たないことを、日付が示している点にある。</strong> <strong>③材料は期限より37日遅れて出た。</strong> CISA は8月24日までに「フォレンジック・トリアージ要件」に従った対処を課したが、<strong>何を探せばよいかがまとまって出たのは9月30日である。</strong> <strong>INC-2026-0229（NetScaler）で記録した「当局の指示が照合材料の公開より先に出る」型が、ここでも同じ形で現れている。</strong></p>
+<p><strong>成立条件についての注意。</strong> <code>zimbra-snmp</code> は任意パッケージであり、SNMP 通知は監視のために有効にする。<strong>これは設定不備ではなく、運用として正しいことをした結果の露出である。</strong> <strong>「既定で無効なものを有効にしていた組織が悪い」という読み方をすると、自組織の点検対象を見落とす</strong>——点検すべきは「監視のために入れた任意部品が、外から到達できる経路に乗っていないか」である。</p></section>
+<section id="s8"><h2>権限昇格は、製品が持っている特権部品を踏み台にして成立している<span class="b slot">原因・手口</span></h2><p>Microsoft が示した権限昇格は、外部のエクスプロイトを使っていない。<strong>製品自身が持っている特権部品を順番に使っている。</strong></p>
+<ol>
+<li>サーバに必要な Zimbra の補助部品があり、メールボックス管理部品のログディレクトリが書き込み可能であることを確認する</li>
+<li><strong><code>/etc/pam.d/sudo</code> を退避する</strong></li>
+<li><strong><code>zmmailboxd.out</code> のログファイルを、PAM 設定への symlink に置き換える</strong></li>
+<li><strong>特権部品 <code>zmmailboxdmgr</code> を呼ぶ</strong>——ログへの書き込みがsymlink をたどって PAM 設定の書き換えになる</li>
+<li><strong>PAM のセッションフック（<code>pam_exec</code>）を足し、ローカルのスクリプトを呼ばせる</strong></li>
+<li><strong>正規の補助部品 <code>zmstat-fd</code> を通じて sudo セッションを起こす</strong>——フックが root として走り、<strong>zimbra アカウントに <code>NOPASSWD: ALL</code> を与える</strong></li>
+</ol>
+<p><strong>防御の観点で重いのは、どの段も「正規の部品の正規の動作」だという点である。</strong>マルウェアの検体を探す発想では、ここに引っかかるものが無い。Microsoft 自身がこの点を総括している—— <strong>「本キャンペーンでもっとも重い帰結のいくつか、たとえば持ち出しに向けたメールストア全体の退避は、マルウェアファミリを一切伴わず、素の対話シェルだけで行われた」</strong>（原文英語）。</p>
+<p><strong>したがって、検知の設計は「振る舞い」側に置くしかない。</strong>ログファイルが symlink に変わる、サービスアカウントが<code>sudoers</code> に無制限の権限を得る、<code>/etc/systemd/system/</code> にアプリケーションの外からユニットが入る—— <strong>これらはいずれもファイル1つ・設定1行の変化として現れる。</strong></p></section>
+<section id="s9"><h2>多重に置かれたウェブシェルと、正規に見せる細工<span class="b slot">原因・手口</span></h2><p><strong>ウェブシェルは意図的に多重化されていた。</strong> Jetty 側の2経路（<code>/jetty_base/webapps/</code>・<code>/jetty/webapps/</code>）とmailboxd 側の2経路（<code>/mailboxd/webapps/</code>・<code>/work/zimbra/jsp/</code>）の<strong>計4種の経路に JSP が置かれ、1つ消されても残るようにしてあった。</strong></p>
+<p><strong>見えにくくする細工が3つある。</strong></p>
+<ul>
+<li><strong>公開ディレクトリの書き込み権限を一時的に開けて置き、置いた後で元に戻す。</strong> Microsoft は<strong>「基本的な権限の点検では変更が見えにくくなる」</strong>と述べている</li>
+<li><strong><code>zimlog.service</code> という、Zimbra のログ部品に見える名前</strong>を選んでいる。ただし<strong>置き場は <code>/etc/systemd/system/</code> で、Zimbra のアプリケーションディレクトリの外</strong>である</li>
+<li><strong>そのユニットの時刻を、既存の systemd ユニットに合わせて改竄している</strong>（<code>/tmp</code> から sudo で移してから時刻を合わせる）</li>
+</ul>
+<p><strong>永続化はこれだけではない。</strong> <code>* * * * *</code> と <code>@reboot</code> の cron、SSH の <code>authorized_keys</code> への追記、<code>useradd</code> / <code>adduser</code> による局所アカウントの作成、OpenRC の init.d スクリプト、シェルの起動ファイル（<code>.bash_profile</code> / <code>.zprofile</code>）、そして <strong><code>memfd_create</code> によるメモリ上での実行</strong>が併用されていた。<strong>「1つ見つけて消した」で終わる形にはなっていない。</strong></p></section>
+<section id="s10"><h2>探すべき場所と、入れ替えるべき鍵<span class="b slot">対策・注意喚起</span></h2><p>Microsoft が示した対処を、実施の順に並べ替えて整理する。<strong>順序が重要なのは、鍵を入れ替える前に永続化を取り切らないと、入れ替えた鍵がまた抜かれるためである。</strong></p>
+<p><strong>1. 更新する。</strong> ZCS を <strong>10.1.20 以降</strong>へ上げる。</p>
+<p><strong>2. すぐに当てられないなら、成立条件を外す。</strong>任意パッケージ <strong><code>zimbra-snmp</code> を削除</strong>し、<strong>SNMP 通知を無効にし</strong>、<strong>SNMP と SMTP の到達を信頼するホストだけに制限する。</strong></p>
+<p><strong>3. 侵害の有無を探す（場所で探す）。</strong><br />
+- <strong>すべてのメールボックスノードの</strong> Zimbra アプリケーションディレクトリとサーブレットの作業ディレクトリに、<strong>見覚えのない JSP・生成された <code>*_jsp.java</code>・コンパイル済みのサーブレット成果物</strong>が無いか<br />
+- <strong>最近の権限変更</strong>が無いか（置いて戻す細工の痕跡）<br />
+- <strong>systemd のユニット</strong>に、所有者・有効化・時刻が不自然なものが無いか<br />
+- <strong>cron・<code>authorized_keys</code>・局所アカウント・init.d・シェル起動ファイル</strong><br />
+- <strong>Zimbra の Java や <code>jspawnhelper</code> がネイティブのシェルを起動していないか</strong><br />
+- <strong>注入の署名</strong>——Microsoft は<strong>「正規の <code>snmptrap</code> 呼び出しの直後にシェルのメタ文字が続き、<code>wget</code> または <code>curl</code> の呼び出しがあって、末尾の <code>#</code> で残りの正規の引数を飲み込む形」</strong>を挙げている<br />
+- <strong>注入経路からの DNS コールバック</strong>（帯域外検査サービス宛て）</p>
+<p><strong>4. 鍵を入れ替える。</strong> Microsoft は <strong>「すべてのドメインの <code>zimbraPreAuthKey</code> を入れ替える」</strong>ことを明示的に求めている。<strong>本記録はこれに加えて、<code>zmlocalconfig -s</code> で見える範囲のサービス資格情報（LDAP・MySQL・Postfix・Amavis・複製）と、<code>zimbraAuthTokenKey</code>・<code>zimbraTwoFactorAuthSecret</code> の扱いを自組織の手順として決めておくべきだと考える</strong>（本記録の判断）。<strong>とくにセッショントークンの署名鍵は、入れ替えれば全利用者のセッションが切れる</strong>ため、<strong>「切れることを前提にした入れ替え手順」を平時に書いておかないと、事後に実行できない。</strong></p>
+<p><strong>5. 逆接続の警報を重く扱う。</strong> Microsoft は <strong>「リバースシェルの接続が確認された場合、ペイロードが隔離されていなくても攻撃者のアクセスがあったことを意味する」</strong>と述べている。<strong>検体が取れなかったことを「未侵害」の根拠にしない。</strong></p>
+<p><strong>6. サービスアカウントの爆発半径を縮める。</strong>名前空間・seccomp・AppArmor で <code>zimbra</code> サービスアカウントを閉じ込める。<strong>これは本件の修正ではなく、次のコマンド注入級の脆弱性への備えである。</strong></p></section>
+<section id="s11"><h2>「サーバ側に鍵が集まっている」構造は、Zimbra に限らない（本記録の評価）<span class="b slot">評価・解釈</span></h2><p><strong>ここから先は本記録の判断である。</strong></p>
+<p>本件の技術的な中身は Zimbra に固有だが、<strong>構造は固有ではない。</strong>自前運用のメール基盤・認証基盤・業務システムは、たいてい<strong>「サービスが自分で使うための秘密値」を、サーバ上の設定ファイルやディレクトリサービスに一か所へ集めて持っている。</strong> Zimbra の場合は <code>zmlocalconfig</code> と LDAP がその一か所だった。<strong>1つのコマンド注入でサービスアカウントが取れると、その一か所がそのまま取れる。</strong></p>
+<p><strong>そして、取れたものの中に「利用者の認証を迂回できる鍵」が入っていた。</strong>ここが本件のもっとも重い点である。個々のパスワードが漏れたのなら、変更すれば止まる。<strong>セッショントークンの署名鍵が漏れたら、パスワードの変更も二要素認証も止めない。</strong> <strong>つまり「認証情報が漏れたか」を点検する発想では、本件の被害を測れない。</strong>測るべきは<strong>「認証を成立させている鍵が漏れたか」</strong>である。</p>
+<p><strong>日本の読者にとっての当てはめは2段ある。</strong></p>
+<p><strong>第1段は、同じ製品を使っているかどうか。</strong> Zimbra は国内でも大学・自治体・ISP・中小企業の自社メール基盤として使われている。<strong><code>zimbra-snmp</code> を入れて SNMP 通知を有効にしているかは、構築時の判断としてしか記録されていないことが多い。</strong> <strong>「入れた覚えがない」で済ませず、実機で確認する必要がある。</strong></p>
+<p><strong>第2段は、製品を使っていない組織にも効く。</strong>自組織の基盤について、<strong>「サービスアカウントが取られたとき、同時に取られる秘密値の一覧」</strong>が書けるか。書けないなら、侵害時に何を入れ替えるべきかを事後に決めることになる。<strong>本件では入れ替えるべき対象が公開資料から読み取れた</strong>が、それは Microsoft が属性名まで書いたからである。<strong>自組織の基盤について同じ一覧を持っているのは、自組織だけである。</strong></p>
+<p><strong>最後に、公報の読み方について1つ。</strong> <strong>Zimbra 自身の Security Center には、この修正がCVE 番号無しの「TBD」として載っているだけである</strong>（本記録の作成者が2026年10月1日に確認した）。<strong>製品の公報だけを見て「自分に関係する脆弱性か」を判断する運用は、本件では機能しない。</strong> <strong>KEV・NVD・CERT の側から入ってくる識別子を、自組織の資産一覧に突き合わせる経路を別に持つ必要がある。</strong></p></section>
+<section id="s12"><h2>規模が分からないまま記録する<span class="b slot">未確定事項</span></h2><p>本件で分からないままの点を明示しておく。</p>
+<ul>
+<li><strong>侵害された組織の名前・件数。</strong>「複数の地域・複数の業種」という記述だけで、<strong>規模が分からない</strong></li>
+<li><strong>業種と地域の内訳。</strong> 否定形（「単一に限られていない」）でしか示されていない。<strong>日本が含まれるかも分からない</strong></li>
+<li><strong>帰属。</strong> 国家背景・犯罪集団のいずれにも触れておらず、Microsoft 自身の命名も無い。<strong>探索の段階で「2種類の異なるスキャナ」が観測されており、後段の侵害が同一の主体によるものかも述べられていない</strong></li>
+<li><strong>メールボックスデータが実際に外へ出たのか。</strong> <strong>「準備完了・実行未確認」である。</strong>本記録は「持ち出された」と書かないが、<strong>実務上は出たものとして扱うほかない</strong></li>
+<li><strong>攻撃者がどのようにして脆弱性を知ったのか。</strong>修正公開の8日後・脆弱性公開の16日前に探索が始まっているが、経路はどの資料も述べていない。<strong>本記録は推測しない</strong></li>
+<li><strong>Zimbra 自身が実地悪用について何か述べているか。</strong> <strong>取得できたのは Security Center のみで、そこには CVE 番号無しの「TBD」しか無かった</strong></li>
+<li><strong>日本国内の注意喚起の有無。</strong> <strong>本記録の作成者は探索していない</strong>ので、「無い」とは書かない</li>
+</ul></section>
+<div class="blk " id="s13"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>Zimbra Collaboration Suite（ZCS）のメールサーバ。 **成立条件は、任意パッケージ `zimbra-snmp` が入っていること、 SNMP 通知（`snmp_notify`）が有効であること、 および `swatchdog` サービスが動いていること**である。 攻撃は**細工した SMTP 要求（メール）**で起こり、 `swatchdog` の `snmptrap` 呼び出しを書き換える形でコマンドが実行される</td></tr><tr><th>affected_versions</th><td>ZCS 10.1.20 より前のすべてのバージョン（NVD の記載）。 **修正は 10.1.20（2026年7月20日公開）。** **Zimbra の Security Center では、この修正が CVE 番号無しの「TBD」として載っている**</td></tr><tr><th>leaked_items</th><td><ul class=cl><li>Zimbra のサービス資格情報（LDAP・MySQL・Postfix・Amavis・複製。`zmlocalconfig -s` で取得）</li><li>事前認証キー（`zimbraPreAuthKey`）</li><li>セッショントークンの署名鍵（`zimbraAuthTokenKey`。`cn=config,cn=zimbra` から取得）</li><li>二要素認証の秘密値（`zimbraTwoFactorAuthSecret`）</li><li>MySQL のメールボックス関連テーブル（mailbox / metadata / mobile_devices / out_of_office）</li><li>zimbra の名前空間のテーブル一式</li><li>SSL 証明書・Postfix の設定・LDAP の秘密値・メールの振り分け規則・認証に関する材料</li></ul><span class="b rsn">stated</span><div class=fn>**「収集が確認された範囲」である。** **メールボックスのバックアップ内容を固めて外部へ送ろうとした形跡はあるが、 Microsoft は転送の完了を確認できないと明記している。** **したがって「外へ出た範囲」は確定していない。** **なお、個々の利用者のメールボックスのパスワードは標的になっていない**—— 攻撃者が取ったのは、それを迂回できるサーバ側の鍵である</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年9月30日　<b>補足:</b> **実地の悪用が確認されている**（Microsoft のテレメトリと調査した環境にもとづく）。 **CISA も2026年8月21日に KEV へ収載している。** **ただし、どの組織がいつ侵害されたかの個別の情報は公表されていない**</td></tr><tr><th>ログの有無</th><td>**防御側に残る手がかりは公表されている。** ①**注入の署名**——正規の `snmptrap` 呼び出しの直後にシェルのメタ文字が続き、 `wget` / `curl` の呼び出しがあって、末尾の `#` で残りの引数を飲み込む形。 ②**注入経路からの DNS コールバック**（帯域外検査サービス宛て）。 ③**ウェブ公開ディレクトリへの JSP の書き込み**と、生成される `*_jsp.java`・ コンパイル済みサーブレット成果物。 ④**Zimbra の Java や `jspawnhelper` がネイティブのシェルを起動したこと。** ⑤**権限の一時変更・バックグラウンド実行・落として起動する動作・ 匿名の `memfd_create` 実行・リバースシェルの通信。**
+**一方で、攻撃者は痕跡を減らす動作を複数入れている**—— 公開ディレクトリの権限を戻す、systemd ユニットの時刻を既存に合わせる、 `memfd_create` でメモリ上で実行する。 **Microsoft 自身が「もっとも重い帰結のいくつかはマルウェアファミリを一切伴わず、 素の対話シェルだけで行われた」と述べており、 検体の有無を「未侵害」の根拠にできない**</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> ZCS を 10.1.20 以降へ更新する　<b>状況:</b> Microsoft が最優先として提示（「緊急に当てよ」）　<b>副作用:</b> メールサービスの停止を伴う。 **更新は本件の侵害痕跡を上書きしうるため、 先に証跡（ウェブ公開ディレクトリの一覧・systemd ユニット・cron・ `authorized_keys`）を取っておく必要がある**（本記録の補足）　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> 任意パッケージ `zimbra-snmp` を削除する　<b>状況:</b> Microsoft が「すぐに当てられない場合」の緩和として提示　<b>副作用:</b> **SNMP による監視が止まる。** 監視基盤から当該サーバの状態が見えなくなるため、 **代替の監視（エージェント・ログ転送）を用意しないと、 別の障害に気づけなくなる**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> SNMP 通知を無効にする　<b>状況:</b> 同上　<b>副作用:</b> 通知による障害検知が止まる。**`zimbra-snmp` の削除とあわせて、 監視の穴をどう埋めるかを決めてから実施する必要がある**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> SNMP と SMTP の到達を信頼するホストだけに制限する　<b>状況:</b> 同上　<b>副作用:</b> **SMTP の制限は、インターネットからのメール受信を行うサーバでは そのまま適用できない。** 外部からのメールを受ける構成では、 前段のメールゲートウェイに制限を寄せるなど設計の変更が要る　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> すべてのドメインの `zimbraPreAuthKey` を入れ替える　<b>状況:</b> Microsoft が明示的に要求　<b>副作用:</b> **事前認証に依存している連携（シングルサインオン・外部からの メールボックスアクセス）が切れる。** **連携の一覧を持っていない組織では、入れ替えた後に どこが止まるかを事前に把握できない**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> セッショントークンの署名鍵（`zimbraAuthTokenKey`）と 二要素認証の秘密値（`zimbraTwoFactorAuthSecret`）の扱いを決めて実行する　<b>状況:</b> **本記録の判断による補足。** Microsoft が明示的に挙げたのは `zimbraPreAuthKey` のみである　<b>副作用:</b> **署名鍵を入れ替えると、全利用者のセッションが一斉に切れる。** 二要素認証の秘密値を入れ替えると、**利用者全員が認証アプリの再登録を要する。** **影響が大きいため、平時に手順を書いておかないと事後には実行できない**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> すべてのメールボックスノードでウェブシェルを探す　<b>状況:</b> Microsoft が提示（「多重化された永続化を探せ」）　<b>副作用:</b> **1ノードだけ見て終わると残る。** 横展開が Zimbra 自身の SSH 鍵で行われているため、 **クラスタ全台を同時に見る必要があり、作業量が台数に比例する**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> systemd ユニットの所有者・有効化・時刻の変化を点検する　<b>状況:</b> Microsoft が提示　<b>副作用:</b> **時刻が既存ユニットに合わせて改竄されているため、 「時刻が新しいもの」を探す方法では見つからない。** 所有者と置き場（アプリケーションディレクトリの外か）で見る必要がある　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> サービスアカウントを名前空間・seccomp・AppArmor で閉じ込める　<b>状況:</b> Microsoft が提示（将来のコマンド注入級脆弱性への備えとして）　<b>副作用:</b> **製品の正常動作を壊すおそれがある。** Zimbra は多数の補助部品を特権で呼ぶ設計のため、 **検証環境での確認なしに本番へ入れられない**　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> リバースシェルの警報を重大として扱う運用に変える　<b>状況:</b> Microsoft が提示　<b>副作用:</b> **誤検知のコストが上がる。** 「検体が隔離されたから対処済み」とする運用をやめることになり、 **確認作業の件数が増える**　<b>出典:</b> 3</div></td></tr><tr><th>復旧状況</th><td>**被害組織が公表されていないため、復旧の状況は分からない。** 製品側の修正は2026年7月20日に出ており、入手可能である</td></tr><tr><th>通知</th><td><b>手法:</b> 公表されていない　<b>範囲:</b> 公表されていない　<b>補足:</b> **被害組織が公表されていないため、利用者への通知の有無も分からない。** Microsoft の公表は防御側への技術情報であり、個別の通知には触れていない</td></tr><tr><th>criminal</th><td><span class="b rsn">公表されていない</span></td></tr><tr><th>当局対応</th><td><ul class=cl><li>2026年8月21日、CISA が CVE-2026-73570 を KEV へ収載（ベンダー表記は Synacor）</li><li>2026年8月24日を期限として、連邦民間機関に BOD 26-04 および「フォレンジック・トリアージ要件」に沿った対処を要求</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月20日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Zimbra が ZCS 10.1.20 を公開し、SNMP 通知経路のコマンド注入を修正した。 **この時点では CVE 番号も脆弱性の内容も公表されていない** （Security Center の 10.1.20 の節には「SNMP 監視部品のコマンド注入」の項があるが 識別子は「TBD」である）</td></tr><tr><td class="sm nowrap tw">2026年7月28日</td><td class=nowrap><span class="b kind">発生</span></td><td>**2種類の異なる帯域外（out-of-band）スキャナが、注入点の探索を始めた。** コマンドは `curl` / `wget` / `ping` / `nslookup` / `id` の確認にとどまり、 後続のペイロードは落としていない。 **コールバック先は帯域外検査の公開サービス**（`oast.fun`・`oast.online`・ `dnslog.pp.ua`・`requestrepo.com`・`bypass.eu.org`）だった。 **修正の公開から8日後、脆弱性の公開より16日前である**</td></tr><tr><td class="sm nowrap tw">2026年8月7日</td><td class=nowrap><span class="b kind">発生</span></td><td>2種類のスキャナによる探索が確認された期間の終わり（7月28日からの11日間）</td></tr><tr><td class="sm nowrap tw">2026年8月13日</td><td class=nowrap><span class="b kind">公表</span></td><td>CVE-2026-73570 が公開された（NVD の公開日）。 **CVSS v3.1 基本値 8.9（HIGH）・CWE-78・ ベクタ `AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:L`。** **公開の後に、完全な攻撃連鎖が観測されるようになる**（Microsoft）</td></tr><tr><td class="sm nowrap tw">2026年8月（二次情報では8月17日。本記録は原典を未確認）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>CERT Polska が本脆弱性の実地悪用を注意喚起した（とされる）。 **NVD の参照一覧に第三者勧告として載っている**</td></tr><tr><td class="sm nowrap tw">2026年8月21日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>CISA が CVE-2026-73570 を KEV へ収載した。 ベンダー表記は **Synacor**、名称は 「Zimbra Collaboration Suite (ZCS) OS Command Injection Vulnerability」</td></tr><tr><td class="sm nowrap tw">2026年8月24日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>KEV の対処期限。**収載から3日である。** 求められた行動は BOD 26-04 と「フォレンジック・トリアージ要件」への適合で、 **緩和策が無い場合は製品の利用中止**も含む</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>Microsoft Security Blog が 「Unauthenticated command injection on internet-facing mail servers: tracking CVE-2026-73570」を公開した。 **攻撃連鎖の全段階・永続化の手口・窃取された LDAP 属性名・ 使われた道具・持ち出しの試みとその未完了・検知の着眼点・緩和策が ここで初めてまとまって出た**</td></tr><tr><td class="sm nowrap tw">2026年10月1日 04:11 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>韓国の保安ニュース（boannews）が本件を報じた（本記録の起点）。 **「メールボックスではなくサーバを狙った」という論点の立て方で、 窃取されたのが個々の利用者のパスワードではなくサーバ側の秘密値であることを前面に置いている**</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が検証した結果—— ①**CISA の KEV カタログ（JSON・カタログ版 2026.09.30）に CVE-2026-73570 のエントリが存在する**（収載 2026-08-21・期限 2026-08-24）。 ②**NVD の CVSS v3.1 は 8.9・CWE-78 で、記事の記載と一致する。** ③**Zimbra の Security Center には CVE-2026-73570 の記載を見つけられなかった**—— 10.1.20 の節には SNMP 監視部品のコマンド注入の項があるが識別子が「TBD」で、 同じ節の最大の CVE 番号は CVE-2026-73576 である</td></tr></tbody></table></div></div>
+<div id="s15"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>8</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Zimbra 自身の Security Center に CVE-2026-73570 の記載を見つけられなかった</span><div class=sm>**本記録の作成者が2026年10月1日に Zimbra の Security Center を取得して確認した結果である。** **10.1.20（2026年7月20日公開）の節には「SNMP 監視部品のコマンド注入」の修正が 載っているが、識別子が「TBD」で CVE 番号が入っていない。** **同じ節に並ぶ CVE の最大番号は CVE-2026-73576 である** （つまり番号の割り当て自体は進んでいる）。 **したがって「製品ベンダーの公報を見る」運用では、 CVE-2026-73570 を自組織の問題として認識できない。** **なお、本記録は「Zimbra が意図的に隠した」とは書かない**—— 更新作業の遅れである可能性も残る。 **確認できたのは「10月1日時点で載っていない」ことだけである**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>CERT Polska の原典を取得していない（日付が二次情報のみ）</span><div class=sm>**NVD の参照一覧には「Polish CERT Communication」が第三者勧告として載っており、 CERT Polska が実地悪用を指摘したこと自体は確認できる。** **しかし本記録の作成者は原典を取得しておらず、 二次情報が示す「2026年8月17日」という日付を確認していない。** **timeline T5 は precision を month にとどめ、日付を断定していない**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CISA KEV のベンダー表記が「Synacor」である</span><div class=sm>**本記録の作成者が2026年10月1日に KEV の JSON（カタログ版 2026.09.30）を 取得して確認した。** CVE-2026-73570 のエントリは **`vendorProject: Synacor` / `product: Zimbra Collaboration Suite (ZCS)`** である。 **「Zimbra」というベンダー名で資産一覧と突き合わせる仕組みでは、 ベンダー名の側で当たらない。** **これは本件に固有ではなく、KEV の Zimbra 関連エントリは 2022年以降すべて Synacor 表記である**（本記録の作成者が同じ JSON で確認した）。 **実務上の意味は、資産一覧にベンダー名の別名を併記しておく必要があるという点にある**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>侵害された組織の規模が一切示されていない</span><div class=sm>Microsoft は**「複数の地域・複数の業種」「単一の業種・地域に限られていなかった」** という**否定形の記述のみ**で、 **件数・組織名・業種と地域の内訳をいずれも示していない。** **9月29日に別の事案（INC-2026-0229 / NetScaler）で Mandiant が 業種と地域までは示していたのと比べても、規模の情報は少ない。** **本記録は規模を推定しない**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>持ち出しが完了したかどうかが確定していない</span><div class=sm>**Microsoft は「利用できる証拠では転送が完了したことを確認できない」**（原文英語）と 明記している。**完了を否定する証拠も示されていない。** **本記録は「持ち出された」とも「持ち出されていない」とも書かない。** **ただし実務上は「出たものとして扱う」ほかない**—— これは本記録の判断である</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>「2種類のスキャナ」と後段の侵害が同一の主体かどうかは述べられていない</span><div class=sm>探索の段階（2026年7月28日〜8月7日）で**2種類の異なる帯域外スキャナ**が観測され、 **公開（8月13日）の後に完全な攻撃連鎖が現れる**という順序は示されているが、 **両者が同じ主体によるものかは述べられていない。** **複数の攻撃者が同じ脆弱性を使っていた可能性も否定されていない。** **本記録は timeline で順序だけを示し、主体の同一性には触れない**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>署名鍵と二要素認証の秘密値の入れ替えは、本記録の判断による補足である</span><div class=sm>**Microsoft が対処として明示的に挙げたのは 「すべてのドメインの `zimbraPreAuthKey` を入れ替える」ことだけである。** **一方で本文では `zimbraAuthTokenKey` と `zimbraTwoFactorAuthSecret` の 窃取を報告し、`zimbraAuthTokenKey` については 「任意のアカウントのセッショントークンを生成できる」と述べている。** **本記録はこの不整合を埋めるため、 署名鍵・二要素認証の秘密値・サービス資格情報の入れ替えを `detail.mitigations` と lessons に「本記録の判断」として明記した。** **Microsoft の推奨としては書いていない**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>日本国内の影響・注意喚起を探索していない</span><div class=sm>**本記録の作成者は、日本国内の組織・機関による本件の注意喚起を探索していない。** 起点は韓国の boannews（2026年10月1日）で、保存分に日本語の記事は無い。 **「国内で注意喚起が出ていない」とは書かない。** **日本との関係を「有名事象として記録」の扱いにしたのは、 Microsoft が示した地域の記述に日本が含まれないこと（含まれるという記述も無いこと）に もとづく**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s16"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>メール1通から、サーバ側の認証秘密値とクラスタ全体へ</div><div class=svgwrap><svg viewBox="0 0 1202 330" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,165.0 C193.0,165.0 193.0,126.0 220,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,126.0 C295.0,126.0 295.0,197.0 220,197.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,197.0 C397.0,197.0 397.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C499.0,126.0 499.0,204.0 424,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,204.0 C601.0,204.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,87.0 C703.0,87.0 703.0,165.0 628,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,165.0 C703.0,165.0 703.0,243.0 628,243.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,165.0 C805.0,165.0 805.0,126.0 832,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,126.0 C907.0,126.0 907.0,204.0 832,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,204.0 C1009.0,204.0 1009.0,204.0 1036,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,165.0 C907.0,165.0 907.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,48.0 C805.0,48.0 805.0,204.0 424,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,126.0 C1009.0,126.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,126.0 C1111.0,126.0 1111.0,282.0 1036,282.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="140.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属は公表されて</text><text x="91.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いない）</text><rect x="220" y="101.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="123.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工した SMTP 要求</text><text x="295.0" y="137.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（メール1通・認証不要）</text><rect x="220" y="165.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="187.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SNMP 通知の処理（z</text><text x="295.0" y="201.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">imbra-snmp／s</text><text x="295.0" y="215.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">watchdog の …</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">zimbra サービスア</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウントとしてのコマンド</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実行</text><rect x="424" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JSP ウェブシェル（J</text><text x="499.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">etty 2経路・mai</text><text x="499.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">lboxd 2経路に多…</text><rect x="628" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PAM 設定の差し替え（</text><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログを symlink </text><text x="703.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に／特権部品を呼ぶ）</text><rect x="628" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">root 権限（zimb</text><text x="703.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ra に NOPASSW</text><text x="703.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">D: ALL）</text><rect x="628" y="211.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="233.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">zimlog.servi</text><text x="703.0" y="247.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ce（正規名・時刻改竄・</text><text x="703.0" y="261.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アプリ外に設置）</text><rect x="832" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">秘密値の集積点（zmlo</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">calconfig -s</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> と LDAP）</text><rect x="832" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セッショントークンの署名</text><text x="907.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">鍵・事前認証キー・二要素</text><text x="907.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証の秘密値</text><rect x="1036" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタ内の他ノード（Z</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">imbra 自身の SS</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">H 鍵で到達）</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メールボックスデータ（M</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ySQL の各テーブル・</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">証明書・設定）</text><rect x="1036" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1111.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意アカウントのセッショ</text><text x="1111.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ン偽造（パスワード変更・</text><text x="1111.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">二要素認証では止まらな…</text><rect x="1036" y="250.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="272.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラウドストレージへの転</text><text x="1111.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">送（AzCopy・完了は</text><text x="1111.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未確認）</text></svg></div><div class=fn>layer 0 は攻撃者。layer 1 は入口（細工した SMTP 要求が SNMP 通知の処理に入る）。 layer 2 は得られた実行権限（zimbra サービスアカウント）と、置かれたウェブシェル。 layer 3 は権限昇格（PAM 設定の symlink 差し替え → root → NOPASSWD: ALL）と永続化。 layer 4 は窃取された秘密値の集積点（zmlocalconfig と LDAP）。 layer 5 はその帰結——クラスタ内の他ノード、収集されたメールボックスデータ、 そして任意アカウントのセッション偽造。 **破線相当の扱いにしているのは持ち出しの完了のみ**—— Microsoft は転送が完了したことを確認できないと明記している。</div></div></div>
+<div class="blk " id="s17"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**DNS の外向き問い合わせで見える。** メールサーバが帯域外検査サービスのドメインを引くことは、 正常な運用では起こらない。 **ただし「確認だけ」の段階なので、被害が無く警報の優先度も上がりにくい。** **この11日間に気づけていれば、公開（8月13日）より前に更新できていた**</div></td><td><div class=ctl><span class="b eff">検知できた</span>メールサーバからの外向き DNS を記録し、既知の帯域外検査サービスへの問い合わせを検知する</div><div class=ctl><span class="b eff">侵入を防げた</span>ZCS 10.1.20 以降への更新（この時点で修正は既に出ていた）</div><div class=ctl><span class="b eff">侵入を防げた</span>`zimbra-snmp` の削除と SNMP 通知の無効化</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**注入の形に署名がある。** Microsoft が挙げたのは **「正規の `snmptrap` 呼び出しの直後にシェルのメタ文字が続き、 `wget` または `curl` の呼び出しがあって、末尾の `#` で 残りの正規の引数を飲み込む形」**である。 **メールの受信ログではなく、SNMP 通知の処理の側に出る。** **監視のために入れた部品のログを見ていない運用では通る**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>ZCS 10.1.20 以降への更新</div><div class=ctl><span class="b eff">侵入を防げた</span>`zimbra-snmp` の削除・SNMP 通知の無効化</div><div class=ctl><span class="b eff">影響を限定できた</span>SNMP と SMTP の到達を信頼するホストだけに制限する（外部メールを受ける構成では設計変更が要る）</div><div class=ctl><span class="b eff">検知できた</span>`snmptrap` の呼び出しにシェルのメタ文字が続く形を検知する</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**権限の点検では見えないように設計されている。** 残るのは**ファイルの存在**——JSP 本体と、 生成される `*_jsp.java`・コンパイル済みのサーブレット成果物である。 **多重化されているため、1経路を見るだけでは足りない。** **クラスタでは全ノードを見る必要がある**</div></td><td><div class=ctl><span class="b eff">検知できた</span>すべてのメールボックスノードのアプリケーションディレクトリと サーブレット作業ディレクトリを突き合わせ、見覚えのない JSP と 生成物（`*_jsp.java`・コンパイル済みサーブレット）を探す</div><div class=ctl><span class="b eff">検知できた</span>ウェブ公開ディレクトリへの書き込みをファイル整合性監視で検知する</div><div class=ctl><span class="b eff">検知できた</span>`jspawnhelper` や Zimbra の Java がネイティブのシェルを起動したことを検知する</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**どの段も「正規の部品の正規の動作」である。** 検体を探す発想では何も引っかからない。 **残るのは状態の変化**—— ログファイルが通常ファイルから symlink に変わること、 `/etc/pam.d/sudo` の内容が変わること、 `sudoers` にサービスアカウントの無制限の権限が入ること。 **いずれも「1行の変化」として現れるため、 差分を取っていない環境では気づけない**</div></td><td><div class=ctl><span class="b eff">検知できた</span>`/etc/pam.d/` と `sudoers` をファイル整合性監視の対象に入れ、 変更を変更管理の記録と突き合わせる</div><div class=ctl><span class="b eff">検知できた</span>ログファイルが symlink に置き換わったことを検知する</div><div class=ctl><span class="b eff">検知できた</span>サービスアカウント（`zimbra`）に `NOPASSWD: ALL` が与えられたことを 即時の重大警報として扱う</div><div class=ctl><span class="b eff">影響を限定できた</span>サービスアカウントを名前空間・seccomp・AppArmor で閉じ込め、 特権部品の呼び出し範囲を絞る</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**「時刻が新しいもの」を探す方法は効かない**—— 既存のユニットに合わせて改竄されている。 **効くのは置き場と所有者**である（アプリケーションの外から入ったユニットか）。 **メモリ上の実行（`memfd_create`）はディスクに残らない**ため、 ファイルを探す方法では捕まらない</div></td><td><div class=ctl><span class="b eff">検知できた</span>systemd ユニットの一覧を定点で取得し、 所有者・有効化状態・置き場が不自然なものを差分で検知する</div><div class=ctl><span class="b eff">検知できた</span>cron・`authorized_keys`・局所アカウント・init.d・シェル起動ファイルを一括で点検する</div><div class=ctl><span class="b eff">検知できた</span>匿名の `memfd_create` 実行を振る舞いとして検知する</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**`zmlocalconfig -s` は管理者が正当に使うコマンドである。** したがって「実行されたこと」自体では異常にならない。 **区別できるのは実行の主体と文脈**—— ウェブシェル経由のプロセスから呼ばれたのか、 管理者の対話セッションから呼ばれたのか。 **LDAP 側では、`cn=config,cn=zimbra` の高価値属性への照会が手がかりになる**</div></td><td><div class=ctl><span class="b eff">検知できた</span>`zmlocalconfig -s` の実行を、親プロセス（Java / `jspawnhelper` 由来か）とあわせて記録・検知する</div><div class=ctl><span class="b eff">検知できた</span>`cn=config,cn=zimbra` 配下の高価値属性への LDAP 照会を記録・警報化する</div><div class=ctl><span class="b eff">影響を限定できた</span>**侵害が疑われた時点で、`zimbraPreAuthKey`・`zimbraAuthTokenKey`・ `zimbraTwoFactorAuthSecret` とサービス資格情報をすべて入れ替える** （全セッションが切れることを前提にした手順を平時に用意しておく）</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ノード間の SSH は、Zimbra の正常運用でも発生する。** 区別できるのは**ホスト鍵検証の無効化**と、 **`rsync` でアプリケーションディレクトリへファイルが入ること**である。 **1台だけ調査して終える運用では、この段で広がった先が残る**</div></td><td><div class=ctl><span class="b eff">検知できた</span>ノード間 SSH の認証ログを集約し、ホスト鍵検証を切った接続・ 通常の保守時間外の接続を検知する</div><div class=ctl><span class="b eff">影響を限定できた</span>侵害調査をクラスタ全ノードで同時に行うことを手順に書く</div><div class=ctl><span class="b eff">影響を限定できた</span>ノード間連携用の鍵を用途限定（`command=` の強制・接続元の制限）にし、 対話シェルを取れないようにする</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**輸送が3通り用意されているため、1つの通信方式を塞ぐ対策は迂回される。** WebSocket と TLS は正常な通信と見分けがつきにくい。 **効くのは向きと宛先**——メールサーバが自分から外部へ 持続的な接続を張ることは正常な運用では起こらない</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>メールサーバからの外向き通信を既定拒否にし、必要な宛先だけを明示的に許可する</div><div class=ctl><span class="b eff">検知できた</span>外部への持続的な接続（長時間の TLS / WebSocket）を検知する</div><div class=ctl><span class="b eff">検知できた</span>**リバースシェルの接続が確認された時点で、検体が取れていなくても 侵害として扱う**（Microsoft が明示的に求めている）</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**MySQL と LDAP への接続は、Zimbra の正常動作そのものである。** 区別できるのは**テーブル全体の書き出し**という量と、 **接続元のプロセス**である。 **データベースの監査ログを取っていない環境では、この段が見えない**</div></td><td><div class=ctl><span class="b eff">検知できた</span>Zimbra の MySQL に対する一括書き出しを監査ログで検知する</div><div class=ctl><span class="b eff">検知できた</span>`/opt/zimbra/conf/localconfig.xml` の読み取りを、想定外のプロセスから行われた場合に検知する</div><div class=ctl><span class="b eff">検知できた</span>ディスク上に作られた大きな書庫・ダンプファイルの出現を検知する</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**正規のクラウド転送ツールが正規の配布元から取られている。** したがって「不審なファイルの取得」としては検知しにくい。 **効くのは、メールサーバが AzCopy を取ること自体の異常性**と、 **クラウドストレージへの大量転送**である。 **自組織が使っていないクラウドへの送信を既定で拒否していれば、 この段で止まった可能性がある**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>メールサーバからの外向き通信を既定拒否にし、 自組織が使わないクラウドストレージへの送信を遮断する</div><div class=ctl><span class="b eff">検知できた</span>正規のクラウド転送ツール（AzCopy 等）がサーバ上で取得・実行されたことを検知する</div><div class=ctl><span class="b eff">検知できた</span>大きな書庫の作成と、その直後の外向き大量転送を関連づけて警報化する</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検体ベースの調査は、設計上当てが外れる。** **「アンチウイルスが何も出さなかった」「ペイロードを隔離した」は 未侵害の根拠にならない**——Microsoft 自身がこれを明示している。 **残るのは、状態の差分（PAM・`sudoers`・systemd・ウェブ公開ディレクトリ）と、 ネットワーク側の記録である**</div></td><td><div class=ctl><span class="b eff">検知できた</span>調査の主証拠を「状態の差分」と「ネットワークの記録」に置き、 検体の有無を未侵害の根拠にしない</div><div class=ctl><span class="b eff">検知できた</span>ログをサーバ外へリアルタイムに転送する（サーバ上で消されても残る）</div><div class=ctl><span class="b eff">復旧を早められた</span>更新・隔離の前に、ウェブ公開ディレクトリの一覧・systemd ユニット・ cron・`authorized_keys` の証跡を取る</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Microsoft は**攻撃連鎖の全段階・永続化の手口・窃取された LDAP 属性名・ 使われた道具・検知の着眼点**を公開し、 **被害組織の名前・件数・業種と地域の内訳・帰属は公開しなかった**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価。** 本件で読者が取る行動（更新・成立条件の除去・ ウェブシェルの探索・鍵の入れ替え）は、 **規模の情報が無くても決まる。** むしろ**属性名まで書いたこと**が決定的に有用である—— `zimbraAuthTokenKey` が漏れたと分かれば、 対処が「パスワード変更」ではなく「署名鍵の入れ替え」に変わる。 **業種と地域を否定形でしか示さなかった点は惜しいが、 行動を変える情報ではない**</td></tr><tr><td>Zimbra は**2026年7月20日に修正を出し、脆弱性の公開は8月13日**だった （24日の間がある）</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**本記録の評価であり、結果論を含む。** **ただし「公開前に探索が始まっていた」ことは観測されている事実**であり、 24日の沈黙が利用組織の側にだけ不利に働いたと読める。 **評価を下げるもう1つの根拠は、公開後も製品側の公報に CVE 番号が載っていないことである**—— **2026年10月1日時点で Security Center の該当項は「TBD」のままで、 製品の公報だけを見ている組織は本件を自分の問題として認識できない**</td></tr><tr><td>**CISA は KEV 収載時に「フォレンジック・トリアージ要件」への適合を求めた** （2026年8月21日・期限8月24日）</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価。** **INC-2026-0229（NetScaler）で記録した「当局の指示が照合材料の公開より先に出る」型が、 本件でも同じ形で現れている。** **この型は偶発ではなく構造的である**——当局は悪用を知った時点で指示を出す必要があり、 手口の解析はその後に出る。 **読者側の備えは、「材料が来る前に始められる調査の型」を持っておくことである**</td></tr></tbody></table></div></div>
+<div id="s19"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「認証情報が漏れたか」ではなく「認証を成立させている鍵が漏れたか」を問う</div><div class=lw>本件で取られたのは個々の利用者のパスワードではなく、 **セッショントークンの署名鍵・事前認証キー・二要素認証の秘密値**である。 Microsoft は**「この値にアクセスできれば任意のアカウントの セッショントークンを生成できる」**（原文英語）と明記した。 **パスワードを全員変えても、二要素認証を入れていても、この鍵が出た時点で止まらない**</div><div class=la><b>取るべき行動</b> 自組織の主要な基盤（メール・認証・業務システム）について、 **「サービスアカウントが取られたとき、同時に取られる秘密値の一覧」**を1枚作る。 各項目に**①入れ替えの手順、②入れ替えたときに切れるもの、③所要時間**を書く。 **署名鍵のように「入れ替えると全利用者のセッションが切れる」ものは、 平時に手順を書いておかないと事後に実行できない**</div></li><li><div class=lp>製品ベンダーの公報だけを見る運用は、本件では機能しない</div><div class=lw>**Zimbra 自身の Security Center には、10.1.20 の SNMP コマンド注入の修正が CVE 番号無しの「TBD」として載っているだけである** （本記録の作成者が2026年10月1日に確認）。 一方で **CISA は8月21日に KEV へ収載し、期限は3日後**だった。 **製品の公報を見ていた組織は、本件を自分の問題として認識できなかったおそれがある**</div><div class=la><b>取るべき行動</b> **資産一覧と、KEV・NVD・CERT 側の識別子を突き合わせる経路を、 製品公報とは別に持つ。** 具体的には、KEV の更新を自動で取り込み、 **「自組織が使っている製品名・ベンダー名」で機械的に当てる**仕組みを作る （本件のベンダー表記は **Synacor** であり、「Zimbra」で探すと当たらない一覧もある）。 **ベンダー名の別名を資産一覧に併記しておく**</div></li><li><div class=lp>当局の期限は、探すべきものが公開される前に来る</div><div class=lw>CISA は2026年8月24日までに「フォレンジック・トリアージ要件」に沿った対処を課したが、 **攻撃連鎖の詳細が公開されたのは37日後の9月30日である。** **INC-2026-0229（NetScaler）でも同じ型が観測されている**—— 当局は悪用を知った時点で指示を出す必要があり、手口の解析はその後に出る</div><div class=la><b>取るべき行動</b> **「材料が来る前に始められる調査の型」を平時に決めておく。** 製品を問わず実行できるのは—— ①ウェブ公開ディレクトリのファイル一覧の取得と比較、 ②`sudoers` と PAM 設定の差分、 ③systemd ユニット・cron・`authorized_keys` の一覧、 ④サービスアカウントからの外向き通信の棚卸し。 **これらを「IoC が出たら動く」手順と分けて書く**</div></li><li><div class=lp>監視のために入れた任意部品が、攻撃面になっていないかを棚卸しする</div><div class=lw>本件の成立条件は **任意パッケージ `zimbra-snmp` の導入と SNMP 通知の有効化**であり、 **これは監視のために行う正当な構成である。** **「設定不備だった組織が悪い」という読み方をすると、 自組織の点検対象を見落とす**</div><div class=la><b>取るべき行動</b> 主要な基盤について、**「運用のために後から足した任意部品」の一覧**を作る （監視エージェント・SNMP・バックアップ部品・診断ツール）。 各項目に**①外から到達できるか、②止めたときに何が見えなくなるか**を書く。 **②を書いておかないと、緊急時に「止める」判断ができない**</div></li><li><div class=lp>「検体が出なかった」を未侵害の根拠にする報告を受け取らない</div><div class=lw>Microsoft は**「本キャンペーンでもっとも重い帰結のいくつかは、 マルウェアファミリを一切伴わず、素の対話シェルだけで行われた」**（原文英語）と述べ、 **「リバースシェルの接続が確認された場合、ペイロードが隔離されていなくても 攻撃者のアクセスがあったことを意味する」**とも明記している</div><div class=la><b>取るべき行動</b> インシデント報告の様式に、**「何を根拠に未侵害と判断したか」**の欄を作る。 **アンチウイルスの結果だけが根拠の報告は差し戻す。** 受け入れる根拠は、**状態の差分（設定・ユニット・公開ディレクトリ）と ネットワークの記録**とする</div></li></ul></div></div>
+<div id="s20"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>ウェブシェルは「1つ見つけて消す」では終わらない前提で探す</div><div class=lw>本件では **Jetty 側2経路・mailboxd 側2経路の計4種**に JSP が多重に置かれ、 **1つ消されても残るようにしてあった。** さらに**置く際に公開ディレクトリの権限を一時的に開け、置いた後で元に戻している**ため、 **権限の点検では変更が見えにくい**</div><div class=la><b>取るべき行動</b> 探索を**「経路の一覧」に対して機械的に回す**。 対象は——アプリケーションディレクトリ、**サーブレットの作業ディレクトリ**、 生成された `*_jsp.java`、コンパイル済みのサーブレット成果物。 **クラスタでは全ノードに同じ探索をかける**（横展開は Zimbra 自身の SSH 鍵で行われた）。 **1件見つけた時点で終了しない手順にする**</div></li><li><div class=lp>権限昇格の痕跡は「ログファイルが symlink に変わる」1行である</div><div class=lw>本件の昇格は外部のエクスプロイトを使わず、 **`zmmailboxd.out` のログを `/etc/pam.d/sudo` への symlink に置き換え、 特権部品 `zmmailboxdmgr` を呼ぶ**ことで PAM 設定を書き換えている。 最終的に **zimbra アカウントに `NOPASSWD: ALL`** が入る</div><div class=la><b>取るべき行動</b> **`/etc/pam.d/` と `sudoers` をファイル整合性監視の対象に入れる。** あわせて**「ログファイルが通常ファイルから symlink に変わった」ことを検知する** 規則を置く。**サービスアカウントが `NOPASSWD: ALL` を得たことは、 即時の重大警報として扱う**</div></li><li><div class=lp>systemd の永続化は「時刻が新しいもの」では見つからない</div><div class=lw>**`zimlog.service` は Zimbra のログ部品に見える名前**で、 **`/tmp` から sudo で `/etc/systemd/system/` へ移したうえで 時刻を既存のユニットに合わせて改竄**されていた。 **置き場は Zimbra のアプリケーションディレクトリの外**である</div><div class=la><b>取るべき行動</b> **systemd ユニットの一覧（名前・置き場・所有者・有効化状態）を定点で取得し、 差分で見る。** 探す軸は時刻ではなく**置き場と所有者**にする。 あわせて cron（`* * * * *` と `@reboot`）・`authorized_keys`・ 局所アカウント・init.d・シェル起動ファイル（`.bash_profile` / `.zprofile`）を **1つの点検スクリプトにまとめる**</div></li><li><div class=lp>サービスアカウントから外へ出る通信を、既定拒否にする</div><div class=lw>本件では**外からのペイロード取得（`curl` / `wget`）・ リバースシェル・SOCKS5 プロキシを備えた常駐（`zimclient2`）・ AzCopy によるクラウドへの持ち出し**が、いずれも装置から外へ出る通信で成立している。 **`zimclient2` は WebSocket・TLS・生 TCP の3通りの輸送を持つため、 通信方式を1つ塞ぐ対策は迂回される**</div><div class=la><b>取るべき行動</b> メールサーバからの外向き通信を**既定拒否**にし、 更新・DNS・メール配送など必要な宛先だけを明示的に許可する。 **これは入口（取得）と出口（持ち出し）の両方を同じ制御で塞ぐ。** 既定拒否にできない場合は、**自組織が使っていないクラウドストレージへの送信**を 先に遮断する</div></li><li><div class=lp>侵害が疑われたら、鍵の入れ替えを「パスワード変更」と別の作業として実行する</div><div class=lw>Microsoft が明示的に求めたのは **すべてのドメインの `zimbraPreAuthKey` の入れ替え**だが、 本文では **`zimbraAuthTokenKey` で任意アカウントのセッショントークンを 生成できる**とも述べている。 **パスワードの変更では、この鍵による偽造は止まらない**</div><div class=la><b>取るべき行動</b> 手順書に**「鍵の入れ替え」の節を独立して作る。** 対象は——`zimbraPreAuthKey`・`zimbraAuthTokenKey`・`zimbraTwoFactorAuthSecret`、 および `zmlocalconfig -s` で見える範囲のサービス資格情報 （LDAP・MySQL・Postfix・Amavis・複製）。 **各項目に「入れ替えると何が切れるか」を書く**—— 署名鍵は全セッション、二要素認証の秘密値は全利用者の再登録、 事前認証キーはシングルサインオン連携である</div></li></ul></div></div>
+<div class="blk " id="s21"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Zimbra Collaboration Suite（ZCS）を自前で運用しており、 バージョンが **10.1.20 より前**である</td><td class=sm>**これが本件の直接の該当条件である。** 修正は2026年7月20日に出ている。 **CISA が KEV へ収載し8月24日を期限としていることも、緊急度の根拠になる**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> ZCS に任意パッケージ **`zimbra-snmp`** を入れており、 SNMP 通知（`snmp_notify`）を有効にし、`swatchdog` が動いている</td><td class=sm>**成立条件そのものである。** 監視のために入れる正当な構成なので、 **「入れた覚えがない」で済ませず実機で確認する必要がある。** 当てられない場合の緩和策は、この部品の削除と通知の無効化である</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> メール基盤や業務システムが、**セッショントークンの署名鍵・事前認証キー・ 二要素認証の秘密値**をサーバ側に保持しており、 **その入れ替え手順が文書化されていない**</td><td class=sm>**本件でもっとも重い被害はここである。** 鍵が出た時点でパスワード変更も二要素認証もセッションの偽造を止めない。 **入れ替えると全利用者のセッションが切れるため、 手順が無いと事後に実行できない**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> メールサーバやアプリケーションサーバを**複数ノードのクラスタ**で運用し、 **ノード間の自動連携にサービスアカウントの SSH 鍵**を使っている</td><td class=sm>本件の横展開は **Zimbra 自身の SSH 鍵（`/opt/zimbra/.ssh/zimbra_identity`）**で、 ホスト鍵の検証を切った非対話 SSH により成立した。 **1台だけ調査して終える運用では、広がった先が残る**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サーバからの**外向き通信が既定許可**であり、 どの宛先へ出ているかの一覧を持っていない</td><td class=sm>本件のペイロード取得・リバースシェル・SOCKS5 常駐・ クラウドへの持ち出しは、いずれも外向き通信で成立している。 **既定拒否は、入口と出口を同じ制御で塞ぐ**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性情報の入手経路が**製品ベンダーの公報に依存**しており、 KEV・NVD・CERT 側の識別子を資産一覧へ突き合わせる経路を持っていない</td><td class=sm>**Zimbra の Security Center には本件の CVE 番号が載っていない** （10.1.20 の該当項は「TBD」）。 **KEV のベンダー表記は「Synacor」であり、「Zimbra」で探すと当たらない一覧もある。** **別名を資産一覧に併記しておかないと機械的な突き合わせが外れる**</td></tr></tbody></table></div></div>
+<div class="blk " id="s22"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[7]</span> <span class=sm>2026年7月20日（10.1.20 の公開日） Zimbra（Synacor）</span> <a href="https://wiki.zimbra.com/wiki/Security_Center" target="_blank" rel="noreferrer noopener nofollow">Zimbra Security Center（ZCS 10.1.20 の修正一覧を含む）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(**製品ベンダーの公報。本記録の作成者が2026年10月1日に取得した。** **10.1.20〈2026年7月20日公開〉の節には9件の修正が並び、 そのうち「SNMP 監視部品のコマンド注入」の項は識別子が「TBD」で CVE 番号が入っていない。** **同じ節に並ぶ CVE の最大番号は CVE-2026-73576 である。** **したがって、本ページを見るだけでは CVE-2026-73570 を 自組織の問題として認識できない**〈discrepancies に記録〉)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年8月13日（最終更新 2026年8月24日） NIST NVD</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73570" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-73570</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(取得して確認できたのは——**CVSS v3.1 基本値 8.9（HIGH）・ ベクタ `AV:N/AC:H/PR:N/UI:N/S:C/C:H/I:H/A:L`・CWE-78**・ 影響範囲〈ZCS 10.1.20 より前のすべて〉・ 成立条件〈任意パッケージ `zimbra-snmp` の導入と SNMP 通知の有効化〉・ 公開日 2026年8月13日・最終更新 2026年8月24日・ 参照に **Zimbra の Security Center / ベンダー勧告 / ポーランド CERT の通達 / CISA KEV** が並ぶこと。 **ベンダー表記は Synacor である**)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年8月21日（収載日。取得したカタログ版は 2026.09.30） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（CVE-2026-73570 のエントリ）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(本記録の作成者が2026年10月1日に JSON を取得して確認した。 **収載 2026-08-21・期限 2026-08-24〈3日〉・ ベンダー表記 Synacor・製品 Zimbra Collaboration Suite (ZCS)・ 名称「Zimbra Collaboration Suite (ZCS) OS Command Injection Vulnerability」。** 要求される行動は **BOD 26-04〈リスクに基づく更新の優先順位付け〉および 「フォレンジック・トリアージ要件」への適合**で、 **緩和策が無い場合は製品の利用中止**も含む。 あわせて確認したこととして、**KEV の Zimbra 関連エントリは 2022年以降すべて Synacor 表記である**)）</span></li></ol></div><div class=rg><div class=rgt>外国当局</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年8月（日付は未確認） CERT Polska（NASK）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-73570" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-73570 の実地悪用に関する通達（NVD の参照一覧に「Polish CERT Communication」として掲載）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(**実地悪用の最初の公的な指摘とされる資料。** **本記録はこの資料を直接取得していない**ため、 二次情報が示す「2026年8月17日」という日付を採らず、 timeline では precision を month にとどめた。 **確認できたのは「NVD の参照一覧に第三者勧告として載っている」ことだけである**)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月30日 Microsoft Threat Intelligence（Microsoft Security Blog）</span> <a href="https://www.microsoft.com/en-us/security/blog/2026/09/30/unauthenticated-command-injection-on-internet-facing-mail-servers-tracking-cve-2026-73570/" target="_blank" rel="noreferrer noopener nofollow">Unauthenticated command injection on internet-facing mail servers: tracking CVE-2026-73570</a> <span class="b kind">調査レポート</span><span class=sm>（(**本記録の中核の一次資料。** 取得して確認できたのは—— 脆弱性の成立条件〈`zimbra-snmp` の導入・SNMP 通知の有効化・`swatchdog` の稼働〉・ 探索の期間〈2026年7月28日〜8月7日・2種類の帯域外スキャナ・コールバック先〉・ 攻撃連鎖の全段階・ウェブシェルの4経路・権限昇格の手順 〈PAM 設定への symlink 差し替え → `zmmailboxdmgr` → `pam_exec` → `NOPASSWD: ALL`〉・ 永続化の多重性〈`zimlog.service` の時刻改竄・cron・SSH 鍵・局所アカウント・ init.d・シェル起動ファイル・`memfd_create`〉・ 窃取された LDAP 属性3種と `zmlocalconfig -s` の範囲・ 横展開〈`/opt/zimbra/.ssh/zimbra_identity`・ホスト鍵検証無効・`rsync`〉・ 遠隔操作の多段〈`agent2.sh` → `zimdown2` → `zimclient2`／SOCKS5・3種の輸送〉・ 収集の対象テーブル・持ち出しの試みと**完了未確認**・検知の着眼点・緩和策7項目。 **被害組織の名前・件数・業種と地域の内訳・帰属はいずれも示されていない。** **CVSS 値も本文には示されておらず、本記録は NVD から取った**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月1日 04:11 UTC 보안뉴스（boannews・韓国）</span> <a href="https://www.boannews.com/news/articleView.html?idxno=146135" target="_blank" rel="noreferrer noopener nofollow">메일함 대신 서버 노렸다... 짐브라 취약점 악용 공격, 인증 비밀값까지 털어</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点。本文は保存分〈output/articles/20261001/0207_boannews.md〉で確認した。 **「メールボックスの代わりにサーバを狙った」という論点の立て方**が的確で、 窃取されたのが個々の利用者のパスワードではなくサーバ側の秘密値であることを前面に置いている。 記載内容は一次資料〈出典3〉と整合している。 なお本記事は CVSS 値を示しておらず、本記録は NVD〈出典4〉から取った)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s23"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月1日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月1日の 보안뉴스（boannews）記事を起点に、 **Microsoft Security Blog の原文（2026年9月30日）を取得して裏を取り**、 **NVD・CISA KEV の JSON・Zimbra の Security Center**も取得して突き合わせた。
+**一次資料で確認できたこと。** 脆弱性の成立条件・CVSS v3.1 8.9・CWE-78・ 修正版 10.1.20（2026年7月20日）・探索の期間（7月28日〜8月7日）・ 公開日（8月13日）・KEV 収載（8月21日）と期限（8月24日）・ 攻撃連鎖の全10段階・ウェブシェルの4経路・権限昇格の手順・ 永続化の多重性・窃取された LDAP 属性3種・横展開の鍵のパス・ 遠隔操作の多段構成・収集の対象テーブル・持ち出しの試みと**完了未確認**・ 緩和策7項目。
+**本記録として記録した重要な発見が1つある。** **Zimbra 自身の Security Center には、10.1.20 の SNMP コマンド注入の修正が CVE 番号無しの「TBD」として載っているだけで、 CVE-2026-73570 の記載を見つけられなかった**（同じ節の最大 CVE 番号は 73576）。 **製品ベンダーの公報だけを見る運用では本件に気づけない**という点を、 discrepancies・orgs・lessons（CISO 向け）に書いた。 **あわせて、KEV のベンダー表記が「Synacor」であり 「Zimbra」では機械的に当たらないことも記録した**（2022年以降すべて Synacor 表記）。
+**type は `threat-campaign`**（従に `vulnerability` と `unauthorized-access`）。 複数の組織に対する実地の侵入連鎖の報告であり、脆弱性の公報ではないためである。 **root_causes は `vulnerability-exploit` を主に、`design-flaw` と `patch-management` を併記した。`zero-day` は置かない**—— 修正は探索開始の8日前に出ている。 **`misconfiguration` も置かない**——`zimbra-snmp` と SNMP 通知は 監視のための正当な構成である。
+**japan_relevance は `overseas-watch`。** Microsoft の記述に日本は含まれない（含まれるという記述も無い）。 **日本国内の注意喚起は探索していないので「無い」とは書かず、unknowns に残した。**
+**本記録の判断として補ったこと。** Microsoft が入れ替えを明示的に求めたのは `zimbraPreAuthKey` のみだが、 本文では `zimbraAuthTokenKey` で**任意アカウントのセッショントークンを生成できる**と 述べている。**この不整合を埋めるため、署名鍵・二要素認証の秘密値・ サービス資格情報の入れ替えを「本記録の判断」として明記した** （discrepancies に authored_inference として記録）。
+**未公表として残したこと。** 被害組織の名前・件数・業種と地域の内訳・帰属・ 持ち出しの完了・攻撃者が脆弱性を知った経路・ Zimbra 自身の実地悪用への言及の有無。</li></ul></div></div>
+<div class="blk " id="s24"><h3>タグ</h3><span class="b tag">Zimbra</span><span class="b tag">ZCS</span><span class="b tag">Synacor</span><span class="b tag">CVE-2026-73570</span><span class="b tag">CWE-78</span><span class="b tag">コマンド注入</span><span class="b tag">SNMP</span><span class="b tag">メールサーバ</span><span class="b tag">JSPウェブシェル</span><span class="b tag">多重永続化</span><span class="b tag">systemd</span><span class="b tag">PAM</span><span class="b tag">権限昇格</span><span class="b tag">認証秘密値</span><span class="b tag">セッショントークン署名鍵</span><span class="b tag">事前認証キー</span><span class="b tag">二要素認証の秘密値</span><span class="b tag">横展開</span><span class="b tag">SOCKS5</span><span class="b tag">クラウドへの持ち出し</span><span class="b tag">KEV</span><span class="b tag">BOD 26-04</span><span class="b tag">Microsoft</span><span class="b tag">CERT Polska</span><span class="b tag">一次資料裏取り</span><span class="b tag">公報にCVE番号なし</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-01 18:18 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
