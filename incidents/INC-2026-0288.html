@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>偽 Zoom に隠れた macOS バックドア — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0288</span>偽 Zoom に隠れた macOS バックドア</h1>
+<header class="site-header">
+  <p class="subtitle">Jamf Threat Labs が2026年9月30日、偽の Zoom インストーラに隠れた macOS のバックドア「CloudSyncD」を公表した。ディスクイメージは正規の Zoom インストーラを模し、背景画像で「システム設定からセキュリティの警告を手で越えろ」と利用者に指示して Gatekeeper を迂回させる。続いて偽の認証プロンプトでログインパスワードを求め、dscl でローカルアカウントに対して正しさを検証したうえで、そのパスワードを外部へ送らずに設定ファイルへ Base64 で埋め、位置と長さを48個のゼロ幅 Unicode 文字で符号化して隠す。第2段の universal Mach-O は /dev/fd 経由のファイルレス実行を試み、失敗すると一時ファイルへ書き出して sudo で実行する。C2 は 8〜16秒間隔・ChaCha20-Poly1305 の暗号通信で、2011年登録の2ドメインが Cloudflare の背後にある。初確認は9月15日の開発中ビルドで、2日後にはライブ C2 を向いた検体が現れた。ブラウザ・Keychain・暗号通貨ウォレットの収集機能は無く、情報窃取型ではなく遠隔タスク実行のバックドアである。永続化は観測されず、感染の確認例も報告されていない</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">人を介した誘導（ビッシング・BEC）</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月30日</span>
+  <span>最終更新: 2026年10月1日</span>
+</div>
+
+<div class="lead"><p><strong>Jamf Threat Labs</strong> は2026年9月30日、<strong>偽の Zoom インストーラ</strong>に隠されたmacOS のバックドア <strong>CloudSyncD</strong> を公表しました。名称は、第2段が動く際のデーモン名（<code>cloudsyncd</code>）から取られています。</p>
+<p>経過は短く、そして速いです。</p>
+<ul>
+<li><strong>2026年9月15日</strong> — Jamf が<strong>開発中のビルド</strong>を初確認（C2 が内部向け・暗号鍵が仮）</li>
+<li><strong>その2日後</strong> — <strong>ライブの C2 基盤を向いた検体</strong>が、<strong>1つを超えるドメイン</strong>に対して構成されているのを確認。<strong>試験から配備へ進んだ</strong></li>
+<li><strong>2026年9月30日</strong> — Jamf が解析を公表</li>
+</ul>
+<p>手口の中心は<strong>3つの操作</strong>です。</p>
+<ol>
+<li><strong>Gatekeeper を利用者の手で越えさせる。</strong>ディスクイメージは「Zoom」ボリュームとしてマウントし、アプリのアイコンと <code>Applications</code> へのエイリアスを置いて正規のインストーラを模します。署名は <strong>ad-hoc</strong>（正規の開発者証明書でも公証でもない）。そのうえで背景画像が「<strong>システム設定 → プライバシーとセキュリティ →『このまま開く』→ 管理者パスワード</strong>」という手順を指示します。</li>
+<li><strong>偽の認証プロンプトでパスワードを取り、<code>dscl</code> で正しさを確かめる。</strong>「Enter your password to allow this.」と表示し、入力値を<strong>ローカルアカウントに対して検証</strong>します。<strong>パスワードはどこにも送信されません</strong>（Jamf）。代わりに <code>~/.config/zoom/</code> の <code>data.json</code> の cache フィールドへ<strong>Base64 で入れ、32〜64文字のランダムな詰め物で埋め</strong>、<strong>位置と長さを48個のゼロ幅 Unicode 文字（U+200B・U+200C）</strong>で version フィールドに符号化します。<strong>人の目にも、文字列の目視検査にも映りません。</strong></li>
+<li><strong>そのパスワードで第2段を昇格して起動する。</strong>第2段は <strong>Apple silicon と Intel の両方に対応する universal Mach-O</strong>。まず <strong><code>/dev/fd</code> 経由でディスクに書かずに実行</strong>しようとし、失敗した場合は <code>mktemp</code> で一時ファイルへ書き出し、<strong><code>sudo</code> に窃取したパスワードを渡して実行</strong>します。</li>
+</ol>
+<p>動き出した後は、<strong>8〜16秒間隔</strong>のビーコンで C2 と通信します。通信は <strong>ChaCha20-Poly1305</strong> で暗号化され、<strong>URI は jQuery のスクリプトのパスに似せて</strong>普通の通信に紛れます。C2 の2ドメインは<strong>いずれも2011年に登録され、Cloudflare の背後</strong>にあります。最初に<strong>ホストの調査結果（システム情報）</strong>を送り、以降のチェックインでは<strong>機体のハードウェア識別子</strong>を載せます。</p>
+<p>記録として押さえておきたいのは、<strong>これが情報窃取型ではない</strong>ことです。Jamf は、<strong>ブラウザのデータ・Keychain の項目・暗号通貨ウォレットを集める機能は組み込まれていない</strong>と述べています。パスワードは<strong>第2段を起動するためだけ</strong>に使われました。実体は<strong>遠隔タスク実行のバックドア</strong>で、実行可能ファイル（Mach-O）または gzip 圧縮された tar アーカイブを受け取って実行・展開します。</p>
+<p><strong>永続化は観測されていません。</strong> LaunchAgent / LaunchDaemon の設置も、<code>cloudsyncd</code> への改名も、Jamf の解析中には到達しませんでした—— <strong>解析の間に C2 からタスクが降ってこなかった</strong>ためです。発見は <strong>VirusTotal の監視</strong>経由で、<strong>確認された感染例の報告はありません。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>侵害指標（IoC）の具体——ディスクイメージと第2段のハッシュ値、C2 の2ドメイン名</span><span class="b rsn">探索したが未発見</span><div class=sm>Jamf のレポートには「Indicators of compromise」の節が置かれているが、 **本記録の作成者が取得したページ本文には表の中身が含まれていなかった。** したがって**ハッシュ値・ドメイン名を転記していない。** 検知・ハンティングに使うには、レポートの指標表を直接参照する必要がある。</div></li><li><span class=ui>MITRE ATT&amp;CK の技術 ID の対応</span><span class="b rsn">探索したが未発見</span><div class=sm>レポートは ATT&amp;CK の対応を掲げているが、 **本記録の作成者は個々の技術 ID を一次資料で確認できなかった。** **記述から技術 ID を推定して当てはめることはしない**—— 当たらない ID を書けば、検証の手がかりとしての価値が失われる。</div></li><li><span class=ui>配布の経路（検索広告・偽サイト・共有リンク・メールのいずれか）</span><span class="b rsn">公表されていない</span><div class=sm>Jamf が述べているのは**配布物の形（Zoom を模したディスクイメージ）**までで、 **利用者がそれをどこから入手するのかは示されていない。** 発見は VirusTotal の監視経由である。 **入手経路が分からないため、「どこを塞げば届かないか」を設計できない**（本記録の評価）。</div></li><li><span class=ui>感染の確認例、標的の業種・地域、被害の内容</span><span class="b rsn">公表されていない</span><div class=sm>**確認された感染は報告されていない。** 標的の選定（無差別か特定の業種・地域か）も示されていない。 **本記録の作成者も独自の観測を持たない。**</div></li><li><span class=ui>永続化の方式と、C2 から降ってくるタスクの内容</span><span class="b rsn">調査したが確定せず</span><div class=sm>Jamf は**永続化を観測していない**。LaunchAgent / LaunchDaemon の設置も、 自身を `cloudsyncd` として設置する動作も確認されなかった。 **解析の間に C2 からタスクが降ってこなかった**ためである。 したがって**この implant が最終的に何をするのかは分かっていない。**</div></li><li><span class=ui>攻撃者の帰属と、既知のファミリ・集団との関係</span><span class="b rsn">公表されていない</span><div class=sm>Jamf は帰属に触れていない。 示されているのは、**C2 の2ドメインが2011年登録で Cloudflare の背後にある**こと、 **全ビルドで難読化・鍵・IV・デーモン名が同一で接続先だけが違う**ことである。 **本記録は帰属を推測しない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Jamf（Jamf Threat Labs）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Zoom Communications（装われた側）</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（帰属は公表されていない）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>開発中ビルドの初確認から、ライブ C2 を向いた検体の確認まで</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>日</span></div><div class=fn>Jamf は「初確認（9月15日）の**2日後**に、ライブの C2 基盤に対して構成された 検体を見つけた」としている。 **開発から配備への移行が2日で起きている**という速さが、この値の意味である</div></div><div class=fig><div class=fh><span class=fl>確認された C2 ドメインの数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>Jamf は**2つの別個のドメイン**を特定したとし、 **いずれも2011年に登録され、Cloudflare の背後にある**と述べている。 **本記録はドメイン名そのものを転記していない**（レポートの指標表を取得できていない）</div></div><div class=fig><div class=fh><span class=fl>C2 へのビーコンの間隔</span><span class="b conf">範囲</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>秒</span></div><div class=fn>**8〜16秒**の間隔でチェックインする（下限の値を記録した）。 通信には機体の UUID が載る。 **短い間隔は、検知の側から見れば手がかりになる**—— 通常の業務 application には見られない規則性である（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>パスワードの位置と長さを符号化するゼロ幅 Unicode 文字の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>48<span class=fu>文字</span></div><div class=fn>`data.json` の version フィールドに**48個のゼロ幅文字（U+200B・U+200C）**を置き、 cache フィールド内のパスワードの**オフセットと長さ**を符号化する。 **目視では空に見える**</div></div><div class=fig><div class=fh><span class=fl>公表された感染の確認件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>0<span class=fu>件</span></div><div class=fn>**Jamf は確認された感染を報告していない**（発見は VirusTotal の監視経由）。 **「感染が無い」ではなく「確認された感染の報告が無い」である**—— 配布の規模も、標的の業種・地域も公表されていない</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>偽の Zoom インストーラ（ad-hoc 署名のディスクイメージ）が、 背景画像の手順指示で**利用者自身に Gatekeeper の警告を越えさせる**。 続いて偽の認証プロンプトでログインパスワードを取り、 **`dscl` でローカルアカウントに対して正しさを検証**したうえで、 **外部へ送らずに設定ファイルへ Base64 で埋め、位置と長さを48個のゼロ幅 Unicode 文字で符号化**する。 そのパスワードで**第2段の universal Mach-O を昇格して起動**する （まず `/dev/fd` でファイルレス実行、失敗時は一時ファイル＋`sudo`）。 以後は**8〜16秒間隔・ChaCha20-Poly1305 の C2 通信**で遠隔タスクを受け取る。 **情報窃取の機能は無く、永続化は観測されていない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**Zoom のインストーラを模したディスクイメージ**を利用者が開く。 「Zoom」ボリュームとしてマウントし、アプリのアイコンと `Applications` への エイリアスを並べて正規のインストーラの見た目を作る。 **署名は ad-hoc で、正規の開発者証明書も公証も持たない。** 背景画像が「**システム設定 → プライバシーとセキュリティ → 『このまま開く（Open Anyway）』→ 管理者パスワード**」という **Gatekeeper を迂回する手順を利用者に指示する**（原文英語）</div><div class=fn>根拠: Jamf Threat Labs の解析（配布物の構成と背景画像の文面）</div></li><li><div class=stg><span class="b stage">2. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>偽の認証プロンプト「**Enter your password to allow this.**」を表示し、 入力されたパスワードを **`dscl` でローカルアカウントに対して検証**する。 **正しいパスワードが入るまで進まない。** 窃取したパスワードは**外部へ送信されない**</div><div class=fn>根拠: Jamf の解析（`dscl` による検証、送信しない旨の明記）</div></li><li><div class=stg><span class="b stage">3. 検知回避</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>パスワードを `~/.config/zoom/` の **`data.json`** の cache フィールドへ **Base64 で入れ、32〜64文字のランダムな詰め物で埋める**。 **位置（オフセット）と長さ**は、**48個のゼロ幅 Unicode 文字 （U+200B・U+200C）**として version フィールドに符号化される。 **目視では空に見える。** また C2 の **URI は jQuery のスクリプトのパスに似せ**、 通信は **ChaCha20-Poly1305** で暗号化される</div><div class=fn>根拠: Jamf の解析（符号化の方式とフィールド名の明示）</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**第2段の universal Mach-O（Apple silicon・Intel 両対応）**を、 **まず `/dev/fd` 経由でディスクに書かずに実行**しようとする。 それが失敗した場合（SIP の下ではよく失敗する）、 **`mktemp` で一時ファイルへ書き出し、`sudo` に窃取したパスワードを渡して実行**する。 **資格情報の窃取が、権限昇格の手段として機能している**</div><div class=fn>根拠: Jamf の解析（`/dev/fd`・`mktemp`・`sudo` の各経路）</div></li><li><div class=stg><span class="b stage">5. C2通信</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**8〜16秒間隔**で C2 にチェックインする（**機体の UUID** を載せる）。 通信は **ChaCha20-Poly1305** による暗号化で、 **URI は jQuery のスクリプトのパスに似せる**。 C2 は**2ドメイン**で、**いずれも2011年登録・Cloudflare の背後**にある。 **最初にホストの調査結果（システム情報）を送り、以降はハードウェア識別子を載せる**</div><div class=fn>根拠: Jamf の解析（間隔・暗号方式・ドメインの登録年・経路の偽装）</div></li><li><div class=stg><span class="b stage">6. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>operator は**実行可能ファイル（Mach-O）**または **gzip 圧縮された tar アーカイブ**を送り込み、実行・展開させられる。 **Jamf の解析中にはタスクが降ってこなかったため、 実際に何が配られるのかは観測されていない**</div><div class=fn>根拠: Jamf の解析（遠隔タスク実行の機能の記述）</div></li><li><div class=stg><span class="b stage">7. 永続化</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**永続化は観測されていない。** LaunchAgent / LaunchDaemon の設置も、 自身を `cloudsyncd` として設置する動作も確認されなかった。 Jamf は**解析の間に C2 からタスクが降ってこなかったため、そこまで到達しなかった**と 説明している。**「永続化しない」ではなく「見られなかった」である**</div><div class=fn>根拠: Jamf の解析（永続化を観測していない旨と、その理由の説明）</div></li></ol></div>
+<section id="s5"><h2>macOS は正しく警告を出しており、その警告を越える手順を利用者に教えている<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>CloudSyncD の配布物は、<strong>Zoom のインストーラを模したディスクイメージ</strong>です。「Zoom」というボリュームとしてマウントし、アプリのアイコンと<code>Applications</code> へのエイリアスを並べて、正規の Mac インストーラの見た目を作ります。</p>
+<p>ただし<strong>署名は ad-hoc</strong> です。正規の開発者証明書でも公証でもありません。したがって macOS は<strong>開くことを拒みます</strong>。</p>
+<p>ここが要点です（以下は本記録の評価）。<strong>この攻撃は OS の防御を破っていません。</strong>ディスクイメージの背景画像が、<strong>防御を手で下げる手順</strong>を教えます——「システム設定を開き、プライバシーとセキュリティへ行き、セキュリティの節まで送って『このまま開く（Open Anyway）』を押し、管理者パスワードを入れる」（原文英語）。</p>
+<p>つまり<strong>Gatekeeper の警告は出ており、利用者がそれを越えています。</strong>技術的な脆弱性は使われていません。<strong>「警告が出たら止まる」が成立しない環境では、署名も公証も効きません。</strong></p></section>
+<section id="s6"><h2>窃取したパスワードを外へ送らず、ゼロ幅文字で位置を記して設定ファイルに埋める<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>インストーラは次に<strong>偽の認証プロンプト</strong>を出します。文面は「<strong>Enter your password to allow this.</strong>」。入力されたパスワードは、<strong><code>dscl</code>（macOS のディレクトリサービスの道具）でローカルアカウントに対して検証</strong>されます。<strong>正しいパスワードが入るまで進まない</strong>作りです。</p>
+<p>そして<strong>パスワードはどこへも送信されません</strong>（Jamf）。</p>
+<ul>
+<li><code>~/.config/zoom/</code> の <strong><code>data.json</code></strong> の <strong>cache フィールド</strong>に<strong>Base64 で</strong>入れ、<strong>32〜64文字のランダムな詰め物</strong>で埋める</li>
+<li><strong>位置（オフセット）と長さ</strong>を、<strong>48個のゼロ幅 Unicode 文字（U+200B＝zero width space、U+200C＝zero width non-joiner）</strong>で<strong>version フィールド</strong>に符号化する</li>
+</ul>
+<p><strong>目で見ても、文字列を眺めても、そこに何かあるとは分かりません。</strong>この設計の狙いは、解析の目から隠すことにあります（本記録の評価）。設定ファイルは「Zoom のキャッシュ」に見え、パスワードは「見えない文字」で位置を指されています。</p>
+<p>パスワードの用途は<strong>第2段の起動</strong>です。</p>
+<ol>
+<li>第2段は<strong>Apple silicon と Intel の両方に対応する universal Mach-O</strong></li>
+<li>まず <strong><code>/dev/fd</code> 経由でディスクに書かずに実行</strong>しようとする</li>
+<li>それが失敗した場合（SIP の下ではよく失敗する）、<strong><code>mktemp</code> で一時ファイルへ書き出し、<code>sudo</code> に窃取したパスワードを渡して実行</strong>する</li>
+</ol>
+<p><strong>資格情報の窃取が、権限昇格の手段として使われている</strong>という構図です。</p></section>
+<section id="s7"><h2>情報窃取型ではなく遠隔タスク実行のバックドアで、永続化は観測されていない<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p>パスワードを求める見た目から情報窃取型（infostealer）に見えますが、Jamf の結論は違います。</p>
+<ul>
+<li><strong>ブラウザのデータ・Keychain の項目・暗号通貨ウォレットを集める機能は組み込まれていない</strong></li>
+<li>窃取したパスワードは<strong>第2段の実行を可能にするため</strong>に使われた</li>
+</ul>
+<p>実体は<strong>遠隔タスク実行のバックドア</strong>です。operator は<strong>実行可能ファイル（Mach-O）</strong>または<strong>gzip 圧縮された tar アーカイブ</strong>を送り込み、実行・展開させられます。</p>
+<p>通信は次のようになっています。</p>
+<ul>
+<li><strong>8〜16秒</strong>の間隔でチェックイン（<strong>機体の UUID</strong> を載せる）</li>
+<li><strong>ChaCha20-Poly1305</strong> による暗号化</li>
+<li><strong>URI は jQuery のスクリプトのパスに似せて</strong>普通の通信に紛れる</li>
+<li>C2 は<strong>2ドメイン</strong>。<strong>いずれも2011年登録</strong>で<strong>Cloudflare の背後</strong></li>
+<li>最初に<strong>ホストの調査結果（システム情報）</strong>を送り、以降は<strong>ハードウェア識別子</strong>を載せる</li>
+<li>作業ディレクトリは利用者のホーム配下の隠しディレクトリ（<code>~/.local/share/cloudsync/</code> 配下に暗号化したログを置く）</li>
+</ul>
+<p><strong>永続化は観測されていません。</strong> LaunchAgent / LaunchDaemon の設置も、自身を <code>cloudsyncd</code> として置く動作も確認されませんでした。Jamf はその理由を<strong>「解析の間に C2 からタスクが降ってこなかったため、そこまで到達しなかった」</strong>と説明しています。</p>
+<p>ここは記録として注意が要ります（本記録の評価）。<strong>「永続化しない malware」ではなく「永続化を見られなかった」です。</strong>遠隔からタスクを配れる implant なので、<strong>永続化は後から配られます。</strong></p></section>
+<section id="s8"><h2>2日で試験から配備へ移っており、同一の鍵と名前を使い回している<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>時間の経過が示すものがあります。</p>
+<ul>
+<li><strong>9月15日</strong> — 開発中のビルド。<strong>C2 は内部向け</strong>、<strong>暗号鍵は仮の値</strong></li>
+<li><strong>その2日後</strong> — <strong>ライブの C2</strong> を向いた検体。<strong>1つを超えるドメイン</strong></li>
+</ul>
+<p><strong>2日です。</strong>開発中の検体が VirusTotal に上がり、その2日後には配備用の構成になっています。これは防御側にとって、<strong>「開発中の検体を見つけた」時点がすでに配備の直前である</strong>ことを意味します（本記録の評価）。</p>
+<p>一方で、攻撃者側の運用には<strong>手抜きがあります</strong>。Jamf は、<strong>全ビルドで文字列の難読化・暗号鍵と IV・デーモン名が同一</strong>で、<strong>違うのは接続先だけ</strong>だと述べています。つまり<strong>1つの検体から取れた鍵と名前が、他の検体にも通用します。</strong>これは検知の作り手にとって有利な条件です。</p>
+<p>そして C2 の2ドメインは<strong>いずれも2011年に登録</strong>されています。<strong>古いドメインは、評価（レピュテーション）による遮断をすり抜けます。</strong>「新規に登録されたドメインを警戒する」という一般的な指標は、ここでは効きません。</p></section>
+<section id="s9"><h2>指標の表と技術 ID を本記録は持っていない——検知を作るなら一次資料を直接見ること<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p>本記録の限界を明記します。</p>
+<ul>
+<li><strong>ハッシュ値と C2 の2ドメイン名を持っていません。</strong> Jamf のレポートには「Indicators of compromise」の節がありますが、本記録の作成者が取得したページ本文には表の中身が含まれていませんでした</li>
+<li><strong>MITRE ATT&amp;CK の技術 ID も転記していません。</strong>レポートは対応を掲げていますが、個々の ID を一次資料で確認できませんでした。<strong>記述から推定して当てはめることはしません</strong></li>
+</ul>
+<p>あわせて公表されていないことを並べます。</p>
+<ul>
+<li><strong>配布の経路</strong>（検索広告・偽サイト・共有リンク・メールのいずれか）</li>
+<li><strong>感染の確認例、標的の業種・地域</strong></li>
+<li><strong>永続化の方式</strong>と<strong>C2 から降ってくるタスクの内容</strong></li>
+<li><strong>攻撃者の帰属</strong>、既知のファミリ・集団との関係</li>
+</ul>
+<p>検知やハンティングを作る場合は、<strong>Jamf のレポートの指標表を直接参照してください。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>malware</th><td><b>名称:</b> CloudSyncD　<b>naming:</b> **Jamf Threat Labs による命名。** 第2段が動く際のデーモン名（`cloudsyncd`）から取られた。 ただし**Jamf は、implant が実際に自身を `cloudsyncd` として設置する動作を 観測していない**（そこまで到達しなかった）　<b>platform:</b> macOS。第2段は **Apple silicon と Intel の両方に対応する universal Mach-O**　<b>classification:</b> **遠隔タスク実行のバックドア（backdoor）。情報窃取型（infostealer）ではない。** Jamf は**ブラウザのデータ・Keychain の項目・暗号通貨ウォレットを収集する機能が 組み込まれていない**ことを確認している。 窃取したログインパスワードは**第2段を昇格して起動するため**に使われる　<b>capabilities:</b> 偽の認証プロンプトによるログインパスワードの取得（`dscl` でローカルアカウントに対して検証）、取得したパスワードの隠蔽（Base64＋32〜64文字のランダムな詰め物＋48個のゼロ幅 Unicode 文字による位置と長さの符号化）、第2段のファイルレス実行の試行（`/dev/fd`）と、失敗時の一時ファイル＋`sudo` による実行、ホストの調査（最初の送信はシステム情報、以降のチェックインはハードウェア識別子）、遠隔タスク実行（Mach-O の実行、または gzip 圧縮された tar アーカイブの展開）、暗号化したログの記録（利用者のホーム配下の隠しディレクトリ）</td></tr><tr><th>delivery</th><td>**Zoom のインストーラを模したディスクイメージ。** 「Zoom」というボリュームとしてマウントし、 アプリのアイコンと `Applications` へのエイリアスを置いて正規の Mac インストーラの レイアウトを再現する。**署名は ad-hoc**（正規の開発者証明書・公証ではない）。 **背景画像が、システム設定から「このまま開く（Open Anyway）」を押して 管理者パスワードを入れるという Gatekeeper 迂回の手順を指示する。** **利用者がこのディスクイメージをどこから入手するのかは公表されていない。**</td></tr><tr><th>infrastructure</th><td>**C2 は2ドメイン**で、**いずれも2011年に登録され、Cloudflare の背後**にある。 通信は **8〜16秒間隔**のチェックイン（機体の UUID を載せる）で、 **ChaCha20-Poly1305** による暗号化。 **URI は jQuery のスクリプトのパスに似せて**普通の Web 通信に紛れる。 **開発中のビルドでは C2 が内部向けの宛先、暗号鍵が仮の値**だった。 **全ビルドで文字列の難読化・暗号鍵と IV・デーモン名は同一で、違うのは接続先だけである。** **本記録はドメイン名を転記していない**（レポートの指標表を取得できていない）。</td></tr><tr><th>host_artifacts</th><td><ul class=cl><li>`~/.config/zoom/data.json`（cache フィールドに Base64 のパスワード、version フィールドに48個のゼロ幅 Unicode 文字）</li><li>`~/.local/share/cloudsync/` 配下の隠しディレクトリ（暗号化したログ。`.config/logs/sync.err`）</li><li>一時ディレクトリへ書き出された第2段の Mach-O（`/dev/fd` 経由の実行が失敗した場合）</li></ul><span class="b rsn">stated</span><div class=fn>**ハッシュ値は本記録に無い。** 上記はレポート本文に現れたパスとフィールド名である。 **検知を作る場合は Jamf のレポートの指標表を直接参照すること。**</div></td></tr><tr><th>exploitation_status</th><td>**技術的な脆弱性は使われていない。** macOS の警告は正しく表示されており、 それを越える操作を利用者に行わせる設計である。 **感染の確認例は報告されていない**（発見は VirusTotal の監視経由）。 **開発中ビルドの初確認（2026年9月15日）から2日でライブ C2 を向いた検体が現れている。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 業務端末の利用者から管理者権限を外す（「このまま開く」と `sudo` の経路を断つ）　<b>副作用:</b> **利用者が自分で application を入れられなくなる。** 管理側の配布の仕組みと申請の窓口を先に用意しないと、 業務が止まるか、管理外の端末（私物）へ逃げる</div><div class=sub><b>item:</b> 署名・公証されていない application の実行を管理ポリシーで禁止し、Gatekeeper の設定変更を利用者に許さない　<b>副作用:</b> **社内で自作した道具や、公証を取っていない正規の業務ソフトが動かなくなる。** 例外の申請と承認の手順が必要になる</div><div class=sub><b>item:</b> Zoom などの常用 application を管理側から配布し、利用者が自分で入手する必要をなくす　<b>副作用:</b> **配布と版の追従の運用負荷が増える。** 更新が遅れると、利用者が自分で新しい版を取りに行く動機を作ってしまう</div><div class=sub><b>item:</b> 一時ディレクトリからの実行可能ファイルの起動、署名のない application からの `dscl` 呼び出しを監視・遮断する　<b>副作用:</b> **正規のインストーラや開発用の道具が同じ挙動を取ることがあり、誤検知が出る。** 遮断から始めると業務が止まるため、まず記録と通報から始める必要がある</div><div class=sub><b>item:</b> 設定ファイル（JSON 等）の値に現れるゼロ幅文字（U+200B・U+200C）を異常として検出する　<b>副作用:</b> **走査の対象をホーム配下に広げると負荷と誤検知が増える。** また攻撃側が符号化の方式を変えれば効かなくなる（本件固有の指標である）</div><div class=sub><b>item:</b> 端末からの外向き通信の周期性（8〜16秒の規則的なチェックイン）を検出する　<b>副作用:</b> **正規の常駐 application も短い間隔で通信する**ため、 既知の通信先を除外する作業が先に要る。 **C2 のドメインは2011年登録であり、新規登録ドメインの指標では引っかからない**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月15日</td><td class=nowrap><span class="b kind">判明</span></td><td>Jamf Threat Labs が **CloudSyncD を初めて確認**した。 この時点の検体は**開発中のビルド**で、**C2 は内部向けの宛先**、 **暗号鍵は仮の値**だった</td></tr><tr><td class="sm nowrap tw">2026年9月17日（初確認の2日後）</td><td class=nowrap><span class="b kind">発生</span></td><td>**ライブの C2 基盤を向いた検体**が見つかった。 **1つを超えるドメイン**に対して構成されており、 **試験の段階から配備へ進んだ**ことを示す</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Jamf Threat Labs が解析を公表**。 配布（偽 Zoom のディスクイメージ・ad-hoc 署名・Gatekeeper 迂回の手順指示）、 偽の認証プロンプトと `dscl` による検証、 ゼロ幅 Unicode 文字を用いたパスワードの隠蔽、 `/dev/fd` と `sudo` による第2段の起動、 8〜16秒間隔・ChaCha20-Poly1305 の C2 通信、 **情報窃取の機能を持たない遠隔タスク実行のバックドア**であること、 **永続化は観測されなかった**ことを示した</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>Infosecurity Magazine ほかが報道。 **Jamf は VirusTotal の監視を通じて発見し、確認された感染は報告していない**こと、 **パスワードはどこにも送信されず第2段の起動に使われる**こと、 **ブラウザのデータ・Keychain の項目・暗号通貨ウォレットを集める機能は無い**ことを伝えた</td></tr><tr><td class="sm nowrap tw">2026年10月2日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が確認した時点で、**Jamf のレポートに掲げられている 侵害指標（IoC）の表と MITRE ATT&amp;CK の対応表の中身を取得できていない** （ページ本文として得られなかった）。 **したがって本記録はハッシュ値・C2 ドメイン名・技術 ID を転記していない。** 感染の確認例、標的の業種・地域、配布経路（検索広告・共有リンク等）の いずれも公表されていない</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>侵害指標（IoC）と ATT&amp;CK 技術 ID を本記録が取得できていない</span><div class=sm>Jamf のレポートには「Indicators of compromise」の節が置かれており、 ATT&amp;CK の対応も掲げられている。 **本記録の作成者が2026年10月2日に取得したページ本文には、 指標の表と対応表の中身が含まれていなかった。** したがって本記録は**ハッシュ値・C2 ドメイン名・技術 ID を転記していない。** **記述から技術 ID を推定して当てはめることもしない**—— 当たらない ID を書けば、検証の手がかりとしての価値が失われる。 検知を作る場合はレポートの指標表を直接参照すること。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>ライブ C2 を向いた検体が確認された日付</span><div class=sm>Jamf と報道は「**初確認の2日後**」と書いており、 本記録は初確認の2026年9月15日から**9月17日**と置いた。 **日付そのものが明記されているわけではない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>「永続化は観測されていない」の読み方</span><div class=sm>Jamf は**永続化を観測していない**とし、その理由を 「**解析の間に C2 からタスクが降ってこなかったため、そこまで到達しなかった**」と 説明している。 **したがって「この malware は永続化しない」とは書けない。** 同様に、implant が自身を `cloudsyncd` として設置する動作も観測されていない—— **名称の由来は設定上の名前である。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>感染の確認例が無いことの意味</span><div class=sm>**Jamf は確認された感染を報告していない**（発見は VirusTotal の監視経由）。 **これは「感染が起きていない」ことを意味しない。** 配布の規模、標的の業種・地域、配布の経路（検索広告・偽サイト等）は いずれも公表されていない。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>利用者が警告を越え、パスワードが見えない文字で隠され、権限昇格の鍵になる</div><div class=svgwrap><svg viewBox="0 0 1202 208" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,104.0 C193.0,104.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C397.0,60.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C703.0,60.0 703.0,141.0 628,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C805.0,141.0 805.0,67.0 832,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,67.0 C907.0,67.0 907.0,148.0 832,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,148.0 C1009.0,148.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C1111.0,60.0 1111.0,155.0 1036,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,155.0 C1009.0,155.0 1009.0,148.0 832,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,155.0 C295.0,155.0 295.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="79.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属は公表されて</text><text x="91.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いない）</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">偽 Zoom のディスク</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イメージ（ad-hoc </text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">署名）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">背景画像が Gateke</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">eper 迂回の手順を指</text><rect x="424" y="74.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者</text><text x="499.0" y="109.0" text-anchor="middle" fill="#8892b0" font-size="10">「このまま開く」＋管理者</text><text x="499.0" y="121.0" text-anchor="middle" fill="#8892b0" font-size="10">パスワードを自ら実行</text><rect x="628" y="30.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">偽の認証プロンプト</text><text x="703.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">dscl でローカルアカ</text><text x="703.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">ウントに対して検証・外部</text><rect x="628" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">~/.config/zo</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">om/data.json</text><text x="703.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">Base64＋詰め物／4</text><text x="703.0" y="165.0" text-anchor="middle" fill="#ffcc80" font-size="10">8個のゼロ幅文字で位置と</text><rect x="832" y="30.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第2段（universa</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">l Mach-O）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">/dev/fd で実行を</text><text x="907.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">試み、失敗時は mkte</text><rect x="832" y="118.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">macOS 端末</text><text x="907.0" y="153.0" text-anchor="middle" fill="#64b5f6" font-size="10">~/.local/sha</text><text x="907.0" y="165.0" text-anchor="middle" fill="#64b5f6" font-size="10">re/cloudsync</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（2ドメイン・201</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1年登録・Cloudfl</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">are 配下）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">8〜16秒間隔・ChaC</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">ha20-Poly130</text><rect x="1036" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遠隔タスク（Mach-O</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／gzip tar）</text><text x="1111.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">解析中は配られず・最終目</text><text x="1111.0" y="179.0" text-anchor="middle" fill="#ffcc80" font-size="10">的は不明</text><rect x="220" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Jamf Threat </text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Labs</text><text x="295.0" y="167.0" text-anchor="middle" fill="#80cbc4" font-size="10">VirusTotal の</text><text x="295.0" y="179.0" text-anchor="middle" fill="#80cbc4" font-size="10">監視で発見・9/30 公</text></svg></div><div class=fn>Jamf Threat Labs の解析（2026年9月30日公表）にもとづく。 初確認は9月15日の開発中ビルドで、2日後にはライブ C2 を向いた検体が現れた。 技術的な脆弱性は使われていない——ad-hoc 署名のディスクイメージが、 背景画像で Gatekeeper の迂回手順を利用者に指示する。 窃取したパスワードは外部へ送られず、第2段を `sudo` で起動するために使われる。 **情報窃取の機能は無く、永続化は観測されていない（＝観測されなかっただけである）。** **本記録はハッシュ値・C2 ドメイン名・ATT&amp;CK 技術 ID を持っていない。**</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**macOS は警告を出している。** ad-hoc 署名の実行ファイルは既定で拒否される。 **検知の機会は「利用者が『このまま開く』を押す操作」そのものであり、 そこを止める仕組みが無ければ越えられる**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>業務端末で利用者に管理者権限を与えず、「このまま開く」の操作そのものを行えないようにする</div><div class=ctl><span class="b eff">侵入を防げた</span>署名・公証されていない application の実行を管理ポリシーで禁止する（Gatekeeper の設定変更を利用者に許さない）</div><div class=ctl><span class="b eff">侵入を防げた</span>Zoom などの常用 application を管理側から配布し、利用者が自分で入手する必要をなくす</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**`dscl` を用いたパスワードの検証は、通常の application の挙動ではない。** インストーラを名乗るプロセスが `dscl` を呼ぶこと自体が手がかりになる（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>利用者に「OS の認証ダイアログと application が描くダイアログの違い」を具体例で教育する</div><div class=ctl><span class="b eff">検知できた</span>署名のない application からの `dscl` 呼び出しを監視・通報の対象にする</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ゼロ幅文字の存在そのものが指標になる**—— 設定ファイル（JSON）の値に U+200B / U+200C が並ぶことは、 正規の application ではまず起きない（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>利用者のホーム配下の設定ファイルに現れるゼロ幅文字（U+200B・U+200C）を異常として検出する</div><div class=ctl><span class="b eff">検知できた</span>application の作る設定ディレクトリ（`~/.config/` 配下等）の新規作成を監視する</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**一時ディレクトリから起動される Mach-O と、 対話なしで成功する `sudo` の組み合わせは強い手がかりである** （Jamf も「予期しない一時パスからの Mach-O の実行」の監視を勧めている）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>一時ディレクトリ（`/tmp`・`/var/folders` 配下）からの実行可能ファイルの起動を監視・遮断する</div><div class=ctl><span class="b eff">検知できた</span>`sudo` の成功・失敗を記録して集約し、対話的でない昇格を異常として扱う</div><div class=ctl><span class="b eff">侵入を防げた</span>利用者アカウントを管理者グループから外す（`sudo` の経路そのものを断つ）</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**8〜16秒という短く規則的な間隔は、通信の側から見れば明確な特徴である。** 一方、**ドメインが2011年登録であるため「新規登録ドメイン」の指標では引っかからない** （本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>端末からの外向き通信の周期性（短い間隔の規則的なチェックイン）を検出する</div><div class=ctl><span class="b eff">検知できた</span>ドメインの評価だけに頼らず、通信先と経路の組み合わせ（jQuery に似せた URI で非 Web の通信）を見る</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>配られる内容が分からないため、**後続段階の検知指標は存在しない。** **この implant の最終的な目的も分かっていない**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>遠隔から配られる第2段を前提に、C2 通信の遮断を最優先の封じ込め手段として設計する</div><div class=ctl><span class="b eff">検知できた</span>端末の実行記録（プロセスの親子関係・起動元のパス）を保全し、後から配られたものを追えるようにする</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">公表されていない</span><div class=sm>永続化の方式が分からないため、**LaunchAgent / LaunchDaemon の監視は 一般的な対策として置くほかない**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>LaunchAgent / LaunchDaemon の新規作成と変更を監視する（方式が不明でも共通の置き場は限られる）</div><div class=ctl><span class="b eff">検知できた</span>利用者のホーム配下の隠しディレクトリ（`~/.local/share/` 配下等）の新規作成を監視する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「警告が出たら止まる」が成立しない環境では、署名も公証も効かない</div><div class=lw>配布物は ad-hoc 署名で、macOS は正しく実行を拒んでいる。 攻撃は背景画像で「システム設定から『このまま開く』を押して管理者パスワードを入れる」 という手順を教え、利用者自身に防御を下げさせている。</div><div class=la><b>取るべき行動</b> **利用者が Gatekeeper の警告を越えられるかどうかを、組織の設定として確認する。** 越えられる状態であれば、**管理者権限の付与方針と「このまま開く」の禁止**を 端末管理の設定として入れる。利用者教育は補助であって、設定の代わりにならない。</div></li><li><div class=lp>常用アプリを利用者に自分で入手させている限り、偽のインストーラは届く</div><div class=lw>本件は Zoom を模している。Zoom のような会議ソフトは利用者が自分で入れることが多く、 入手元の正しさを利用者が判断する構図になる。 **入手の経路（検索広告・偽サイト等）は公表されていない**が、 自分で探して入れる余地があることが前提になっている。</div><div class=la><b>取るべき行動</b> **会議・通信・遠隔支援といった常用 application を管理側から配布し、 利用者が自分で探す必要をなくす。** 配布の版が遅れると利用者が自分で取りに行くため、**更新の追従も同時に設計する。**</div></li><li><div class=lp>「情報窃取型ではない」ことは安心材料ではなく、目的が分からないという意味である</div><div class=lw>Jamf はブラウザのデータ・Keychain・暗号通貨ウォレットを集める機能が無いことを 確認している。実体は遠隔タスク実行のバックドアで、 解析の間にタスクが降ってこなかったため最終的な目的は分かっていない。</div><div class=la><b>取るべき行動</b> **「何を盗る malware か」で優先度を決める運用を見直し、 『遠隔から任意のものを配れるか』を基準に加える。** 遠隔実行が可能な implant は、発見時点の機能が最終形ではない。</div></li><li><div class=lp>永続化が観測されていないことを「永続化しない」と読み替えてはならない</div><div class=lw>Jamf は永続化を観測していないが、その理由を 「解析の間に C2 からタスクが降ってこなかったため、そこまで到達しなかった」と 説明している。</div><div class=la><b>取るべき行動</b> **ベンダーのレポートを社内に回すとき、「観測されなかった」と「存在しない」を 区別して要約させる。** 要約の過程でこの区別が落ちると、 対策の優先度を誤る（本記録の評価）。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>一時ディレクトリからの Mach-O 実行と、対話なしの `sudo` の組み合わせを見る</div><div class=lw>第2段は `/dev/fd` によるファイルレス実行を試み、失敗すると `mktemp` で 一時ファイルへ書き出して `sudo` に窃取したパスワードを渡して実行する。 Jamf も「予期しない一時パスからの Mach-O の実行」の監視を勧めている。</div><div class=la><b>取るべき行動</b> **`/tmp`・`/var/folders` 配下から起動された実行可能ファイルと、 `sudo` の成功記録を突き合わせる検知を作る。** まず記録と通報から始め、誤検知の量を測ってから遮断に進める。</div></li><li><div class=lp>設定ファイルの中のゼロ幅文字は、それ自体が指標になる</div><div class=lw>パスワードの位置と長さが、`data.json` の version フィールドに 48個のゼロ幅 Unicode 文字（U+200B・U+200C）で符号化されている。 正規の application の設定ファイルにこれが並ぶことはまず無い。</div><div class=la><b>取るべき行動</b> **利用者のホーム配下の設定ファイル（JSON・plist）を対象に、 U+200B・U+200C の出現を検査する。** 本件固有の指標であることを承知のうえで、安価に試せる検査として置く。</div></li><li><div class=lp>ドメインの登録年が古い C2 は、評価による遮断をすり抜ける</div><div class=lw>C2 の2ドメインはいずれも2011年に登録され、Cloudflare の背後にある。 「新規登録ドメインを警戒する」という一般的な指標では引っかからない。</div><div class=la><b>取るべき行動</b> **通信先の評価だけに頼らず、通信の形（8〜16秒の規則的なチェックイン、 jQuery のパスに似せた URI で Web でない通信）を検知の軸に加える。**</div></li><li><div class=lp>攻撃側が鍵と名前を使い回しているため、1検体から汎用の検知が作れる</div><div class=lw>Jamf は、全ビルドで文字列の難読化・暗号鍵と IV・デーモン名が同一で、 違うのは接続先だけだと述べている。</div><div class=la><b>取るべき行動</b> **ドメインやハッシュではなく、固定の鍵・IV・デーモン名・符号化の方式を 対象にした静的検知（YARA 等）を作る。** 接続先だけを変えた新しい検体にも当たる。</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 業務端末の利用者が管理者権限を持ち、Gatekeeper の警告を自分で越えられる</td><td class=sm>本件は技術的な脆弱性を使わず、利用者に「このまま開く」と管理者パスワードの入力を 行わせることで成立する。越えられる状態が前提条件そのものである。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 会議・通信などの常用 application を利用者が自分で入手している</td><td class=sm>偽のインストーラは「自分で探して入れる」余地があるところに届く。 管理側から配布していれば、利用者が入手元を判断する必要がなくなる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> macOS 端末のプロセス実行記録（起動元のパス・親子関係）と `sudo` の記録を集約していない</td><td class=sm>一時ディレクトリからの Mach-O 実行と対話なしの `sudo` が主要な手がかりである。 記録が端末の中にしか無ければ、検知も事後の確認もできない。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 端末からの外向き通信の周期性を見ておらず、通信先の評価のみで遮断している</td><td class=sm>C2 の2ドメインは2011年登録で、新規登録ドメインの指標では引っかからない。 8〜16秒の規則的なチェックインという形を見るしかない。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> ベンダーのレポートを社内に要約して回す手順で、「観測されなかった」と「存在しない」を区別していない</td><td class=sm>本件の永続化は「観測されなかった」であり「しない」ではない。 区別が落ちると、遠隔からタスクを配れる implant の危険を低く見積もる。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> macOS のログインパスワードが、端末上の他の資格情報（Keychain・ディスク暗号化）と同一である</td><td class=sm>本件はログインパスワードを窃取して権限昇格に使う。 同じパスワードが他の保護にも使われていれば、昇格の先で影響が広がる。</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月30日 Jamf Threat Labs</span> <a href="https://www.jamf.com/blog/cloudsyncd-macos-backdoor-fake-zoom-installer/" target="_blank" rel="noreferrer noopener nofollow">CloudSyncD: macOS backdoor hidden in a fake Zoom installer</a> <span class="b kind">調査レポート</span><span class=sm>（(英語。**初確認が2026年9月15日の開発中ビルド**で、**2日後にライブの C2 基盤を 向いた検体**が見つかったこと、 **「Zoom」ボリュームとしてマウントするディスクイメージ・ad-hoc 署名・ 背景画像による Gatekeeper 迂回の手順指示**、 **偽の認証プロンプト「Enter your password to allow this.」と `dscl` による検証**、 **`~/.config/zoom/` の `data.json` の cache フィールドへの Base64 での格納、 32〜64文字のランダムな詰め物、version フィールドの48個のゼロ幅 Unicode 文字 （U+200B・U+200C）による位置と長さの符号化**、 **第2段が universal Mach-O であること、`/dev/fd` によるファイルレス実行の試行と 失敗時の `mktemp`＋`sudo`**、 **8〜16秒間隔のチェックイン・ChaCha20-Poly1305・jQuery のパスに似せた URI・ 2011年登録の2ドメイン・Cloudflare 配下**、 **`~/.local/share/cloudsync/` 配下の暗号化ログ**、 **遠隔タスク実行（Mach-O／gzip tar）**、 **永続化が観測されなかったこととその理由**、 **全ビルドで難読化・鍵・IV・デーモン名が同一で接続先だけが違う**こと、 **一時パスからの Mach-O 実行と不審な `sudo` の監視の推奨**の出典。 **「Indicators of compromise」の節と ATT&amp;CK の対応表については、 本記録の作成者が取得した本文に中身が含まれておらず、転記できていない**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月1日 Infosecurity Magazine</span> <a href="https://www.infosecurity-magazine.com/news/cloudsyncd-macos-backdoor-fake/" target="_blank" rel="noreferrer noopener nofollow">CloudSyncD MacOS Backdoor Hides Behind Fake Zoom Installer</a> <span class="b kind">記事</span><span class=sm>（(英語。**9月15日の初確認と2日後のライブ C2 構成**、 **利用者に System Settings からセキュリティ保護を越えさせる指示**、 **パスワードはどこにも送信されず、ゼロ幅 Unicode 文字で位置を示して おとりの設定ファイルに埋められる**こと、 **第2段が Apple silicon と Intel の両対応の universal Mach-O**であること、 **`/dev/fd` での実行の試行と失敗時の一時書き出し＋`sudo`**、 **ホストの調査情報を最初に送り以降はハードウェア識別子を載せる**こと、 **ブラウザのデータ・Keychain の項目・暗号通貨ウォレットの収集機能が無く 情報窃取型ではない**こと、 **永続化が観測されておらず `cloudsyncd` としての設置も見られなかった**こと、 **Jamf は VirusTotal の監視を通じて発見し、確認された感染を報告していない**ことの出典。 本文は日次ニュースの保存分〈output/articles/20261001/ 0304_infosecurity-magazine_cloudsyncd-macos-backdoor-hides-behind-fake-zoom-i.md〉で確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月2日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月1日の日次ニュース（Infosecurity Magazine）を起点に、 **Jamf Threat Labs の解析（2026年9月30日）を一次資料として取得して裏取りした。** 配布物の形と ad-hoc 署名・背景画像による Gatekeeper 迂回の手順指示・ 偽の認証プロンプトと `dscl` による検証・`data.json` への Base64 格納と 48個のゼロ幅 Unicode 文字による符号化・`/dev/fd` と `mktemp`＋`sudo` による 第2段の起動・8〜16秒のチェックインと ChaCha20-Poly1305・2011年登録の2ドメインと Cloudflare 配下・遠隔タスク実行・情報窃取機能の不在・永続化が観測されなかったことは、 いずれも Jamf のレポートで確認した。 **指標（ハッシュ値・C2 ドメイン名）と ATT&amp;CK の技術 ID は、 取得したページ本文に表の中身が含まれておらず転記できていない**ため、 self_unverified として齟齬に明記し、未公表・未確認の項目にも残した。 ライブ C2 を向いた検体の日付は「初確認の2日後」という記述からの推定であり、 authored_inference として記録した。 **「永続化は観測されていない」を「永続化しない」と読み替えないこと**を 齟齬と本文の両方に明記した。 感染の確認例が無いことも「感染が無い」ではないと書き分けた。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">CloudSyncD</span><span class="b tag">macOS</span><span class="b tag">バックドア</span><span class="b tag">偽インストーラ</span><span class="b tag">Zoom</span><span class="b tag">Jamf</span><span class="b tag">Jamf_Threat_Labs</span><span class="b tag">Gatekeeper迂回</span><span class="b tag">ad-hoc署名</span><span class="b tag">偽の認証プロンプト</span><span class="b tag">dscl</span><span class="b tag">ゼロ幅Unicode</span><span class="b tag">U+200B</span><span class="b tag">U+200C</span><span class="b tag">パスワード窃取</span><span class="b tag">権限昇格</span><span class="b tag">sudo</span><span class="b tag">ファイルレス実行</span><span class="b tag">dev_fd</span><span class="b tag">universal_Mach-O</span><span class="b tag">ChaCha20-Poly1305</span><span class="b tag">C2ビーコン</span><span class="b tag">Cloudflare</span><span class="b tag">遠隔タスク実行</span><span class="b tag">永続化は未観測</span><span class="b tag">情報窃取型ではない</span><span class="b tag">VirusTotal監視</span><span class="b tag">IoC未転記</span><span class="b tag">ATT&amp;CK未転記</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-02 09:34 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
