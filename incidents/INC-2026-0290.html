@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>FortiMail に悪用中の認証前RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0290</span>FortiMail に悪用中の認証前RCE</h1>
+<header class="site-header">
+  <p class="subtitle">Fortinet が2026年10月1日、メールセキュリティ製品 FortiMail の 認証不要・CVSS 9.8 のパストラバーサル脆弱性 CVE-2026-104286（FG-IR-26-175）を公表。 すでに実際の攻撃で悪用されており、**修正版は未提供**で回避策のみが示された。 CISA は同日 KEV に収載し、連邦機関に10月4日までのフォレンジック調査と緩和を義務づけた</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月1日</span>
+  <span>最終更新: 2026年10月2日</span>
+</div>
+
+<div class="lead"><p><strong>Fortinet</strong> は現地時間2026年10月1日、メールセキュリティ製品 <strong>FortiMail</strong> の 脆弱性 <strong>CVE-2026-104286（勧告 ID: FG-IR-26-175）</strong> を公表した。 <strong>認証を必要とせず</strong>、細工した HTTP / HTTPS 要求によって <strong>システム上へ任意のファイルを書き込める</strong>欠陥で、 CVSS v3.1 の基本値は <strong>9.8（Critical）</strong> である。 Fortinet は勧告に「<strong>実際に悪用されているとの報告がある</strong>」と明記し、 侵害された機器で追加・変更された<strong>7つのファイル（SHA-256 付き）</strong>と <strong>2つの攻撃元 IP アドレス</strong>、 および確認に使えるログの例を IoC として公開した。 最も重いのは<strong>修正版がまだ存在しないこと</strong>である—— Fortinet は修正を含む版として FortiMail 8.0.2 / 7.6.7 / 7.4.9 を「予定」として挙げ、 現時点では <strong>IBE（Identity Based Encryption）機能の無効化</strong>、 または<strong>管理インタフェースへのインターネットからの到達を断つこと</strong>を回避策として求めている。 <strong>7.2 系は修正の対象外</strong>で、7.4 系以降への移行が必要とされた。 米 CISA は同日 <strong>KEV（悪用が確認された脆弱性カタログ）に収載</strong>し、 連邦民間機関に対して <strong>2026年10月4日まで</strong>にフォレンジック調査の要件を満たし 緩和することを義務づけた（期限は収載から3日である）。 <strong>いつから悪用されていたか、何台が侵害されたか、誰が攻撃しているかは公表されていない。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>悪用がいつ始まったか</span><span class="b rsn">公表されていない</span><div class=sm>Fortinet の勧告は「実際に悪用されているとの報告がある」と述べるだけで、 **初回の観測時期を示していない。** BleepingComputer も「Fortinet はいつから悪用されていたかを明らかにしていない」と書いている。 **これが分からないと、利用者は「いつまで遡ってログを調べるべきか」を決められない。** CISA がフォレンジック調査を要求している一方で、 **調査すべき期間の起点が公表されていない**という不整合がある（本記録の評価）。</div></li><li><span class=ui>侵害された機器の台数と被害組織</span><span class="b rsn">公表されていない</span><div class=sm>**何台が侵害されたか、どの組織が被害を受けたかは公表されていない。** 日本国内の被害の有無も示されていない。 Fortinet は IoC を公開しているが、被害の規模には触れていない。</div></li><li><span class=ui>攻撃者の帰属と目的</span><span class="b rsn">公表されていない</span><div class=sm>**攻撃者が誰か、国家支援か犯罪集団かは一切示されていない。** ログの例に「保存データを遠隔サーバへ送る設定」が含まれることから、 目的がメールの収集にあるとみることはできるが、 **Fortinet はそう述べていない**（BleepingComputer の読みである）。 メールゲートウェイを狙う攻撃は 過去に諜報目的の事例が多いが、**本件に当てはめる根拠は無い。**</div></li><li><span class=ui>修正版の提供時期</span><span class="b rsn">公表されていない</span><div class=sm>Fortinet は修正を含む版として FortiMail 8.0.2 / 7.6.7 / 7.4.9 を挙げるが、 **「upcoming（予定）」であり提供日は示されていない。** **本記録の作成者が2026年10月2日に確認した時点で、いずれも入手できない。** CISA の期限（10月4日）までに修正版が出る見込みも示されていない。</div></li><li><span class=ui>脆弱な機能と IBE の関係</span><span class="b rsn">公表されていない</span><div class=sm>勧告は影響のある構成要素を**管理インタフェース（GUI）**とするが、 **回避策は「IBE（Identity Based Encryption）機能の無効化」である。** また IoC のログの例に **IBE の復号エラー** （不正な Base64 エンコーディング）が含まれる。 これらから本記録の作成者は 「脆弱な処理は GUI のうち IBE に関わる経路にある」と読むが、 **Fortinet は脆弱な関数・経路を説明していない。** **IBE を使っていない組織が安全と言えるのかは、勧告からは判断できない。**</div></li><li><span class=ui>7.2 系に修正を出さない理由</span><span class="b rsn">公表されていない</span><div class=sm>7.2.0〜7.2.9 は影響を受けるとされながら、 **修正版は示されず「7.4 系以降への移行が必要」とされている。** サポート期間の終了によるものと読めるが、 **Fortinet は理由を説明していない。** 移行は版の更新ではなく系列の乗り換えであり、 設定の互換性の確認を含む作業になる。</div></li><li><span class=ui>回避策（IBE の無効化）で防げる範囲</span><span class="b rsn">公表されていない</span><div class=sm>**IBE を無効化すれば悪用を完全に防げるのか、 それとも既知の攻撃経路だけを塞ぐのかが示されていない。** Fortinet は代替の回避策として 「管理インタフェースへのインターネットからの到達を無効にする、 または信頼する内部ネットワークに限定する」を併記しており、 **2つの回避策が等価なのか、併用が必要なのかも書かれていない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Fortinet</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>米 Cybersecurity and Infrastructure Security Agency（CISA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Gwendal Guégniaud（Fortinet 製品セキュリティチーム）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（帰属は公表されていない）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fn>Fortinet の勧告の値。4段階で最も高い **Critical**。 **認証が不要**で、**ネットワーク越しに単一の HTTP / HTTPS 要求**で 任意のファイル書き込みに至るため、 攻撃の前提条件がほぼ無い。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける製品系列</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>系列</span></div><div class=fn>FortiMail 8.0 / 7.6 / 7.4 / 7.2 の4系列。 具体の範囲は 8.0.0〜8.0.1、7.6.0〜7.6.6、7.4.0〜7.4.8、7.2.0〜7.2.9。 **運用されている版の広さを示す値であり、台数ではない。**</div></div><div class=fig><div class=fh><span class=fl>Fortinet が示した侵害機器上のファイル（IoC）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>件</span></div><div class=fn>追加4点（`/data/lib/liblog.so`、`/data/bin/webconsole`、 `/data/bin/mailservice`、`/data/etc/ld.so.preload`）と 変更3点（`/bin/smit`、`/data/etc/httpd.conf`、`/data/migadmin.tar.gz`）。 いずれも SHA-256 が併記されている。 **`ld.so.preload` の追加は、共有ライブラリを先読みさせて 正規のプロセスの挙動を書き換える古典的な永続化の形**である （本記録の評価。Fortinet は用途を説明していない）。</div></div><div class=fig><div class=fh><span class=fl>Fortinet が示した攻撃に関連する IP アドレス</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>79[.]141.169.187 と 45[.]129.0.192。 前者はログの例で**保存データの転送先**として現れる。 **本記録はこれらの悪性を独自に検証していない**（照合先のテレメトリを持たない）。</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から CISA の期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年10月1日の収載（T3）に対して期限は2026年10月4日（T7）。 **本記録の作成者が算出した値。** KEV の標準的な猶予（通常は3週間程度）に比べて著しく短く、 **修正版が無い状態で緩和とフォレンジック調査を3日で求める**扱いである。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>認証を必要とせず、細工した HTTP / HTTPS 要求を FortiMail の管理インタフェースへ送ることで、 パストラバーサルと NULL バイトの無害化不備を突いて **基盤システム上の任意の場所にファイルを書き込む。** Fortinet が公開した IoC からは、書き込みの後に **共有ライブラリの先読み（`ld.so.preload`）による永続化**と、 **保存機能を使ったメールの外部転送の設定**が行われた形跡が読み取れる。 **ただし後段の機序は Fortinet が説明しておらず、本記録の読みである。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**認証されていない攻撃者**が、FortiMail の管理インタフェースへ **細工した HTTP または HTTPS 要求**を送る。 パス名の制限ディレクトリへの不適切な限定（CWE-22）と NULL バイト・NULL 文字の不適切な無害化（CWE-158）により、 **基盤システム上の任意の場所へファイルを書き込める。**</div><div class=fn>根拠: Fortinet 勧告 FG-IR-26-175（CVE-2026-104286 の記述）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">推定</span><span class=srcs>[1] [3]</span></div><div>書き込まれたファイルにより**任意のコードまたはコマンドが実行される。** BleepingComputer は「脆弱な機器上で未認可のコードまたはコマンドを実行するために 悪用されている」と報じている。 **Fortinet の勧告自体は「任意のファイルの書き込み」までを記述し、 実行に至る機序は説明していない**（書き込めるファイルの場所から 実行につながると読める）。</div><div class=fn>根拠: BleepingComputer（2026年10月1日）、Fortinet の IoC（追加・改変されたファイル）</div></li><li><div class=stg><span class="b stage">3. 永続化</span><span class="b conf">推定</span><span class=srcs>[1] [3]</span></div><div>侵害された機器では、**`/data/etc/ld.so.preload` が追加され、 `/data/lib/liblog.so` が置かれている**（Fortinet の IoC）。 あわせて `/bin/smit`・`/data/etc/httpd.conf`・`/data/migadmin.tar.gz` が改変されている。 **これは共有ライブラリを先読みさせて正規のプロセスの挙動を書き換える形の永続化である** （**本記録の評価。Fortinet は用途を説明していない**）。</div><div class=fn>根拠: Fortinet 勧告の IoC 一覧（ファイル7点と SHA-256）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">推定</span><span class=srcs>[1] [3]</span></div><div>Fortinet が示したログの例の1つは、 **`archive234` という保存用アカウントを CLI から設定し、 転送先を遠隔の `79.141.169.187` の `/uploads` に向ける**内容である。 BleepingComputer は 「攻撃者が侵害した FortiMail から保存データを外部のサーバへ送るよう 設定した可能性を示す」と書いている。 **Fortinet はこれを攻撃者の目的として説明していない**ため、 **段階としては「読み取れる形跡」である。**</div><div class=fn>根拠: Fortinet 勧告のログの例（archive account の設定）、BleepingComputer の解釈</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Fortinet は**修正版が提供できていない段階で**勧告を公表し、 **IoC まで同時に公開した。** CISA は**同日に KEV へ収載し、3日という短い期限を切った。**</div><div class=fn><b>トレードオフ:</b> 修正版を待ってから公表すれば、 攻撃者に手がかりを与えずに済む一方、 **利用者は悪用が進む間に何も手を打てない。** 先に出せば利用者は回避策と侵害の確認に動けるが、 **脆弱性の存在と場所（IBE に関わる経路）を広く知らせることになる。** Fortinet は後者を選び、 「責任ある PSIRT の開示と官民連携の方針に沿い、 CISA を含む政府機関と内容について連絡を取っている」と説明した（原文英語）。</div></li></ul></div>
+<section id="s6"><h2>認証の前に届く要求でファイルを書き込める——しかも直す版がまだ無い<span class="b slot">概観</span><span class=srcs>出典 [1] [3]</span></h2><p>Fortinet の勧告（FG-IR-26-175、2026年10月1日）の記述は短く、 実務上の要点は3つです。</p>
+<p><strong>第一に、攻撃の前提条件がほぼ無い。</strong> 欠陥は CWE-22（パストラバーサル）と CWE-158（NULL バイトの不適切な無害化）の 組み合わせで、 「<strong>認証されていない攻撃者が、細工した HTTP または HTTPS 要求により、 基盤となるシステム上に任意のファイルを書き込むことを許す可能性がある</strong>」 （原文英語）。 認証が要らず、要求を1つ投げられる位置にいれば届きます。 CVSS v3.1 は <strong>9.8（Critical）</strong>。</p>
+<p><strong>第二に、すでに悪用されている。</strong> 勧告には「<strong>実際に悪用されているとの報告がある</strong>」と明記されています。 Fortinet は IoC まで公開しており、 侵害された機器で<strong>追加されたファイル4点・改変されたファイル3点</strong>、 <strong>攻撃元の IP 2件</strong>、確認に使えるログの例が示されています。 IoC を出す段階に至っているということは、 <strong>侵害された実機の解析が済んでいる</strong>ということです（本記録の評価）。</p>
+<p><strong>第三に、修正版が存在しない。</strong> Fortinet が挙げる FortiMail 8.0.2 / 7.6.7 / 7.4.9 はいずれも 「<strong>予定（upcoming）</strong>」であり、 <strong>本記録の作成者が2026年10月2日に確認した時点で入手できません。</strong> つまり現時点で取れる手は<strong>回避策だけ</strong>です。 そして 7.2 系には修正版の予定すら示されず、 <strong>7.4 系以降への移行が必要</strong>とされています。</p>
+<p>この3つが重なると、利用者の選択は 「<strong>IBE を切るか、管理面をインターネットから外すか、製品を止めるか</strong>」に絞られます。</p></section>
+<section id="s7"><h2>CISA は収載から3日で期限を切り、「塞ぐ」ではなく「調べる」まで求めた<span class="b slot">当局対応</span><span class=srcs>出典 [2]</span></h2><p>CISA は<strong>2026年10月1日に CVE-2026-104286 を KEV カタログへ収載</strong>しました （本記録の作成者が catalogVersion 2026.10.01 を直接取得して確認）。 注目すべき点が3つあります。</p>
+<p><strong>期限が2026年10月4日——収載から3日です。</strong> KEV の猶予は通常3週間程度が多く、 <strong>3日は「修正版が無いので塞ぐ以外の手を取れ」という性格の期限</strong>です。 要求事項には 「緩和策が利用できない場合は<strong>製品の利用を停止する</strong>」ことまで書かれています。</p>
+<p><strong><code>forensicTriage: Yes</code> が立っています。</strong> KEV の項目に「<strong>CISA の Forensics Triage Requirements に従う</strong>」ことが含まれており、 これは<strong>既に侵害されていないかを調べる義務</strong>です。 塞ぐだけでは要求を満たしません。 ところが——これが本事案の構造的な問題ですが—— <strong>悪用がいつ始まったかが公表されていないため、 どこまで遡って調べるべきかの起点が分かりません</strong>（本記録の評価）。</p>
+<p><strong>ランサムウェアキャンペーンでの使用は <code>Unknown</code> です。</strong> 恐喝に使われているという情報は、この時点ではありません。</p>
+<p>なお KEV の要求は<strong>米連邦民間機関に対する拘束</strong>であり、 日本の組織に法的な義務は生じません。 ただし<strong>「3日で調べて塞げ」という判断そのものが、 この脆弱性の危険度についての当局の読み</strong>です （本記録の評価）。</p></section>
+<section id="s8"><h2>回避策が「IBE の無効化」である点から、脆弱な経路が読める<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3]</span></h2><p>勧告が示す回避策は2つです。</p>
+<p><strong>1. IBE（Identity Based Encryption）機能を無効にする</strong></p>
+<pre><code>config system encryption ibe
+set status disable
+end
+</code></pre>
+<p><strong>2. 管理インタフェースへのインターネットからのアクセスを無効にする、 または信頼する内部ネットワークに限定する</strong></p>
+<p>ここに読み取れることがあります。 勧告は影響を受ける構成要素を<strong>管理インタフェース（GUI）</strong>としていますが、 回避策の1つ目が<strong>IBE の無効化</strong>です。 さらに Fortinet が示した IoC のログの例には <strong>IBE の復号エラー</strong>（<code>Invalid Base64 Encoding at pos 0</code>）が含まれています。 これらを合わせると、 <strong>脆弱な処理は GUI のうち IBE に関わる経路（暗号化メールの受信者が ブラウザで復号する画面）にある</strong>と読めます。 <strong>これは本記録の作成者の推定です</strong>—— Fortinet は脆弱な関数も経路も説明していません。</p>
+<p>実務上の判断に直結する問題が残ります。 <strong>IBE を使っていない組織は安全なのでしょうか。</strong> 勧告はそう書いていません。 そして IBE の無効化と管理面の遮断が <strong>等価なのか、併用が必要なのかも書かれていません。</strong> 安全側に寄せるなら<strong>両方を実施する</strong>のが妥当です（本記録の評価）。</p>
+<p>なお回避策には副作用があります。 IBE を無効にすれば<strong>外部の相手に暗号化メールを送る運用（受信者がブラウザで開く形）が 止まります。</strong> 管理面をインターネットから外せば<strong>遠隔からの管理が止まります。</strong> どちらも「とりあえず実行」では業務が止まる種類の変更です。</p></section>
+<section id="s9"><h2>侵害の痕跡は「ライブラリの先読み」と「保存データの外部転送」に現れている<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p>Fortinet が公開した IoC は、攻撃の後段を推測する材料になります。</p>
+<p><strong>追加されたファイル</strong><br />
+- <code>/data/lib/liblog.so</code>（SHA-256: 8015f34d…）<br />
+- <code>/data/bin/webconsole</code>（7a6cea9f…）<br />
+- <code>/data/bin/mailservice</code>（4000276a…）<br />
+- <code>/data/etc/ld.so.preload</code>（8953ec79…）</p>
+<p><strong>変更されたファイル</strong><br />
+- <code>/bin/smit</code>（77324ac4…）<br />
+- <code>/data/etc/httpd.conf</code>（703e97c6…）<br />
+- <code>/data/migadmin.tar.gz</code>（d6fe51c2…）</p>
+<p><code>ld.so.preload</code> の追加は、 <strong>共有ライブラリを他のライブラリより先に読み込ませる仕組み</strong>で、 正規のプロセスの関数呼び出しを書き換えるために使われます。 <code>liblog.so</code> という名前のライブラリが同時に置かれていることから、 <strong>ログ出力に関わる関数を差し替えて痕跡を隠す、 あるいは常駐の足場を作っている</strong>と読めます （<strong>本記録の作成者の評価です。Fortinet は用途を説明していません</strong>）。 <code>webconsole</code>・<code>mailservice</code> という名前は正規の部品に似せたもので、 <code>httpd.conf</code> の改変は<strong>web の経路を攻撃者側に向ける</strong>ための変更とみられます。</p>
+<p>もう1つ重いのがログの例です。 Fortinet が示した例の1つは、 <strong><code>archive234</code> という名前の保存用アカウントを CLI から設定し、 転送先を <code>79.141.169.187</code> の <code>/uploads</code> に向ける</strong>という内容です。 FortiMail の保存機能はメールのアーカイブを外部に送る仕組みなので、 これが攻撃者の設定であれば <strong>通過するメールがそのまま外部へ流れる</strong>ことになります。 BleepingComputer も同じ読みを示していますが、 <strong>Fortinet はこれを「攻撃者の目的」とは述べていません。</strong></p>
+<p>つまり、<strong>この機器が狙われる理由は機器そのものではなく、 そこを通るメールにある</strong>ということです（本記録の評価）。</p></section>
+<section id="s10"><h2>「悪用の開始時期が不明」なのに「フォレンジック調査」を求められる構造<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>この事案には、実務者を困らせる不整合があります。</p>
+<p>CISA は <code>forensicTriage: Yes</code> として、 <strong>既に侵害されていないかを調べることを要求しています。</strong> しかし<strong>Fortinet は悪用がいつ始まったかを公表していません。</strong> BleepingComputer も 「Fortinet はいつから悪用されたか、何台が侵害されたか、誰が背後にいるかを 明らかにしていない」と書いています。</p>
+<p>調査する側には、次が分かりません。</p>
+<ul>
+<li><strong>どこまで遡ってログを見ればよいのか</strong>（1か月か、半年か）</li>
+<li><strong>自組織が狙われる側だったのか</strong>（標的が特定の業種・地域に偏っていたのか）</li>
+<li><strong>侵害の規模</strong>（広範な走査か、絞った攻撃か）</li>
+</ul>
+<p>結果として、現実的な手は 「<strong>IoC のファイル7点の存在確認と、2つの IP との通信の有無を、 手元に残っているログの全期間で見る</strong>」ことになります。 これは<strong>ログの保存期間が調査の深さをそのまま決める</strong>という意味です （本記録の評価）。</p>
+<p>なお本記録は、<strong>IoC の悪性を独自に検証していません。</strong> 照合先のテレメトリを持たないため、 ここに挙げたハッシュと IP は<strong>Fortinet の勧告の記載をそのまま引いたもの</strong>です。</p></section>
+<section id="s11"><h2>メールゲートウェイは「境界の外側に置かれた、メールが平文で通る機器」である<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>FortiMail のような製品の位置づけを考えると、 この脆弱性の重さが見えます。</p>
+<p>メールセキュリティゲートウェイは、 <strong>組織のメールが出入りする経路の上に置かれます。</strong> 添付の検査やリンクの書き換えをするため、 <strong>中身を見られる位置にある</strong>ことが設計の前提です。 そして管理のために web の画面を持ち、 運用の都合でそれが<strong>インターネットから見える構成になりやすい。</strong></p>
+<p>つまりこの種の機器は、 <strong>「外から届く」「中身が見える」「落とされると全社のメールに影響する」</strong>という 3つの条件を同時に満たします。 攻撃者から見れば、 1台を取るだけでメールの収集と組織内への足がかりの両方が手に入ります。</p>
+<p>本件の IoC が <strong>保存データの外部転送の設定</strong>を含んでいることは、 この構造がそのまま使われたことを示しています（本記録の評価）。</p>
+<p>2026年に入ってから、<strong>境界に置かれる機器（VPN・メールゲートウェイ・ ファイル転送装置・ネットワーク機器）の認証前の脆弱性</strong>が 繰り返し悪用されています。 共通するのは「<strong>守るための機器が、守られていない</strong>」という点です。 エンドポイントには EDR が入り、サーバには監視が入っていても、 <strong>アプライアンスは中が見えず、ログも機器の中にしか無い</strong>ことが多い。 本件で CISA がフォレンジック調査まで求めたのは、 <strong>この種の機器では「侵害されたかどうか」を後から調べる手立てが薄い</strong>という 認識の表れだと読めます（本記録の評価）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-104286　<b>概要:</b> FortiMail。CWE-22（パストラバーサル）と CWE-158（NULL バイト・NULL 文字の 不適切な無害化）により、**認証されていない攻撃者が 細工した HTTP / HTTPS 要求で基盤システム上に任意のファイルを書き込める。** CVSS v3.1 基本値 9.8（Critical）。勧告 ID は FG-IR-26-175。 **2026年10月1日に CISA の KEV カタログへ収載（期限10月4日・ フォレンジック調査の要求つき）。**　<b>exploited:</b> はい</div></td></tr><tr><th>affected_versions</th><td>**FortiMail 8.0.0〜8.0.1 / 7.6.0〜7.6.6 / 7.4.0〜7.4.8 / 7.2.0〜7.2.9** （Fortinet の勧告および BleepingComputer）。 修正を含む版として **8.0.2 / 7.6.7 / 7.4.9** が挙げられているが、 いずれも**「予定」であり、本記録の作成者が2026年10月2日に確認した時点で入手できない。** **7.2 系には修正版が示されておらず、7.4 系以降への移行が必要**とされている。</td></tr><tr><th>exploitation_status</th><td>**Fortinet は勧告に「実際に悪用されているとの報告がある」と明記している。** あわせて**IoC（侵害機器上のファイル7点の SHA-256、攻撃に関連する IP 2件、 ログの例）を公開**しており、実機の解析が済んでいる段階と読める（本記録の評価）。 **CISA は2026年10月1日に KEV へ収載し、期限を10月4日とした上で フォレンジック調査を要求している**（`forensicTriage: Yes`）。 **ランサムウェアキャンペーンでの使用は KEV 上 `Unknown`。** **悪用の開始時期・侵害台数・攻撃者は公表されていない。**</td></tr><tr><th>iocs</th><td><div class=sub>/data/lib/liblog.so</div><div class=sub>/bin/smit</div><div class=sub>/data/bin/webconsole</div><div class=sub>/data/bin/mailservice</div><div class=sub>/data/etc/httpd.conf</div><div class=sub>/data/etc/ld.so.preload</div><div class=sub>/data/migadmin.tar.gz</div><div class=sub>79[.]141.169.187</div><div class=sub>45[.]129.0.192</div><div class=fn>**Fortinet の勧告に掲載された値をそのまま引いたものである。** **本記録はこれらの悪性を独自に検証していない** （照合先のテレメトリを持たないため）。 **検知の根拠としてそのまま使うのではなく、 手元の機器にファイルが存在するかの確認と、 2つの IP との通信の有無の確認に用いる。** IP は誤クリックを避けるため角括弧で区切って記載した。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> IBE（Identity Based Encryption）機能を無効化する （`config system encryption ibe` → `set status disable` → `end`）　<b>副作用:</b> **外部の相手へ暗号化メールを送り、受信者がブラウザで復号する運用が止まる。** IBE を業務で使っている組織では、 **相手方への連絡と代替手段（添付の暗号化・ファイル転送サービス）の 用意を先に済ませないと、メールが届かない事故になる。**</div><div class=sub><b>item:</b> 管理インタフェース（GUI）へのインターネットからのアクセスを無効にする、 または信頼する内部ネットワークからのみ到達できるようにする　<b>副作用:</b> **遠隔地からの管理が止まる。** 運用を外部委託している場合、委託先の作業経路も同時に切れる。 VPN や踏み台の経路を先に用意しないと、 **障害時に機器へ入れなくなる。**</div><div class=sub><b>item:</b> Fortinet の IoC（ファイル7点の SHA-256、IP 2件）で 手元の機器が既に侵害されていないかを確認する　<b>副作用:</b> **確認には機器への管理アクセスが必要で、 上記の回避策2と作業の順序が競合する。** また**侵害が見つかった場合、設定を引き継いだ復旧では 攻撃者の仕込みも引き継ぐ**ため、初期化からの再構築が必要になる （所要時間とメールの停止を見込む必要がある）。</div><div class=sub><b>item:</b> 修正版（8.0.2 / 7.6.7 / 7.4.9）が提供されたら速やかに適用する　<b>副作用:</b> **現時点では適用できない（いずれも未提供）。** 提供を待つ間は回避策で持たせる必要がある。 **7.2 系の利用者は版の更新ではなく 7.4 系への移行**になるため、 設定の互換性の確認と試験の時間を見込む。</div><div class=sub><b>item:</b> アプライアンスの syslog を機器外の収集先へ転送し、 IBE の復号エラー・認証失敗・構成変更（保存アカウントの追加・cron の追加）を 監視の対象にする　<b>副作用:</b> **ログの量が増え、収集先の容量と費用が増える。** 既存の検知規則に合わないため、 **何を通知の対象にするかを決める作業が必要**になる。</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期は公表されていない</td><td class=nowrap><span class="b kind">発生</span></td><td>**Fortinet 製品セキュリティチームの Gwendal Guégniaud が社内で脆弱性を発見。** **発見日は公表されていない。** そのため、内部発見が悪用の観測より前だったのかは判断できない。</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（2026年10月1日より前）</td><td class=nowrap><span class="b kind">発生</span></td><td>**実際の攻撃での悪用が始まる。** Fortinet は勧告に「実際に悪用されているとの報告がある」と記すのみで、 **初回の悪用がいつか、何台が侵害されたかを公表していない。** 侵害された機器では `/data/lib/liblog.so` 等の追加や `/bin/smit`・`/data/etc/httpd.conf` の改変が確認されている。</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Fortinet が勧告 FG-IR-26-175 を公表。** CVE-2026-104286（CVSS v3.1 9.8・Critical）、 影響を受ける4系列の版、悪用の報告、回避策（IBE の無効化／管理面の到達性の制限）、 修正版の「予定」、IoC（ファイル7点・IP 2件・ログの例）を示した。</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA が CVE-2026-104286 を KEV カタログに収載**（期限2026年10月4日・ フォレンジック調査の要求つき）。 本記録の作成者が KEV カタログ（catalogVersion 2026.10.01、 公開時刻 19:54 UTC）を直接取得して確認した。</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**BleepingComputer が報道**（22:42 UTC）。 Fortinet への取材内容（CISA を含む政府機関と連絡中）と、 IoC の一覧、ログの例を記事化した。</td></tr><tr><td class="sm nowrap tw">2026年10月2日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**国内では Security NEXT が報道。** 回避策の実施と、7.2 系の利用者は 7.4 系以降への移行が必要であることを伝えた。</td></tr><tr><td class="sm nowrap tw">2026年10月2日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Fortinet の勧告ページと CISA の KEV カタログを参照し、 修正版が依然として「予定」の段階であることを確認した**（観測）。 FortiMail 8.0.2 / 7.6.7 / 7.4.9 はいずれも この時点で入手可能になっていない。</td></tr><tr><td class="sm nowrap tw">2026年10月4日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>**CISA が米連邦民間機関に課した期限。** BOD 26-04 に沿った緩和と、フォレンジック調査の要件の充足が求められる。 緩和が利用できない場合は**製品の利用を停止**することとされている。</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">本記録による推定</span><span class=ui>影響を受ける構成要素（GUI）と回避策（IBE の無効化）が噛み合っていない</span><div class=sm>勧告は脆弱な構成要素を**管理インタフェース（GUI）**とし、 Security NEXT も「グラフィカルユーザーインタフェースのコンポーネント」と報じている。 一方で**回避策の筆頭は IBE（Identity Based Encryption）機能の無効化**であり、 IoC のログの例にも**IBE の復号エラー**が含まれる。 本記録の作成者はここから 「脆弱な処理は GUI のうち IBE に関わる経路にある」と**推定した**が、 **Fortinet は脆弱な関数・経路を説明していない。** **したがって「IBE を無効にしていれば安全」とは本記録も主張しない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の開始時期が公表されていないのに、フォレンジック調査が要求されている</span><div class=sm>CISA は `forensicTriage: Yes` として侵害の有無の調査を求め、 期限を2026年10月4日とした。 一方**Fortinet は悪用がいつ始まったかを公表していない。** BleepingComputer も 「Fortinet はいつから悪用されたか、何台が侵害されたか、 誰が背後にいるかを明らかにしていない」と書いている。 **調査すべき期間の起点が無い**という不整合があり、 本記録は「手元に残っているログの全期間を見る」以外の指示を導けない （本記録の評価）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>「任意のファイルの書き込み」と「コードの実行」の記述の差</span><div class=sm>**Fortinet の勧告が明言しているのは「任意のファイルの書き込み」**である。 一方 BleepingComputer は 「**未認可のコードまたはコマンドを実行するために悪用されている**」と報じている。 書き込みから実行に至る機序は **勧告に説明が無い**ため、本記録では execution 段階の confidence を presumed としている。 **「ファイルを書けること」と「コードが動くこと」は厳密には別の主張である。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>修正版が「予定」のまま入手できない</span><div class=sm>Fortinet は FortiMail 8.0.2 / 7.6.7 / 7.4.9 を修正を含む版として挙げているが、 **いずれも「upcoming（予定）」であり提供日は示されていない。** **本記録の作成者が2026年10月2日に勧告ページを参照した時点で、 提供開始の記載は確認できなかった。** ただし**本記録はダウンロードサイト（Fortinet のサポートポータル。 認証が必要）を確認していない**ため、 「2026年10月2日時点で絶対に存在しない」ことまでは裏取りできていない。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>攻撃者の帰属・目的に一次資料が触れていない</span><div class=sm>**Fortinet は攻撃者について一切述べていない。** 本記録は IoC のログの例（保存データの外部転送の設定）から 「目的はメールの収集にあるとみられる」という BleepingComputer の読みを 紹介しているが、 **Fortinet がそう述べたわけではなく、本記録も断定しない。** 国家支援か犯罪集団かも不明である。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証の前に届く要求が、メールの通り道そのものを攻撃者側に向ける</div><div class=svgwrap><svg viewBox="0 0 1610 184" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,92.0 C193.0,92.0 193.0,92.0 220,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,92.0 C397.0,92.0 397.0,92.0 424,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,92.0 C601.0,92.0 601.0,92.0 628,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,92.0 C805.0,92.0 805.0,92.0 832,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,92.0 C1009.0,92.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,92.0 C1009.0,92.0 1009.0,143.0 1036,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,92.0 C1213.0,92.0 1213.0,143.0 1036,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,143.0 C1315.0,143.0 1315.0,53.0 1444,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,131.0 C1213.0,131.0 1213.0,92.0 832,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証されていない攻撃者（</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">帰属は公表されていない）</text><rect x="220" y="55.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工した HTTP / </text><text x="295.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTPS 要求</text><text x="295.0" y="104.0" text-anchor="middle" fill="#f48fb1" font-size="10">CWE-22 + CWE</text><text x="295.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">-158。認証の前に到達</text><rect x="424" y="55.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">FortiMail 管理</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インタフェース（GUI）</text><text x="499.0" y="104.0" text-anchor="middle" fill="#f48fb1" font-size="10">回避策は IBE の無効</text><text x="499.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">化。脆弱な経路は特定され</text><rect x="628" y="69.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意のファイルの書き込み</text><rect x="832" y="67.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">FortiMail アプ</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ライアンス</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ld.so.preloa</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">d + liblog.s</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">o（永続化）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">共有ライブラリの先読み。</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">用途は Fortinet</text><rect x="1036" y="118.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">保存アカウント arch</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ive234 の設定</text><rect x="1240" y="67.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">組織のメール（通過・保存</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><rect x="1444" y="21.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="43.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遠隔サーバ 79[.]1</text><text x="1519.0" y="57.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">41.169.187 の</text><text x="1519.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> /uploads</text><rect x="1444" y="99.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1519.0" y="121.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA（KEV 収載・</text><text x="1519.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">期限10月4日・フォレン</text><text x="1519.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジック調査の要求）</text></svg></div><div class=fn>Fortinet の勧告 FG-IR-26-175（2026年10月1日）の記述と公開された IoC、 および BleepingComputer の報道にもとづく経路。 **initial-access は Fortinet が明言した事実、 それ以降は IoC から読み取れる形跡であり、 機序は Fortinet が説明していない。**</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価である。** Fortinet はログの例として**失敗したログイン試行**と **IBE の復号エラー（不正な Base64 エンコーディング）**を挙げている。 つまり**攻撃の過程は機器のログに現れていた。** しかし**修正版が無い状態で悪用が進んでいた**ことは、 これらのログが監視の対象になっていなかったことを示す。 アプライアンスのログを機器の外へ送っていない組織では、 そもそも見る手立てが無い。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>管理インタフェース（GUI）へのインターネットからの到達を断ち、 信頼する内部ネットワークからのみ到達できるようにする（勧告の回避策2）</div><div class=ctl><span class="b eff">侵入を防げた</span>IBE（Identity Based Encryption）機能を無効化する（勧告の回避策1）</div><div class=ctl><span class="b eff">影響を限定できた</span>機器の前段に WAF を置き、経路にパストラバーサルの表現や NULL 文字を含む 要求を遮断する（恒久対策ではなく時間稼ぎとして）</div><div class=ctl><span class="b eff">検知できた</span>アプライアンスの syslog を機器外の収集先へ転送し、 IBE の復号エラーと認証失敗を監視の対象にする</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価である。** Fortinet はログの例として **`/migadmin` に関わるコマンドを実行する cron のジョブ**を挙げている。 **機器上で定期実行が追加されたことはログに現れている**が、 アプライアンスの構成変更を差分で見ていなければ気づけない。</div></td><td><div class=ctl><span class="b eff">検知できた</span>機器の構成（管理者・保存アカウント・cron・ファイアウォール規則）の 差分を定期的に取得して比較する</div><div class=ctl><span class="b eff">検知できた</span>機器の完全性検査（ベンダーが提供する検証手段がある場合）を定期的に実行する</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**Fortinet が SHA-256 まで示している**ため、 勧告の公開後は**ファイルの存在確認で検知できる。** ただしそれは事後の確認であり、 **設置された時点で止める検知ではない。** アプライアンスは内部にエンドポイント対策を入れられないため、 **ファイルの追加をその場で捕まえる手立てが利用者側に無い** （本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>勧告の IoC（ファイル7点の SHA-256）を手元の機器で確認する—— CISA が求めるフォレンジック調査の実質的な中身がこれである</div><div class=ctl><span class="b eff">影響を限定できた</span>侵害が疑われる機器は設定の移行ではなく**初期化して再構築**し、 管理者の資格情報・証明書・API キーを入れ替える</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価である。** **保存アカウントの追加は機器の構成変更としてログに残る** （Fortinet が例として挙げているログそのものがそれである）。 外部 IP への定期的な大量送信は、 ネットワーク側でも見える種類の通信である。 **機器のログを外に出し、機器からの外向き通信を許可先で絞っていれば捕まえられた。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>アプライアンスからの外向き通信を、業務上必要な宛先だけに絞る （既定で全許可にしない）</div><div class=ctl><span class="b eff">検知できた</span>機器の構成変更（管理者・保存アカウント・転送先）のログを 外部の収集先へ送り、変更を通知の対象にする</div><div class=ctl><span class="b eff">検知できた</span>メールの保存・アーカイブの転送先を台帳で管理し、 登録外の宛先が現れたら検知する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Fortinet は**修正版が提供できていない段階で**勧告を公表し、 **IoC まで同時に公開した。** CISA は**同日に KEV へ収載し、3日という短い期限を切った。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** この判断は妥当だと考える。 すでに悪用されている脆弱性では、 **黙っていて守られるのは攻撃者だけ**である。 とくに評価したいのは**IoC を同時に出した**点で、 これにより利用者は「塞ぐ」と「既に入られていないか調べる」の両方に着手できる。 CISA が3日の期限とフォレンジック調査を課したのも、 修正版が無い状況では筋が通っている。
+
+一方で**不足が2つある。** 第一に、**悪用の開始時期が示されていない。** フォレンジック調査を求めるなら、 **どこまで遡るべきかの目安が無ければ作業が設計できない。** 第二に、**IBE を使っていない構成が安全なのかが書かれていない。** 回避策が IBE の無効化であるのに、 影響を受ける構成要素は GUI とされており、 **自組織が対象かどうかを利用者が判定できない。**</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「修正版が無い脆弱性」では、意思決定は技術ではなく業務停止の判断になる</div><div class=lw>本件で取れる手は**IBE を切る・管理面を外から切る・製品を止める**の3つで、 **いずれも業務に影響が出る。** 修正版（8.0.2 / 7.6.7 / 7.4.9）は「予定」であり、 本記録の作成者が2026年10月2日に確認した時点で入手できない。 CISA は期限を3日とし、 「緩和が利用できない場合は**製品の利用を停止する**」ことまで要求している。 **これは技術部門だけでは下せない判断である。**</div><div class=la><b>取るべき行動</b> **「修正版が無い重大脆弱性が自社の境界機器に出たとき、 誰が業務停止を判断するか」を事前に決めておくこと。** 具体には、①対象機器ごとに「止めたら何が止まるか」を1行で書いた一覧を持つ、 ②暗号化メール・遠隔管理といった機能を切る判断の権限者を定める、 ③判断に要る情報（影響する取引先・代替手段）を平時に用意しておく。 **緊急時に調べ始めると、3日の期限には間に合わない。**</div></li><li><div class=lp>境界に置くアプライアンスは、侵害されたかを後から調べる手立てが最も薄い</div><div class=lw>CISA が `forensicTriage: Yes` として調査を要求したのは、 **この種の機器では侵害の確認が難しい**という認識の表れと読める（本記録の評価）。 アプライアンスには EDR を入れられず、 ログは機器の中にしか無いことが多い。 本件の IoC には**`ld.so.preload` によるライブラリの先読み**が含まれており、 これは**機器のログ出力そのものを書き換えうる形**である （用途は Fortinet が説明していないが、 ログを汚染されれば機器内のログは証拠にならない）。</div><div class=la><b>取るべき行動</b> **境界に置く機器すべてについて「syslog を機器外に送っているか」を 棚卸しし、送っていない機器を今期中に潰すこと。** 費用は収集先の容量として見積もる。 あわせて**機器の構成（管理者・転送先・cron・ファイアウォール規則）の 定期的な取得と差分比較**を運用に組み込む。 **機器が掌握された後に機器の中を見ても、それは攻撃者が見せたい内容である。**</div></li><li><div class=lp>サポートの切れた系列を運用していると、緊急時に「移行」を要求される</div><div class=lw>**FortiMail 7.2 系には修正版が示されず、7.4 系以降への移行が必要**とされた。 これは版を上げる作業ではなく**系列を乗り換える作業**で、 設定の互換性の確認と試験が要る。 **緊急の対応としては時間がかかりすぎる**（本記録の評価）。 理由は Fortinet が説明していないが、 サポート期間の扱いによるものと読める。</div><div class=la><b>取るべき行動</b> **境界機器の台帳に「ベンダーのサポート期限」の欄を設け、 期限の6か月前に移行を起案する運用にすること。** 本件のように**緊急時に移行を迫られる**と、 試験を省いた移行か、脆弱なまま運用を続けるかの二択になる。 平時の更新は費用の問題だが、緊急時の移行は事故の原因になる。</div></li><li><div class=lp>メールゲートウェイの侵害は、情報漏えいであると同時に「出口の掌握」である</div><div class=lw>Fortinet が示したログの例には、 **保存用アカウントを追加して外部サーバへ送る設定**が含まれている。 FortiMail は組織のメールが通過する位置にあるため、 掌握されれば**通過するメールがそのまま流れる**ことになりうる （BleepingComputer も同じ読みを示しているが、 **Fortinet はこれを攻撃者の目的として述べていない**）。 さらにメールゲートウェイは**組織の全員に届くメールを操作できる位置**でもある。</div><div class=la><b>取るべき行動</b> **「メールゲートウェイが侵害された場合」を想定した対応計画を、 個別に作っておくこと。** 含めるべきは、①通過したメールを侵害期間について漏えいと見なすかの判断基準、 ②機器が持つ資格情報（LDAP / AD の連携用アカウント、 API キー、証明書）の入れ替えの手順、 ③取引先への通知の判断。 **機器の復旧（塞ぐ）と、漏えいの評価（何が出たか）は別の作業である。**</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>最初の一手は版の更新ではない——修正版が存在しないため、到達性を断つことから始める</div><div class=lw>欠陥は**認証の前に到達できる**管理インタフェースの要求処理にある。 修正版（8.0.2 / 7.6.7 / 7.4.9）は未提供で、 待っている間も悪用は続いている。 **到達性を断つことだけが、今日できる確実な対処である。**</div><div class=la><b>取るべき行動</b> **今日のうちに2つを実施する**—— ①**管理インタフェース（GUI）へのインターネットからの到達を断つ** （信頼する内部ネットワークに限定）、 ②**IBE を使っていなければ無効化する** （`config system encryption ibe` → `set status disable` → `end`）。 **勧告はこの2つを等価とも併用必須とも書いていないため、 安全側に寄せて両方を実施する。** IBE を業務で使っている場合は、 切る前に相手方への連絡と代替手段を用意する。</div></li><li><div class=lp>IoC の確認は「ファイルの有無」と「2つの IP との通信」の2本で足りる</div><div class=lw>Fortinet は**追加・変更された7つのファイルを SHA-256 付きで**、 **攻撃に関連する2つの IP** を公開している。 悪用の開始時期が不明なため期間を絞れないが、 **確認そのものは具体的である。**</div><div class=la><b>取るべき行動</b> **次の順で確認すること**—— ①機器上に `/data/etc/ld.so.preload`・`/data/lib/liblog.so`・ `/data/bin/webconsole`・`/data/bin/mailservice` が存在するか （**存在自体が異常**）、 ②`/bin/smit`・`/data/etc/httpd.conf`・`/data/migadmin.tar.gz` が 勧告のハッシュと一致するか、 ③ファイアウォールのログで 79[.]141.169.187 と 45[.]129.0.192 への／からの 通信が**手元に残っている全期間**にあるか、 ④機器の構成に**見覚えのない保存アカウント**（例: archive234 のような名前）や **cron のジョブ**が追加されていないか。</div></li><li><div class=lp>機器のログを機器の中だけに置いていると、フォレンジック調査が成立しない</div><div class=lw>Fortinet が示したログの例には、 **IBE の復号エラー・認証失敗・保存アカウントの追加・cron の実行**が含まれる。 **攻撃の痕跡はログに出ていた。** しかし IoC に `ld.so.preload` と `liblog.so` が含まれることから、 **ログ出力の経路自体を書き換えられうる**と読める（本記録の評価）。 機器内のログだけに頼る構成では、 侵害後に「残っているログが信用できない」状態になる。</div><div class=la><b>取るべき行動</b> **FortiMail の syslog を機器外の収集先へ転送し、 最低でも次の4つを検知・通知の対象にすること**—— ①IBE の復号エラー、②管理者の認証失敗の多発、 ③保存アカウント（archive account）の追加・変更、 ④cron のジョブの追加。 **転送は侵害後ではなく今設定する**—— 侵害されてからでは、送られるログも疑わしい。</div></li><li><div class=lp>侵害が見つかった機器は、設定を引き継いだ復旧をしてはならない</div><div class=lw>IoC には**改変された設定ファイル（`/data/etc/httpd.conf`）と アーカイブ（`/data/migadmin.tar.gz`）**が含まれる。 設定のバックアップから復元すると、 **攻撃者の仕込みも一緒に戻る可能性がある**（本記録の評価）。 また機器は LDAP / AD の連携用アカウントや証明書を保持しているため、 **機器の掌握は資格情報の漏えいを含む。**</div><div class=la><b>取るべき行動</b> **侵害の痕跡が見つかった場合は、①機器を初期化して再構築し、 ②設定は手作業で再投入（バックアップからの一括復元を避ける）、 ③機器が保持していた資格情報（LDAP / AD 連携用、API キー、証明書）をすべて入れ替える。** 所要時間とメールの停止時間を見込んだ手順を、 **侵害が見つかる前に書いておく。**</div></li><li><div class=lp>「IBE を使っていないから無関係」とは勧告から判断できない</div><div class=lw>勧告は影響を受ける構成要素を**管理インタフェース（GUI）**とし、 回避策の1つが**IBE の無効化**である。 IoC のログに IBE の復号エラーが現れることから、 脆弱な経路は IBE に関わると読めるが、 **Fortinet は経路を特定して説明していない。** **「IBE を無効にしていれば安全」とは勧告のどこにも書かれていない。**</div><div class=la><b>取るべき行動</b> **IBE の利用状況にかかわらず、影響する版に該当するなら 対象として扱うこと。** 判定条件は「**版が 8.0.0〜8.0.1 / 7.6.0〜7.6.6 / 7.4.0〜7.4.8 / 7.2.0〜7.2.9 のいずれかであるか**」であり、 機能の有効・無効ではない。 **到達性を断つ回避策（管理面をインターネットから外す）は、 経路の特定に依存しないため確実性が高い。**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> FortiMail 8.0.0〜8.0.1 / 7.6.0〜7.6.6 / 7.4.0〜7.4.8 / 7.2.0〜7.2.9 を運用しており、 管理インタフェース（GUI）にインターネットから到達できる</td><td class=sm>欠陥は**認証の前に到達できる。** 管理者のパスワードの強度も多要素認証も関係しない。 **外から要求を1つ投げられる位置にいれば成立する**ため、 到達性そのものが唯一の防壁になる。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> IBE（Identity Based Encryption）機能を業務で使っており、 無効化すると外部の相手との暗号化メールの運用が止まる</td><td class=sm>勧告の回避策の筆頭が IBE の無効化である。 **使っている組織は「切る」判断に業務上の代償が伴う**ため、 代替手段の用意が先に必要になる。 使っていない組織は無効化の副作用が無いので、即座に実施できる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> FortiMail の syslog を機器の外へ転送しておらず、 機器の構成（管理者・保存アカウント・cron）の差分を定期的に取得していない</td><td class=sm>Fortinet が示した痕跡（IBE の復号エラー、保存アカウントの追加、 cron の追加）は**いずれもログと構成に現れる。** CISA が要求するフォレンジック調査は、 **ログを機器の外に持っているかで成否が分かれる** （IoC に `ld.so.preload` と `liblog.so` が含まれるため、 機器内のログの信頼性も問われる）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> FortiMail 7.2 系を運用しており、7.4 系以降への移行計画が無い</td><td class=sm>**7.2 系には修正版が示されていない。** 対処は版の更新ではなく系列の移行になり、 設定の互換性の確認と試験が要る。 **緊急の時間軸（CISA の期限は収載から3日）では間に合わない**ため、 回避策で持たせながら移行を計画する必要がある。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 「修正版が存在しない重大脆弱性」に対して、 機能の停止・機器の停止を判断する権限者と手順が決まっていない</td><td class=sm>本件で取れる手はすべて業務に影響する （IBE の停止・遠隔管理の停止・製品の停止）。 CISA は「緩和が利用できない場合は製品の利用を停止する」ことまで求めた。 **技術部門だけでは下せない判断を、3日で下す必要がある。**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> メールゲートウェイを通過するメールに機密情報が含まれ、 機器が侵害された場合の「漏えいの範囲」の評価基準が無い</td><td class=sm>Fortinet のログの例には**保存データを外部へ送る設定**が含まれる。 機器が掌握されていた期間のメールを漏えいと見なすのか、 見なすならどう範囲を確定するのかは、 **侵害が確認されてから考えると答えが出ない**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月1日 Fortinet（PSIRT）</span> <a href="https://fortiguard.fortinet.com/psirt/FG-IR-26-175" target="_blank" rel="noreferrer noopener nofollow">FG-IR-26-175: FortiMail - Path traversal and improper neutralization of NULL byte (CVE-2026-104286)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（英語。**本記録の中核となる一次資料。** **本記録の作成者が2026年10月2日に参照して確認した内容**は次のとおり—— 影響を受ける版（8.0.0〜8.0.1 / 7.6.0〜7.6.6 / 7.4.0〜7.4.8 / 7.2.0〜7.2.9）、 CVSS 9.8、公開日2026年10月1日、 「**実際に悪用されているとの報告がある**」（原文英語: &quot;This has been reported to be exploited in the wild&quot;）、 回避策（IBE の無効化／管理インタフェースへのインターネットからのアクセスの制限）、 修正版の予定（8.0.2 以降 / 7.6.7 以降 / 7.4.9 以降、7.2 は 7.4 以降へ移行）、 IoC（ファイル・IP 79.141.169.187 と 45.129.0.192・ログの記載）。 **修正版は「予定」のままで、入手可能にはなっていない。**））</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月1日 米 Cybersecurity and Infrastructure Security Agency（CISA）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog — CVE-2026-104286（Fortinet FortiMail Path Traversal Vulnerability）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（英語。**本記録の作成者が2026年10月2日に KEV カタログの JSON（catalogVersion 2026.10.01、 公開 2026-10-01T19:54:04Z）を直接取得し、 CVE-2026-104286 の項目を確認した。** `dateAdded: 2026-10-01`、`dueDate: 2026-10-04`、 `forensicTriage: Yes`、 `knownRansomwareCampaignUse: Unknown`、 `cwes: [CWE-22, CWE-158]`。 要求事項は BOD 26-04 に沿った緩和とフォレンジック調査の要件の充足、 **緩和が利用できない場合は製品の利用の停止。**））</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月1日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/fortinet-warns-of-critical-fortimail-flaw-exploited-in-zero-day-attacks/" target="_blank" rel="noreferrer noopener nofollow">Fortinet warns of critical FortiMail flaw exploited in zero-day attacks</a> <span class="b kind">記事</span><span class=sm>（（英語。**IoC の全文（ファイル7点の SHA-256、IP 2件、ログの例）と、 Fortinet への取材内容を含む最も詳しい二次資料。** 発見者が Fortinet 製品セキュリティチームの Gwendal Guégniaud であること、 Fortinet が「CISA を含む関係政府機関と連絡を取っている」と回答したこと、 CISA が KEV へ収載し10月4日の期限を課したことを報じている。 **「未認可のコードまたはコマンドの実行」という記述は勧告より踏み込んでいる** 点に注意が要る。配信 22:42 UTC。））</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月2日 Security NEXT</span> <a href="https://www.security-next.com/190943" target="_blank" rel="noreferrer noopener nofollow">「FortiMail」に深刻なゼロデイ脆弱性 - 悪用が報告、修正版は準備中</a> <span class="b kind">記事</span><span class=sm>（（日本語。**国内向けの報道。本記録が本事案を把握した起点の一方。** 脆弱性を「グラフィカルユーザーインタフェースのコンポーネント」のものと記述し、 7.2 系の利用者は 7.4 系以降への移行が必要であることを伝えている。 **IoC には触れていない。**配信は2026年10月1日 23:28 UTC。））</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月2日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月2日の日次ニュース（Security NEXT・BleepingComputer）を起点に、 **本記録の作成者が Fortinet の勧告ページ（FG-IR-26-175）と CISA の KEV カタログ（catalogVersion 2026.10.01）を直接取得して裏を取った。** KEV の項目（`dateAdded: 2026-10-01`、`dueDate: 2026-10-04`、 `forensicTriage: Yes`、`knownRansomwareCampaignUse: Unknown`、 `cwes: [CWE-22, CWE-158]`）は報道に無い一次情報である。 **修正版が2026年10月2日時点で「予定」のままであることも勧告ページで確認した。** 悪用の開始時期・侵害台数・攻撃者・脆弱な経路の特定はいずれも公表されていないため unknowns に明示した。status は updating（修正版の提供が未了）。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">Fortinet</span><span class="b tag">FortiMail</span><span class="b tag">CVE-2026-104286</span><span class="b tag">FG-IR-26-175</span><span class="b tag">ゼロデイ</span><span class="b tag">パストラバーサル</span><span class="b tag">CWE-22</span><span class="b tag">CWE-158</span><span class="b tag">認証前の脆弱性</span><span class="b tag">任意ファイル書き込み</span><span class="b tag">IBE</span><span class="b tag">IBE 暗号化メール</span><span class="b tag">メールセキュリティゲートウェイ</span><span class="b tag">境界機器</span><span class="b tag">CISA KEV</span><span class="b tag">BOD 26-04</span><span class="b tag">フォレンジック調査</span><span class="b tag">IoC</span><span class="b tag">ld.so.preload</span><span class="b tag">修正版未提供</span><span class="b tag">回避策</span><span class="b tag">アプライアンス</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-02 17:11 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
