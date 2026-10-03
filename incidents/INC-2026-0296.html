@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>GitLab 自前 AI Gateway に RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0296</span>GitLab 自前 AI Gateway に RCE</h1>
+<header class="site-header">
+  <p class="subtitle">GitLab が2026年10月2日、自前でホストする AI Gateway に CVSS 9.9 の重大な脆弱性 CVE-2026-90970（CWE-1336）を公表した。Duo Agent Platform を使えるログイン済みの利用者が、細工したフロー設定でプロンプトテンプレートのサンドボックスを脱出し、AI Gateway 上で任意のコマンドを実行できる。対策版は 19.2.4・19.3.2・19.4.1 で、GitLab がホストする AI Gateway は修正済み。回避策は示されておらず、侵害の有無を確かめる手順も提供されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月2日</span>
+  <span>最終更新: 2026年10月3日</span>
+</div>
+
+<div class="lead"><p>2026年10月2日、GitLab が <strong>AI Gateway</strong> の重大な脆弱性<strong>CVE-2026-90970</strong>（CVSS 3.1 基本値 <strong>9.9</strong>・CWE-1336）を公表しました。AI Gateway は GitLab のインスタンスと AI モデルをつなぐサービスで、<strong>GitLab Duo</strong> の AI 機能を支えます。</p>
+<p>GitLab の説明は次のとおりです——「<strong>GitLab は AI Gateway の問題を是正した。一定の条件下で、Duo Agent Platform へのアクセス権を持つ認証済みの利用者が、細工したフロー設定によってプロンプトテンプレートのサンドボックスを脱出し、AI Gateway 上で任意のコマンドを実行できる可能性があった</strong>」（原文英語）。</p>
+<p><strong>対象は、自前で AI Gateway をホストしている組織だけです。</strong> GitLab は自社が運用する AI Gateway を既に修正しており、<strong>GitLab.com・GitLab Dedicated・GitLab がホストするゲートウェイを使うSelf-Managed の利用者は対応不要</strong>としています。<strong>自前でホストしている組織には、勧告の公開に先立って個別に連絡した</strong>とも述べています。</p>
+<p>対策版は <strong>19.2.4・19.3.2・19.4.1</strong> です。影響する版は<strong>18.1.6 以降 19.2.4 未満・19.3 系の 19.3.2 未満・19.4 系の 19.4.1 未満</strong>で、<strong>19.2.4 より下の系列には対策版が示されていません。</strong></p>
+<p><strong>回避策は示されていません。</strong> また、<strong>更新する前に攻撃を受けていたかどうかを確かめる手順も提供されていません。</strong> 悪用の有無について GitLab の勧告は触れておらず、米 CISA は10月2日に CVE レコードへ「悪用: なし（none）」の評価を追加しています。</p>
+<p>カナダのサイバーセキュリティセンターは同日、勧告 <strong>AV26-994</strong> を出して更新を促しました。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>悪用が成立する「一定の条件（under certain conditions）」の中身</span><span class="b rsn">公表されていない</span><div class=sm>GitLab の説明は「**一定の条件下で**（under certain conditions）」としか書いていない。 **どの条件が揃えばサンドボックスを脱出できるのかが示されていない。** **Duo Agent Platform へのアクセス権より細かい役割（ロール）の指定も無い。** **このため、自組織が『条件に当たるか』を判断できず、 結果として「全員が当たる」前提で動くしかない**（本記録の評価）。</div></li><li><span class=ui>回避策（更新できない場合に何をすればよいか）</span><span class="b rsn">公表されていない</span><div class=sm>**勧告に回避策（workaround）の記載が無い。** **本記録の作成者が GitLab の CVE レコードを取得して確認したが、 そこにも記載は無かった。** **AI Gateway は Docker イメージ／Helm チャートとして動いており、 止めるという選択は Duo の AI 機能を止めることを意味する** （本記録の整理。GitLab はそう説明していない）。</div></li><li><span class=ui>更新する前に攻撃を受けていたかを確かめる手順（侵害の指標）</span><span class="b rsn">公表されていない</span><div class=sm>**勧告には、ゲートウェイが更新前に攻撃されていたかを確認する方法が示されていない。** ログに何が残るのか、どのような痕跡を探せばよいのかの記述が無い。 **CVSS 9.9 の任意コマンド実行に対して確認の手順が無いということは、 更新した組織は「侵害されていなかった」と言えないまま運用を続けることになる** （本記録の評価）。</div></li><li><span class=ui>19.2.4 より下の系列（18.1.6〜19.1 系）に対策版が出るかどうか</span><span class="b rsn">公表されていない</span><div class=sm>**対策版として示されたのは 19.2.4・19.3.2・19.4.1 の3つで、 19.2.4 より下の対策版は示されていない。** **GitLab の導入手引きは「GitLab の minor バージョンに合うゲートウェイの イメージを使う」よう指示しているが、 19.2.4 のゲートウェイが GitLab 19.1 以前で動くかどうかは勧告に書かれていない** （報道による）。 **古い系列への修正の予定も示されていない。**</div></li><li><span class=ui>自前で AI Gateway をホストしている組織の数</span><span class="b rsn">公表されていない</span><div class=sm>**GitLab は「自前でホストしている顧客に個別に連絡した」としているが、 その数は公表していない。** **したがって本脆弱性の影響の広さを外部から見積もれない。** GitLab 全体の登録利用者が3,000万人を超えるという数字は、 **この脆弱性の母数とは関係がない**（本記録の注記）。</div></li><li><span class=ui>実証コードの公開状況と、実際の悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**GitLab の勧告は悪用の有無に触れていない。** **米 CISA は2026年10月2日に CVE レコードへ「悪用: なし（none）」の評価を 追加した**（報道による）。 **CISA の評価には「公開された実証コードあり」「活発に悪用されている」が 上の段階としてある**ため、本件は現時点で最も低い段階に置かれている。 **本記録の作成者は実証コードの公開を確認していない。** **評価は時点のものであり、変わりうる。**</div></li><li><span class=ui>2026年2月の CVE-2026-1868 との関係について GitLab の見解</span><span class="b rsn">公表されていない</span><div class=sm>**今回の勧告は、2026年2月に修正した CVE-2026-1868 に言及していない**（報道による）。 **両者は同じ AI Gateway・同じ CWE-1336・いずれも CVSS 9.9 で、 どちらも「認証済みの利用者が細工したフロー（設定／定義）から到達する」形である。** **同じ機構で2度目かどうか、修正の射程が足りなかったのかどうかについて、 GitLab の説明は無い。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>GitLab Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>自前で AI Gateway をホストしている GitLab Self-Managed の利用組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>invisiblemeerkat（HackerOne の報告者）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>米国サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>カナダ・サイバーセキュリティセンター（Canadian Centre for Cyber Security）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS 3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.9<span class=fu>点</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>GitLab（CNA）の CVE レコードによる。 ベクタは `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`。 **9.9 まで上がっているのは `S:C`（スコープ変更）と `PR:L`（低い権限で足りる）が 同時に立っているためである**（本記録の読み解き）—— **「ログインできてさえいれば、ゲートウェイの外まで影響が及ぶ」**という形。 **`PR:N`（権限不要）ではない**ため、**誰でも外部から撃てる種類ではない。** **この項目は件数ではなく評点である**（分類の都合で「件数」の枠に入れている）</div></div><div class=fig><div class=fh><span class=fl>【比較】2026年2月の AI Gateway の脆弱性（CVE-2026-1868）の CVSS</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>9.9<span class=fu>点</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**本事案の数値ではない。** 2026年2月に GitLab が修正した AI Gateway の別の脆弱性。 **CWE-1336 で、認証済みの利用者が細工したフロー定義から到達できる点も同じ。** **同じ場所で同じ分類の欠陥が8か月に2度出ていることを示すために併記した** （本記録の注記）。出典は報道であり、本記録は CVE レコードを確認していない</div></div><div class=fig><div class=fh><span class=fl>【比較】2021年11月以降に CISA が KEV へ収載した GitLab の脆弱性の件数</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**本事案の数値ではない。** BleepingComputer による。 **うち1件はランサムウェアの集団に悪用されたとされる。** **本件（CVE-2026-90970）はこの5件に含まれない**—— 本記録の作成時点で KEV への収載を確認していない</div></div><div class=fig><div class=fh><span class=fl>提供された対策版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>版</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>19.2.4・19.3.2・19.4.1 の3つ。 **報道によれば、2026年10月2日時点で GitLab の保守方針がセキュリティ修正の 対象としていたのは 19.4・19.3・19.2 の3系列であり、 対策版が出た系列と一致する。** **したがって 18.1.6 から 19.1 系までを使っている組織には、 その系列向けの対策版が無い**（本記録の整理）</div></div></div></div>
+<section id="s4"><h2>対応が要るのは「自前で AI Gateway を立てている組織」だけである<span class="b slot">概観</span></h2><p>2026年10月2日、GitLab が公表した内容は次のとおりです。</p>
+<ul>
+<li><strong>識別子</strong>——<strong>CVE-2026-90970</strong></li>
+<li><strong>深刻度</strong>——CVSS 3.1 基本値 <strong>9.9</strong>（<code>AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H</code>）・<strong>CWE-1336</strong></li>
+<li><strong>影響</strong>——Duo Agent Platform へのアクセス権を持つ<strong>認証済みの利用者</strong>が、細工した<strong>フロー設定</strong>でプロンプトテンプレートのサンドボックスを脱出し、<strong>AI Gateway 上で任意のコマンドを実行</strong>できる</li>
+<li><strong>影響する版</strong>——<strong>18.1.6 以降 19.2.4 未満／19.3 系の 19.3.2 未満／19.4 系の 19.4.1 未満</strong></li>
+<li><strong>対策版</strong>——<strong>19.2.4・19.3.2・19.4.1</strong></li>
+<li><strong>対応不要</strong>——GitLab.com・GitLab Dedicated・<strong>GitLab がホストするAI Gateway を使っている Self-Managed の利用者</strong></li>
+<li><strong>報告者</strong>——HackerOne の <code>invisiblemeerkat</code></li>
+</ul>
+<p><strong>AI Gateway は、GitLab のインスタンスと AI モデルをつなぐサービス</strong>です。GitLab Duo の AI 機能はここを通ります。<strong>GitLab は自社でこのゲートウェイを運用しており、既に修正しています。</strong></p>
+<p><strong>自前で立てている組織だけが対象です。</strong> GitLab Duo Self-Hosted という形で、<strong>AI の要求と応答のデータを自社環境の内側にとどめたい</strong>組織に向けて提供されている選択肢です。<strong>データを外に出したくないという判断で選んだ構成が、今回は自分で更新しなければならない対象になっています</strong>（本記録の整理）。</p>
+<p>GitLab は、<strong>勧告を公開する前に、自前でホストしている顧客へ個別に連絡した</strong>と述べています。</p></section>
+<section id="s5"><h2>9.9 という点数は「低い権限で足りる」と「影響がゲートウェイの外へ出る」から来ている<span class="b slot">原因・手口</span></h2><p>CVSS ベクタは <code>CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H</code> です。<strong>9.9 まで上がっている理由は、2つの要素にあります</strong>（本記録の読み解き）。</p>
+<ul>
+<li><strong><code>PR:L</code>（低い権限で足りる）</strong>——必要なのは<strong>「Duo Agent Platform にアクセスできるログイン済みの利用者」</strong>であって、管理者ではありません。<strong>開発者が普通に持っている権限で届く可能性があります。</strong></li>
+<li><strong><code>S:C</code>（スコープ変更）</strong>——<strong>影響が脆弱なコンポーネントの外へ及びます。</strong>任意のコマンド実行がゲートウェイの実行環境で起きるため、<strong>そこから先に到達できるものすべてが射程に入ります。</strong></li>
+</ul>
+<p><strong>一方で <code>PR:N</code>（権限不要）ではありません。</strong> 誰でも外部から撃てる種類ではなく、<strong>「ログインできる人」が前提です。</strong> この区別は実務上重要です—— <strong>インターネットに露出しているかどうかより、「Duo Agent Platform を誰が使えるか」のほうが効きます</strong>（本記録の評価）。</p>
+<p><strong>自前のゲートウェイが何を持っているか</strong>も、影響の大きさを決めます。GitLab の導入手引きによれば、<strong>自前のゲートウェイは JSON Web Token（JWT）の署名鍵を保持しており、機微な資格情報として扱うべきもの</strong>とされています。<strong>ゲートウェイは GitLab 本体と、組織が契約している AI モデルの提供元にも接続しています。</strong></p>
+<p><strong>欠陥の場所は、カスタムフローのプロンプトテンプレートです。</strong>カスタムフローは、Duo Agent Platform 上で利用者が作る「複数の手順を自動化する AI のワークフロー」です。<strong>利用者が書ける設定が、テンプレートエンジンの評価に乗っている</strong>という構造が、CWE-1336（テンプレートエンジンで使われる特殊要素の不適切な無害化）の中身です。</p></section>
+<section id="s6"><h2>同じ場所で同じ分類の欠陥が8か月に2度出ている（本記録の評価）<span class="b slot">評価・解釈</span></h2><p><strong>2026年2月、GitLab は AI Gateway の別の脆弱性 CVE-2026-1868 を修正しています。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>CVE-2026-1868（2026年2月）</th>
+<th>CVE-2026-90970（2026年10月）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>対象</td>
+<td><strong>AI Gateway</strong></td>
+<td><strong>AI Gateway</strong></td>
+</tr>
+<tr>
+<td>CVSS</td>
+<td><strong>9.9</strong></td>
+<td><strong>9.9</strong></td>
+</tr>
+<tr>
+<td>CWE</td>
+<td><strong>CWE-1336</strong></td>
+<td><strong>CWE-1336</strong></td>
+</tr>
+<tr>
+<td>到達経路</td>
+<td>認証済みの利用者が<strong>細工したフロー定義</strong></td>
+<td>認証済みの利用者が<strong>細工したフロー設定</strong></td>
+</tr>
+<tr>
+<td>影響</td>
+<td>サービス拒否またはコード実行</td>
+<td><strong>任意のコマンド実行</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>同じコンポーネント・同じ分類・同じ到達経路です。</strong> <strong>今回の勧告は、2月の件に言及していません。</strong></p>
+<p><strong>これを「同じミスの繰り返し」と断じる材料は、本記録にはありません</strong>（2月の修正の射程がどこまでだったかが公表されていないため）。<strong>ただし、利用者が書いた設定をテンプレートとして評価する機構は、そこに閉じ込めようとする限り破られ続ける種類の問題です</strong>（本記録の評価）。</p>
+<p><strong>読者が自組織に引き寄せるべきは、製品の評価ではなく設計の問いです</strong>—— <strong>「自社の製品や内製ツールで、利用者が書いたテキストをテンプレートとして評価している場所はどこか。そこが破れたとき、何に到達できるか。」</strong></p>
+<p>AI エージェントの基盤は、<strong>この構造を大量に持ち込みます。</strong>プロンプト・ツール定義・フロー設定——<strong>いずれも「利用者が書けるテキストを実行系が解釈する」形</strong>です。<strong>サンドボックスの内側に置くという設計は、サンドボックスが破れた時点で一段も残りません。</strong></p></section>
+<section id="s7"><h2>回避策も、侵害の確認手順も示されていない<span class="b slot">対策・注意喚起</span></h2><p><strong>勧告には、更新以外の選択肢が書かれていません。</strong></p>
+<ul>
+<li><strong>回避策（workaround）の記載が無い。</strong>本記録の作成者が GitLab の CVE レコードを取得して確認しましたが、そこにも記載はありませんでした。</li>
+<li><strong>更新する前に攻撃を受けていたかを確かめる手順が無い。</strong>ログに何が残るのか、どのような痕跡を探せばよいのかの記述がありません。</li>
+<li><strong>19.2.4 より下の系列（18.1.6〜19.1 系）に対策版が無い。</strong> GitLab の導入手引きは「GitLab の minor バージョンに合うゲートウェイのイメージを使う」よう指示していますが、<strong>19.2.4 のゲートウェイが GitLab 19.1 以前で動くかは勧告に書かれていません。</strong>古い系列への修正の予定も示されていません。</li>
+</ul>
+<p><strong>更新の手順自体は示されています。</strong> Docker で動かしている場合はコンテナを止めて削除し、新しいイメージのタグ（例: <code>self-hosted-v19.4.1-ee</code>）を取得して起動します。Helm の場合はチャートのイメージ設定を新しいタグに変えます。</p>
+<p><strong>「侵害の確認手順が無い」ことの意味</strong>は、実務では小さくありません（本記録の評価）。<strong>CVSS 9.9 の任意コマンド実行に対して、更新した組織は「自分は侵害されていなかった」と言えないまま運用を続けることになります。</strong>自前でホストしているゲートウェイは<strong>JWT の署名鍵を持ち、GitLab 本体と AI モデルの提供元に接続している</strong>ため、<strong>「念のため鍵を入れ替えるか」の判断を各組織が自力で下すことになります。</strong></p>
+<p><strong>本記録としての助言は、更新に加えて次の2つを自組織で決めることです</strong>（いずれも GitLab は求めていません）—— <strong>①ゲートウェイの実行環境のログを遡って確認できる期間はどれだけか。②署名鍵と AI モデル提供元の資格情報を、更新に合わせて入れ替えるか。</strong></p></section>
+<section id="s8"><h2>GitLab の脆弱性は実際に悪用されてきた系譜がある<span class="b slot">背景・過去事例</span></h2><p>本件そのものに悪用の報告はありません（2026年10月2日時点で CISA の評価は「悪用: なし」）。<strong>ただし、GitLab という製品が置かれている文脈は別です。</strong></p>
+<p>報道によれば——</p>
+<ul>
+<li><strong>2026年9月、GitLab CE/EE の最高深刻度のパストラバーサル脆弱性CVE-2026-85706</strong> が修正されました。<strong>認証されていない攻撃者が資格情報などの機微な情報を読み取れる</strong>もので、<strong>翌日に米 CISA が KEV へ収載</strong>し、<strong>BOD 26-04 により連邦政府機関に3日の期限</strong>を課しました。</li>
+<li><strong>2021年11月以降、CISA が実際に悪用されたと判定した GitLab の脆弱性は5件</strong>あり、<strong>うち1件はランサムウェアの集団に悪用</strong>されました。</li>
+</ul>
+<p><strong>本件はこの5件には含まれません。</strong></p>
+<p><strong>文脈として置く理由は、「悪用の報告が無い」を「急がなくてよい」と読み替えないためです</strong>（本記録の評価）。前月の CVE-2026-85706 は、<strong>修正の翌日に KEV 入りしています。</strong> <strong>評価は時点のものであり、変わります。</strong></p>
+<p>なお本件は前月の事案とは<strong>対象も前提も違います</strong>——前月のものは<strong>認証不要で GitLab 本体</strong>、本件は<strong>認証が必要で自前の AI Gateway</strong>です。<strong>同列に扱わないでください。</strong></p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-90970　<b>cvss:</b> 9.9　<b>概要:</b> GitLab AI Gateway における、テンプレートエンジンで使われる特殊要素の 不適切な無害化（CWE-1336）。 **Duo Agent Platform へのアクセス権を持つ認証済みの利用者が、 細工したフロー設定によってプロンプトテンプレートのサンドボックスを脱出し、 AI Gateway 上で任意のコマンドを実行できる可能性がある。** CVSS 3.1 基本値 9.9（`CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`）。 **採番は GitLab（CNA）。報告者は HackerOne の invisiblemeerkat。** **成立の条件（「一定の条件下で」）の中身は公表されていない。** **影響するのは自前でホストする AI Gateway のみで、 GitLab がホストするゲートウェイは修正済み**　<b>exploited:</b> いいえ</div></td></tr><tr><th>affected_versions</th><td>【影響する AI Gateway の版】 18.1.6 以降 19.2.4 未満／19.3 系の 19.3.2 未満／19.4 系の 19.4.1 未満。 GitLab の CVE レコードの記載では 18.1.6〜19.2.3・19.3.0〜19.3.1・19.4.0 が該当する。 【対策版】 19.2.4・19.3.2・19.4.1。 【対象外】 GitLab.com・GitLab Dedicated・GitLab がホストする AI Gateway を使う Self-Managed （いずれも GitLab 側で修正済みのため利用者側の対応は不要）。 【備考】 **19.2.4 より下の系列（18.1.6〜19.1 系）に対策版は示されていない。** 報道によれば、2026年10月2日時点で GitLab の保守方針がセキュリティ修正の対象と していたのは 19.4・19.3・19.2 の3系列であり、対策版が出た系列と一致する。 **19.2.4 のゲートウェイが GitLab 19.1 以前で動くかどうか、 古い系列への修正が予定されているかは、勧告に書かれていない。** なお AI Gateway は Docker イメージまたは Helm チャートとして GitLab 本体とは 別に導入されており、**独自の更新手順を持つ。**</td></tr><tr><th>exploitation_status</th><td>**GitLab の勧告は悪用の有無に触れていない。** **米 CISA は2026年10月2日に CVE レコードへ評価を追加し、 悪用の状況を「なし（none）」とした**（報道による。 CISA の評価には「公開された実証コードあり」「活発に悪用されている」が 上の段階としてある）。 **本記録の作成時点で、KEV への収載も実証コードの公開も確認していない。** **発見は HackerOne 経由の責任ある開示であり、 悪用の観測が発見の契機になったことを示す記述はどの資料にも無い。** **ただしこの評価は時点のものである**——前月の CVE-2026-85706 は 修正の翌日に KEV へ収載されている（本記録の注記）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 対策版（19.2.4・19.3.2・19.4.1）への更新。Docker ならコンテナを止めて削除し新しいイメージのタグ（例 self-hosted-v19.4.1-ee）で起動、Helm ならチャートのイメージ設定を変更する　<b>副作用:</b> **更新中は AI Gateway が止まり、GitLab Duo の AI 機能が使えなくなる。** AI Gateway は GitLab 本体とは別の更新手順を持つため、 **本体の更新計画とは別に段取りが要る。** **GitLab の導入手引きは「GitLab の minor バージョンに合うイメージを使う」よう 指示しているため、19.1 以前の GitLab を使っている組織は 本体の更新も連動して必要になる可能性がある**（勧告に明記は無い）</div><div class=sub><b>item:</b> Duo Agent Platform へのアクセス権を持つ利用者を必要最小限に絞る　<b>副作用:</b> **AI 支援を使えなくなる開発者が出る。** 本脆弱性は `PR:L`（低い権限で足りる）であり、 **「誰が Duo Agent Platform を使えるか」が実質的な攻撃面である** （本記録の整理。GitLab は回避策として挙げていない）。 導入を推進している組織では、生産性の施策と逆向きの措置になる</div><div class=sub><b>item:</b> 自前の AI Gateway の実行環境を分離し、到達できる範囲（GitLab 本体・AI モデル提供元・社内ネットワーク）を最小にする　<b>副作用:</b> **ネットワーク設計の変更が要り、短期の対応にはならない。** AI モデル提供元への接続は AI Gateway の機能そのものであるため、 **塞げる範囲は限られる**（本記録の整理）</div><div class=sub><b>item:</b> 更新に合わせて、ゲートウェイが保持する JWT の署名鍵と AI モデル提供元の資格情報を入れ替える　<b>副作用:</b> **鍵の入れ替えは GitLab 本体との連携を一時的に壊すため、手順と停止時間が要る。** **GitLab はこれを求めていない**—— **侵害の確認手順が示されていないため「念のため」の判断になる** （本記録の助言）。入れ替えないという判断もありうるが、 **その場合は「侵害されていなかったと言えない」状態を受け入れることになる**</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> 自前の AI Gateway を運用しているかどうか（まずこれを確かめる）　<b>補足:</b> **指標というより前提条件の点検である。** GitLab.com・GitLab Dedicated・GitLab がホストするゲートウェイを使う Self-Managed は対応不要である。 **自前で立てているかどうかを把握していない組織がありうる**—— **AI Gateway は Docker イメージ／Helm チャートとして別個に導入されるため、 GitLab 本体の管理台帳に載っていないことがある**（本記録の注記）</div><div class=sub><b>item:</b> 稼働中の AI Gateway の版（18.1.6 以降 19.2.4 未満／19.3.2 未満／19.4.1 未満か）　<b>補足:</b> **コンテナのイメージタグで確認できる。** **19.2.4 より下の系列には対策版が無いため、 該当した場合は本体を含む更新計画の検討が要る**</div><div class=sub><b>item:</b> Duo Agent Platform へのアクセス権を持つ利用者の一覧　<b>補足:</b> **本脆弱性は認証済みの利用者を前提とする。** **「誰が使えるか」が実質的な攻撃面である。** GitLab は役割（ロール）をこれ以上細かく指定していない</div><div class=sub><b>item:</b> AI Gateway の実行環境における想定外のプロセス起動・外向き通信・ファイル書き込み　<b>補足:</b> **GitLab は侵害の確認手順を示していないため、具体的なパターンは提示できない** （本記録の注記）。**ゲートウェイの実行環境のログが取得・外部転送されているか、 遡れる期間はどれだけかを先に確認する必要がある**</div><div class=sub><b>item:</b> 利用者が作成したカスタムフローのうち、プロンプトテンプレートに通常と異なる記法を含むもの　<b>補足:</b> **欠陥はカスタムフローのプロンプトテンプレートにある**（勧告の題名による）。 **ただし、どの記法が脱出に使えるかは公表されていないため、 探すべきパターンを特定できない**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**【先行事例】GitLab が AI Gateway の別の脆弱性 CVE-2026-1868 を修正した。** **CVSS 9.9・CWE-1336 で、認証済みの利用者が細工したフロー定義から到達でき、 サービス拒否またはゲートウェイ上でのコード実行につながりうるものだった。** **本件と同じ場所・同じ分類の欠陥である**（本記録の注記。 今回の勧告は2月の件に言及していない）</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**【先行事例】GitLab CE/EE の最高深刻度のパストラバーサル脆弱性 CVE-2026-85706 が修正された。認証されていない攻撃者が資格情報などの 機微な情報を読み取れるもので、翌日に米 CISA が KEV へ収載し、 BOD 26-04 により連邦政府機関に3日の期限を課した**（報道による）。 **2021年11月以降、CISA が実際に悪用されたと判定した GitLab の脆弱性は5件あり、 うち1件はランサムウェアの集団に悪用された**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**GitLab が、自前で AI Gateway をホストしている顧客に対して、 勧告の公開に先立って個別に連絡した**（「We have conducted targeted outreach to Self-Hosted AI Gateway customers prior to this release post with this guidance.」 原文英語）</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**GitLab が CVE-2026-90970 を公表し、対策版 19.2.4・19.3.2・19.4.1 を提供した。** CVSS 3.1 基本値 **9.9**（`AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`）、 CWE-1336。**自社が運用する AI Gateway は修正済み**とした</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**米 CISA が CVE レコードへ評価を追加し、悪用の状況を「なし（none）」とした** （報道による）</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**カナダ・サイバーセキュリティセンターが勧告 AV26-994 を公表し、 影響を受ける版（19.2.4 未満・19.3.2 未満・19.4.1 未満）を挙げて更新を促した**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が GitLab の CVE レコード（gitlab-org/cves リポジトリ）を取得し、 CVSS ベクタ・CWE・影響する版・対策版・報告者の記載を確認した。** **悪用の有無・回避策・侵害の確認手順についての記載は、 この一次資料にも無かった**</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>GitLab の勧告ページ本文を本記録が取得できていない</span><div class=sm>**本記録の作成者は、GitLab の CVE レコード（gitlab-org/cves リポジトリの CVE-2026-90970）を取得して、説明文・CVSS ベクタ（`CVSS:3.1/AV:N/AC:L/PR:L/ UI:N/S:C/C:H/I:H/A:H`）・CWE-1336・影響する版・対策版・報告者の記載を 一次資料として確認した。** **しかし勧告のブログ記事（リリースポスト）そのものには到達できなかった**—— about.gitlab.com の該当 URL は docs.gitlab.com のリリース一覧へ転送され、 一覧には本件の記載が無かった。 したがって、**「GitLab がホストするゲートウェイは修正済み」「自前でホストする 顧客へ事前に個別連絡した」「Docker/Helm の更新手順」「保守方針が対象とする系列」 といった記述は、報道（The Hacker News・BleepingComputer）が引用した 勧告の内容に依拠している。** **一次資料で直接確認できた範囲と、報道経由の範囲を混ぜない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の有無について、ベンダーの勧告が沈黙している</span><div class=sm>**GitLab の勧告は、本脆弱性が攻撃に使われたかどうかに触れていない** （The Hacker News が明記）。 **本記録の作成者が取得した CVE レコードにも、悪用に関する記載は無かった。** **米 CISA が2026年10月2日に CVE レコードへ追加した評価が 「悪用: なし（none）」であることは報道による**—— **本記録はその追加そのものを CVE レコード上で確認していない。** **沈黙を「悪用されていない」と読まない**（本記録の方針）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>回避策と侵害の確認手順が示されていない</span><div class=sm>**勧告には、更新できない場合の回避策（workaround）が記載されていない。** **また、更新する前に攻撃を受けていたかを確かめる手順も提供されていない** （The Hacker News が明記）。 **本記録の作成者が取得した CVE レコードにも、どちらの記載も無かった。** **CVSS 9.9 の任意コマンド実行に対して確認の手順が無いという事実は、 対応する組織の判断（鍵の入れ替えをするか等）に直接影響する** （本記録の評価）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>19.2.4 より下の系列への対応が示されていない</span><div class=sm>**対策版として示されたのは 19.2.4・19.3.2・19.4.1 の3つで、 18.1.6 から 19.1 系までの対策版は示されていない。** **GitLab の導入手引きは「GitLab の minor バージョンに合うゲートウェイの イメージを使う」よう指示しているが、19.2.4 のゲートウェイが GitLab 19.1 以前で動くかどうか、古い系列への修正が予定されているかは、 勧告に書かれていない**（The Hacker News が明記）。 **これらの系列を使っている組織には、勧告の中に取るべき道が示されていない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>2026年2月の CVE-2026-1868 との関係に、今回の勧告が触れていない</span><div class=sm>**両者は同じ AI Gateway・同じ CWE-1336・いずれも CVSS 9.9 で、 どちらも「認証済みの利用者が細工したフロー（定義／設定）から到達する」形である。** **今回の勧告は2月の件に言及していない**（The Hacker News が明記）。 **本記録は「同じミスの繰り返し」とは断じない**—— 2月の修正の射程が公表されていないためである。 **並べて示すのは、読者が『同じ機構で繰り返しが起きていないか』を 自組織の採用判断に使えるようにするためである**（本記録の方針）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>本記録が CVSS ベクタの読み解きとして述べた部分は、ベンダーの説明ではない</span><div class=sm>**「9.9 まで上がっているのは `S:C` と `PR:L` が同時に立っているため」 「露出の有無より『誰が Duo Agent Platform を使えるか』のほうが効く」 という整理は、本記録の作成者が CVSS ベクタから読み解いたものである。** **GitLab はこうした説明をしていない。** **また「Duo Agent Platform へのアクセス権を絞る」「鍵を入れ替える」という 対策は、GitLab が回避策として挙げたものではなく、本記録の助言である。** **ベンダーの記述と本記録の判断を混ぜない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ログイン済みの利用者が細工したフロー設定からサンドボックスを脱出し、自前の AI Gateway 上で任意のコマンドを実行する</div><div class=svgwrap><svg viewBox="0 0 1202 296" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,67.0 C193.0,67.0 193.0,148.0 220,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,148.0 C397.0,148.0 397.0,148.0 424,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,148.0 C703.0,148.0 703.0,148.0 832,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,148.0 C805.0,148.0 805.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C907.0,53.0 907.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C907.0,53.0 907.0,141.0 1036,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C907.0,53.0 907.0,229.0 1036,229.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,148.0 C703.0,148.0 703.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,243.0 C703.0,243.0 703.0,148.0 628,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,155.0 C397.0,155.0 397.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,236.0 C397.0,236.0 397.0,148.0 628,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="91.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Duo Agent Pl</text><text x="91.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">atform を使えるロ</text><text x="91.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グイン済みの利用者</text><text x="91.0" y="86.0" text-anchor="middle" fill="#8892b0" font-size="10">管理者権限は不要（CVS</text><text x="91.0" y="98.0" text-anchor="middle" fill="#8892b0" font-size="10">S の PR:L）</text><rect x="220" y="111.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カスタムフローの設定（利</text><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用者が書ける）</text><text x="295.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">複数手順を自動化する A</text><text x="295.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">I のワークフロー</text><rect x="424" y="111.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プロンプトテンプレートの</text><text x="499.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サンドボックス</text><text x="499.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">CWE-1336。細工し</text><text x="499.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">た設定で脱出できる</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自前でホストする AI </text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Gateway</text><text x="703.0" y="65.0" text-anchor="middle" fill="#64b5f6" font-size="10">Docker イメージ／</text><text x="703.0" y="77.0" text-anchor="middle" fill="#64b5f6" font-size="10">Helm チャート。影響</text><rect x="832" y="111.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ゲートウェイ上での任意の</text><text x="907.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コマンド実行</text><text x="907.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS 9.9。影響は</text><text x="907.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">ゲートウェイの外へ及ぶ（</text><rect x="1036" y="30.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JWT の署名鍵</text><text x="1111.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">GitLab の導入手引</text><text x="1111.0" y="77.0" text-anchor="middle" fill="#ffcc80" font-size="10">きが機微な資格情報として</text><rect x="1036" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitLab 本体のイン</text><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スタンス</text><text x="1111.0" y="153.0" text-anchor="middle" fill="#64b5f6" font-size="10">ゲートウェイが接続してい</text><text x="1111.0" y="165.0" text-anchor="middle" fill="#64b5f6" font-size="10">る</text><rect x="1036" y="192.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">組織が契約する AI モ</text><text x="1111.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デルの提供元</text><text x="1111.0" y="241.0" text-anchor="middle" fill="#64b5f6" font-size="10">ゲートウェイが接続してい</text><text x="1111.0" y="253.0" text-anchor="middle" fill="#64b5f6" font-size="10">る</text><rect x="628" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策版 19.2.4 /</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 19.3.2 / 19</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.4.1</text><text x="703.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">回避策・侵害の確認手順は</text><text x="703.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">示されていない</text><rect x="628" y="206.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitLab がホストす</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る AI Gateway</text><text x="703.0" y="255.0" text-anchor="middle" fill="#64b5f6" font-size="10">修正済み。GitLab.</text><text x="703.0" y="267.0" text-anchor="middle" fill="#64b5f6" font-size="10">com・Dedicate</text><rect x="16" y="125.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">米 CISA</text><text x="91.0" y="160.0" text-anchor="middle" fill="#b0bec5" font-size="10">10/2 に CVE レ</text><text x="91.0" y="172.0" text-anchor="middle" fill="#b0bec5" font-size="10">コードへ「悪用: なし」</text><rect x="16" y="199.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="221.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カナダ・サイバーセキュリ</text><text x="91.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティセンター</text><text x="91.0" y="248.0" text-anchor="middle" fill="#b0bec5" font-size="10">10/2 に勧告 AV2</text><text x="91.0" y="260.0" text-anchor="middle" fill="#b0bec5" font-size="10">6-994 を公表</text></svg></div><div class=fn>2026年10月2日の GitLab の勧告および CVE レコード（CVE-2026-90970）にもとづく。 **成立に必要なのは管理者権限ではなく「Duo Agent Platform にアクセスできる ログイン済みの利用者」である**（CVSS ベクタの `PR:L`）。 **影響はゲートウェイの外へ及ぶ**（`S:C`）。 **対象は自前でホストする AI Gateway のみ**で、GitLab がホストするものは修正済み。 **「一定の条件下で」とされる条件の中身・回避策・侵害の確認手順は、 いずれも公表されていない。** **本図は勧告の記述から経路を図示したものであり、 実際の攻撃が観測されたことを示すものではない。**</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「データを外に出さないために自前で立てた」構成は、自分で守る対象になる</div><div class=lw>本脆弱性で対応が要るのは、**自前で AI Gateway をホストしている組織だけ**である。 **GitLab がホストするゲートウェイを使っている組織は、 GitLab 側の修正で終わっている。** **AI の要求・応答を自社環境にとどめたいという判断で選んだ構成が、 今回は自分で更新しなければならない対象になった**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **AI 関連の基盤について「自前で立てたもの」の台帳を作り、 それぞれに更新の責任者と適用期限を割り当てる。** **データの所在を理由に自前を選んだ構成ほど、更新の手当てが抜けやすい**—— 選定時の稟議に**「誰がこれを更新し続けるか」を必ず書かせる。** **「外に出さない」と「安全」は同じではない。**</div></li><li><div class=lp>攻撃面は「インターネットに露出しているか」ではなく「誰が使えるか」で決まることがある</div><div class=lw>本脆弱性の CVSS ベクタは **`PR:L`（低い権限で足りる）** である。 **必要なのは管理者権限ではなく、Duo Agent Platform にアクセスできる ログイン済みの利用者であること**だけである。 **一方 `S:C`（スコープ変更）により、影響はゲートウェイの外へ及ぶ。** **露出の有無より、AI 機能の利用権限の広さのほうが効く**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **AI 支援機能の利用権限を「全社に開放」から「必要な部門・役割」へ 絞れるかを検討し、絞れないならその判断を記録に残す。** 脆弱性管理の優先度づけでも、**`PR:N`（権限不要）か `PR:L`（低権限）かで 対応の速度を分ける基準**を持つ。 **AI 機能の普及を推進する施策と、権限を絞る施策は衝突する**—— **どちらを取るかを明示的に決める。**</div></li><li><div class=lp>同じコンポーネントで同じ分類の欠陥が繰り返されるかを追う</div><div class=lw>GitLab は2026年2月にも AI Gateway で **CVE-2026-1868**（CVSS 9.9・CWE-1336・ 認証済み利用者が細工したフロー定義から到達）を修正している。 **同じコンポーネント・同じ分類・同じ到達経路で、8か月に2度である。** **今回の勧告は2月の件に言及していない。**</div><div class=la><b>取るべき行動</b> **採用している基盤について「同じコンポーネントで過去に出た脆弱性の分類」を 記録し、繰り返しが起きていないかを四半期ごとに見る。** 繰り返しが見えたら、**個別の更新ではなく『その機構を使い続けるか』の 判断に上げる。** **ベンダーの勧告は過去の類似案件に触れないことが多い**—— **繰り返しの検出は利用者側の仕事である**（本記録の評価）。</div></li><li><div class=lp>「悪用の報告が無い」は時点の情報であって、優先度を下げる根拠ではない</div><div class=lw>本件について CISA は2026年10月2日時点で「悪用: なし」と評価している。 **しかし前月の CVE-2026-85706（GitLab CE/EE）は、 修正の翌日に KEV へ収載され、連邦政府機関に3日の期限が課された。** **2021年11月以降、CISA が実際に悪用されたと判定した GitLab の脆弱性は5件あり、 うち1件はランサムウェアの集団に悪用された。**</div><div class=la><b>取るべき行動</b> **脆弱性の対応期限を「悪用の有無」ではなく 『深刻度 × 自組織での到達可能性』で決める運用にする。** 悪用の情報は**期限を前倒しする材料としてのみ使い、 後ろ倒しの材料にはしない。** **製品ごとに「過去に KEV 入りした件数」を把握しておくと、 初動の判断が速くなる**（本記録の助言）。</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>利用者が書いたテキストをテンプレートとして評価する場所を洗い出す</div><div class=lw>本件の分類は **CWE-1336（テンプレートエンジンで使われる特殊要素の 不適切な無害化）** で、**欠陥はカスタムフローのプロンプトテンプレートにある。** **利用者が書ける設定が、テンプレートエンジンの評価に乗っている**という構造である。 **AI エージェントの基盤は、この構造を大量に持ち込む**—— プロンプト・ツール定義・フロー設定（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自社の製品・内製ツールで『利用者が書いたテキストをテンプレートとして 評価している場所』を列挙し、それぞれについて 「評価が破れたとき、何に到達できるか」を書き出す。** **サンドボックスの内側に置く設計は、サンドボックスが破れた時点で 一段も残らない**——**評価を行うプロセスの実行権限・ネットワーク到達範囲・ 読める資格情報を、破れる前提で最小化する。**</div></li><li><div class=lp>AI の基盤は本体と別の更新経路を持つため、管理台帳から漏れる</div><div class=lw>**AI Gateway は Docker イメージまたは Helm チャートとして、 GitLab 本体とは別に導入される。** **更新手順も本体とは別である**（コンテナを止めて削除し、 新しいイメージタグで起動する）。 **本体の更新計画に乗らない資産は、台帳から落ちやすい**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **コンテナ・Helm で動かしている補助的な基盤（AI ゲートウェイ・ ベクタデータベース・埋め込みサービス等）を資産台帳に載せ、 イメージタグを定期的に棚卸しする。** **「GitLab は最新です」と「GitLab の AI Gateway は最新です」は 別の主張である**——**台帳の単位を製品名ではなく稼働中のイメージにする。**</div></li><li><div class=lp>侵害の確認手順が無い脆弱性では、ログの遡及可能期間が判断の分かれ目になる</div><div class=lw>**GitLab は、更新前に攻撃を受けていたかを確かめる手順を示していない。** ログに何が残るのか、何を探せばよいのかの記述が無い。 **CVSS 9.9 の任意コマンド実行に対して、更新した組織は 「侵害されていなかった」と言えないまま運用を続けることになる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **AI Gateway の実行環境について、 ①ログを外部へ転送しているか ②遡れる期間はどれだけか ③プロセス起動・外向き通信・ファイル書き込みが記録されているか の3点を今すぐ確認する。** **確認手順が提供されない脆弱性は今後も出る**—— **「後から調べられる状態」を平時に作っておくこと自体が対策である。**</div></li><li><div class=lp>ゲートウェイが保持する鍵と資格情報を、更新とセットで棚卸しする</div><div class=lw>**自前の AI Gateway は JWT の署名鍵を保持しており、 GitLab の導入手引きは機微な資格情報として扱うよう求めている。** **ゲートウェイは GitLab 本体と、組織が契約している AI モデルの提供元にも 接続している。** **任意コマンド実行が成立していれば、これらすべてが射程に入る** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **AI Gateway が保持・参照する秘密（JWT 署名鍵・AI モデル提供元の API キー・ GitLab への接続資格情報）を列挙し、更新作業の手順書に 「入れ替えるかどうかの判断」を工程として組み込む。** **入れ替えないと決めるなら、その判断と理由を記録に残す。** **GitLab はこれを求めていない**——自組織の判断になる。</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> GitLab Self-Managed を運用しており、GitLab Duo Self-Hosted で AI Gateway を自前で立てている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Duo Agent Platform へのアクセス権を広く（全開発者など）付与している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> コンテナ・Helm で動かしている補助的な基盤を、製品本体とは別に資産台帳へ載せていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社の製品・内製ツールで、利用者が書いたテキストをテンプレートとして評価している場所がある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> AI 関連の実行環境のログを外部へ転送しておらず、遡れる期間を把握していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性の対応期限を「悪用の報告があるかどうか」で決めている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月2日 GitLab Inc.（CVE 採番機関）</span> <a href="https://gitlab.com/gitlab-org/cves/-/raw/master/2026/CVE-2026-90970.json" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-90970（gitlab-org/cves リポジトリの CVE レコード）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(英語。**本記録が一次資料として直接取得・確認したもの。** **GitLab は本脆弱性の CVE 採番機関（CNA）である。** 確認した内容——**説明文**「GitLab has remediated a vulnerability in the GitLab AI Gateway component affecting all versions of the AI Gateway from 18.1.6 before 19.2.4, 19.3 before 19.3.2, and 19.4 before 19.4.1」、 **CVSS 3.1 基本値 9.9（CRITICAL）とベクタ `CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`**、 **CWE-1336（Improper Neutralization of Special Elements Used in a Template Engine）**、 **影響する版（18.1.6〜19.2.3・19.3.0〜19.3.1・19.4.0）と 対策版（19.2.4・19.3.2・19.4.1）**、 **報告者の謝辞「Thanks invisiblemeerkat for responsibly disclosing this issue」**、 **参照先の作業項目 URL。** **悪用の有無・回避策・侵害の確認手順についての記載は無かった。** **本記録ではこれらを日本語に訳して「（原文英語）」を添えた)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月2日 Canadian Centre for Cyber Security（カナダ・サイバーセキュリティセンター）</span> <a href="https://cyber.gc.ca/en/alerts-advisories/gitlab-security-advisory-av26-994" target="_blank" rel="noreferrer noopener nofollow">GitLab security advisory (AV26-994)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。政府機関の勧告。 **2026年10月2日時点で GitLab AI Gateway の 19.2.4 未満・19.3.2 未満・ 19.4.1 未満が影響を受ける**とし、**提示されたリンクを確認して 必要な更新を適用するよう利用者と管理者に促している。** **内容は版の列挙と更新の推奨にとどまり、CVE 番号・CVSS・悪用の有無には 触れていない。** **本記録はこれを「複数の政府機関が同日に注意を向けた」ことの根拠として使う。** 本文は日次ニュースの保存分 〈output/articles/20261003/0069_canadian-centre-for-cyber_gitlab-security-advisory-av26-994.md〉 で確認した)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月2日 The Hacker News</span> <a href="https://thehackernews.com/2026/10/gitlab-patches-critical-self-hosted-ai.html" target="_blank" rel="noreferrer noopener nofollow">GitLab Patches Critical 9.9 AI Gateway Flaw Allowing Command Execution on Self-Hosted Servers</a> <span class="b kind">記事</span><span class=sm>（(英語。**本記録が一次資料から得られなかった記述の主な出典。** **GitLab がホストするゲートウェイは修正済みで、GitLab.com・GitLab Dedicated・ GitLab がホストするゲートウェイを使う Self-Managed は対応不要であること**、 **自前でホストする顧客へ勧告の公開に先立って個別連絡したこと**、 **Docker の更新手順（コンテナを止めて削除し、新しいイメージタグ `self-hosted-v19.4.1-ee` で起動）と Helm の手順**、 **19.2.4 より下に対策版が無く、18.1.6 から 19.1 系までが影響範囲に残ること**、 **19.2.4 のゲートウェイが GitLab 19.1 以前で動くか、古い系列への修正が 予定されているかを勧告が述べていないこと**、 **2026年10月2日時点で GitLab の保守方針がセキュリティ修正の対象としていたのは 19.4・19.3・19.2 の3系列であること**、 **勧告が悪用の有無に触れていないこと**、 **米 CISA が10月2日に CVE レコードへ「悪用: なし（none）」の評価を追加したこと （CISA の他の2つの値は公開された実証コードと活発な悪用を表す）**、 **回避策が示されていないこと**、 **攻撃を受けたかを確認する方法が示されていないこと**、 **欠陥がカスタムフローのプロンプトテンプレートにあり、 カスタムフローは Duo Agent Platform 上で利用者が作る多段のワークフローであること**、 **自前のゲートウェイが JWT の署名鍵を保持し、機微な資格情報として 扱うべきとされていること**、 **2026年2月に修正された CVE-2026-1868（CVSS 9.9・CWE-1336・細工したフロー定義から 到達・サービス拒否またはコード実行）との類似と、今回の勧告がそれに 言及していないこと**の出典。 本文は日次ニュースの保存分 〈output/articles/20261003/0028_the-hacker-news_gitlab-patches-critical-99-ai-gateway-flaw-allowin.md〉 で確認した)）</span></li><li><span class=rid>[1]</span> <span class=sm>2026年10月2日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/gitlab-warns-of-critical-rce-vulnerability-in-ai-gateway-service/" target="_blank" rel="noreferrer noopener nofollow">GitLab warns of critical RCE vulnerability in AI Gateway service</a> <span class="b kind">記事</span><span class=sm>（(英語。**GitLab の勧告の引用**——「GitLab has remediated an issue in the GitLab AI Gateway that, under certain conditions, could have allowed an authenticated user with Duo Agent Platform access to escape the prompt template sandbox via a specially crafted flow configuration, leading to arbitrary command execution on the AI Gateway.」 および「These versions contain a critical security fix for GitLab Self-Hosted AI Gateway, and we strongly recommend that all GitLab Self-Managed customers with GitLab Self-Hosted AI Gateway installations update to one of these versions immediately.」 「We have conducted targeted outreach to Self-Hosted AI Gateway customers prior to this release post with this guidance.」 **本記録ではこれらを日本語に訳して「（原文英語）」を添えた。** そのほか**AI Gateway が GitLab Duo の AI 機能へのアクセスを提供するサービスで、 GitLab 自身がクラウドのインスタンスを運用し、利用者は GitLab Duo Self-Hosted を 通じて自前のインスタンスを立てられること**、 **本脆弱性が不適切な無害化の弱点に起因し、基本的な権限と Duo Agent Platform へのアクセスを持つ攻撃者が任意のコマンドを実行できること**、 **前月に GitLab CE/EE の最高深刻度のパストラバーサル脆弱性 CVE-2026-85706 （認証されていない攻撃者が資格情報などを読み取れる）が修正され、 その翌日に CISA が KEV へ収載して BOD 26-04 により連邦政府機関に3日の期限を 課したこと**、 **2021年11月以降 CISA が悪用を確認した GitLab の脆弱性は5件で、 うち1件はランサムウェアの集団に悪用されたこと**、 **GitLab の登録利用者が3,000万人を超え、Fortune 100 の50%超が利用していること** の出典。 本文は日次ニュースの保存分 〈output/articles/20261003/0042_bleepingcomputer_gitlab-warns-of-critical-rce-vulnerability-in-ai-g.md〉 で確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月3日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月2日の報道3本（The Hacker News・BleepingComputer・ カナダ・サイバーセキュリティセンターの勧告）を起点に、 **GitLab の CVE レコード（gitlab-org/cves リポジトリの CVE-2026-90970）を 一次資料として取得して裏を取った。** **GitLab は本脆弱性の CVE 採番機関（CNA）であり、このレコードが一次資料である。** 確認できたのは、説明文・CVSS 3.1 基本値 9.9 とベクタ `AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H`・CWE-1336・影響する版 （18.1.6〜19.2.3・19.3.0〜19.3.1・19.4.0）・対策版（19.2.4・19.3.2・19.4.1）・ 報告者（HackerOne の invisiblemeerkat）である。 **勧告のブログ記事そのものには到達できず**（about.gitlab.com の URL が docs.gitlab.com のリリース一覧へ転送され、一覧に本件の記載が無かった）、 **「GitLab がホストするゲートウェイは修正済み」「自前でホストする顧客への事前連絡」 「Docker/Helm の更新手順」「保守方針が対象とする系列」などは報道経由であることを 齟齬に明記した。** 英語の記述は日本語に訳して「（原文英語）」を添えた。
+**本記録が本文の軸に置いたのは3点である。** (1) **対応が要るのは「自前で AI Gateway を立てている組織」だけである。** AI の要求・応答を自社環境にとどめたいという判断で選んだ構成が、 今回は自分で更新しなければならない対象になった。 (2) **9.9 という点数は `PR:L`（低い権限で足りる）と `S:C`（スコープ変更）から 来ており、露出の有無より「誰が Duo Agent Platform を使えるか」が効く。** この読み解きは本記録の作成者によるもので、GitLab の説明ではないことを `authored_inference` として明記した。 (3) **同じ AI Gateway で、同じ CWE-1336・同じ CVSS 9.9・同じ到達経路の欠陥が 2026年2月（CVE-2026-1868）にも出ている。** 今回の勧告はそれに言及していない。 **「同じミスの繰り返し」とは断じない**（2月の修正の射程が公表されていないため）が、 **繰り返しの検出は利用者側の仕事であるという読み方を学びに置いた。**
+**沈黙を4点記録した。** 悪用の有無（勧告が触れていない。CISA の 「悪用: なし」は報道経由で、本記録は CVE レコード上で確認していない）・ 回避策が無いこと・侵害の確認手順が無いこと・19.2.4 より下の系列への 対応が示されていないこと。 **とくに「侵害の確認手順が無い」ことは、更新した組織が 『侵害されていなかった』と言えないまま運用を続けることを意味する**—— 本記録は**ログの遡及可能期間の確認と、JWT 署名鍵・AI モデル提供元の資格情報の 入れ替えの判断**を助言として置いたが、**これらは GitLab が求めたものではない** ことを齟齬に明記した。
+**type を `vulnerability` としたため attack / response は置かず、 技術情報を `detail`（CVE・影響する版・悪用の状況・緩和策とその副作用・ 点検の指標）にまとめた。** **緩和策には必ず副作用を書いた**——「Duo Agent Platform の利用権限を絞る」は AI 活用の推進と衝突し、「鍵を入れ替える」は連携を一時的に壊すためである。 本記録の作成時点で悪用も実証コードの公開も確認されていないため `status` は `new` とする。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">GitLab</span><span class="b tag">AI Gateway</span><span class="b tag">GitLab Duo</span><span class="b tag">CVE-2026-90970</span><span class="b tag">CWE-1336</span><span class="b tag">プロンプトテンプレート</span><span class="b tag">サンドボックス脱出</span><span class="b tag">DevSecOps</span><span class="b tag">自前ホスト</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-03 17:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
