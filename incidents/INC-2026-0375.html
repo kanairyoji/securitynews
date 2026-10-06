@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Atlassian 8製品に認証不要の読取 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0375</span>Atlassian 8製品に認証不要の読取</h1>
+<header class="site-header">
+  <p class="subtitle">Atlassian が2026年10月5日、自社ホスト型の Data Center 製品8種 （Bitbucket / Confluence / Jira Software / Jira Service Management / Bamboo / Crowd / Crucible / Fisheye）に共通する任意ファイル読み取りの脆弱性 CVE-2026-21589（CVSS v4.0 で 9.3・Critical）を公表した。 **認証を要さず**、ウェブアプリケーションのルートディレクトリ内の特定ファイルを 読み出せる。成立にはファイル名とパスを事前に知っている必要があり、 ディレクトリの一覧は取れない。クラウド版は修正済みで利用者の作業は不要とされ、 自社ホスト型については**悪用の有無を Atlassian は確認できないと明記**している。 同社が CVE として届け出た記録には、勧告が触れていない旧 Server 版も 「全版が影響」として載っており、Server 版の修正版は示されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月5日</span>
+  <span>最終更新: 2026年10月6日</span>
+</div>
+
+<div class="lead"><p><strong>Atlassian</strong> は現地時間2026年10月5日、自社ホスト型の <strong>Data Center 製品8種</strong>に共通する脆弱性 <strong>CVE-2026-21589</strong> を公表した。同社は CVSS <strong>v4.0</strong> の基本値を <strong>9.3（Critical）</strong>と評価している。</p>
+<p>欠陥の性質は<strong>任意ファイル読み取り</strong>である。<strong>認証を要さない攻撃者</strong>が、ウェブアプリケーションのルートディレクトリ内にある<strong>特定のファイル</strong>を読み出せる。ただし成立には<strong>対象ファイルの正確な名前とパスを事前に知っている必要</strong>があり、<strong>ディレクトリの中身を列挙・一覧することはできない。</strong> Atlassian は「構成によっては機微なファイルが存在し、危険度を高めることがある」と述べている（原文英語）。</p>
+<p>対象は <strong>Bitbucket / Confluence / Jira Software / Jira Service Management / Bamboo / Crowd / Crucible / Fisheye</strong> の Data Center 版で、製品ごとに修正版が示された。<strong>クラウド版はすでに修正済みで、クラウド利用者の作業は不要</strong>とされ、<strong>Bitbucket Cloud は影響を受けない。</strong></p>
+<p>すぐに更新できない場合の指示は<strong>「可能ならインスタンスをオフラインにする」</strong>である。同社は代替として3通りの一時的な遮断規則（WAF / リバースプロキシの URL 遮断、Tomcat の RewriteValve、Bitbucket の <code>urlrewrite.xml</code>）を示しつつ、<strong>「これらは限定的であり、パッチの代わりにはならない」</strong>と製品チケットに明記している（原文英語）。</p>
+<p><strong>悪用についての同社の記述は、クラウドと自社ホスト型で分かれている。</strong>クラウドについては「調査で悪用の証跡は見つかっていない」とした一方、自社ホスト型については<strong>「あなたのインスタンスが影響を受けたかどうかをAtlassian は確認できない」</strong>と述べ、利用者の側でアクセスログを調べることを求めている（原文英語）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>自社ホスト型インスタンスへの悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は、自社ホスト型のインスタンスに対する攻撃が観測されたかを述べていない。** 書かれているのは**「あなたのインスタンスが影響を受けたかどうかを Atlassian は確認できない」**という一文である（原文英語）。 クラウドについては「調査で悪用の証跡は見つかっていない」とされているが、 **これは自社ホスト型の状況を何も示さない。** **「悪用の報告なし」ではなく「ベンダーに判定能力が無い」が正しい読みである**（本記録の評価）。</div></li><li><span class=ui>どのファイルが機微で、どの構成だと存在するのか</span><span class="b rsn">公表されていない</span><div class=sm>勧告は「構成によっては機微なファイルが存在し、危険度を高める」と述べるだけで、 **対象のファイル名も、そうした構成の条件も示していない。** **読み出せるのは「名前とパスを知っているファイル」**なので、 攻撃の成否は**どのファイルが置かれているか**に直接かかっている。 **利用側は「自機のルートディレクトリに何が置かれているか」を自力で調べるしかない。**</div></li><li><span class=ui>CVSS で「後続システム」側の完全性・可用性が High である理由</span><span class="b rsn">公表されていない</span><div class=sm>Atlassian のベクタは `SC:H/SI:H/SA:H`—— **後続システム（subsequent system）の機密性・完全性・可用性のすべてを High** と置いている。 一方で脆弱なシステム側は `VC:H/VI:N/VA:N`（機密性のみ）である。 **読み取りだけの欠陥が後続システムの完全性・可用性をなぜ High にするのかは 説明されていない。** 読み出したファイルに資格情報が含まれる場合の 二次被害を織り込んだとも読めるが、**勧告はそう書いていない**（本記録の読み）。</div></li><li><span class=ui>旧 Server 版の利用者が取るべき行動</span><span class="b rsn">公表されていない</span><div class=sm>CVE 記録は **Bamboo / Bitbucket / Confluence / Crowd の Server 版を 「全版が影響」としながら、修正版を1つも示していない。** 勧告（製品チケット）の側は Server 版に触れていない。 **サポート終了済みの Server 版を動かし続けている組織に対する指示が存在しない。** 残るのは「オフラインにする」か「①の遮断規則を置く」のどちらかだが、 **Atlassian がそれで足りると述べているわけではない**（本記録の整理）。</div></li><li><span class=ui>ログに該当する要求が見つかった場合に何をすべきか</span><span class="b rsn">公表されていない</span><div class=sm>Atlassian はアクセスログの調べ方を2通り示している—— ①各要求行を**最大2回まで URL デコード**して `..` が `/`・`\`・`::` と 隣接していないか探す、②同社の遮断パターンを生のログ行に当てる。 しかし**失敗した試行と実際にファイルが返った要求を区別する方法は書かれていない。** **見つかった場合に更新以外に何をすべきかも示されていない。** そのため「痕跡があった」という結論が出ても、次の手が決められない（本記録の評価）。</div></li><li><span class=ui>発見者・報告経路・内部での認知時期</span><span class="b rsn">公表されていない</span><div class=sm>**誰が見つけたのか（外部研究者・バグバウンティ・社内）も、 Atlassian がいつ把握したのかも公表されていない。** 影響を受け始めた版が製品ごとに古いことから長く残っていた経路とみられるが、 **なぜ今見つかったのかは分からない。**</div></li><li><span class=ui>Crowd 7.1 系と Bamboo 10.2 系の正しい修正版</span><span class="b rsn">公表されていない</span><div class=sm>**Atlassian 自身の資料の中で数字が割れている**（discrepancies 参照）。 Crowd 7.1 系は 7.1.1 / 7.1.6 / 7.1.7 の3つの数字が別の欄に現れ、 Bamboo は 10.2.4 と 10.2.24 が同じ CVE 記録の中で食い違う。 **どれが正しいのかを Atlassian は明示していない。** 本記録は記述文（description）側の 7.1.1 / 10.2.24 を併記するにとどめ、 **断定しない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Atlassian Corporation（豪州・開発／運用基盤）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Atlassian Data Center 製品を自社運用している組織（名称・数は公表されていない）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v4.0 基本値（Atlassian 自身の評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.3<span class=fu>点</span></div><div class=fn>Atlassian が CVE 記録に記載した値。ベクタは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:H/SA:H`。 **ネットワーク越し・権限不要・利用者の操作不要**で、 脆弱なシステム側は機密性のみ High（完全性・可用性は None）、 **後続システム側（SC/SI/SA）は3つとも High** という構成である。 読み取りだけの欠陥で後続システムの完全性・可用性まで High になる理由は 勧告では説明されていない（本記録の注記）。 Atlassian は「自組織の環境にどう当てはまるかは利用者が判断すること」と述べている。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける Data Center 製品の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>製品</span></div><div class=fn>Bitbucket / Confluence / Jira Software / Jira Service Management / Bamboo / Crowd / Crucible / Fisheye の Data Center 版。 **これは製品の数であり、影響を受けたインスタンスの数ではない。** なお CVE 記録には上記に加えて旧 **Server** 版も載っており、 **「製品」の数え方は資料によって変わる**（旧 Server 版についての次の数値も参照）。</div></div><div class=fig><div class=fh><span class=fl>CVE 記録で「全版が影響」とされ修正版が示されていない旧 Server 版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>製品</span></div><div class=fn>**Bamboo Server・Bitbucket Server・Confluence Server・Crowd Server。** 本記録の作成者が CVE 記録を直接読んで数えた。いずれも `All versions` が `affected` で、`unaffected` の行が存在しない。 一方で Jira Software Server は 9.12.40 以降、 Jira Service Management Server は 5.12.40 以降、 Crucible Server と Fisheye Server は 4.9.15 以降が 「影響を受けない」とされている。 **Server ライセンスでそれらの版を動かせるのかは CVE 記録に書かれていない。** The Hacker News は、Crowd には2023年9月の 5.2 以降 Server 版のリリースが無く、 示された修正版のどれも Server 版ではないと指摘している。</div></div><div class=fig><div class=fh><span class=fl>Atlassian が示した一時的な遮断規則の種類</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>種類</span></div><div class=fn>①WAF / リバースプロキシでの URL 遮断（8製品すべてで使える）、 ②Tomcat の RewriteValve（Confluence / Jira Software / Jira Service Management / Bamboo / Crowd。各ノードで停止・再起動が必要）、 ③Bitbucket の `urlrewrite.xml`（全ノード・ミラー・ミラーファームへ適用し再起動）。 **Crucible と Fisheye は①しか使えない。** いずれも「`..` が `/`・`\`・`::` と隣接する要求（URL エンコードされた形も含む）」を 遮断するもので、**Atlassian 自身が「限定的でパッチの代わりにはならない」と記している。**</div></div></div></div>
+<section id="s4"><h2>「名前を知っているファイルだけ読める」という制約は、守る側の安心材料にはならない<span class="b slot">概観</span></h2><p><strong>公表された欠陥の形は限定的に見える。</strong>認証は要らないが、読めるのは<strong>ウェブアプリケーションのルートディレクトリ内</strong>に限られ、しかも<strong>正確なファイル名とパスを事前に知っている必要</strong>がある。ディレクトリの中身を列挙することはできない。Atlassian 自身も、この2点を「良い知らせ」として示している。</p>
+<p><strong>それでも CVSS は 9.3 である。</strong> 理由は制約の中身を考えると分かる。</p>
+<ul>
+<li><strong>Atlassian 製品のファイル配置は標準的である。</strong> 自社開発のアプリと違い、<strong>どの組織でも同じパスに同じ名前のファイルが置かれる。</strong>「名前を知っている必要がある」という条件は、<strong>製品のソースやドキュメントを読める攻撃者には条件になっていない</strong>（本記録の評価）。</li>
+<li><strong>ルートディレクトリに何を置いているかは利用側の運用で決まる。</strong> Atlassian は「構成によっては機微なファイルが存在し、危険度を高める」と述べるが、<strong>どのファイルが危ないのかは示していない。</strong>自社の運用で置いたもの——構成ファイル、接続情報、鍵——があれば、そこが被害の中身になる。</li>
+<li><strong>対象は開発と運用の中枢である。</strong> ソース管理（Bitbucket）、ドキュメント（Confluence）、課題管理（Jira）、CI（Bamboo）、そして<strong>認証（Crowd）</strong>。Crowd は他製品の利用者認証を束ねる製品であり、ここから資格情報に届いた場合の広がりは製品1つの話では済まない。</li>
+</ul>
+<p><strong>読み取りだけの脆弱性を「情報漏えいのリスク」として片付けると、ここを読み落とす</strong>（本記録の評価）。</p></section>
+<section id="s5"><h2>いちばん重い一文は「あなたのインスタンスが影響を受けたか当社は確認できない」である<span class="b slot">原因・手口</span></h2><p>Atlassian はクラウドと自社ホスト型を明確に分けて書いている。</p>
+<ul>
+<li><strong>クラウド版</strong>——すでに修正済み。利用者の作業は不要。Bitbucket Cloud は影響を受けない。調査で<strong>悪用の証跡は見つかっていない。</strong></li>
+<li><strong>自社ホスト型（Data Center）</strong>——製品ごとに修正版を適用する必要がある。そして<strong>「あなたのインスタンスが影響を受けたかどうかを当社は確認できない」</strong>（原文英語）。</li>
+</ul>
+<p><strong>この一文が本件の実務上の中心である。</strong>ベンダーが悪用の有無を判定できない以上、<strong>「悪用の報告はありません」はこの事案については成立しない報告文である。</strong>言えるのは「ベンダーは判定していない」までで、判定の責任はログを持っている利用側にある。</p>
+<p><strong>幸いな点として、自社ホスト型であればログは手元にある。</strong>機器の脆弱性（例: INC-2026-0290 の FortiMail）のようにベンダーの IoC に頼る構造ではなく、<strong>自分のウェブサーバ・リバースプロキシ・WAF のアクセスログを自分で読める。</strong> Atlassian が示した調べ方は2通りである—— ①各要求行を<strong>最大2回まで URL デコード</strong>し、<code>..</code> が <code>/</code>・<code>\</code>・<code>::</code> と隣接していないか探す、②同社の遮断パターン（下記）を生のログ行に当てる。</p>
+<p>遮断・検出に使う正規表現は、本記録が製品チケット CONFSERVER-104488 で実体を確認した次のものである。</p>
+<pre><code>(?is).*(?:/|\\|::|%(?:25)*(?:2f|5c)|(?::|%(?:25)*3a){2})(?:\.|%(?:25)*2e){2}(?:/|\\|::|%(?:25)*(?:2f|5c)|(?::|%(?:25)*3a){2}|;|%(?:25)*3b|$).*
+</code></pre>
+<p><strong><code>%25</code> の繰り返しを織り込んでいる点に注目する価値がある</strong>—— <code>%252e</code> のような<strong>二重エンコード</strong>まで拾う作りになっている。これは、単純な <code>..</code> の文字列一致では抜けることを前提にした書き方である。FBI の採用基盤の事案（INC-2026-0189）では、攻撃者が<code>/PSEMHUB/</code> の <code>P</code> を <code>%50</code> に置き換えて WAF の規則を素通りした。<strong>文字列一致で塞ぐ発想が繰り返し破られている</strong>という流れの中で読むべきである（本記録の整理）。</p>
+<p><strong>ただし Atlassian は、ログに該当する要求が見つかった場合の次の手を書いていない。</strong>失敗した試行と実際にファイルが返った要求をどう区別するのかも示されていない。<strong>見つけた側が判断を引き受けることになる。</strong></p></section>
+<section id="s6"><h2>旧 Server 版の扱いが、勧告と CVE 記録で噛み合っていない<span class="b slot">評価・解釈</span></h2><p><strong>本記録が一次資料で確認したうち、報道が十分に扱っていない点がここである。</strong></p>
+<p>Atlassian が CVE 採番機関として届け出た記録には、勧告（製品チケット）が触れていない<strong>旧 Server 版</strong>が載っている。</p>
+<table>
+<thead>
+<tr>
+<th>製品</th>
+<th>CVE 記録の記載</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bamboo Server</td>
+<td>全版が影響。<strong>修正版なし</strong></td>
+</tr>
+<tr>
+<td>Bitbucket Server</td>
+<td>全版が影響。<strong>修正版なし</strong></td>
+</tr>
+<tr>
+<td>Confluence Server</td>
+<td>全版が影響。<strong>修正版なし</strong></td>
+</tr>
+<tr>
+<td>Crowd Server</td>
+<td>全版が影響。<strong>修正版なし</strong></td>
+</tr>
+<tr>
+<td>Jira Software Server</td>
+<td>9.12.40 以降は影響なし</td>
+</tr>
+<tr>
+<td>Jira Service Management Server</td>
+<td>5.12.40 以降は影響なし</td>
+</tr>
+<tr>
+<td>Crucible Server / Fisheye Server</td>
+<td>4.9.15 以降は影響なし</td>
+</tr>
+</tbody>
+</table>
+<p><strong>前半4製品には上げる先が無い。</strong> Server 版は Atlassian が2020年に開発を止めた旧来の自社ホスト型の系列で、サポートは終了している。The Hacker News は、Crowd には<strong>2023年9月の 5.2 以降 Server 版のリリースが無く、勧告が示した修正版のどれも Server 版ではない</strong>と指摘している。後半の3行についても、<strong>Server ライセンスでその版を動かせるのかは書かれていない。</strong></p>
+<p><strong>ここから読者が取り出せるのは、サポート終了後の資産に対して「勧告の対象外」と「影響あり」が同時に成立しうるということである</strong>（本記録の評価）。脆弱性管理の台帳が「勧告に載っている製品」だけを拾う作りだと、<strong>CVE 記録にしか載っていない影響範囲が落ちる。</strong>本件では、勧告を読むだけでは Server 版の利用者は自機が対象だと気づけない。</p>
+<p><strong>The Register はこの状況を Atlassian の移行方針の文脈で書いている</strong>—— 2020年に低価格帯の Server 製品の開発を止め、2025年には Data Center 製品も終息させる決定をし、移行ツールは新版のほうが前版より劣っていたと同社が認めた、と。<strong>移行を促す側の都合と、移行できていない資産の安全は別の問題である。</strong>自組織に「移行途中」「移行できていない」Atlassian 製品があるなら、<strong>本件は移行計画の優先順位を見直す材料になる</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>ベンダー自身の資料の中で修正版の数字が割れている<span class="b slot">評価・解釈</span></h2><p><strong>更新する版を決めるための数字が、Atlassian の資料の中で一致していない。</strong></p>
+<ul>
+<li><strong>Crowd 7.1 系</strong>——製品チケットの「fix version」欄は <strong>7.1.7</strong>。同じチケット内の表は <strong>7.1.6</strong> を影響版として挙げている。一方 CVE 記録は <strong>7.1.1 以降が影響を受けない</strong>としている。The Hacker News は、Crowd 7.1 系のリリースノートによれば<strong>7.1.1 は2025年11月27日</strong>、つまり公表の10か月以上前の版であると指摘している。</li>
+<li><strong>Bamboo 10.2 系</strong>——CVE 記録の構造化された欄は<strong>「10.2.4 以降は影響なし」</strong>とする一方、<strong>同じ記録の記述文は 10.2.24</strong> を修正版としている。</li>
+</ul>
+<p><strong>本記録はどちらが正しいかを断定しない。</strong>記述文（description）側の <strong>7.1.1 / 10.2.24</strong> を併記するにとどめる。<strong>10.2.4 と 10.2.24 の差は「桁の打ち間違い」に見えるが、見えるからといって本記録が正解を決めてよいものではない</strong>（本記録の判断）。</p>
+<p><strong>実務上の含意は単純である。</strong> <strong>自動化された脆弱性管理の仕組みが、どちらの数字を読んでいるかで判定が反転する。</strong> CVE 記録を取り込む製品（多くのスキャナがそうである）はBamboo 10.2.4 を「安全」と判定しうるが、Atlassian の記述文に従えば 10.2.24 まで上げる必要がある。<strong>版番号の自動照合に全面的に依存している組織は、本件のように採番側の記録が割れている場合に静かに取りこぼす</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>公表されていないことを並べておく<span class="b slot">未確定事項</span></h2><p><strong>2026年10月6日時点で、本記録が確認できなかったものを並べる。</strong></p>
+<ul>
+<li><strong>自社ホスト型への悪用の有無</strong>（Atlassian が「確認できない」と明記）</li>
+<li><strong>機微なファイルの名前と、それが置かれる構成の条件</strong></li>
+<li><strong>CVSS で後続システムの完全性・可用性が High である理由</strong></li>
+<li><strong>旧 Server 版（Bamboo / Bitbucket / Confluence / Crowd）の利用者が取るべき行動</strong></li>
+<li><strong>ログに該当する要求が見つかった場合の次の手</strong></li>
+<li><strong>発見者・報告経路・内部での認知時期</strong></li>
+<li><strong>Crowd 7.1 系と Bamboo 10.2 系の正しい修正版</strong></li>
+<li><strong>Atlassian の勧告ページ本体</strong>（本記録が推定した URL は 404。確認できたのは CVE 記録と製品チケット CONFSERVER-104488 である）</li>
+</ul>
+<p><strong>「悪用の報告が無い」とは書かない。</strong>本件についてベンダーが述べているのは「判定できない」であり、<strong>報告の不在と判定の不在は別物である。</strong></p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_product</th><td>**Atlassian Data Center 製品8種**—— Bitbucket Data Center（4.6.0 以降の版で影響開始。修正版 9.4.26 / 10.2.8 / 10.5.1）、 Confluence Data Center（5.10.0 以降。修正版 9.2.26 / 10.2.19）、 Jira Software Data Center（7.1.0 以降。修正版 9.12.40 / 10.3.26 / 11.3.12）、 Jira Service Management Data Center（3.1.0 以降。修正版 5.12.40 / 10.3.26 / 11.3.12）、 Bamboo Data Center（7.0.1 以降。修正版 10.2.24 / 12.1.12。 **CVE 記録の別の欄は 10.2.4 とする**）、 Crowd Data Center（2.11.0 以降。修正版 6.3.7 / 7.0.3 / 7.1.1 / 7.2.4。 **7.1 系は 7.1.1 / 7.1.6 / 7.1.7 の3つの数字が資料間で割れている**）、 Crucible（修正版 4.9.15）、Fisheye（修正版 4.9.15）。 Atlassian は「修正版より前の全版が影響し、 サポート終了（EOL）に達した版も含みうる」として、 **長期サポート（LTS）の修正版以降への更新**を推奨している。 **クラウド版は修正済みで利用者の作業は不要。Bitbucket Cloud は影響を受けない。** **旧 Server 版については CVE 記録のみが扱っており、 Bamboo / Bitbucket / Confluence / Crowd の Server 版は 「全版が影響」で修正版が示されていない。**</td></tr><tr><th>cves</th><td><ul class=cl><li>CVE-2026-21589</li></ul><div class=fn>**Atlassian 自身が採番機関（CNA）として届け出た記録である** （assignerShortName: atlassian、公開 2026年10月5日21:30 UTC）。 種別は **Path Traversal（Arbitrary Read/Write）**。 **記述文は読み取り（access）のみを述べており、書き込みには触れていない**—— 種別の表記と記述文の範囲が一致していない（discrepancies 参照）。 CVSS は v4.0 のみ（v3.1 の評価は付いていない）。 参照先として製品チケット8件（BAM-26567 / BSERV-20604 / CONFSERVER-104488 / CRUC-8741 / CWD-6610 / FE-7583 / JRASERVER-79546 / JSDSERVER-16809）が挙がっている。</div></td></tr><tr><th>exploitation_status</th><td>**クラウドと自社ホスト型で記述が分かれている。** クラウドについては「影響を受ける製品は修正済みで、 調査で悪用の証跡は見つかっていない」とされる。 **自社ホスト型については、攻撃が観測されたかどうかの記述が無い。** 勧告にあるのは**「Atlassian はあなたのインスタンスが この脆弱性の影響を受けたかどうかを確認できない」**という一文である（原文英語）。 **本記録はこれを「悪用の報告なし」とは扱わない**—— ベンダーが判定する立場に無いだけである（本記録の評価）。 なお Atlassian 製品の同種の欠陥は過去に悪用されている—— Jira Server / Data Center のパストラバーサル **CVE-2021-26086** は、 米 CISA が2024年11月12日に KEV へ収載した （The Hacker News の指摘。本記録は KEV 側を直接確認していない）。</td></tr><tr><th>discovery_method</th><td>**公表されていない。** 発見者の名前・所属、報告経路（外部研究者・バグバウンティ・社内）、 Atlassian が把握した時期のいずれも勧告・CVE 記録に記載が無い。</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 修正版へ更新する（製品ごとの版は本記録の「対象製品」の記載のとおり。 **資料間で数字が割れている Crowd 7.1 系と Bamboo 10.2 系は、 更新前に Atlassian へ確認するか、より新しい系列へ上げる**）　<b>副作用:</b> **8製品を一度に上げられる組織はほとんど無い。** Jira・Confluence・Bitbucket は相互に連携し、Crowd は認証を束ねているため、 **更新の順序とプラグイン（アプリ）の互換性の確認が要る。** Atlassian 自身「一度に全部を上げられない場合は」という前提で 緩和策を示している。</div><div class=sub><b>item:</b> すぐ更新できない場合、**可能ならインスタンスをオフラインにする。** 公開インターネットから到達できるインスタンスは、 **ログインを要する構成であっても**外部からの到達を制限する　<b>副作用:</b> 課題管理・ドキュメント・ソース管理を止めれば開発と運用が止まる。 **「ログイン画面があるから安全」という反論が社内から必ず出る**が、 本件は認証の前に成立するため成り立たない（本記録の注記）。 社外の委託先・顧客がアクセスしている場合は、 遮断の連絡と代替手段の用意が先に要る。</div><div class=sub><b>item:</b> WAF / リバースプロキシで、`..` が `/`・`\`・`::` と隣接する URL （URL エンコード・二重エンコードされた形を含む）を遮断する （8製品すべてで使える唯一の手段）　<b>副作用:</b> **Atlassian 自身が「限定的であり、パッチの代わりにはならない」と記している。** 正規の要求を誤って遮断する可能性があり、 とくに**ファイル名に `..` を含む添付やリポジトリのパス**で 誤検知が出ることを想定して試験する必要がある（本記録の評価）。 **文字列一致での遮断は過去に繰り返し迂回されている** （INC-2026-0189 の `%50` 置換）。</div><div class=sub><b>item:</b> Confluence / Jira Software / Jira Service Management / Bamboo / Crowd では Tomcat の RewriteValve 規則を各ノードに入れる。Bitbucket では `urlrewrite.xml` に規則を入れ、**全ノード・ミラー・ミラーファームへ適用**する　<b>副作用:</b> **いずれもノードの停止と再起動が必要**であり、 クラスタ構成では計画停止の調整が要る。 Bitbucket はミラーとミラーファームにも入れる必要があり、 **1か所でも漏らすと迂回経路が残る。** **Crucible と Fisheye にはこの選択肢が無く、WAF しかない。**</div><div class=sub><b>item:</b> アクセスログを調べる——各要求行を**最大2回まで URL デコード**して `..` が `/`・`\`・`::` と隣接していないか探すか、 Atlassian の遮断パターンを生のログ行に当てる　<b>副作用:</b> **失敗した試行と実際にファイルが返った要求を区別する方法が 勧告に書かれていない。** また**見つかった場合に更新以外に何をすべきかも示されていない。** 調べた結果の解釈を自組織で引き受ける前提で着手する必要がある（本記録の評価）。</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> 自組織で動いている Atlassian 製品の一覧（製品・版・ライセンス種別・公開範囲）　<b>補足:</b> **最初に作るのはこれ。** **ライセンス種別（Data Center / Server）を必ず含める**—— 本件では勧告が Data Center だけを扱い、 **Server 版は CVE 記録にしか載っていない。** 「Atlassian 製品を使っているか」ではなく 「どの系列の何版が、どこから到達できるか」まで要る。</div><div class=sub><b>item:</b> 各インスタンスのウェブアプリケーションのルートディレクトリに置かれているファイルの一覧　<b>補足:</b> **読み出せるのは「名前とパスを知っているファイル」**なので、 **自機に何が置かれているかが被害の上限を決める。** 構成ファイル・接続情報・鍵・バックアップ・作業中の退避ファイルなど、 **運用で後から置いたものが危ない**（本記録の評価）。 製品の標準ファイルは攻撃者も名前を知っていると想定する。</div><div class=sub><b>item:</b> アクセスログ中で、URL デコード後に `..` が `/`・`\`・`::` と隣接する要求 （Atlassian の遮断パターンと同じ条件）　<b>補足:</b> **二重エンコード（`%252e`）まで拾う必要がある**—— Atlassian の正規表現が `%25` の繰り返しを織り込んでいるのは そのためである。 **単純な `..` の文字列検索では抜ける。** ログの保存期間が短い場合は、**遡れる範囲を先に確認する。**</div><div class=sub><b>item:</b> Crowd（認証を束ねる製品）が外部から到達できるかどうか、および Crowd が保持する連携先の一覧　<b>補足:</b> **8製品の中で Crowd の扱いは別に考える価値がある**（本記録の評価）—— 他製品の利用者認証を束ねる位置にあるため、 **ここから資格情報に届いた場合の影響は製品1つで収まらない。** 到達範囲の制限を最優先に置く候補である。</div><div class=sub><b>item:</b> サポート終了済みの Atlassian 資産（Server 版・EOL の Data Center 版）の一覧と、その到達範囲　<b>補足:</b> **勧告には修正版が示されていない区分である。** 「対象外」ではなく「影響あり・修正なし」なので、 **残存リスクとして登録し、到達範囲の制限か停止で扱うしかない**（本記録の整理）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**脆弱な実装が入った版。** Atlassian は CVE 記録の記述で製品別に 「introduced in version &gt;=」として示している—— Bitbucket Data Center 4.6.0 以降、Confluence Data Center 5.10.0 以降、 Crowd Data Center 2.11.0 以降、Jira Software Data Center 7.1.0 以降、 Jira Service Management Data Center 3.1.0 以降、Bamboo Data Center 7.0.1 以降。 **具体的なリリース日は勧告に書かれておらず、本記録も確認していない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**Atlassian が CVE-2026-21589 を公表した**（CVE 記録の公開時刻は 2026年10月5日21時30分 UTC）。 CVSS v4.0 の基本値は **9.3**、ベクタは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:H/SA:H`。 製品別の修正版と3通りの緩和策、ログの確認方法が同時に示された。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Register が、Atlassian が利用者へ「Action required」で始まるメールを 送ったことを報じた。** 同誌は Atlassian が2020年に低価格帯の Server 製品の 開発を止めてクラウドへの移行を求め、2025年には Data Center 製品も 終息させる決定をした経緯に触れている。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が、Atlassian の CVE 記録と製品チケットの間で 修正版の数字が食い違っている点を指摘した。** Crowd の 7.1 系について、チケットの「fix version」欄は **7.1.7** だが 同じチケット内の表は **7.1.6** を影響版として挙げ、CVE 記録は **7.1.1** を 「影響を受けない版」としている。Bamboo については CVE 記録の一方の欄が **10.2.4**、同じ記録の記述が **10.2.24** となっている。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、Atlassian が届け出た CVE 記録（CVE Program の API）と 製品チケット CONFSERVER-104488 を直接取得して裏を取った**（観測）。 CVE 記録で確認したのは、①CVSS v4.0 9.3 とベクタ、 ②種別が「Path Traversal（Arbitrary Read/Write）」であること、 ③製品別の「影響を受け始めた版」と修正版、 ④**勧告が触れていない旧 Server 版4種（Bamboo / Bitbucket / Confluence / Crowd）が 「全版が影響」として載り、修正版が示されていない**こと、 ⑤Bamboo の 10.2.4 / 10.2.24 の食い違いが CVE 記録の内部にあること。 チケットでは**WAF 用の遮断正規表現の実体**を確認した。 **Atlassian の勧告ページ本体（confluence.atlassian.com/security 配下）は 本記録が推定した URL では 404 を返し、直接取得できていない。**</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Crowd 7.1 系の修正版が、Atlassian の資料の中で3つに割れている</span><div class=sm>**製品チケットの「fix version」欄は 7.1.7、 同じチケット内の表は 7.1.6 を影響版として挙げ、 CVE 記録は 7.1.1 以降を「影響を受けない」としている**（The Hacker News の指摘）。 本記録は CVE 記録側（7.1.1）を直接確認した。 The Hacker News は、Crowd 7.1 系のリリースノートによれば **7.1.1 は2025年11月27日**、つまり公表の10か月以上前の版であると指摘している。 **どれが正しいのかを Atlassian は明示していない。** **本記録は断定せず、記述文側の 7.1.1 を併記するにとどめる。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Bamboo Data Center の修正版が、同じ CVE 記録の中で 10.2.4 と 10.2.24 に割れている</span><div class=sm>**本記録が CVE 記録を直接読んで確認した食い違いである。** 構造化された `affected` の欄は 「Patch version 10.2.4 and later」を `unaffected` とする一方、 **同じ記録の記述文（description）は「fix versions 10.2.24, 12.1.12」**としている。 桁の打ち間違いに見えるが、**本記録が正解を決めてよいものではない。** **実務上の含意は、CVE 記録を取り込むスキャナが 「10.2.4 なら安全」と判定しうることである**（本記録の評価）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>旧 Server 版の扱いが、勧告（製品チケット）と CVE 記録で噛み合っていない</span><div class=sm>**CVE 記録には Bamboo Server・Bitbucket Server・Confluence Server・ Crowd Server が「全版が影響」として載り、修正版が1つも示されていない。** Jira Software Server は 9.12.40 以降、Jira Service Management Server は 5.12.40 以降、Crucible Server と Fisheye Server は 4.9.15 以降が 「影響を受けない」とされる。 **一方で勧告の側は Server 版に触れていない**（The Hacker News の指摘。 本記録も製品チケット CONFSERVER-104488 で Server 版への言及を確認できなかった）。 **Server ライセンスでそれらの版を動かせるのかも書かれていない。** The Hacker News は、Crowd には2023年9月の 5.2 以降 Server 版のリリースが無く、 示された修正版のどれも Server 版ではないと指摘している。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>CVE 記録の種別は「Arbitrary Read/Write」だが、記述文は読み取りしか述べていない</span><div class=sm>**本記録が CVE 記録を直接読んで確認した。** `problemTypes` の記載は **「Path Traversal (Arbitrary Read/Write)」**だが、 記述文（description）は一貫して **access（アクセス・読み取り）**であり、 **書き込みには触れていない。** CVSS v4.0 のベクタも 脆弱なシステム側の完全性を **VI:N（影響なし）**としている。 **書き込みが可能なのかどうかは、資料からは判断できない**（本記録の読み）。 本記録は**読み取りとして記述し、種別の表記の広さを齟齬として残す。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>CVSS で「後続システム」の完全性・可用性が High である理由が説明されていない</span><div class=sm>Atlassian のベクタは `VC:H/VI:N/VA:N/SC:H/SI:H/SA:H`—— **脆弱なシステム側は機密性のみ High なのに、 後続システム側は機密性・完全性・可用性の3つとも High** である。 **読み取りだけの欠陥でこうなる理由は勧告に書かれていない。** 読み出したファイルに資格情報が含まれる場合の二次被害を 織り込んだとも読めるが、**Atlassian はそう述べていない**（本記録の読み）。 The Hacker News も同じ点を「説明されていない」と指摘している。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Atlassian の勧告ページ本体を本記録は取得できていない</span><div class=sm>**本記録が裏を取ったのは、①Atlassian が採番機関として届け出た CVE 記録 （CVE Program の API から取得）と、②製品チケット CONFSERVER-104488 である。** Atlassian のセキュリティ勧告一覧には 「Arbitrary File Access Vulnerability impacts Multiple Products (CVE-2026-21589)」という項目の存在を確認したが、 **勧告本文のページは本記録が推定した URL では 404 を返した。** そのため、**勧告だけに書かれている記述（他7製品のチケットの内容、 クラウド側の調査結果の正確な文言、ログ確認の手順の詳細）は 報道（The Hacker News）経由での把握である。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>自社ホスト型への悪用の有無について、当事者が「確認できない」と述べている</span><div class=sm>**勧告は、自社ホスト型のインスタンスに対する攻撃が観測されたかを述べていない。** あるのは**「Atlassian はあなたのインスタンスが影響を受けたかどうかを 確認できない」**という一文である（原文英語）。 **これは「悪用の報告が無い」とは別の意味である**—— 自社ホスト型の製品についてベンダーは観測する立場に無い。 **本記録は「悪用なし」と書かない**（本記録の判断）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証の前に届く要求で、ウェブアプリケーションのルート配下の 「名前を知っているファイル」を読み出せる （自社ホスト型では悪用の有無をベンダーが判定できない）</div><div class=svgwrap><svg viewBox="0 0 1202 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,60.0 C193.0,60.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,60.0 C295.0,60.0 295.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,67.0 628,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,67.0 C805.0,67.0 805.0,67.0 832,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,67.0 C1009.0,67.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1009.0,111.0 1009.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,148.0 C397.0,148.0 397.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="30.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証を持たない攻撃者</text><text x="91.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">権限・利用者操作いずれも</text><text x="91.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">不要（CVSS v4.0</text><rect x="220" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WAF・リバースプロキシ</text><text x="295.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（遮断規則を置ける層）</text><text x="295.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">`..` が `/`・`</text><text x="295.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">\`・`::` と隣接す</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Atlassian Da</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ta Center 製品</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">8種（自社運用）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">Bitbucket / </text><text x="499.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">Confluence /</text><rect x="628" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パストラバーサル（CVE</text><text x="703.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-2026-21589・</text><text x="703.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVSS v4.0 9…</text><text x="703.0" y="86.0" text-anchor="middle" fill="#f48fb1" font-size="10">名前とパスを知っているフ</text><text x="703.0" y="98.0" text-anchor="middle" fill="#f48fb1" font-size="10">ァイルのみ読める。ディレ</text><rect x="832" y="30.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウェブアプリケーションの</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルートディレクトリ</text><text x="907.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">製品の標準ファイルはパス</text><text x="907.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">が共通。危ないのは運用で</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">構成によって置かれている</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">機微なファイル（内容は非</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表）</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">Atlassian は「</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">構成によっては機微なファ</text><rect x="832" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Crowd（他製品の利用</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者認証を束ねる）</text><text x="907.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">ここから資格情報に届いた</text><text x="907.0" y="179.0" text-anchor="middle" fill="#64b5f6" font-size="10">場合、影響は製品1つで収</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">旧 Server 版4製</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">品（全版が影響・修正版な</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">し）</text><text x="499.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">Bamboo / Bit</text><text x="499.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">bucket / Con</text><rect x="628" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用側のアクセスログ（侵</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">害判定の唯一の材料）</text><text x="703.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">Atlassian「あな</text><text x="703.0" y="186.0" text-anchor="middle" fill="#ffcc80" font-size="10">たのインスタンスが影響を</text><rect x="16" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Atlassian（クラ</text><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウド版は修正済み・自社ホ</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スト型は判定不能）</text><text x="91.0" y="167.0" text-anchor="middle" fill="#80cbc4" font-size="10">クラウドでは悪用の証跡な</text><text x="91.0" y="179.0" text-anchor="middle" fill="#80cbc4" font-size="10">し。Bitbucket </text></svg></div><div class=fn>Atlassian が届け出た CVE 記録（CVE-2026-21589、2026年10月5日公開）と 製品チケット CONFSERVER-104488 にもとづく（本記録が2026年10月6日に取得して確認）。 **実際に攻撃が成立したことを示す図ではない**—— 自社ホスト型への悪用の有無は公表されておらず、 Atlassian は「確認できない」と述べている。 読み出せるファイルの中身は構成によって変わるため、 点線より下は**環境次第で成立する部分**である。</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>ベンダーが「悪用の有無を確認できない」と書いた事案を、「悪用の報告なし」と報告させない</div><div class=lw>**Atlassian は自社ホスト型について 「あなたのインスタンスが影響を受けたかどうかを当社は確認できない」と明記している。** これは「報告が無い」ではなく「判定する立場に無い」という意味である。 **自社ホスト型の製品では、判定材料は常に利用側の手元にある。** それでも社内報告は「ベンダーは悪用を確認していません」と書かれがちで、 **調べる作業が発生しないまま終わる。**</div><div class=la><b>取るべき行動</b> 脆弱性対応の報告様式に**「ベンダーが悪用の有無を判定できる立場か」**という欄を作る。 「できない」と書かれた事案は、**自社のログ調査を完了するまで クローズできない区分**に入れる。</div></li><li><div class=lp>脆弱性管理の台帳を「勧告に載っている製品」ではなく「CVE 記録の影響範囲」で引く</div><div class=lw>**本件では、勧告（製品チケット）が Data Center 版だけを扱い、 旧 Server 版は CVE 記録にしか載っていない。** Bamboo / Bitbucket / Confluence / Crowd の Server 版は **「全版が影響」で修正版が示されていない。** 勧告だけを読んでいる組織は、**自機が対象だと気づけない。**</div><div class=la><b>取るべき行動</b> 影響判定の手順に**「ベンダー勧告と CVE 記録の両方を読む」**を明記する。 食い違いがあった場合は**広いほうを採る**と決めておく。 本件を最初の適用例として、自組織の Atlassian 資産を **ライセンス種別込みで棚卸しする。**</div></li><li><div class=lp>サポート終了済みの資産に「影響あり・修正なし」が起こることを、移行計画の前提に入れる</div><div class=lw>**Server 版4製品には上げる先が無い。** サポート終了は「ベンダーが守らない」という意味であり、 **「脆弱性の対象から外れる」という意味ではない。** 本件はその差が明示的に出た例である。 Atlassian は Data Center 製品自体の終息も決めているため、 **同じ状況が次の層でも起こりうる**（The Register の報道）。</div><div class=la><b>取るべき行動</b> サポート終了済み・終了予定の基幹ソフトウェアの一覧に、 **「修正が出ない前提での代替策（到達範囲の制限・停止・置き換え）」**を 1行ずつ書き添える。 **移行の遅れをリスク登録簿に金額または影響範囲で載せ、 移行予算の判断材料にする。**</div></li><li><div class=lp>開発・運用の基盤（課題管理・ソース管理・認証）の公開範囲を、経営の判断事項として持つ</div><div class=lw>本件の指示は**「可能ならオフラインにする」**から始まる。 これは技術部門が単独で実行できる判断ではない—— **止めれば開発が止まり、社外の委託先・顧客も影響を受ける。** 平時に公開範囲を決めていない組織は、**緊急時に止める判断ができない。**</div><div class=la><b>取るべき行動</b> Atlassian 製品のような**内部向け基盤をインターネットに出す必要があるか**を 平時に棚卸しし、必要な場合は**到達元の制限（VPN・IP 制限・ゼロトラストのプロキシ）**を 前提に置く。**「ログイン画面があるから公開して良い」という判断は、 認証前に成立する脆弱性では無効**であることを方針に書く。</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>遮断規則は「文字列一致」ではなく「デコード後の判定」で書く</div><div class=lw>Atlassian の遮断正規表現は **`%25` の繰り返しを織り込み、 `%252e` のような二重エンコードまで拾う**作りになっている。 **単純な `..` の一致では抜ける**ことを前提にした書き方である。 FBI の採用基盤の事案（INC-2026-0189）では、 攻撃者が `/PSEMHUB/` の `P` を `%50` に置き換えるだけで WAF の規則を素通りした。</div><div class=la><b>取るべき行動</b> 自組織の WAF 規則を**「デコード後に判定しているか」**で棚卸しする。 パス名を含む遮断規則については **二重エンコード・大小文字・`\`・`::`・`;` の変形を含む試験ケース**を作り、 規則を入れたあとに**実際に通らないことを確認する。**</div></li><li><div class=lp>ウェブアプリケーションのルートディレクトリに置いたファイルを棚卸しする</div><div class=lw>**読み出せるのは「名前とパスを知っているファイル」**なので、 **自機に何が置かれているかが被害の上限を決める。** 製品の標準ファイルは攻撃者も名前を知っている。 危ないのは**運用の過程で後から置いたもの**—— 構成の控え、接続情報、鍵、作業中の退避ファイル——である（本記録の評価）。 Atlassian は「構成によっては機微なファイルがある」と述べるだけで、 **何が危ないかは示していない。**</div><div class=la><b>取るべき行動</b> 各インスタンスのルートディレクトリの**ファイル一覧を取得して差分管理に入れる。** 標準配布に含まれないファイルは**退避先を外に移す**か、削除する。 以後は**配置の手順に「ルート配下に置かない」を明記**する。</div></li><li><div class=lp>緩和策を入れる対象に、ミラーと副系を必ず含める</div><div class=lw>Bitbucket の緩和策は**全ノード・ミラー・ミラーファームへの適用と再起動**を要する。 **1か所でも漏らすと迂回経路が残る。** Crucible と Fisheye には WAF 以外の選択肢が無い。 **製品によって打てる手が違う**ことを把握していないと、 「緩和済み」の報告に穴が開く。</div><div class=la><b>取るべき行動</b> 緩和策の適用表を**製品 × ノード（本体・クラスタ各ノード・ミラー）**の マトリクスで作り、**適用と再起動の両方にチェック欄を置く。** **WAF しか打てない製品（Crucible / Fisheye）は別扱いで記録する。**</div></li><li><div class=lp>アクセスログの調査は「どこまで遡れるか」を先に確認してから着手する</div><div class=lw>影響を受け始めた版は製品ごとに古く（Crowd Data Center は 2.11.0 以降）、 **いつから悪用が可能だったかの下限が非常に古い。** 一方 Atlassian は**自社ホスト型への悪用の有無を述べていない**ため、 **調査期間の起点を示す情報が無い。** 遡れる範囲を知らずに始めると、 **「見つからなかった」が何を意味するのか言えなくなる。**</div><div class=la><b>取るべき行動</b> 調査の着手前に**各インスタンスのアクセスログの保存期間を記録**し、 報告書に**「この期間について調べた結果である」と範囲を明示して書く。** 保存期間が短い場合は、**その事実を残存リスクとして登録する。**</div></li><li><div class=lp>版番号の自動照合に依存している部分を把握しておく</div><div class=lw>**本件では Atlassian 自身の資料の中で修正版の数字が割れている**—— Bamboo は CVE 記録の一方の欄が 10.2.4、同じ記録の記述文が 10.2.24。 Crowd 7.1 系は 7.1.1 / 7.1.6 / 7.1.7 の3つが別の欄に現れる。 **CVE 記録を取り込むスキャナは「10.2.4 なら安全」と判定しうる。**</div><div class=la><b>取るべき行動</b> 重要度の高い脆弱性については、**スキャナの判定をそのまま信じず、 ベンダーの記述文（description）側の版番号と突き合わせる**手順を入れる。 食い違った場合は**新しいほうへ上げる**。 本件の2件（Crowd 7.1 系・Bamboo 10.2 系）は **ベンダーへ照会した記録を残す。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Atlassian の Data Center 製品（Bitbucket / Confluence / Jira Software / Jira Service Management / Bamboo / Crowd / Crucible / Fisheye）を 自社で運用しており、インターネットから到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 旧 Server 版、またはサポート終了（EOL）に達した Data Center 版を動かし続けている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Crowd で複数製品の利用者認証を束ねている、または Atlassian 製品を社外の委託先・顧客と共有している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ウェブアプリケーションのルートディレクトリに、製品の標準配布に含まれないファイル （構成の控え・接続情報・鍵・バックアップ・作業中の退避ファイル）を置いている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> WAF やリバースプロキシの遮断規則が、URL デコード前の文字列一致で書かれている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性の影響判定をベンダー勧告だけで行っており、CVE 記録の影響範囲を読んでいない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月5日21:30（UTC） Atlassian Corporation（CVE 採番機関としての届け出）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-21589" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-21589 — Arbitrary File Access Vulnerability impacts Multiple Products</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録が直接取得して裏を取った一次資料**（Atlassian 自身が CNA として 届け出た CVE 記録。assignerShortName: atlassian）。 ここで確認したのは—— ①CVSS v4.0 基本値 **9.3（Critical）**、ベクタ `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:H/SI:H/SA:H`、 ②種別が **Path Traversal（Arbitrary Read/Write）**である一方、 記述文は access（読み取り）しか述べていないこと、 ③影響を受け始めた版（Bitbucket DC 4.6.0 / Confluence DC 5.10.0 / Crowd DC 2.11.0 / Jira Software DC 7.1.0 / JSM DC 3.1.0 / Bamboo DC 7.0.1 以降）、 ④修正版（Bitbucket 9.4.26・10.2.8・10.5.1／Confluence 9.2.26・10.2.19／ Crowd 6.3.7・7.0.3・7.1.1・7.2.4／Jira Software 9.12.40・10.3.26・11.3.12／ JSM 5.12.40・10.3.26・11.3.12／Bamboo 10.2.24・12.1.12／ Crucible 4.9.15／Fisheye 4.9.15）、 ⑤**旧 Server 版4製品（Bamboo / Bitbucket / Confluence / Crowd）が 「全版が影響」で修正版なし**であること、 ⑥**Bamboo の 10.2.4 と 10.2.24 の食い違いが同じ記録の内部にある**こと、 ⑦参照先として製品チケット8件が挙がっていること。 **悪用の有無・発見者・報告経路の記載は無い。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月5日 Atlassian Corporation（製品チケット）</span> <a href="https://jira.atlassian.com/browse/CONFSERVER-104488" target="_blank" rel="noreferrer noopener nofollow">CONFSERVER-104488 — Arbitrary File Access in Confluence Data Center</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本記録が直接取得して裏を取った一次資料**（8製品のうち Confluence 分）。 ここで確認したのは—— ①CVSS 9.3（Critical）、 ②修正版 9.2.26 / 10.2.19、 ③**「直ちに修正版へ更新する。更新が完了するまでインターネットからの 到達を断つ」**という指示、 ④**WAF / リバースプロキシ用の遮断正規表現の実体** （`%25` の繰り返しを織り込み、`%252e` のような二重エンコードまで拾う）、 ⑤Tomcat の RewriteValve を使う緩和策（`server.xml` と `WEB-INF/rewrite.config` の変更、クラスタ各ノードの再起動）、 ⑥**緩和策は一時的なもので、更新が不可欠であること。** **ログ確認の具体的な手順はこのチケットでは確認できなかった。** 他7製品のチケット（BAM-26567 / BSERV-20604 / CRUC-8741 / CWD-6610 / FE-7583 / JRASERVER-79546 / JSDSERVER-16809）は本記録では未取得。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月6日 The Hacker News</span> <a href="https://thehackernews.com/2026/10/critical-atlassian-flaw-lets.html" target="_blank" rel="noreferrer noopener nofollow">Critical Atlassian Flaw Lets Unauthenticated Attackers Read Known Files Across 8 Products</a> <span class="b kind">記事</span><span class=sm>（**本記録がこの事案を把握した入口**（2026年10月6日収集分）。 一次資料の読み合わせを最も細かく行っている記事で、 ①Crowd 7.1 系の 7.1.7 / 7.1.6 / 7.1.1 の食い違いと **7.1.1 が2025年11月27日の版である**という指摘、 ②Bamboo の 10.2.4 / 10.2.24 の食い違い、 ③**CVE 記録にのみ旧 Server 版が載っており、 Bamboo / Bitbucket / Confluence / Crowd Server は全版が影響で修正版なし**、 ④**Crowd には2023年9月の 5.2 以降 Server 版のリリースが無い**こと、 ⑤3通りの緩和策の適用先（Crucible と Fisheye は WAF のみ）、 ⑥ログの調べ方（最大2回の URL デコード／遮断パターンの当てはめ）と **失敗した試行との区別方法が書かれていないこと**、 ⑦クラウドは修正済み・Bitbucket Cloud は影響なし・ **自社ホスト型については「Atlassian は確認できない」**という記述、 ⑧先行事例として CVE-2021-26086（Jira のパストラバーサル。 CISA が2024年11月12日に KEV 収載）を挙げている。 **本記録は①〜③を CVE 記録側でも確認した。**）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月6日 The Register</span> <a href="https://www.theregister.com/security/2026/10/06/atlassian-warns-of-critical-file-access-flaw-in-it/5301284" target="_blank" rel="noreferrer noopener nofollow">Atlassian warns of critical file access flaw in its datacenter products</a> <span class="b kind">記事</span><span class=sm>（Atlassian が利用者へ**「Action required」で始まるメール**を送ったことを伝えた記事。 加えて、同社が**2020年に低価格帯の Server 製品の開発を止めてクラウドへの移行を求め、 2025年には Data Center 製品も終息させる決定をした**経緯、 **移行ツールの新版が前版より劣っていたと同社が認めた**こと、 2026年3月に人員の10%を削減したことを背景として書いている。 **脆弱性そのものについての新しい事実は含まない。**）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月6日 Security NEXT</span> <a href="https://www.security-next.com/191078" target="_blank" rel="noreferrer noopener nofollow">複数のAtlassian製品が影響を受ける「クリティカル」脆弱性</a> <span class="b kind">記事</span><span class=sm>（**日本語での報道。** 8製品名・CVSS v4.0 の 9.3・ 「悪用には対象ファイルの名称やパスを事前に把握している必要があるが、 認証を必要とせずアクセスできる」という性質、 **とくにデータセンター製品はリスクが高いとして早急な対応を求めた**こと、 緩和策と侵害痕跡の確認方法が案内されていることを伝えている。 **旧 Server 版の扱い・修正版の数字の食い違いには触れていない。** 国内の被害や国内利用組織への言及は無い。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月6日</span> <span class="b rev">新規作成</span> 2026年10月6日収集分の記事（The Hacker News・Security NEXT・The Register）を起点に作成。 **一次公表として、Atlassian が採番機関として届け出た CVE 記録と 製品チケット CONFSERVER-104488 を本記録の作成者が直接取得して裏を取った。** 報道に無い一次情報として確認したのは—— ①CVSS v4.0 のベクタ全体（後続システム側が `SC:H/SI:H/SA:H` である一方、 脆弱なシステム側は `VC:H/VI:N/VA:N` であること）、 ②種別が「Path Traversal（Arbitrary Read/Write）」なのに記述文は 読み取りしか述べていないこと、 ③影響を受け始めた版（製品ごとに Crowd DC 2.11.0 以降など）、 ④**Bamboo の 10.2.4 / 10.2.24 の食い違いが同じ CVE 記録の内部にある**こと、 ⑤旧 Server 版4製品が「全版が影響・修正版なし」であること、 ⑥WAF 用の遮断正規表現の実体（`%252e` のような二重エンコードまで拾う作り）。 **Atlassian の勧告ページ本文は推定 URL が 404 で取得できず**、 他7製品のチケットも未取得であることを齟齬（self_unverified）に残した。 自社ホスト型への悪用の有無については、**「悪用の報告なし」と書かず、 ベンダーが「確認できない」と述べている事実として記録した。** status は new（修正版は提供済みで、追加の公表待ちの論点が無い）。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Atlassian</span><span class="b tag">Confluence</span><span class="b tag">Jira</span><span class="b tag">Bitbucket</span><span class="b tag">Crowd</span><span class="b tag">Bamboo</span><span class="b tag">CVE-2026-21589</span><span class="b tag">パストラバーサル</span><span class="b tag">任意ファイル読み取り</span><span class="b tag">認証不要</span><span class="b tag">Data Center</span><span class="b tag">サポート終了資産</span><span class="b tag">CVSS v4.0</span><span class="b tag">二重エンコード</span><span class="b tag">IT・通信</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 17:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
