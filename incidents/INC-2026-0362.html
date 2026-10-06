@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>GROWI に非公開ファイル読み取りの脆弱性 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0362</span>GROWI に非公開ファイル読み取りの脆弱性</h1>
+<header class="site-header">
+  <p class="subtitle">国産の社内 Wiki「GROWI」にアクセス制限不備の脆弱性（CVE-2026-100727）——**未認証の第三者が、非公開ページに添付されたファイルを読み取れる**。JVN#24352487 として2026年10月5日に公表された。影響は **v7.5.5 より前のすべてのバージョン**のうち、**ファイルアップロード方法の設定が「Local」の構成**で、Amazon S3 / GCS / Azure Blob Storage を使う構成は影響を受けない。修正版 v7.5.5 は `/uploads` プレフィックスへのアクセスを静的ファイル配信の前に 403 で拒否する。**開発者自身が JPCERT/CC に報告して調整を依頼した経路での公表**で、**悪用の有無・影響を受ける組織数・修正版の公開日はいずれも公表されていない**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月5日</span>
+  <span>最終更新: 2026年10月5日</span>
+</div>
+
+<div class="lead"><p><strong>株式会社GROWI</strong> が提供する社内 Wiki・ナレッジ共有ソフトウェア <strong>GROWI</strong> に、<strong>アクセス制限不備の脆弱性</strong>（CVE-2026-100727 / CWE-552）が見つかりました。JPCERT/CC と IPA が運営する JVN で、<strong>2026年10月5日</strong>に<strong>JVN#24352487</strong> として公表されています。</p>
+<p><strong>何が起きるか。</strong> <strong>認証されていない第三者が、GROWI 内に保存されている非公開ページのファイルを読み取れます。</strong> ログインも、ページの閲覧権限も要りません。</p>
+<p><strong>影響するのは「ファイルアップロード方法が Local」の構成だけです。</strong></p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>影響バージョン</td>
+<td><strong>v7.5.5 より前のすべてのバージョン</strong></td>
+</tr>
+<tr>
+<td>影響する条件</td>
+<td>ファイルアップロード方法の設定が「<strong>Local</strong>」</td>
+</tr>
+<tr>
+<td>影響しない構成</td>
+<td>Amazon S3 / Google Cloud Storage / Azure Blob Storage</td>
+</tr>
+<tr>
+<td>修正版</td>
+<td><strong>v7.5.5</strong>（GitHub・Docker Hub から入手可）</td>
+</tr>
+<tr>
+<td>CVSS v4.0</td>
+<td>6.9</td>
+</tr>
+<tr>
+<td>CVSS v3.0</td>
+<td>5.3（AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>読みどころは、CVSS の数字が事案の重さを表していないことです。</strong> CVSS v3.0 の 5.3 は「機密性への影響が Low」という評価ですが、これは<strong>1つのファイルが読めることの影響</strong>を測った値です。GROWI が置かれる場所——<strong>社内の設計書・議事録・手順書・認証情報のメモが集まるナレッジ基盤</strong>——を踏まえると、組織にとっての意味は数字より重くなります（本記録の評価）。</p>
+<p><strong>もう1つの読みどころは、公表の経路です。</strong> JVN は「この脆弱性情報は、製品利用者への周知を目的に、<strong>開発者が JPCERT/CC に報告し</strong>、JPCERT/CC が開発者との調整を行いました」と記しています。<strong>外部の研究者が見つけて通報した形ではなく、開発者自身が周知を選んだ</strong>形です。自社製品の脆弱性を自ら JVN に載せる判断は、国内ベンダーの対応として記録に値します。</p>
+<p><strong>一方で、書かれていないこともあります。</strong>悪用の有無、影響を受ける組織の数、v7.5.5 がいつ公開されたか、そして<strong>修正版へ上げる前に取れる緩和策</strong>——いずれも示されていません。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>悪用の有無（実際に読み取られた事例があるか）</span><span class="b rsn">公表されていない</span><div class=sm>**JVN もベンダ告知も、悪用の観測・被害報告について触れていない。** 「触れていない」ことは「無い」ことを意味しない（本記録の留保）</div></li><li><span class=ui>影響を受ける組織の数と業種</span><span class="b rsn">公表されていない</span><div class=sm>**GROWI の導入数・そのうち「Local」構成の割合はいずれも公表されていない。** オンプレミス導入の製品であるため、提供元が把握しているとも限らない（本記録の留保）</div></li><li><span class=ui>修正版 v7.5.5 の公開日</span><span class="b rsn">公表されていない</span><div class=sm>JVN の公開日は2026年10月5日だが、 **v7.5.5 そのものがいつリリースされたかは JVN・ベンダ告知のどちらにも 記載を確認できなかった。** 「公表の時点ですでに修正版が出ていた」ことだけが分かる</div></li><li><span class=ui>修正版へ上げる前に取れる緩和策</span><span class="b rsn">公表されていない</span><div class=sm>JVN の対策は「アップデートする」のみで、**回避策（ワークアラウンド）の記載は無い。** ベンダ告知にも緩和策の明記は確認できなかった。 修正内容（`/uploads` への到達を 403 で拒否）から**前段での遮断が 同等の効果を持つと読めるが、提供元が推奨した手段ではない**（本記録の評価）</div></li><li><span class=ui>到達に必要な条件（ファイル名・URL を知る必要があるか）</span><span class="b rsn">公表されていない</span><div class=sm>**`/uploads` 配下のファイルへ到達するために、 ファイル名や識別子を事前に知る必要があるかは公表されていない。** 一覧できる（ディレクトリが列挙できる）のか、 URL を知っている場合に限り読めるのかで、**露出の広さは大きく変わる**（本記録の評価）</div></li><li><span class=ui>この脆弱性がいつから存在していたか</span><span class="b rsn">公表されていない</span><div class=sm>影響範囲は「v7.5.5 より前のすべてのバージョン」とされるが、 **いつの版から該当するかは示されていない。** 「過去にアクセスされた痕跡を探す期間」を決める材料が無い</div></li><li><span class=ui>報告者（発見者）</span><span class="b rsn">公表されていない</span><div class=sm>JVN は「**製品利用者への周知を目的に、開発者が JPCERT/CC に報告**し、 JPCERT/CC が開発者との調整を行いました」と記す。 **誰が最初に発見したか（社内か外部か）は示されていない**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社GROWI</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERTコーディネーションセンター（JPCERT/CC）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GROWI v7.5.5 より前を「Local」構成で運用している組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>6.9<span class=fu>点</span></div><div class=fn>JVN が示す基本値。**深刻度の指標であり、被害の規模を表す数値ではない。** 本記録では件数・金額と同じ集計には用いない</div></div><div class=fig><div class=fh><span class=fl>CVSS v3.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5.3<span class=fu>点</span></div><div class=fn>ベクタは CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N。 **機密性への影響が Low と評価されているのは「1 ファイルが読めること」の 評価であり、ナレッジ基盤に何が入っているかは反映されない**（本記録の評価）。 上と同じく深刻度の指標であり、件数・金額と同じ集計には用いない</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃事例は公表されていない。** 以下は JVN とベンダ告知に記載された 脆弱性の性質にもとづく**到達の経路**であり、観測された攻撃の再構成ではない。 悪用の有無そのものが公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class=srcs>[1] [2]</span></div><div>**認証を経ずに、GROWI が公開しているポートへ HTTP リクエストを送る。** CVSS ベクタは PR:N（権限不要）/ UI:N（利用者の操作不要）/ AC:L（難易度低）で、 **ログインも、既存利用者を騙す手順も要らない**。 **ファイル名や識別子を事前に知る必要があるかは公表されていない**（本記録の留保）</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class=srcs>[1] [2]</span></div><div>**非公開ページに添付されたファイルを読み取る。** ページの閲覧権限は確認されない。 ベンダ告知は、**HTML ファイルがインラインで描画されることによる スクリプト実行のリスク**にも触れている</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**開発者が自ら JPCERT/CC に報告し、JVN 経由で利用者に周知した。** あわせて自社サイトの News で、 **影響条件（ファイルアップロード方法が「Local」の場合）と 影響しない構成（S3 / GCS / Azure Blob）、修正の内容 （静的配信の前に `/uploads` への到達を 403 で拒否）を公開した**</div><div class=fn><b>トレードオフ:</b> JVN に載せれば CVE 番号が付き、脆弱性情報を機械的に収集している 利用者にも届く。一方で、**未更新の利用者に対しては 攻撃者側にも手口の存在を知らせることになる**。 影響条件を併記すれば不要な対応を減らせるが、 **「Local 構成だけ」という情報は攻撃者にとっての絞り込みにもなる**</div></li></ul></div>
+<section id="s6"><h2>未認証の第三者が、非公開ページの添付ファイルを直接読める<span class="b slot">概観</span></h2><p>JVN#24352487 が示す内容は1行で足ります。</p>
+<blockquote>
+<p><strong>認証されていない第三者により、当該製品内に保存されている非公開ページのファイルが読み取られる可能性があります。</strong></p>
+</blockquote>
+<p>分類は <strong>CWE-552（外部からアクセス可能なファイルまたはディレクトリ）</strong>、識別子は <strong>CVE-2026-100727</strong>、JVN iPedia では JVNDB-2026-000144 です。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>影響バージョン</td>
+<td>v7.5.5 より前のすべてのバージョン</td>
+</tr>
+<tr>
+<td>影響する条件</td>
+<td>ファイルアップロード方法の設定が「Local」</td>
+</tr>
+<tr>
+<td>影響しない構成</td>
+<td>Amazon S3 / Google Cloud Storage / Azure Blob Storage</td>
+</tr>
+<tr>
+<td>修正版</td>
+<td>v7.5.5（GitHub・Docker Hub から入手）</td>
+</tr>
+<tr>
+<td>CVSS v4.0</td>
+<td>6.9</td>
+</tr>
+<tr>
+<td>CVSS v3.0</td>
+<td>5.3（AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>押さえるべきは CVSS ベクタの <code>PR:N/UI:N</code> です。</strong>権限が不要（PR:N）で、利用者の操作も不要（UI:N）。つまり<strong>ログインしていない相手が、誰にも気づかれず単独で実行できる</strong>。攻撃の難易度は低い（AC:L）と評価されています。</p></section>
+<section id="s7"><h2>原因は「ファイルの配信」と「ページの閲覧権限」が別経路だったこと<span class="b slot">原因・手口</span></h2><p>ベンダ告知から読み取れる構造は次のとおりです。</p>
+<ul>
+<li>GROWI の非公開ページに添付したファイルは、<strong>ファイルアップロード方法が「Local」のとき、サーバ上の <code>/uploads</code> 配下に置かれる</strong></li>
+<li><strong>その <code>/uploads</code> 配下が静的ファイルとして配信されていた</strong>——つまり、<strong>添付元のページの閲覧権限を確認する経路を通らずに</strong>配信されていた</li>
+<li>修正版 v7.5.5 は、<strong>静的ファイル配信の前段で <code>/uploads</code> プレフィックスへのアクセスを 403 で拒否する</strong>形に変えた</li>
+<li>ベンダ告知は、未認証者による直接のファイルアクセスに加えて、<strong>HTML ファイルがインラインで描画されることによるスクリプト実行のリスク</strong>にも触れている</li>
+</ul>
+<p><strong>これは、Web アプリケーションで繰り返し起きる型です</strong>（本記録の評価）。</p>
+<p>アプリケーションは「ページを見る権限」で守りますが、<strong>ファイルの実体は別の経路（静的配信）で外に出ている。</strong>権限の判定がアプリケーション側にしか無く、配信経路がそれを通らなければ、<strong>権限は実質的に機能しません。</strong></p>
+<p>オブジェクトストレージ（S3 など）を使う構成が影響を受けないのは、ファイルの実体がアプリケーションのサーバの公開領域に置かれず、<strong>署名付き URL など別の到達制御を経るから</strong>です（本記録の評価）。</p></section>
+<section id="s8"><h2>CVSS 5.3 は「1ファイルが読める」ことの評価で、ナレッジ基盤の中身は反映されない<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価です。</strong></p>
+<p>CVSS v3.0 の 5.3 は、機密性への影響を <strong>Low（C:L）</strong> としています。これは「限定された情報が読める」という意味で、<strong>1つのファイルを取得できることへの評価</strong>です。</p>
+<p>しかし、<strong>GROWI が置かれる場所</strong>を考えると、組織にとっての意味は変わります。</p>
+<p>社内 Wiki・ナレッジ共有基盤に集まるのは、たとえば次のようなものです。</p>
+<ul>
+<li>システムの構成図・ネットワーク図・サーバの一覧</li>
+<li>運用手順書（障害対応・バッチの再実行・権限付与の手順）</li>
+<li>会議の議事録（人事・取引・価格）</li>
+<li><strong>「非公開ページだから」という前提で貼られた認証情報・接続情報のメモ</strong></li>
+<li>添付された設計書・契約書・スクリーンショット</li>
+</ul>
+<p>つまり、<strong>「非公開ページ」という区分そのものが、組織の中でいちばん機微な情報の置き場所になっている</strong>ことがあります。</p>
+<p><strong>CVSS は脆弱性の性質を測る指標で、資産の価値は測りません。</strong>本件を「中程度」として後回しにするか、「社内の機微情報が未認証で読める」として即日対応にするかは、<strong>自社の GROWI に何が入っているかで決まります。</strong></p>
+<p>ここが、CVSS の数字だけで優先順位を付ける運用の限界です。</p></section>
+<section id="s9"><h2>「自社は Local 構成か」を最初に確認する——影響の有無がそこで決まる<span class="b slot">対策・注意喚起</span></h2><p>ベンダ告知は影響条件を明確にしています。</p>
+<ul>
+<li><strong>影響する</strong>: ファイルアップロード方法の設定が「<strong>Local</strong>」</li>
+<li><strong>影響しない</strong>: Amazon S3 / Google Cloud Storage / Azure Blob Storage</li>
+</ul>
+<p>対応の順序は次のようになります（本記録の整理）。</p>
+<ol>
+<li><strong>GROWI のバージョンを確認する。</strong> v7.5.5 以降なら対応済み</li>
+<li><strong>ファイルアップロード方法の設定を確認する。</strong>「Local」でなければ、本脆弱性の影響は受けない</li>
+<li><strong>v7.5.5 へ更新する。</strong> GitHub・Docker Hub から入手できる</li>
+<li><strong>更新できるまでの間</strong>、<code>/uploads</code> 配下への外部からの到達を前段（リバースプロキシ・WAF・ネットワーク）で遮断する——<strong>ただしこれは提供元が示した回避策ではない</strong>（本記録の評価。修正版が同じ経路を 403 で拒否していることから導いたもの）</li>
+<li><strong>過去のアクセスを確認する。</strong> <code>/uploads</code> 配下への未認証のリクエストがアクセスログに残っていないかを見る</li>
+</ol>
+<p><strong>JVN の対策欄は「アップデートする」のみで、回避策の記載はありません。</strong>更新までの窓をどう埋めるかは、利用側で決める必要があります。</p></section>
+<section id="s10"><h2>開発者自身が JPCERT/CC に報告して周知した——公表経路として記録に値する<span class="b slot">体制・ガバナンスの変更</span></h2><p>JVN には次の一文があります。</p>
+<blockquote>
+<p>この脆弱性情報は、製品利用者への周知を目的に、<strong>開発者が JPCERT/CC に報告し</strong>、JPCERT/CC が開発者との調整を行いました。</p>
+</blockquote>
+<p><strong>外部の研究者が見つけて通報し、調整の末に公表された</strong>という通常の経路ではなく、<strong>開発者自身が JVN へ載せることを選んだ</strong>形です。</p>
+<p>これが実務上どう違うか（本記録の評価）。</p>
+<ul>
+<li><strong>利用者が気づける。</strong> 自社サイトの News だけに書けば、更新情報を追っていない利用者には届かない。JVN に載れば、脆弱性情報の収集の仕組み（JVN iPedia・CVE・各社の監視）に乗る</li>
+<li><strong>CVE 番号が付く。</strong> 資産管理・脆弱性管理のツールで突合できるようになる</li>
+<li><strong>ベンダステータスが残る。</strong> JVN には「該当製品あり」としてベンダの確認が記録される</li>
+<li><strong>影響条件が併記された。</strong> ベンダ告知側で「Local 構成のみ」と限定したため、<strong>影響の無い利用者が不要な対応をしなくて済む</strong></li>
+</ul>
+<p>国産の業務ソフトウェアで、<strong>自社の脆弱性を自ら JVN に載せる判断</strong>は、日本の調達側（利用企業）が国産製品を評価するときの観点にもなります。</p></section>
+<section id="s11"><h2>悪用の有無も、影響組織数も、到達の条件も書かれていない<span class="b slot">未確定事項</span></h2><p>書かれていないことを並べます。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>公表の状態</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>悪用の観測・被害報告</td>
+<td><strong>記載なし</strong></td>
+</tr>
+<tr>
+<td>影響を受ける組織数・導入数</td>
+<td><strong>記載なし</strong></td>
+</tr>
+<tr>
+<td>修正版 v7.5.5 の公開日</td>
+<td><strong>記載を確認できず</strong></td>
+</tr>
+<tr>
+<td>更新前に取れる回避策</td>
+<td><strong>記載なし</strong>（対策は「アップデートする」のみ）</td>
+</tr>
+<tr>
+<td>ファイル名を知る必要があるか</td>
+<td><strong>記載なし</strong></td>
+</tr>
+<tr>
+<td>いつの版から該当するか</td>
+<td><strong>記載なし</strong>（「v7.5.5 より前のすべて」のみ）</td>
+</tr>
+<tr>
+<td>報告者（発見者）</td>
+<td><strong>記載なし</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>このうち実務に最も効くのは「ファイル名を知る必要があるか」です</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>一覧できる（ディレクトリが列挙できる）場合</strong> —— 到達すれば中身を総取りできる。緊急性は最大になる</li>
+<li><strong>URL を知っている場合に限り読める場合</strong> —— 共有された URL の再利用、ブラウザ履歴、外部へ転送されたリンクが現実的な経路になる。それでも「非公開ページの権限が機能していない」ことは変わらない</li>
+</ul>
+<p><strong>どちらであっても修正は必要ですが、「過去に何が読まれた可能性があるか」の調べ方は変わります。</strong>公表にこの情報が無いため、利用側は<strong>最悪のケースを前提に</strong>ログを確認することになります（本記録の評価）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>GROWI（株式会社GROWI。社内 Wiki・ナレッジ共有ソフトウェア）<div class=fn>影響は **v7.5.5 より前のすべてのバージョン**のうち、 **ファイルアップロード方法の設定が「Local」の構成**。 修正版は v7.5.5（GitHub・Docker Hub から入手）。 **影響を受ける組織の数・業種は公表されていない**</div></td></tr><tr><th>not_affected</th><td><ul class=cl><li>ファイルアップロード方法に Amazon S3 を使っている構成（ベンダ告知に明示）</li><li>ファイルアップロード方法に Google Cloud Storage を使っている構成（ベンダ告知に明示）</li><li>ファイルアップロード方法に Azure Blob Storage を使っている構成（ベンダ告知に明示）</li><li>GROWI v7.5.5 以降</li></ul><span class="b rsn">stated</span></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 公表されていない　<b>時点:</b> 2026年10月6日　<b>補足:</b> **JVN もベンダ告知も、悪用の観測・被害報告に触れていない。** 本記録は「触れていない」ことを記録し、悪用の有無は判定しない　<b>ログの有無:</b> **公表されていない。** 利用側で「過去に読まれたか」を確認できるかは、 Web サーバのアクセスログに `/uploads` 配下のリクエストが 残っているかに依存する（本記録の評価）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> GROWI を v7.5.5 以降へ更新する　<b>状況:</b> 提供元が示す対策（JVN の対策欄は「アップデートする」のみ）　<b>副作用:</b> 静的ファイル配信の前段で `/uploads` プレフィックスへのアクセスを 403 で拒否する仕様に変わる。**アプリケーション外から直接 `/uploads` 配下を参照していた運用（バックアップ・外部からの画像参照など）が あれば動かなくなる可能性がある**（本記録の評価）　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> ファイルアップロード方法をオブジェクトストレージへ変更する　<b>状況:</b> ベンダ告知が「影響を受けない構成」として挙げているもの　<b>副作用:</b> 既存の添付ファイルの移行作業が伴い、 移行中の参照不整合や外部ストレージの費用が生じる。 **緊急の封じ込めとしては更新のほうが速い**（本記録の評価）　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> 前段で `/uploads` 配下への外部からの到達を拒否する（更新までの暫定）　<b>状況:</b> **提供元が示した回避策ではない。本記録が修正内容から導いたもの**　<b>副作用:</b> アプリケーションが内部で同じ経路を使っている場合、 **画像や添付の表示が壊れる可能性がある。** 適用前に検証が必要（本記録の評価）　<b>出典:</b> 2</div></td></tr><tr><th>contact_disclosed</th><td>False</td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">公表</span></td><td>**JVN#24352487「GROWI におけるアクセス制限不備の脆弱性」が公表**された （公開日・最終更新日とも2026年10月5日）。 CVE-2026-100727 / CWE-552（外部からアクセス可能なファイルまたはディレクトリ）。 **認証されていない第三者が、製品内に保存されている非公開ページのファイルを 読み取れる可能性がある**とし、影響は **v7.5.5 より前のバージョン**、 修正は **v7.5.5** とした。 ベンダステータスは「該当製品あり」（最終更新2026年10月5日）。 JVN iPedia の識別子は JVNDB-2026-000144</td></tr><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">公表</span></td><td>株式会社GROWI が自社サイトの News で告知した。 **影響条件を「ファイルアップロード方法の設定が Local である場合」に限定**し、 **Amazon S3 / Google Cloud Storage / Azure Blob Storage を利用している場合は 影響を受けない**と明示。修正版 v7.5.5 では **静的ファイル配信の前に `/uploads` プレフィックスへのアクセスを 403 で拒否する** 仕様へ変更したとし、**未認証者による直接のファイルアクセスに加えて、 HTML がインラインで描画されることによるスクリプト実行のリスク**にも触れている。 修正版は GitHub と Docker Hub から入手できる</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が **JVN とベンダ告知の双方を取得して裏を取った**。 影響条件・修正内容・CVSS 値・CVE 番号を確認した一方、 **悪用の有無・影響組織数・v7.5.5 の公開日・修正版へ上げる前の緩和策の記載は 確認できなかった**</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>JVN は影響条件を「v7.5.5 より前のバージョン」とし、ベンダ告知は「Local 構成の場合」に限定している</span><div class=sm>JVN#24352487 の「影響を受けるシステム」は **「GROWI v7.5.5 より前のバージョン」**とだけ書かれている。 一方、**株式会社GROWI の告知は 「ファイルアップロード方法の設定が『Local』である場合」に影響条件を限定**し、 **S3 / GCS / Azure Blob を利用している場合は影響を受けない**と明示している。 **JVN だけを見た利用者は、影響を受けない構成でも対応対象だと判断する。** 本記録は両方を併記し、影響条件はベンダ告知にもとづく</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>修正版 v7.5.5 の公開日が公表されていない</span><div class=sm>JVN の公開日は2026年10月5日で、「本脆弱性は次のバージョンで修正されています： GROWI v7.5.5」とある。 **v7.5.5 そのもののリリース日は JVN・ベンダ告知のどちらにも記載を確認できなかった。** このため「修正版の提供から公表まで何日あったか」を算出できない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>回避策（更新までの暫定措置）が公表されていない</span><div class=sm>JVN の対策欄は「アップデートする」のみで、**回避策の記載が無い。** ベンダ告知にも緩和策の明記は確認できなかった。 本記録が示した「前段で `/uploads` への到達を拒否する」は **修正内容から導いた本記録の評価であり、提供元が推奨した手段ではない**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>到達にファイル名の事前知識が必要かどうかは公表されていない</span><div class=sm>JVN は「非公開ページのファイルが読み取られる可能性」とするのみで、 **`/uploads` 配下が列挙できるのか、 URL を知っている場合に限り読めるのかは示されていない。** CVSS v3.0 の機密性影響が Low（C:L）と評価されていることは **「限定された情報が読める」評価と整合的だが、 これを根拠に列挙できないと断定することはしない**（本記録の留保）</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の有無について双方の資料が沈黙している</span><div class=sm>**JVN もベンダ告知も、悪用の観測・被害報告・攻撃コードの公開に触れていない。** 本記録は「触れていない」ことを記録し、悪用の有無は判定しない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>非公開ページの権限はアプリ側にしか無く、添付ファイルは静的配信で外に出ていた</div><div class=svgwrap><svg viewBox="0 0 998 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,74.0 C193.0,74.0 193.0,53.0 220,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,53.0 C397.0,53.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C397.0,155.0 397.0,74.0 16,74.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,148.0 C499.0,148.0 499.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,193.0 C601.0,193.0 601.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,250.0 C295.0,250.0 295.0,53.0 220,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,143.0 C91.0,143.0 91.0,224.0 16,224.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,224.0 C499.0,224.0 499.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,143.0 C193.0,143.0 193.0,250.0 220,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="49.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の第三者（PR:N</text><text x="91.0" y="85.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> / UI:N）</text><rect x="220" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">静的ファイル配信（/up</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">loads 配下）</text><text x="295.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">ページの閲覧権限を確認す</text><text x="295.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">る経路を通らない</text><rect x="220" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GROWI アプリケーシ</text><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ョン（権限判定はここにあ</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る）</text><text x="295.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">本文の閲覧は権限で守られ</text><text x="295.0" y="179.0" text-anchor="middle" fill="#64b5f6" font-size="10">る</text><rect x="424" y="80.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ファイルアップロード方法</text><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「Local」</text><text x="499.0" y="129.0" text-anchor="middle" fill="#f48fb1" font-size="10">影響する構成</text><rect x="424" y="156.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S3 / GCS / A</text><text x="499.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">zure Blob</text><text x="499.0" y="205.0" text-anchor="middle" fill="#f48fb1" font-size="10">影響を受けない構成（ベン</text><text x="499.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">ダ告知に明示）</text><rect x="628" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非公開ページの添付ファイ</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル</text><text x="703.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">設計書・手順書・認証情報</text><text x="703.0" y="179.0" text-anchor="middle" fill="#ffcc80" font-size="10">のメモが入りうる</text><rect x="832" y="124.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GROWI を運用する組</text><text x="907.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">織</text><text x="907.0" y="173.0" text-anchor="middle" fill="#80cbc4" font-size="10">影響組織数は非公表</text><rect x="220" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 v7.5.5（/</text><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">uploads へのアク</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セスを 403）</text><text x="295.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">GitHub・Docke</text><text x="295.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">r Hub から入手</text><rect x="16" y="113.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">株式会社GROWI</text><text x="91.0" y="148.0" text-anchor="middle" fill="#80cbc4" font-size="10">自ら JPCERT/CC</text><text x="91.0" y="160.0" text-anchor="middle" fill="#80cbc4" font-size="10"> に報告</text><rect x="16" y="187.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="209.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JPCERT/CC（JV</text><text x="91.0" y="223.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">N）</text><text x="91.0" y="236.0" text-anchor="middle" fill="#b0bec5" font-size="10">2026/10/5 に </text><text x="91.0" y="248.0" text-anchor="middle" fill="#b0bec5" font-size="10">JVN#24352487</text></svg></div><div class=fn>JVN#24352487（2026年10月5日）と株式会社GROWI の告知にもとづく。 **認証されていない第三者が、非公開ページに保存されたファイルを読み取れる** （CVE-2026-100727 / CWE-552）。 影響は **v7.5.5 より前**かつ**ファイルアップロード方法が「Local」**の構成で、 S3 / GCS / Azure Blob を使う構成は影響を受けない。 修正版 v7.5.5 は静的ファイル配信の前段で `/uploads` への到達を 403 で拒否する。 **悪用の有無・影響組織数・ファイル名を知る必要があるかはいずれも公表されていない。** 図中の破線は「公表されていない部分」を示す。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** 一般には、未認証のまま `/uploads` 配下へ向かう リクエストはアクセスログに残る。 ただし**社内 Wiki は「内部からしか見えない」前提でログ監視の対象外に 置かれていることがある**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>GROWI を v7.5.5 以降へ更新する<span class=sm>　**提供元が示した対策。** v7.5.5 は静的ファイル配信の前段で `/uploads` プレフィックスへのアクセスを 403 で拒否する</span></div><div class=ctl><span class="b eff">侵入を防げた</span>ファイルアップロード方法をオブジェクトストレージ（S3 / GCS / Azure Blob）に変える<span class=sm>　**ベンダ告知は「これらを利用している場合は影響を受けない」と明示している。** ただし既存の添付ファイルの移行が伴うため、 緊急対応としてより更新のほうが速い（本記録の評価）</span></div><div class=ctl><span class="b eff">侵入を防げた</span>前段（リバースプロキシ・WAF）で `/uploads` 配下への外部からの到達を拒否する<span class=sm>　**本記録の評価による。提供元が示した回避策ではない。** 修正版が同じ経路を 403 で拒否していることから導いた。 アプリケーションが内部で使う経路を塞ぐと表示が壊れる可能性があるため、 検証してから適用する</span></div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** 読み取りは単発の GET で済むため、 アプリケーション側の監査ログには残らない構成がありうる（本記録の評価）。 **「読まれたか」を後から言えるかは、 Web サーバ側のアクセスログの保存期間で決まる**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>社内 Wiki に認証情報・接続情報を貼らない運用にし、貼られているものを棚卸しする<span class=sm>　**本記録の評価による。** 本件で読まれうるのは「非公開ページの添付ファイル」である。 **非公開という区分を機微情報の保管場所として使っている組織ほど 影響が大きくなる。** 区分に依存しない形（秘密管理の仕組み）へ移す</span></div><div class=ctl><span class="b eff">影響を限定できた</span>GROWI の公開面をインターネットから切り離す（VPN・IP 制限の内側に置く）<span class=sm>　**本記録の評価による。** 未認証で到達できることが条件なので、 到達そのものを絞れば悪用の母集団は社内に限られる。 **社外公開している構成では緊急性が上がる**</span></div><div class=ctl><span class="b eff">検知できた</span>Web サーバのアクセスログを `/uploads` 配下まで含めて保存し、保存期間を確保する<span class=sm>　**本記録の評価による。** この脆弱性がいつの版から存在したかは公表されていない。 **さかのぼれる期間がログの保存期間を超えることはない**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**開発者が自ら JPCERT/CC に報告し、JVN 経由で利用者に周知した。** あわせて自社サイトの News で、 **影響条件（ファイルアップロード方法が「Local」の場合）と 影響しない構成（S3 / GCS / Azure Blob）、修正の内容 （静的配信の前に `/uploads` への到達を 403 で拒否）を公開した**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** 自社の News だけでは 更新情報を追っていない利用者に届かない。 JVN 経由にしたこと、修正版の入手先（GitHub・Docker Hub）まで示したこと、 影響条件を限定して「影響しない構成」を明示したことは、 利用者が**その日のうちに自社の影響を判定できる**形になっている。 ただし**回避策（更新までの窓をどう埋めるか）が示されていない**点は欠けている</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>社内 Wiki は「資産の重要度」の評価が実態に追いついていないことが多い</div><div class=lw>社内 Wiki は業務システムではなく「道具」として導入されるため、 重要度の分類が低く設定されがちである。 だが実際には、**システム構成図・運用手順・議事録・ 「非公開ページだから」という前提で貼られた認証情報**が集まる。 **情報の濃さと、台帳上の重要度がずれている。**</div><div class=la><b>取るべき行動</b> 社内 Wiki・ナレッジ基盤を**個人情報・機密情報を保持するシステムとして 台帳に登録**し、重要度を実態に合わせて上げる。 あわせて「Wiki に貼ってはいけないもの」を定め、 **すでに貼られている認証情報を棚卸しして秘密管理の仕組みへ移す**。</div></li><li><div class=lp>CVSS の数字で優先順位を決める運用は、資産の価値を落とす</div><div class=lw>本件の CVSS v3.0 は 5.3（機密性 Low）だが、これは **「1 ファイルが読めること」の評価**であり、 そのファイルが設計書なのか認証情報なのかは反映されない。 **CVSS だけで並べると、社内の機微情報が未認証で読める脆弱性が 「中程度」として後回しになる。**</div><div class=la><b>取るべき行動</b> 脆弱性の優先順位付けの基準に、**CVSS に加えて 「その資産が保持している情報の種類」**を掛ける軸を入れる。 最低限、台帳で重要度が高い資産の脆弱性は **CVSS が中程度でも即日の影響判定の対象**にする。</div></li><li><div class=lp>国産製品の選定基準に「脆弱性を JVN に載せるか」を入れられる</div><div class=lw>本件は**開発者自身が JPCERT/CC に報告して JVN に載せた**。 自社サイトの告知だけなら、更新情報を追っていない利用者には届かない。 JVN に載れば CVE 番号が付き、**脆弱性管理の仕組みで機械的に拾える。** これは製品の品質ではなく**提供元の運用姿勢**の指標である。</div><div class=la><b>取るべき行動</b> 業務ソフトウェアの選定・更新時のチェック項目に、 **「過去の脆弱性が JVN / CVE として公表されているか」 「影響条件と影響しない構成を明示しているか」**を加える。 既存の導入製品についても、同じ観点で振り返っておく。</div></li><li><div class=lp>「社内向けだから外からは見えない」という前提を文書で確認する</div><div class=lw>本件は**未認証で到達できること**が前提の脆弱性である。 社内 Wiki は在宅勤務や協業先との共有のために インターネットへ公開されている構成がありうるが、 **公開していること自体が担当者以外に共有されていないことがある。**</div><div class=la><b>取るべき行動</b> 社内向けと認識しているシステムについて、 **インターネットから到達できるかを実測**し（外部からの疎通確認）、 公開している理由と制限（VPN・IP 制限・認証の前置）を文書に残す。 公開の必要が無いものは内側へ戻す。</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>まず「バージョン」と「ファイルアップロード方法の設定」の2つを確認する</div><div class=lw>影響条件はこの2つで決まる。 **v7.5.5 以降なら対応済み。Local 以外（S3 / GCS / Azure Blob）なら影響を受けない。** 逆に言えば、この2つを確認しないまま緊急対応に入ると、 影響の無い環境に工数を使う。</div><div class=la><b>取るべき行動</b> 社内の GROWI について**バージョンとファイルアップロード方法の設定を記録**し、 「v7.5.5 より前 かつ Local」に該当する環境を特定する。 該当するものを **v7.5.5 以降へ更新**（GitHub / Docker Hub）。 検証環境・停止中のインスタンス・部門が個別に立てたものを数え漏らさない。</div></li><li><div class=lp>静的ファイルの配信経路が、アプリケーションの権限判定を通っているか確認する</div><div class=lw>本件の原因は、**非公開ページの添付ファイルが ページの閲覧権限を確認せずに静的配信されていた**ことである。 これは GROWI 固有の問題ではなく、 **自社開発のアプリケーションでも同じ形で起きる型**である （アップロード先を公開ディレクトリに置く構成）。</div><div class=la><b>取るべき行動</b> 自社で運用するアプリケーションについて、 **アップロードされたファイルの実体の置き場所**を洗い出す。 公開ディレクトリ配下にあるものは、 **①配信をアプリケーション経由にする（権限判定を通す）か、 ②オブジェクトストレージへ移して署名付き URL にする** のいずれかへ寄せる。推測しにくいファイル名は対策ではない。</div></li><li><div class=lp>更新までの窓は前段で塞げるが、提供元の回避策ではないので検証してから入れる</div><div class=lw>JVN の対策は「アップデートする」のみで、**回避策の記載が無い。** 修正版が `/uploads` プレフィックスへの到達を 403 で拒否していることから、 前段での遮断が同等の効果を持つと読めるが、 **アプリケーションが内部で同じ経路を使っていれば表示が壊れる。**</div><div class=la><b>取るべき行動</b> 即時に更新できない環境では、リバースプロキシ・WAF で **外部からの `/uploads` 配下へのリクエストを拒否**する設定を 検証環境で試し、画像・添付の表示が壊れないことを確認してから本番へ入れる。 入れた設定は**更新後に外す**ことを作業票に残す。</div></li><li><div class=lp>「過去に読まれたか」を調べられるログがあるかを、いま確認する</div><div class=lw>この脆弱性が**いつの版から存在していたかは公表されていない。** 影響範囲は「v7.5.5 より前のすべてのバージョン」であり、 さかのぼる期間の目安が無い。 **さかのぼれる期間は、ログの保存期間を超えない。**</div><div class=la><b>取るべき行動</b> GROWI の前段にある Web サーバ・リバースプロキシのアクセスログを確認し、 **`/uploads` 配下への未認証のリクエスト**を検索する。 ログが残っていない、または保存期間が短い場合は、 **その事実を記録**しておく（後から「無かった」と言えない根拠になる）。 あわせて保存期間を延長する。</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> GROWI を自社で運用しており、バージョンが v7.5.5 より前である</td><td class=sm>影響範囲は「v7.5.5 より前のすべてのバージョン」である。 **まずバージョンが条件を満たすかで切り分かる。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> GROWI のファイルアップロード方法が「Local」に設定されている</td><td class=sm>ベンダ告知は影響条件をこの設定に限定し、 **S3 / GCS / Azure Blob を使う構成は影響を受けない**と明示している。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 非公開ページの権限設定を、機微情報の保管の根拠にしている</td><td class=sm>本件は**非公開ページの権限が、添付ファイルの配信経路では 機能していなかった**事案である。 区分だけを根拠にしている情報は、そのまま露出する。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 社内 Wiki に認証情報・接続情報・構成図を添付ファイルとして置いている</td><td class=sm>読み取られるのは**添付ファイル**である。 本文ではなく添付に機微情報が寄っている組織ほど影響が大きい。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 社内 Wiki をインターネットから到達できる位置に置いている</td><td class=sm>本件は**未認証の第三者**が到達できることが前提である。 到達範囲が社内に限られていれば悪用の母集団は狭まる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自社開発のアプリケーションで、アップロードされたファイルを公開ディレクトリ配下に置いている</td><td class=sm>本件と同じ型（**権限判定を通らない静的配信**）が 自社の実装でも起きうる。GROWI を使っていなくても確認の対象になる。</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月5日 株式会社GROWI</span> <a href="https://growi.co.jp/news/47" target="_blank" rel="noreferrer noopener nofollow">GROWI におけるアクセス制限不備の脆弱性について（News #47）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(日本語。**提供元の告知。本記録の作成者が2026年10月6日に取得して確認した。** **影響条件が「ファイルアップロード方法の設定が Local である場合」に限定されること、 Amazon S3 / Google Cloud Storage / Azure Blob Storage を利用している場合は 影響を受けないこと、影響は v7.5.5 より前のすべてのバージョンであること、 修正版 v7.5.5 では静的ファイル配信の前に `/uploads` プレフィックスへの アクセスを 403 で拒否する仕様に変更したこと、 修正版は GitHub と Docker Hub から入手できること、 未認証者による直接のファイルアクセスに加えて HTML のインライン描画によるスクリプト実行のリスクがあること**の出典。 **回避策・v7.5.5 の公開日・報告者・悪用の有無についての記載は確認できなかった)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月5日 JPCERTコーディネーションセンター / IPA（JVN）</span> <a href="https://jvn.jp/jp/JVN24352487/" target="_blank" rel="noreferrer noopener nofollow">JVN#24352487 GROWIにおけるアクセス制限不備の脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(日本語・英語。**本記録の作成者が2026年10月6日に取得して本文を確認した。** **CVE-2026-100727、CWE-552（外部からアクセス可能なファイルまたはディレクトリ）、 CVSS v4.0 基本値 6.9、CVSS v3.0 基本値 5.3 （AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N）、 影響は GROWI v7.5.5 より前のバージョン、 認証されていない第三者により非公開ページのファイルが読み取られる可能性、 対策は v7.5.5 へのアップデート、ベンダステータスは「該当製品あり」（2026/10/5 更新）、 JVN iPedia は JVNDB-2026-000144、 開発者が JPCERT/CC に報告し JPCERT/CC が調整を行った経路であること**の出典。 **影響条件（Local 構成のみ）・悪用の有無・影響組織数・ 回避策・v7.5.5 の公開日についての記載は無い)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月5日 JPCERT/CC（JVN RSS 経由で取得した記事）</span> <a href="https://jvn.jp/jp/JVN24352487/" target="_blank" rel="noreferrer noopener nofollow">GROWIにおけるアクセス制限不備の脆弱性</a> <span class="b kind">記事</span><span class=sm>（(日本語。本記録の起点となった収集記事 output/articles/20261005/0025_jpcertcc_jvn-growi.md に相当する。 内容は出典1と同一の JVN ページである。 **本記録は出典1として一次資料を直接取得して確認しているため、 このエントリは収集の経路を示す目的で残す)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月6日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月5日の JVN#24352487 を起点に、 **JVN と株式会社GROWI の告知（growi.co.jp/news/47）の双方を取得して裏を取った。** 確認できたのは、CVE-2026-100727 / CWE-552・CVSS v4.0 6.9・CVSS v3.0 5.3・ 影響は v7.5.5 より前・修正は v7.5.5・ **未認証の第三者が非公開ページのファイルを読み取れる**こと、 および**ベンダ告知側にのみある情報**—— 影響条件が「ファイルアップロード方法が Local」の構成に限られること、 S3 / GCS / Azure Blob の構成は影響を受けないこと、 修正は静的配信の前段で `/uploads` への到達を 403 で拒否する形であること——である。 **JVN だけを見ると影響条件が分からず、影響の無い構成でも対応対象と読める**ため、 この差を discrepancies（source_silent）に立てた。 **記録した価値は3点。** ①原因が **「ファイルの配信経路がページの閲覧権限を通らない」**という、 自社開発でも再現する型であること。 ②**CVSS 5.3 が「1ファイルが読める」ことの評価**であり、 社内 Wiki に何が入っているかを反映しないこと （CVSS だけで優先順位を付ける運用の限界）。 ③**開発者自身が JPCERT/CC に報告して JVN に載せた**という公表経路。 **回避策・v7.5.5 の公開日・悪用の有無・到達にファイル名の知識が必要かは いずれも公表されていない**ため unknowns に置き、 本記録が示した暫定措置は「提供元の回避策ではない」ことを note で明示した。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">GROWI</span><span class="b tag">株式会社GROWI</span><span class="b tag">社内Wiki</span><span class="b tag">ナレッジ共有</span><span class="b tag">CVE-2026-100727</span><span class="b tag">JVN24352487</span><span class="b tag">CWE-552</span><span class="b tag">アクセス制限不備</span><span class="b tag">非公開ページ</span><span class="b tag">添付ファイル</span><span class="b tag">静的ファイル配信</span><span class="b tag">未認証アクセス</span><span class="b tag">国産ソフトウェア</span><span class="b tag">開発者からJPCERTへ報告</span><span class="b tag">影響条件はLocal構成</span><span class="b tag">オブジェクトストレージは影響なし</span><span class="b tag">CVSSと資産価値のずれ</span><span class="b tag">回避策が非公表</span><span class="b tag">悪用の有無が非公表</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

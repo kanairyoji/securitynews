@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Roundcube 認証前 SQLi が悪用開始 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0344</span>Roundcube 認証前 SQLi が悪用開始</h1>
+<header class="site-header">
+  <p class="subtitle">**Roundcube Webmail の virtuser_query プラグインにある認証前 SQL インジェクション（CVE-2026-48842・CVSS 8.1）が、修正公開から120日後に 実環境で悪用され始めた。** **カナダ・サイバーセキュリティセンターは2026年9月21日、 5月25日に出した勧告 AV26-503 を更新し 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」と記載した**（原文英語）。 **欠陥は `preg_replace()` が置換文字列中のバックスラッシュを エスケープ列として解釈する性質を突くもので、 プラグインが仕掛けていたエスケープを回り込める。** **修正は2026年5月24日公開の 1.6.16 / 1.7.1 で、 4つの関数の `preg_replace()` を `str_replace()` に置き換えている** （Roundcube のコミットで確認）。 **本記録が中心に置くのは「該当判定が版番号だけでは決まらない」点である**—— **影響を受けるのは virtuser_query プラグインを有効にしている環境に限られる。** **一方で、有効にしている環境では認証を要しない** （CVSS の PR:N）。 **なお本記録の確認時点（2026年10月5日）で、 本件は CISA の KEV カタログには収載されていない**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年5月24日（修正公開）・2026年9月21日（悪用の報告）</span>
+  <span>最終更新: 2026年10月5日</span>
+</div>
+
+<div class="lead"><p><strong>2026年9月21日、カナダ・サイバーセキュリティセンターが勧告 AV26-503 を更新しました。</strong></p>
+<p><strong>追記された1文はこれだけです。</strong> <strong>「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを示している」</strong>（原文英語）。</p>
+<p><strong>この勧告の初版は2026年5月25日に出ていました。</strong> <strong>つまり、悪用の報告は修正の公開から120日後です。</strong></p>
+<p><strong>欠陥の内容を、NVD の記述のまま引用します。</strong> <strong>「Roundcube Webmail 1.6.16 より前の 1.6.x および 1.7.1 より前の 1.7.x は、<code>preg_replace()</code> のバックスラッシュのエスケープの回り込みを通じて、virtuser_query プラグインに認証前の SQL インジェクションを持つ」</strong>（原文英語）。</p>
+<p><strong>CVSS v3.1 は 8.1（High）、ベクタは<code>AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H</code> です。</strong></p>
+<p><strong>ベクタの読み方を2点だけ押さえます</strong>（本記録の整理）。</p>
+<ul>
+<li><strong><code>PR:N</code>（権限不要）</strong> — <strong>認証を要しません。</strong> <strong>プラグインが認証前のユーザ名の照会を扱うためです。</strong></li>
+<li><strong><code>AC:H</code>（攻撃条件の複雑度・高）</strong> — <strong>条件は自明ではありません。</strong> <strong>「1回の HTTP リクエストで」と書いている二次情報もありますが、CVSS の評価は複雑度を高と置いています</strong>（本記録はこの食い違いを discrepancies に記録しました）。</li>
+</ul>
+<p><strong>原因は実装の細部にあります。</strong> <strong>Roundcube のコミットメッセージは「virtuser_query プラグインにおける <code>preg_replace</code> のバックスラッシュのエスケープの回り込みによる認証前 SQLインジェクションを修正する」</strong>（原文英語）です。</p>
+<p><strong>コミットが変更しているのは<code>plugins/virtuser_query/virtuser_query.php</code> の4つの関数（<code>user2email</code> / <code>email2user</code> / <code>user2host</code> / <code>alias2user</code>）で、いずれも <code>preg_replace()</code> を <code>str_replace()</code> に置き換えています。</strong></p>
+<p><strong>元のコードは、問い合わせ文中の <code>%u</code> / <code>%m</code> を<code>preg_replace()</code> で値に差し替えていました。</strong> <strong><code>preg_replace()</code> は置換文字列の中のバックスラッシュをエスケープ列として解釈します</strong>——<strong>そのため、バックスラッシュを含む入力を与えると、プラグインが仕掛けていたエスケープを回り込めました。</strong></p>
+<p><strong>本記録がこの事案を記録する理由は、2つあります</strong>（本記録の判断）。</p>
+<p><strong>1つめ。該当判定が版番号だけでは決まりません。</strong> <strong>影響を受けるのは virtuser_query プラグインを有効にしている環境だけです。</strong> <strong>「Roundcube を使っているか」ではなく「そのプラグインを有効にしているか」を見ないと、自組織が該当するかが分かりません。</strong></p>
+<p><strong>2つめ。120日という数字です。</strong> <strong>修正は出ていました。</strong> <strong>プロジェクトは「本番稼働中の全てのインストールを更新することを強く勧める」と書いていました。</strong> <strong>それでも悪用が始まったときに未更新の環境が残っていた。</strong> <strong>本記録はこれを「脆弱性の問題」ではなく「更新されない Web メールが残る構造の問題」として読みます。</strong></p>
+<p><strong>なお、本記録の確認時点（2026年10月5日）で、本件は CISA の KEV カタログには収載されていません。</strong> <strong>KEV を更新の起点にしている組織では、本件は起点に乗らないことになります</strong>（本記録の指摘）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>悪用の具体（手口・観測件数・標的の国や業種・観測の時期）</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない。** **カナダ・サイバーセキュリティセンターの記載は 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」の1文のみである**（原文英語）。 **本記録の作成者は、悪用の具体を示す一次資料を見つけられなかった。** **本記録の指摘**——**「公開情報による報告」という表現は、 当局自身の観測ではなく第三者の報告を根拠にしていることを示す。** **しかしその第三者が誰で、何を観測したかは示されていない。** **その結果、防御側は次のいずれも判断できない**—— **①自組織が標的の範囲に入るか、②どのログを見れば痕跡が見つかるか、 ③悪用が広範か限定的か。** **判断できないため、本記録の推奨は「痕跡を探す」ではなく 「更新する」になる**（本記録の判断）</div></li><li><span class=ui>到達可能な未更新の Roundcube インスタンスの数</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の作成者は、到達可能なインスタンスの数を示す資料を 見つけられなかった。** **仮に全体のインスタンス数が分かっても、 本件の該当判定にはもう1段必要である**—— **`virtuser_query` プラグインを有効にしているかは、 外部からの観測では分からない**（本記録の評価）。 **したがって「何件が危険か」という問いには、 外部からは原理的に答えられない。** **この性質は、管理者側にとっては有利に働く** ——**攻撃者も外から有効・無効を判定できないため、 手当たり次第に試す形になる**（本記録の推定）</div></li><li><span class=ui>CISA の KEV に収載されない理由</span><span class="b rsn">公表されていない</span><div class=sm>**本記録の確認時点（2026年10月5日）で、 CVE-2026-48842 は KEV カタログに収載されていない。** **収載の判断基準（悪用の証拠の水準）について、 本件に関する CISA の説明は公表されていない。** **本記録の指摘**——**KEV は米国の連邦機関への指示を根拠に持つ仕組みであり、 世界中の脆弱性を網羅する一覧ではない。** **本件の悪用を記載しているのはカナダの当局である。** **KEV だけを更新の起点にしている組織では、 本件は起点に乗らない**（本記録の判断）</div></li><li><span class=ui>悪用された環境で何が起きたか（データの窃取・認証情報の露出の有無）</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない。** **CVSS のベクタは機密性・完全性・可用性のいずれも「高」 （`C:H/I:H/A:H`）と評価しているが、 これは「起こり得ること」の評価であり、 実際に何が起きたかの記録ではない**（本記録の整理）。 **本記録の評価**——**SQL インジェクションがメールシステムの ユーザ照会の経路で成立した場合、 最も直接的な影響はユーザ名とメールアドレスの対応表、 および同じデータベースに置かれている資格情報の露出である。** **ただし本記録は、実際の影響を確認していない**</div></li><li><span class=ui>報告から修正までの経過（報告日・協調的開示の期間）</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない。** **oss-security の投稿で報告者が「skull」であることは分かるが、 報告日・所属・修正までの期間は示されていない。** **本記録の指摘**——**Roundcube の公表には CVE 番号も深刻度の区分も 含まれていない。** **oss-security の投稿も 「いつものとおり、CVE 番号は公表には含まれていない」と述べている。** **CVE 番号が別経路（NVD・Debian のトラッカー）でしか 確認できない公表の作法は、脆弱性管理の台帳との突合を難しくする** （本記録の評価）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Roundcube（Roundcube Webmail プロジェクト）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**脆弱性のある製品の開発元。** **2026年5月24日に 1.6.16 と 1.7.1 を公開し、 「Roundcube Webmail の 1.6 LTS と 1.7 の各版に対する セキュリティ更新を公開した。いずれも最近報告された セキュリティ脆弱性に対する修正を含む」 「1.6.x と 1.7.x の本番稼働中の全てのインストールを この新しい版へ更新することを強く勧める」と述べた**（原文英語）。 **この公表では CVE 番号が示されておらず、 8件の脆弱性が文章で列挙されているだけである** ——**本件はその3番目「virtuser_query プラグインにおける `preg_replace` の回り込みによる認証前 SQL インジェクション」である。** **修正の内容は、`plugins/virtuser_query/virtuser_query.php` の 4関数の `preg_replace()` を `str_replace()` に置き換えるものだった** （本記録がコミットで確認）</p></div></div><div class=org><div class=org-h><span class=org-n>カナダ・サイバーセキュリティセンター（Canadian Centre for Cyber Security）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**本件の悪用を公的に記載した当局。** **2026年5月25日に勧告 AV26-503 を公表し （対象は 1.6.16 より前および 1.7.1 より前の Roundcube Webmail）、 2026年9月21日に「更新1」として 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」と追記した**（原文英語）。 **勧告の推奨事項は「サイバーセンターは、利用者と管理者が 提供された Web リンクを確認し、必要な更新を適用することを勧める」** （原文英語）。 **本記録の評価**——**悪用の根拠が「公開情報による報告」とされており、 当局自身の観測によるものかは示されていない。** **悪用の手口・観測件数・標的の国や業種も記載されていない**</p></div></div><div class=org><div class=org-h><span class=org-n>「skull」（報告者）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**本件を Roundcube へ報告した人物。** **oss-security メーリングリストの投稿では 「virtuser_query プラグインにおける `preg_replace` の バックスラッシュのエスケープの回り込みによる認証前 SQL インジェクションを修正する。skull による報告」と記載されている** （原文英語）。 **所属・報告日・協調的開示の経過は公表されていない**</p></div></div><div class=org><div class=org-h><span class=org-n>米サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span><span class="b role">注意喚起主体</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**本記録が確認した時点（2026年10月5日）で、 CVE-2026-48842 は CISA の KEV（悪用が確認された脆弱性）カタログに 収載されていない**（本記録がカタログを検索して確認）。 **一方 Security Affairs によれば、CISA は過去に Roundcube の CVE-2025-49113 と CVE-2025-68461 を 悪用が確認された脆弱性として収載している** （2026年2月。本記録は収載日を一次資料で確認していない）。 **本記録の指摘**——**KEV への収載を更新の起点にしている組織では、 本件は起点に乗らない。** **実環境での悪用を記載しているのはカナダの当局のみである**</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-48842 の CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.1<span class=fu>点</span></div><div class=fn>**NVD に登録された値（評価元は `cve@mitre.org`）。** **ベクタは `CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`。** **読み方の要点は2つである**（本記録の整理）—— **①`PR:N` は認証を要しないことを示す、 ②`AC:H` は攻撃条件の複雑度が高いことを示す。** **「1回の HTTP リクエストで資格情報データベースへの 完全な読み取りを得られる」と書いている二次情報があるが、 CVSS の評価と整合しない**（discrepancies に記録）</div></div><div class=fig><div class=fh><span class=fl>修正の公開から実環境での悪用が報告されるまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>120<span class=fu>日</span></div><div class=fn>**本記録の作成者が算出した値。** **起点は Roundcube が 1.6.16 / 1.7.1 を公開した2026年5月24日、 終点はカナダ・サイバーセキュリティセンターが 「実環境で悪用されている」と追記した2026年9月21日。** **本記録がこの数字を置く理由**——**この120日は 「修正が無かった期間」ではなく「修正があったのに適用されていなかった期間」 である。** **攻撃者側から見れば、未更新の環境が十分に残っていると 判断できるまでの待ち時間でもある**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>修正の公開から本記録の作成時点までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>134<span class=fu>日</span></div><div class=fn>**本記録の作成者が算出した値（2026年5月24日から10月5日まで）。** **悪用が報告されてからも14日が経過しており、 なお未更新の環境が残っていれば危険な状態が続く**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>1.6.16 / 1.7.1 で修正された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>件</span></div><div class=fn>**Roundcube の公表に文章で列挙された件数。** **本件（認証前 SQL インジェクション）はその3番目である。** **本記録がこの数字を置く理由**——**他に 「認証前の任意ファイル削除（redis / memcache のセッションの汚染経由）」 も含まれており、1つの更新が複数の認証前の欠陥を閉じている。** **更新を見送った環境は、本件以外の7件も抱え続けている** （本記録の指摘）。 **なお本件の規模を示す値ではないため、背景値として記録する**</div></div><div class=fig><div class=fh><span class=fl>修正コミットで変更された関数の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>関数</span></div><div class=fn>**本記録の作成者が Roundcube のコミットで確認した。** **`plugins/virtuser_query/virtuser_query.php` の `user2email`（67行目）・`email2user`（104行目）・ `user2host`（120行目）・`alias2user`（136行目）の4関数で、 `preg_replace()` が `str_replace()` に置き換えられている。** **本記録の読み**——**同じ誤りが4か所に複製されていたことを示す。** **1か所で見つけた欠陥は、同じファイル内の同じ書き方を すべて探すべきだという例である**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本記録は、悪用の具体（手口・ペイロード・観測件数）を示す資料を 確認できていない。** **以下の連鎖は、NVD の記述と Roundcube の修正コミットから 本記録が組み立てた「成立しうる経路」であり、 実際に観測された攻撃の再現ではない**（本記録の明示）。 **経路は、①到達可能な Roundcube の認証前の画面に接触する → ②`virtuser_query` が扱うユーザ名の照会にバックスラッシュを含む 入力を与える → ③`preg_replace()` の置換文字列の解釈により エスケープを回り込む → ④SQL 文を操作して データベースの内容を取得する**という形になる。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">推定</span><span class=srcs></span></div><div>**到達可能な Roundcube のインスタンスに対し、 認証前のユーザ名の照会を行う経路へ接触する。** **`virtuser_query` プラグインは、ユーザ名とメールアドレスの データベース照会を行う**（Roundcube の公表の記述）。 **実際にどのリクエストが使われたかは公表されていない。**</div><div class=fn>根拠: NVD の記述（認証前・ネットワーク経由）および Roundcube の公表</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ユーザ名の照会に、バックスラッシュを含む入力を与える。** **プラグインは問い合わせ文中の `%u` / `%m` を `preg_replace()` で値に置き換えていた。** **`preg_replace()` は置換文字列中のバックスラッシュを エスケープ列として解釈するため、 プラグインが仕掛けていたエスケープを回り込める** （NVD の記述と Roundcube のコミットメッセージ）。 **該当は `user2email` / `email2user` / `user2host` / `alias2user` の4関数である**（本記録がコミットで確認）。</div><div class=fn>根拠: NVD の記述・Roundcube のコミットメッセージ・コミットの変更内容</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">推定</span><span class=srcs></span></div><div>**操作した SQL 文を通じて、データベースの内容を取得する。** **CVSS は機密性・完全性・可用性のいずれも「高」と評価している （`C:H/I:H/A:H`）。** **ただしこれは「起こり得ること」の評価であり、 実際に何が取得されたかは公表されていない**（本記録の明示）。 **本記録の読みでは、照会の経路がユーザ名とメールアドレスの 対応表であることから、最も直接的に届くのは その対応表および同じデータベースに置かれている情報である。**</div><div class=fn>根拠: CVSS のベクタ（評価）および照会の性質（本記録の読み）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Roundcube は、8件の脆弱性を文章で列挙し、 「本番稼働中の全てのインストールを更新することを強く勧める」と 述べた一方、CVE 番号・CVSS 値・深刻度の区分のいずれも 公表に含めなかった。** **oss-security の投稿も「いつものとおり、CVE 番号は公表には 含まれていない」と述べ、CVE の対応は Debian の セキュリティトラッカーを参照するよう案内している**（原文英語）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **CVE 番号を出さないことで、 プロジェクト側は番号の割り当てを待たずに修正を公開できる** ——**修正を早く出すことが優先されている可能性がある** （本記録の推定）。 **一方、利用側では脆弱性管理の台帳との突合が働かない。** **多くの組織は CVE 番号を起点に対応の期限を管理している** ——**番号が付かないまま公表されると、 台帳に載らず、期限も付かない**（本記録の評価）。 **本件では、番号が NVD に登録されたのは翌日（5月25日）だが、 どの脆弱性にどの番号が付くかの対応が一覧で示されるまでに 10日を要している（6月3日の oss-security の投稿）。**</div></li><li><div class=ui>**カナダ・サイバーセキュリティセンターは、 5月25日の勧告を9月21日に更新し、実環境での悪用を記載した。** **根拠は「公開情報による報告」とされており、 悪用の手口・観測件数・標的は記載されていない。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **既存の勧告を更新する形は、 同じ CVE を追っている利用者には届きやすい** （本記録の評価）。 **一方、新規の勧告として出さないため、 新着だけを見ている利用者には気づかれにくい。** **また悪用の具体を載せないことで、 防御側は痕跡を探す方針を取れず、更新しか選べなくなる** ——**ただし「更新する」が唯一の正解である事案では、 それが実害につながるとは限らない**（本記録の整理）。</div></li></ul></div>
+<section id="s6"><h2>該当判定は版番号だけでは決まらない——`virtuser_query` を有効にしているかで分かれる<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [5]</span></h2><p><strong>まず、自組織が該当するかの判定条件を先に書きます。</strong></p>
+<p><strong>次の3つがすべて揃ったときに該当します</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>条件</th>
+<th>確認の方法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td><strong>Roundcube 1.6.16 より前、または 1.7.1 より前</strong></td>
+<td>版番号</td>
+</tr>
+<tr>
+<td>②</td>
+<td><strong><code>virtuser_query</code> プラグインを有効にしている</strong></td>
+<td>設定（<code>plugins</code> の一覧）</td>
+</tr>
+<tr>
+<td>③</td>
+<td><strong>そのインスタンスが攻撃者から到達できる</strong></td>
+<td>公開の範囲</td>
+</tr>
+</tbody>
+</table>
+<p><strong>②が重要です。</strong></p>
+<p><strong>NVD の記述はプラグイン名を挙げているだけで、「有効にしている環境に限る」という前提条件を明示していません。</strong> <strong>しかし Roundcube の修正コミットが変更しているのは<code>plugins/virtuser_query/virtuser_query.php</code> のみです</strong>（本記録がコミットで確認）。<strong>プラグインを有効にしていない環境では、この経路に到達しません。</strong></p>
+<p><strong>一方、有効にしている環境では認証を要しません。</strong> <strong>CVSS のベクタの <code>PR:N</code> がそれを示しています。</strong> <strong>プラグインが認証前のユーザ名の照会を扱うためです。</strong></p>
+<p><strong><code>virtuser_query</code> が使われるのはどういう構成かを補足します</strong>（本記録の推定。公表資料の記述ではありません）。<strong>仮想ユーザのメールアドレスをデータベースで管理する構成（Postfix / Dovecot + MySQL など）で使われます。</strong> <strong>複数ドメインのメールを1つの Roundcube で提供している環境——ホスティング事業者・大学・中小企業の自前運用——で有効になっていることが多い種類のプラグインです。</strong></p>
+<p><strong>本記録が強調したいのは、判定の順序です</strong>（本記録の判断）。</p>
+<p><strong>「Roundcube を使っているか」から始めると、使っていない組織は無関係として読み飛ばします。</strong> <strong>しかし本件で本当に危ないのは、「Roundcube が入っていることを把握していない組織」です。</strong></p>
+<ul>
+<li><strong>ホスティング事業者が提供する Web メールとして自組織のドメインで動いている。</strong></li>
+<li><strong>数年前に立てたサーバで、いまも稼働している。</strong></li>
+<li><strong>部門が独自に立てたものが残っている。</strong></li>
+</ul>
+<p><strong>これらは「自組織の資産一覧に無い Roundcube」です。</strong> <strong>②の確認までたどり着けません。</strong></p></section>
+<section id="s7"><h2>原因は `preg_replace()` が置換文字列のバックスラッシュを解釈する性質であり、同じ誤りが4か所に複製されていた<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [5]</span></h2><p><strong>欠陥の中身を、コミットの内容にもとづいて書きます。</strong></p>
+<p><strong><code>virtuser_query</code> プラグインは、ユーザ名とメールアドレスのデータベース照会を行います。</strong> <strong>問い合わせ文には <code>%u</code>（ユーザ名）と <code>%m</code>（ドメイン）という差し込みの印が書かれており、実行時にこれを実際の値へ置き換えていました。</strong></p>
+<p><strong>その置き換えに <code>preg_replace()</code> が使われていました。</strong></p>
+<pre><code>置換前: ... WHERE user = '%u' ...
+置換の実装: preg_replace('/%u/', $値, $問い合わせ文)
+</code></pre>
+<p><strong>問題は、<code>preg_replace()</code> が置換文字列の中のバックスラッシュをエスケープ列として解釈することです</strong>（NVD とコミットメッセージの記述）。</p>
+<p><strong>プラグインは値をエスケープしてから差し込んでいましたが、バックスラッシュを含む入力を与えると、そのエスケープを回り込めました。</strong></p>
+<p><strong>修正は、<code>preg_replace()</code> を <code>str_replace()</code> に替えることでした。</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>置換の方法</th>
+<th>置換文字列の解釈</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>修正前</strong></td>
+<td><code>preg_replace()</code></td>
+<td><strong>正規表現として解釈される</strong>（バックスラッシュが効く）</td>
+</tr>
+<tr>
+<td><strong>修正後</strong></td>
+<td><code>str_replace()</code></td>
+<td><strong>文字列としてそのまま置かれる</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録の読みでは、これは「エスケープの実装を直した」のではなく「エスケープを要する経路そのものを無くした」修正です。</strong> <strong>後者のほうが安全側です</strong>——<strong>エスケープの実装を直すと、次に別の回り込みが見つかる余地が残ります。</strong></p>
+<p><strong>もう1点、記録に残しておきたいことがあります。</strong></p>
+<p><strong>コミットが変更したのは、同じファイルの4つの関数です。</strong></p>
+<table>
+<thead>
+<tr>
+<th>関数</th>
+<th>行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user2email</code></td>
+<td>67</td>
+</tr>
+<tr>
+<td><code>email2user</code></td>
+<td>104</td>
+</tr>
+<tr>
+<td><code>user2host</code></td>
+<td>120</td>
+</tr>
+<tr>
+<td><code>alias2user</code></td>
+<td>136</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同じ誤った書き方が4か所に複製されていました。</strong></p>
+<p><strong>自組織のコードに引き写すときの教訓はここです</strong>（本記録の判断）。<strong>1か所で見つけた欠陥は、同じファイル・同じプロジェクト内の同じ書き方をすべて探す。</strong> <strong>本件のように、置換の実装が複数の照会関数にコピーされている形は珍しくありません。</strong></p>
+<p><strong>具体的な探し方としては、「問い合わせ文を文字列の置換で組み立てている箇所」を一括で探すのが実際的です</strong>（本記録の提案）。<strong><code>preg_replace</code> に限りません</strong>——<strong><code>sprintf</code>・文字列の連結・テンプレートの差し込みも同じ性質を持ちます。</strong></p></section>
+<section id="s8"><h2>修正公開から120日後に悪用が始まった——これは「修正が無かった時間」ではなく「適用されなかった時間」である<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [4]</span></h2><p><strong>日付を並べます。</strong></p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>起きたこと</th>
+<th>修正公開からの日数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2026年5月24日</strong></td>
+<td><strong>Roundcube が 1.6.16 / 1.7.1 を公開</strong></td>
+<td>0日</td>
+</tr>
+<tr>
+<td>2026年5月25日</td>
+<td>NVD に CVE-2026-48842 が登録</td>
+<td>1日</td>
+</tr>
+<tr>
+<td>2026年5月25日</td>
+<td>カナダの当局が勧告 AV26-503 を公表</td>
+<td>1日</td>
+</tr>
+<tr>
+<td>2026年6月3日</td>
+<td>oss-security に脆弱性の一覧が投稿</td>
+<td>10日</td>
+</tr>
+<tr>
+<td><strong>2026年9月21日</strong></td>
+<td><strong>実環境での悪用が勧告に追記</strong></td>
+<td><strong>120日</strong></td>
+</tr>
+<tr>
+<td>2026年10月5日</td>
+<td>本記録の作成時点</td>
+<td>134日</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Roundcube は公開の時点で「1.6.x と 1.7.x の本番稼働中の全てのインストールをこの新しい版へ更新することを強く勧める」と書いていました</strong>（原文英語）。</p>
+<p><strong>それでも120日後に悪用が始まり、そのとき未更新の環境が残っていました。</strong></p>
+<p><strong>本記録はこの120日を、こう読みます</strong>（本記録の判断）。</p>
+<p><strong>これはゼロデイの話ではありません。</strong> <strong>「修正が無かった時間」ではなく「修正があったのに適用されていなかった時間」です。</strong></p>
+<p><strong>そして攻撃者側から見ると、別の意味を持ちます。</strong> <strong>修正が出てから4か月待つのは、未更新の環境が十分に残っていると判断できるまでの待ち時間でもあります</strong>（本記録の推定）。</p>
+<p><strong>なぜ Web メールで更新が遅れるかを整理します</strong>（本記録の読み）。</p>
+<ul>
+<li><strong>止めると業務が止まる。</strong> <strong>メールは待てない種類のシステムです。</strong></li>
+<li><strong>資産一覧に無い。</strong> <strong>部門やホスティング経由で入っていると脆弱性管理の対象になりません。</strong></li>
+<li><strong>更新の起点に乗らない。</strong> <strong>本件は KEV に収載されていないため、KEV を起点にしている組織では期限が付きません。</strong></li>
+</ul>
+<p><strong>3つめについて、具体的に書きます。</strong></p>
+<p><strong>本記録の確認時点（2026年10月5日）で、CVE-2026-48842 は CISA の KEV カタログに収載されていません</strong>（本記録がカタログを検索して確認。総件数は1,734件と表示）。</p>
+<p><strong>実環境での悪用を記載しているのは、カナダの当局のみです。</strong></p>
+<p><strong>「KEV に入ったら優先する」という運用は分かりやすい一方、KEV は米国の連邦機関への指示を根拠に持つ仕組みであり、世界中の脆弱性を網羅する一覧ではありません</strong>（本記録の指摘）。<strong>本件は、その隙間に落ちる実例です。</strong></p></section>
+<section id="s9"><h2>悪用の具体が公表されていないため、本記録の推奨は「痕跡を探す」ではなく「更新する」になる<span class="b slot">未確定事項</span><span class=srcs>出典 [2] [4] [5]</span></h2><p><strong>本件の資料の限界を明示します。</strong></p>
+<p><strong>悪用について公表されているのは、1文だけです。</strong> <strong>「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを示している」</strong>（カナダ・サイバーセキュリティセンター。原文英語）。</p>
+<p><strong>公表されていないのは、次のすべてです。</strong></p>
+<table>
+<thead>
+<tr>
+<th>知りたいこと</th>
+<th>公表状況</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>悪用の手口（リクエストの形・ペイロード）</td>
+<td><strong>公表されていない</strong></td>
+</tr>
+<tr>
+<td>観測件数</td>
+<td><strong>公表されていない</strong></td>
+</tr>
+<tr>
+<td>標的の国・業種</td>
+<td><strong>公表されていない</strong></td>
+</tr>
+<tr>
+<td>観測の時期</td>
+<td><strong>公表されていない</strong></td>
+</tr>
+<tr>
+<td>悪用された環境で何が起きたか</td>
+<td><strong>公表されていない</strong></td>
+</tr>
+<tr>
+<td>「公開情報による報告」の出所</td>
+<td><strong>示されていない</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>「公開情報による報告」という表現は、当局自身の観測ではなく第三者の報告を根拠にしていることを示します。</strong> <strong>しかしその第三者が誰で、何を観測したかは示されていません。</strong></p>
+<p><strong>この状態が、防御側の行動を決めます</strong>（本記録の判断）。</p>
+<p><strong>痕跡を探す方針は取れません。</strong> <strong>ペイロードの形が分からないため、ログで何を検索すべきかが決まりません。</strong></p>
+<p><strong>したがって本記録の推奨は、更新です。</strong></p>
+<p><strong>順序を書きます</strong>（本記録の提案）。</p>
+<ol>
+<li><strong>Roundcube が自組織のどこで動いているかを洗う</strong>（ホスティング経由・部門が立てたもの・放置されたものを含む）。</li>
+<li><strong>各インスタンスの版番号と、<code>virtuser_query</code> の有効・無効を確認する。</strong></li>
+<li><strong>該当するものを 1.6.16 以降 / 1.7.1 以降へ更新する。</strong></li>
+<li><strong>更新できないものは、到達範囲を絞る</strong>（社内網・VPN 経由のみ・特定の IP からのみ）。</li>
+<li><strong>更新後、同じデータベースに置いている資格情報の入れ替えを検討する</strong> ——<strong>悪用されていた場合に露出した可能性があるため</strong>（本記録の判断。実際の露出は確認されていない）。</li>
+</ol>
+<p><strong>5番目について補足します。</strong> <strong>CVSS は機密性への影響を「高」と評価していますが、これは「起こり得ること」の評価であり、実際に何が起きたかの記録ではありません。</strong> <strong>悪用の有無を自組織で判定できない以上、「露出したと仮定した場合の対処」を決めておくのが安全側です</strong>（本記録の評価）。</p></section>
+<section id="s10"><h2>1つの更新が8件の欠陥を閉じていた——見送った環境は本件以外の7件も抱え続けている<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>本件の修正が入った 1.6.16 / 1.7.1 は、8件の脆弱性をまとめて閉じています</strong>（Roundcube の公表）。</p>
+<p><strong>列挙されていたのは次のとおりです</strong>（公表の記述の順。本記録の訳）。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>下書き復元ダイアログの件名欄における保存型 XSS / HTML / CSS インジェクション</td>
+</tr>
+<tr>
+<td>2</td>
+<td>SVG の <code>&lt;animate attributeName="style"&gt;</code> による CSS インジェクションの回り込み</td>
+</tr>
+<tr>
+<td><strong>3</strong></td>
+<td><strong>virtuser_query プラグインにおける <code>preg_replace</code> の回り込みによる認証前 SQL インジェクション（本件）</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>特定のローカルアドレスの URL による SSRF の回り込み</td>
+</tr>
+<tr>
+<td>5</td>
+<td>遠隔リソースを禁止している場合のローカル / 私設 URL の取得の回り込み</td>
+</tr>
+<tr>
+<td>6</td>
+<td>CSS の <code>var()</code> による遠隔画像の遮断の回り込み</td>
+</tr>
+<tr>
+<td><strong>7</strong></td>
+<td><strong>redis / memcache のセッションの汚染による認証前の任意ファイル削除</strong></td>
+</tr>
+<tr>
+<td>8</td>
+<td>LDAP の autovalues 設定におけるコードインジェクション</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは、3番目と7番目です。</strong> <strong>どちらも「認証前」です。</strong></p>
+<p><strong>つまりこの更新は、認証を要しない欠陥を2件閉じています。</strong></p>
+<p><strong>更新を見送った環境は、本件（SQL インジェクション）だけでなく認証前の任意ファイル削除も抱え続けていることになります</strong>（本記録の指摘）。</p>
+<p><strong>ここから引き出せる運用上の示唆を書きます</strong>（本記録の判断）。</p>
+<p><strong>CVE 単位で優先度を付ける運用には、構造的な弱点があります。</strong> <strong>1つの更新が複数の欠陥を閉じているとき、「この CVE は CVSS 8.1 だから対応する / あの CVE は低いから後回し」という判断は、同じ更新で閉じられるはずの欠陥を取りこぼします。</strong></p>
+<p><strong>とくに本件では、Roundcube の公表に CVE 番号が含まれていません。</strong> <strong>oss-security の投稿も「いつものとおり、CVE 番号は公表には含まれていない」と述べ、CVE の対応は Debian のセキュリティトラッカーを参照するよう案内しています。</strong></p>
+<p><strong>この作法のもとでは、CVE 番号を起点にした台帳の突合が働きません。</strong> <strong>実務上は、製品の版番号を起点にするほうが確実です</strong> ——<strong>「使っている版」と「公開されている最新版」を比べる、という単純な形です</strong>（本記録の提案）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_product</th><td>**Roundcube Webmail**——**ブラウザから使う IMAP の Web メールクライアント。** **オープンソースであり、ホスティング事業者の提供する Web メール、 大学・中小企業の自前運用、個人のサーバなどで広く使われている。**
+**影響を受ける版**（NVD の記述および カナダ・サイバーセキュリティセンターの勧告）—— **① 1.6.x のうち 1.6.16 より前のすべて（1.6 は LTS 系列）。** **② 1.7.x のうち 1.7.1 より前のすべて。**
+**修正版は 1.6.16 および 1.7.1（いずれも2026年5月24日公開）。**
+**ただし、該当の前提条件がもう1つある**—— **`virtuser_query` プラグインを有効にしていること。** **修正コミットが変更しているのは `plugins/virtuser_query/virtuser_query.php` のみであり、 プラグインを有効にしていない環境ではこの経路に到達しない** （本記録がコミットで確認。NVD の記述には明示されていない）。
+**`virtuser_query` は、ユーザ名とメールアドレスの対応を データベースで照会するためのプラグインである。** **仮想ユーザのメールアドレスをデータベースで管理する構成で使われるため、 複数ドメインのメールを1つの Roundcube で提供している環境で 有効になっていることが多い**（本記録の推定。公表資料の記述ではない）。
+**到達可能なインスタンス数・導入組織数・国別の分布は、 いずれも公表されていない。**</td></tr><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-48842　<b>補足:</b> **NVD の記述は「Roundcube Webmail 1.6.16 より前の 1.6.x および 1.7.1 より前の 1.7.x は、`preg_replace()` のバックスラッシュの エスケープの回り込みを通じて、virtuser_query プラグインに 認証前の SQL インジェクションを持つ」**（原文英語）。 **CWE は SQL インジェクション（CWE-89）とされる （本記録は NVD の API 応答で CWE の記載を確認していないため、 二次情報の記述として扱う）。** **CVSS v3.1 基本値 8.1、ベクタ `CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`、 評価元は `cve@mitre.org`。** **NVD への登録は 2026-05-25T20:16:36。** **参考情報として、修正コミット2件・ 1.6.16 と 1.7.1 のリリースタグ・Roundcube の公表・ oss-security の投稿が挙げられている。** **本記録の確認時点（2026年10月5日）で、 CISA の KEV カタログには収載されていない。** **報告者は「skull」**（oss-security の投稿の記述）</div><span class="b rsn">stated</span></td></tr><tr><th>exploitation_status</th><td>**実環境での悪用が、公的な文書に記載されている。** **カナダ・サイバーセキュリティセンターは2026年9月21日、 勧告 AV26-503 を「更新1」として更新し 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」と記載した**（原文英語）。 **これは修正の公開（2026年5月24日）から120日後である。**
+**ただし、公表されているのはこの1文のみである。** **悪用の手口・ペイロードの形・観測件数・標的の国や業種・ 観測の時期のいずれも記載されていない。** **また「公開情報による報告」という表現から、 当局自身の観測ではなく第三者の報告を根拠にしていることが分かるが、 その第三者が誰で何を観測したかは示されていない。**
+**本記録の確認時点（2026年10月5日）で、 CVE-2026-48842 は CISA の KEV カタログには収載されていない** （本記録がカタログを検索して確認）。 **本記録はこれを「悪用されていない」とは読まない**—— **KEV は米国の連邦機関への指示を根拠に持つ仕組みであり、 世界中の脆弱性を網羅する一覧ではない**（本記録の判断）。
+**防御側への含意**——**手口が公表されていないため、 ログから痕跡を探す方針は取れない。** **残る手段は更新と到達範囲の制限、 および「露出したと仮定した場合の対処」を決めておくことである** （本記録の判断）。</td></tr><tr><th>discovery_method</th><td>**報告者は「skull」である** （oss-security メーリングリストの投稿の記述。 「virtuser_query プラグインにおける `preg_replace` の バックスラッシュのエスケープの回り込みによる認証前 SQL インジェクションを修正する。skull による報告」。原文英語）。 **所属・報告日・発見の経緯・協調的開示の期間は、 いずれも公表されていない。** **Roundcube の公表にも報告者の記載は無い。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> **1.6.16 以降（1.6 系）または 1.7.1 以降（1.7 系）へ更新する。** **これが唯一の恒久的な対処である** ——**4つの関数の `preg_replace()` が `str_replace()` に 置き換えられ、置換文字列の解釈そのものが起きなくなる**　<b>副作用:</b> **更新のあいだ Web メールが使えなくなる。** **メールは待てない種類のシステムであるため、 停止時間の調整に時間がかかる**（本記録の評価）。 **また 1.6 系から 1.7 系への移行ではなく系列内の更新であれば 影響は小さいが、** **ホスティング事業者が運用しているインスタンスでは 自組織で更新できない** ——**この場合、事業者への確認と依頼の往復が発生する。** **さらに本件以外に7件の脆弱性が同じ更新で閉じられているため、 他の機能（下書きの復元・SVG の扱い・遠隔画像の遮断・LDAP の autovalues）の挙動が変わる可能性がある。** **更新後の動作確認の範囲を狭く見積もらないこと。**</div><div class=sub><b>item:</b> **更新できない場合、`virtuser_query` プラグインを 無効にできるかを業務要件と照らして判断する。** **有効にしていない環境では、この経路に到達しない** （本記録が修正コミットの変更範囲から確認）　<b>副作用:</b> **このプラグインは、ユーザ名とメールアドレスの対応を データベースで照会するためのものである。** **無効にすると、仮想ユーザのメールアドレスを データベースで管理している構成ではログインができなくなる** （本記録の推定）。 **つまり「無効にできるか」は技術的な判断ではなく 構成の問題であり、使っている環境では無効にできない。** **本記録の評価**——**この緩和策が使えるのは、 過去に有効にしたまま実際には使っていない環境に限られる。** **まず「有効になっているが実際に使っているか」を 確認する作業が要る。**</div><div class=sub><b>item:</b> **Roundcube のインスタンスへの到達範囲を絞る （社内網・VPN 経由・特定の IP からのみ）**　<b>副作用:</b> **Web メールは外部から使うために置かれていることが多い** ——**外出先・在宅からの利用を前提にしている環境では、 到達範囲を絞ると業務が止まる**（本記録の評価）。 **VPN 経由に限る場合、VPN の同時接続数と 認証の仕組みが新たな依存先になる。** **また「社内網からのみ」にしても、 社内に侵入された場合の守りは無い** ——**本件は認証を要しないため、 社内の端末1台が乗っ取られれば到達される。**</div><div class=sub><b>item:</b> **Roundcube が接続するデータベース利用者の権限を、 必要なテーブルと操作に絞る**　<b>副作用:</b> **権限を絞る作業そのものに、 どのテーブルにどの操作が必要かの調査が要る。** **絞りすぎると、更新時のスキーマ変更や 一部の機能（アドレス帳・設定の保存）が動かなくなる** （本記録の評価）。 **また本件の影響を完全に無くす対処ではない** ——**照会に使うテーブルへの読み取りは必要であり、 そこに資格情報が同居していれば届く。** **絞るのは「被害の広がり」であって「成立の有無」ではない。**</div><div class=sub><b>item:</b> **更新後、同じデータベースに置いている資格情報の 入れ替えを検討する** （悪用されていた場合に露出した可能性があるため）　<b>副作用:</b> **利用者全員のパスワードの再設定は、 問い合わせの急増と業務の停滞を招く**（本記録の評価）。 **また本件では悪用の手口が公表されておらず、 自組織が悪用されたかを判定できない** ——**つまりこの対処は「仮定にもとづく判断」であり、 空振りの可能性がある。** **本記録の判断**——**判定できないことを理由に 判断を先送りすると、仮に露出していた資格情報が 有効なまま残る。** **「入れ替えるか」を事案の前に決めておくほうが、 発生後に迷うより速い。**</div><div class=sub><b>item:</b> **自組織で動いている Roundcube の一覧 （ホスティング経由・部門が立てたもの・放置されたものを含む）を作り、 版番号と有効なプラグインを把握する**　<b>副作用:</b> **棚卸しそのものに時間がかかり、 ホスティング事業者への問い合わせや 部門への照会の往復が発生する**（本記録の評価）。 **また一覧を作ると、 「誰も運用していないが動いている」インスタンスが見つかることがある** ——**その扱い（停止するか引き取るか）の判断が 新たな案件として発生する。** **本記録の指摘**——**それでもこの作業は避けられない。** **一覧が無ければ、本件の該当判定にたどり着けない。**</div></td></tr><tr><th>indicators</th><td><div class=sub><b>item:</b> 自組織で動いている Roundcube のインスタンスの一覧（運用主体・版番号・到達範囲）　<b>補足:</b> **最初に作るのはこれである。** **本件の該当判定は版番号から始まる（1.6.16 より前・1.7.1 より前）。** **一覧が無ければ、勧告が来ても該当の有無を答えられない。** **ホスティング事業者が提供する Web メール、 部門が独自に立てたサーバ、 数年前に立てて放置されたものが含まれる**（本記録の評価）。</div><div class=sub><b>item:</b> 各インスタンスの設定における `plugins` の一覧（`virtuser_query` が含まれるか）　<b>補足:</b> **該当の2つめの条件である。** **本件はプラグインを有効にしている環境に限って影響する** （本記録が修正コミットの変更範囲から確認）。 **外部からは有効・無効を判定できないため、 設定を見る以外に確認の方法が無い。** **なお「有効になっているが実際には使っていない」場合は、 無効化が緩和策になりうる。**</div><div class=sub><b>item:</b> Roundcube が接続するデータベース利用者の権限と、同じデータベースに置かれている情報　<b>補足:</b> **成立した場合の影響の範囲を決める要素である。** **見るべきは、①到達できるテーブルの範囲、 ②資格情報が同じデータベースに置かれているか、 ③他のアプリケーションのデータが同居していないか。** **本記録の評価**——**②が該当する場合、 更新後の資格情報の入れ替えを検討する根拠になる。**</div><div class=sub><b>item:</b> 認証前のリクエストに対する Web アプリケーションファイアウォールのログ　<b>補足:</b> **本記録は、悪用のペイロードの形を知らないため、 具体的な検索の条件を書けない**（本記録の明示）。 **原理的には、認証前のリクエストに バックスラッシュや SQL の構文要素が含まれることを 検知しうるが、** **これは本記録の推定であり、 実際の悪用の痕跡と一致するかは分からない。** **本記録の判断**——**痕跡の探索は、 手口が公表されてから着手する項目として別に積む。**</div><div class=sub><b>item:</b> データベース側の問い合わせログ（残っている場合）　<b>補足:</b> **通常の照会と異なる形の問い合わせを 後から見つけられる可能性がある。** **ただし Web メールのデータベースで 全問い合わせのログを取っている環境は多くない** （本記録の推定）。 **残っていない場合は「観測できない」ことを 先に確定させておくほうがよい** ——**探して見つからなかったことを 「悪用されていない」と読まないため**（本記録の評価）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年5月24日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Roundcube が 1.6.16 と 1.7.1 を公開した。** **「Roundcube Webmail の 1.6 LTS と 1.7 の各版に対する セキュリティ更新を公開した。いずれも最近報告された セキュリティ脆弱性に対する修正を含む」**（原文英語）。 **8件の脆弱性が文章で列挙され、本件はその3番目である。** **「1.6.x と 1.7.x の本番稼働中の全てのインストールを この新しい版へ更新することを強く勧める」と述べている**（原文英語）。 **この公表には CVE 番号が示されていない**</td></tr><tr><td class="sm nowrap tw">2026年5月25日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**NVD に CVE-2026-48842 が登録された** （登録時刻は 2026-05-25T20:16:36 UTC）。 **記述は「Roundcube Webmail 1.6.16 より前の 1.6.x および 1.7.1 より前の 1.7.x は、`preg_replace()` のバックスラッシュの エスケープの回り込みを通じて、virtuser_query プラグインに 認証前の SQL インジェクションを持つ」**（原文英語）。 **CVSS v3.1 は 8.1、ベクタは `AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`、 評価元は `cve@mitre.org`**</td></tr><tr><td class="sm nowrap tw">2026年5月25日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**カナダ・サイバーセキュリティセンターが勧告 AV26-503 を公表した。** **対象は 1.6.16 より前および 1.7.1 より前の Roundcube Webmail。** **推奨事項は「利用者と管理者が提供された Web リンクを確認し、 必要な更新を適用すること」**（原文英語）</td></tr><tr><td class="sm nowrap tw">2026年6月3日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**oss-security メーリングリストに、 1.6.16 / 1.7.1 で修正された脆弱性の一覧が投稿された。** **本件については「virtuser_query プラグインにおける `preg_replace` のバックスラッシュのエスケープの回り込みによる 認証前 SQL インジェクションを修正する。skull による報告」と記載。** **同投稿は「いつものとおり、CVE 番号は公表（announcement）には 含まれていない」と述べ、CVE の対応は Debian のセキュリティトラッカーを 参照するよう案内している**（原文英語）。 **本記録の評価**——**修正の公開（5月24日）から10日間、 どの脆弱性にどの CVE が付くかが一覧で示されていなかったことになる**</td></tr><tr><td class="sm nowrap tw">2026年9月21日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**カナダ・サイバーセキュリティセンターが勧告 AV26-503 を 「更新1」として更新し、 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」と追記した**（原文英語）。 **これは修正の公開（5月24日）から120日後である**（本記録の算出）。 **悪用の手口・観測件数・標的の国や業種は記載されていない。** **また悪用が当局自身の観測によるものかも示されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月4日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Security Affairs の週刊ニュースレター（Round 598）が、 本件を「Roundcube SQL injection CVE-2026-48842 is now being exploited in the wild」および 「Roundcube Pre-Auth SQL Injection Flaw Actively Exploited in the Wild」 として取り上げた。** **本記録が本件を認知した経路である**</td></tr><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が確認した結果**—— **①Roundcube の公表（2026年5月24日）と 修正コミットの内容を確認した （`plugins/virtuser_query/virtuser_query.php` の4関数で `preg_replace()` を `str_replace()` に置換）、 ②カナダ・サイバーセキュリティセンターの勧告 AV26-503 の 更新1の文言を確認した、 ③NVD の登録内容（CVSS 8.1・ベクタ・記述）を API で取得して確認した、 ④CISA の KEV カタログを検索し、CVE-2026-48842 が 収載されていないことを確認した、 ⑤Roundcube の GitHub のセキュリティアドバイザリ欄には 公開されたアドバイザリが無いことを確認した。** **一方、悪用の具体（手口・件数・標的）を示す資料は 見つけられなかった**（unknowns に記録）</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>NVD の記述に「プラグインを有効にしている環境に限る」という前提条件が明示されていない</span><div class=sm>**NVD の記述は「virtuser_query プラグインに認証前の SQL インジェクションを持つ」とプラグイン名を挙げているが、 そのプラグインを有効にしている必要があることを明示していない**（原文英語）。 **本記録は、Roundcube の修正コミットが変更しているのが `plugins/virtuser_query/virtuser_query.php` のみであることから、 この前提条件を確認した。** **本記録の判断**——**この差は該当判定に直接影響する。** **版番号だけで判定すると、 プラグインを使っていない環境まで該当と扱うことになる。** **一方、前提条件を知った上で設定を確認しなければ、 有効にしている環境を見落とす。** **本記録は、この前提条件を「影響を受ける組織の条件」の節と 自組織への当てはめの判定条件に明記した**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>「1回の HTTP リクエストで」という二次情報の記述が CVSS の評価と整合しない</span><div class=sm>**本記録が検索の過程で参照した二次情報の中に、 「CVE-2026-48842 は、認証されていない任意の攻撃者に、 1回の HTTP リクエストで Roundcube の資格情報データベースへの 完全な読み取りアクセスを与える」という記述があった。** **一方、NVD に登録された CVSS v3.1 のベクタは `AC:H`（攻撃条件の複雑度・高）である。** **本記録はこの食い違いを判定できない**—— **①悪用の実際の難易度を示す一次資料が無く、 ②当該二次情報の根拠も示されていない。** **本記録は NVD のベクタを採り、 「1回のリクエストで」という記述を本文に採用しなかった。** **なお、これは「容易ではない」ことを保証するものではない** ——**`AC:H` は評価であり、公開の悪用コードが存在するかは 本記録が確認していない**（本記録の留保）</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の根拠が「公開情報による報告」とされ、出所が示されていない</span><div class=sm>**カナダ・サイバーセキュリティセンターの勧告 AV26-503 の更新1は 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」の1文のみである**（原文英語）。 **この表現は、当局自身の観測ではなく第三者の報告を 根拠にしていることを示す。** **しかしその第三者が誰で、何を観測したかは示されていない。** **本記録の作成者は、悪用の具体を示す一次資料を 見つけられなかった。** **その結果、防御側は①自組織が標的の範囲に入るか、 ②どのログを見れば痕跡が見つかるか、 ③悪用が広範か限定的か、のいずれも判断できない**（本記録の評価）</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>CISA の KEV に収載されておらず、悪用の記載は1か国の当局のみである</span><div class=sm>**本記録が2026年10月5日に CISA の KEV カタログを 「roundcube」で検索した結果、CVE-2026-48842 は現れなかった （カタログの総件数は1,734件と表示）。** **一方、カナダ・サイバーセキュリティセンターは 実環境での悪用を勧告に記載している。** **本記録はこれを矛盾ではなく、 「収載の基準と仕組みの違い」として整理する** ——**KEV は米国の連邦機関への指示を根拠に持つ仕組みであり、 世界中の脆弱性を網羅する一覧ではない**（本記録の判断）。 **なお Security Affairs は、CISA が過去に Roundcube の CVE-2025-49113 と CVE-2025-68461 を悪用が確認された脆弱性として 収載していると述べているが（2026年2月）、 本記録は収載日を一次資料で確認していない**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Roundcube の公表に CVE 番号・CVSS 値・深刻度の区分が含まれていない</span><div class=sm>**Roundcube の2026年5月24日の公表は、 8件の脆弱性を文章で列挙しているが、 CVE 番号・CVSS 値・深刻度の区分のいずれも含んでいない。** **oss-security の投稿も 「いつものとおり、CVE 番号は公表（announcement）には 含まれていない」と述べ、CVE の対応は Debian の セキュリティトラッカーを参照するよう案内している**（原文英語）。 **また本記録は、Roundcube の GitHub のセキュリティアドバイザリ欄に 公開されたアドバイザリが無いことも確認した （「公開されたセキュリティアドバイザリはありません」と表示）。** **本記録の判断**——**これは本件に限った判断ではなく プロジェクトの一貫した作法であり、 利用側が前提として織り込むべき条件である**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>悪用の規模を示す数値が無いこと、および本記録が置いた数値の性質</span><div class=sm>**本件には、被害の規模を示す数値が1つも公表されていない。** **到達可能な未更新のインスタンス数も、悪用の観測件数も、 影響を受けた組織の数も分からない。** **本記録が figures に置いた値は、性質が3つに分かれる。** **①製品の評価値**——**CVSS v3.1 の 8.1 （NVD に登録された値であり、被害の大きさではない）。** **②本記録が算出した日数**——**修正公開から悪用の報告までの120日、 本記録の作成時点までの134日 （いずれも timeline の日付の差である）。** **③修正の規模**——**同じ更新で閉じられた脆弱性8件 （本件の規模ではないため背景値として記録）と、 修正コミットで変更された関数4つ。** **これらを被害規模として読まないよう、 各値の note に性質を明記した**（本記録の整理）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証前のユーザ名の照会に `preg_replace()` の置換文字列の解釈が挟まっていた—— 止められるのは更新とプラグインの無効化、影響を絞れるのは権限である</div><div class=svgwrap><svg viewBox="0 0 998 426" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,118.0 C193.0,118.0 193.0,168.0 220,168.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,168.0 C397.0,168.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C499.0,60.0 499.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,118.0 C397.0,118.0 397.0,182.0 628,182.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,182.0 628,182.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,182.0 C703.0,182.0 703.0,264.0 628,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,264.0 C805.0,264.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,213.0 C193.0,213.0 193.0,168.0 220,168.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,308.0 C193.0,308.0 193.0,168.0 220,168.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,264.0 C499.0,264.0 499.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,366.0 C499.0,366.0 499.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,264.0 C295.0,264.0 295.0,168.0 220,168.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,213.0 C907.0,213.0 907.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,315.0 C907.0,315.0 907.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="81.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（認証不要・ネット</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ワーク経由）</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS の AV:N </text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">/ PR:N。ただし A</text><rect x="220" y="124.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達可能な Roundc</text><text x="295.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ube（1.6.16 よ</text><text x="295.0" y="174.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">り前／1.7.1 より…</text><text x="295.0" y="187.0" text-anchor="middle" fill="#64b5f6" font-size="10">ホスティング経由・部門が</text><text x="295.0" y="199.0" text-anchor="middle" fill="#64b5f6" font-size="10">立てたものを含む</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">virtuser_que</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ry プラグイン（有効に</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">している環境のみ）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">無効なら到達しない。外部</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">からは有効・無効を判定で</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">preg_replace</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">() による %u / </text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">%m の置換（4関数に…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">user2email /</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10"> email2user </text><rect x="628" y="138.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">置換文字列中のバックスラ</text><text x="703.0" y="174.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッシュがエスケープ列とし</text><text x="703.0" y="188.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">て解釈される</text><text x="703.0" y="201.0" text-anchor="middle" fill="#f48fb1" font-size="10">プラグインが仕掛けていた</text><text x="703.0" y="213.0" text-anchor="middle" fill="#f48fb1" font-size="10">エスケープを回り込める</text><rect x="628" y="240.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="262.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">操作された SQL 文</text><text x="703.0" y="275.0" text-anchor="middle" fill="#ffcc80" font-size="10">認証前に成立する</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">データベース（ユーザ名と</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メールアドレスの対応表・</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同居する情報）</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">CVSS は C:H/I</text><text x="907.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">:H/A:H と評価。実</text><rect x="16" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カナダ・サイバーセキュリ</text><text x="91.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティセンター（AV26-</text><text x="91.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">503 更新1）</text><text x="91.0" y="232.0" text-anchor="middle" fill="#b0bec5" font-size="10">「公開情報による報告は実</text><text x="91.0" y="244.0" text-anchor="middle" fill="#b0bec5" font-size="10">環境で悪用されていること</text><rect x="16" y="271.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（本記録</text><text x="91.0" y="307.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の確認時点で未収載）</text><text x="91.0" y="320.0" text-anchor="middle" fill="#b0bec5" font-size="10">KEV を起点にしている</text><text x="91.0" y="332.0" text-anchor="middle" fill="#b0bec5" font-size="10">組織では本件が起点に乗ら</text><rect x="424" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避①: 1.6.16 </text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">以降／1.7.1 以降へ</text><text x="499.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">更新する（preg_r…</text><text x="499.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">解釈の層そのものを無くす</text><text x="499.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正</text><rect x="424" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避②: 更新できない場</text><text x="499.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">合、virtuser_q</text><text x="499.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">uery を無効にでき…</text><text x="499.0" y="385.0" text-anchor="middle" fill="#f48fb1" font-size="10">無効ならこの経路に到達し</text><text x="499.0" y="397.0" text-anchor="middle" fill="#f48fb1" font-size="10">ない</text><rect x="220" y="226.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="248.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避③: 到達範囲を社内</text><text x="295.0" y="262.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">網・VPN 経由・特定の</text><text x="295.0" y="276.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> IP に絞る</text><text x="295.0" y="289.0" text-anchor="middle" fill="#f48fb1" font-size="10">入口の母数を減らす</text><rect x="832" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避④: データベース利</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用者の権限を必要なテーブ</text><text x="907.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルと操作に絞る</text><text x="907.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">成立した場合の影響を狭め</text><text x="907.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">る</text><rect x="832" y="271.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避⑤: 露出したと仮定</text><text x="907.0" y="307.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">した場合の対処（資格情報</text><text x="907.0" y="321.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の入れ替え）を先に決める</text><text x="907.0" y="334.0" text-anchor="middle" fill="#f48fb1" font-size="10">悪用の手口が公表されず自</text><text x="907.0" y="346.0" text-anchor="middle" fill="#f48fb1" font-size="10">組織での判定ができないた</text></svg></div><div class=fn>Roundcube の公表（2026年5月24日）、修正コミット （`plugins/virtuser_query/virtuser_query.php`）、 NVD の登録内容（CVSS 3.1 8.1・ `AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`）、 カナダ・サイバーセキュリティセンターの勧告 AV26-503 の更新1 （2026年9月21日）にもとづく （本記録が2026年10月5日に各資料を確認）。 **悪用の具体（手口・ペイロード・観測件数・標的）は公表されていない** ——**本図の攻撃経路は、NVD の記述と修正コミットから 本記録が組み立てた「成立しうる経路」であり、 観測された攻撃の再現ではない。** **`virtuser_query` を有効にしている環境に限るという前提条件は、 本記録が修正コミットの変更範囲から確認したものであり、 NVD の記述には明示されていない。** **本件は本記録の確認時点で CISA の KEV には収載されていない。** **点線は回避策で、いずれも本記録の整理である**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** **本記録の評価**——**この段階は正規の画面への接触であり、 通常のアクセスと区別が付かない。** **検知の手がかりになるのは、次の段階（入力の中身）である。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>Roundcube のインスタンスを、インターネット全体ではなく必要な範囲（社内網・VPN 経由・特定の IP）からのみ到達可能にする</div><div class=ctl><span class="b eff">影響を限定できた</span>自組織で動いている Roundcube の一覧（ホスティング経由・部門が立てたものを含む）を作り、版番号と有効なプラグインを把握する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** **本記録の評価**——**原理的には、認証前のリクエストに バックスラッシュや SQL の構文要素が含まれることを Web アプリケーションファイアウォールで検知しうる。** **ただし本記録は実際のペイロードの形を知らないため、 具体的な検知の条件を書けない** ——**これが「痕跡を探す」方針を取れない理由である。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>1.6.16 以降 / 1.7.1 以降へ更新する（4関数の `preg_replace()` が `str_replace()` に置き換えられ、置換文字列の解釈が起きなくなる）</div><div class=ctl><span class="b eff">侵入を防げた</span>更新できない場合、`virtuser_query` プラグインを無効にできるか業務要件と照らして判断する（有効でなければこの経路に到達しない）</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** **本記録の評価**——**データベース側の問い合わせログが 残っていれば、通常の照会と異なる形の問い合わせを 後から見つけられる可能性がある。** **ただし Web メールのデータベースで 全問い合わせのログを取っている環境は多くない** （本記録の推定）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>Roundcube が使うデータベースの利用者に与える権限を、必要なテーブルと操作に絞る（照会用と管理用を分ける）</div><div class=ctl><span class="b eff">影響を限定できた</span>更新後に、同じデータベースに置いている資格情報の入れ替えを検討する（露出したと仮定した場合の対処を決めておく）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Roundcube は、8件の脆弱性を文章で列挙し、 「本番稼働中の全てのインストールを更新することを強く勧める」と 述べた一方、CVE 番号・CVSS 値・深刻度の区分のいずれも 公表に含めなかった。** **oss-security の投稿も「いつものとおり、CVE 番号は公表には 含まれていない」と述べ、CVE の対応は Debian の セキュリティトラッカーを参照するよう案内している**（原文英語）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**評価は本記録の判断である。** **機能した点**——**①修正を8件まとめて公開し、 「本番稼働中の全てのインストールを更新することを強く勧める」と 明確に述べた。 ②脆弱性の内容を具体的に列挙しており、 どの機能が影響を受けるかが読み取れる。 ③修正コミットが公開されており、 本記録のように前提条件（プラグインの有効・無効）を 自分で確認できる。** **不十分な点**——**①CVE 番号と深刻度の区分が無く、 利用側の脆弱性管理の仕組みに乗らない。 ②「認証前」の欠陥が2件含まれていたことが、 列挙の中では他の6件と同じ重みで並んでいる** ——**更新の緊急度を判断する材料として弱い**（本記録の評価）。 **留保**——**オープンソースのプロジェクトであり、 番号の割り当てや深刻度の評価に割ける資源は限られる。 本記録はこれを批判としてではなく、 利用側が前提として織り込むべき条件として記録する。**</td></tr><tr><td>**カナダ・サイバーセキュリティセンターは、 5月25日の勧告を9月21日に更新し、実環境での悪用を記載した。** **根拠は「公開情報による報告」とされており、 悪用の手口・観測件数・標的は記載されていない。**</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**評価は本記録の判断である。** **機能した点**——**実環境での悪用を公的な文書に記載したのは、 本記録が確認した範囲でこの当局のみである。** **CISA の KEV には収載されていないため、 この追記が無ければ本件は「修正済みの古い脆弱性」として 埋もれていた可能性がある。** **不十分な点**——**①悪用の根拠（誰の、どの報告か）が示されておらず、 利用側が確度を評価できない。 ②手口が示されないため、既に悪用された環境が 自分の被害を確認する手段を持てない。** **留保**——**当局が第三者の報告を根拠に注意喚起を出す場合、 出所を示せない事情があり得る。本記録はその有無を確認していない。**</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**KEV への収載を更新の起点にしていると、本件は起点に乗らない**</div><div class=lw>**本記録の確認時点（2026年10月5日）で、 CVE-2026-48842 は CISA の KEV カタログに収載されていない。** **実環境での悪用を記載しているのは、 カナダ・サイバーセキュリティセンターのみである。** **KEV は米国の連邦機関への指示を根拠に持つ仕組みであり、 世界中の脆弱性を網羅する一覧ではない**（本記録の指摘）。 **「KEV に入ったら優先する」という運用は分かりやすいが、 入らない悪用が存在する**</div><div class=la><b>取るべき行動</b> **悪用情報の参照先を KEV の1本に絞らず、 少なくとも2本目を運用に入れる。** **具体的には、使っている製品に関する勧告を出している当局 （カナダ・サイバーセキュリティセンター、英 NCSC、JPCERT/CC、 各国の CERT）のうち、自組織の製品構成に当たるものを選ぶ。** **選んだら「誰が読み、誰が自社該当を判定するか」を決める** ——**購読先だけ増やしても受信箱に溜まる**</div></li><li><div class=lp>**「使っていることを把握していない Web メール」が 本件の最大の母数である**</div><div class=lw>**本件の該当判定には、版番号と有効なプラグインの確認が要る。** **しかしその前に「自組織のどこで Roundcube が動いているか」が 分からなければ、確認にたどり着けない**（本記録の判断）。 **Roundcube はホスティング事業者が提供する Web メールとして、 また部門が独自に立てたサーバとして入っていることがある。** **修正は2026年5月24日に出ていたのに、 120日後の悪用の時点で未更新の環境が残っていた** ——**その多くは「管理されていなかった」ものと考えられる** （本記録の推定）</div><div class=la><b>取るべき行動</b> **自組織のドメインで提供されているメール関連のサービスについて、 ①誰が運用しているか（自社／ホスティング／部門）、 ②製品と版番号、③インターネットからの到達範囲の3項目を 棚卸しする。** **ホスティング事業者が運用しているものについては、 更新の責任分担と適用の時期を契約または問い合わせで確認する** ——**「事業者がやっているはず」を確認せずに前提にしない**</div></li><li><div class=lp>**CVE 番号が付かない公表の作法を、 脆弱性管理の前提として織り込む**</div><div class=lw>**Roundcube の公表には CVE 番号・CVSS 値・深刻度の区分が 含まれていない。** **oss-security の投稿も「いつものとおり、CVE 番号は公表には 含まれていない」と述べ、CVE の対応は Debian の セキュリティトラッカーを参照するよう案内している**（原文英語）。 **多くの組織は CVE 番号を起点に対応の期限を管理している** ——**番号が付かないまま公表されると、台帳に載らず期限も付かない** （本記録の評価）。 **オープンソースのプロジェクトでは、 これは例外ではなく一般的な作法である**</div><div class=la><b>取るべき行動</b> **使っているオープンソース製品について、 CVE 番号ではなく「公開されている最新版」を起点にした 確認の仕組みに切り替える。** **具体的には、製品ごとにリリースの通知 （GitHub のリリース購読・プロジェクトのメーリングリスト）を 受け取り、「使っている版」と「最新版」の差を定期的に突き合わせる。** **この形なら、番号が付いていなくても漏れない**</div></li><li><div class=lp>**悪用の手口が公表されない事案では、 「痕跡を探す」を対応計画に入れない**</div><div class=lw>**本件について公表されているのは 「公開情報による報告は、実環境で悪用されていることを示している」 の1文のみである。** **手口・観測件数・標的・観測の時期はいずれも公表されていない** （本記録の確認）。 **ペイロードの形が分からなければ、 ログで何を検索すべきかが決まらない**（本記録の判断）。 **それでも「調査」を計画に入れると、 結論の出ない作業に時間を使い、更新が遅れる**</div><div class=la><b>取るべき行動</b> **悪用の報告があっても手口が公表されていない事案では、 対応計画を「更新する」「到達範囲を絞る」 「露出したと仮定した場合の対処を決める」の3つに限る。** **痕跡の調査は、手口が公表されてから着手する項目として 別に積む。** **なお「露出したと仮定した場合の対処」には、 同じデータベースに置いている資格情報の入れ替えが含まれる**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**Roundcube の版番号と有効なプラグインの一覧を、 インスタンスごとに出す**</div><div class=lw>**該当判定の条件は3つある**—— **①1.6.16 より前または 1.7.1 より前であること、 ②`virtuser_query` プラグインを有効にしていること、 ③到達可能であること**（本記録の整理）。 **②はコミットの変更範囲から確認した前提条件であり、 NVD の記述には明示されていない** ——**版番号だけ見ると、該当しない環境を該当と判定してしまう**</div><div class=la><b>取るべき行動</b> **各インスタンスで、①版番号、②設定ファイルの `plugins` の一覧、 ③インターネットからの到達の有無を記録する。** **`virtuser_query` が一覧に入っているものを優先して更新する。** **入っていないものも更新対象には残す** ——**同じ更新で認証前の任意ファイル削除（7番目の欄）も 閉じられるためである**</div></li><li><div class=lp>**問い合わせ文を文字列の置換で組み立てている箇所を、 自組織のコードで一括して探す**</div><div class=lw>**本件の原因は `preg_replace()` が置換文字列中の バックスラッシュをエスケープ列として解釈する性質である。** **修正は4つの関数で `preg_replace()` を `str_replace()` に置き換えることだった** ——**同じ誤った書き方が4か所に複製されていた** （本記録がコミットで確認）。 **本記録の評価**——**1か所で見つけた欠陥は、 同じプロジェクト内の同じ書き方をすべて探すべきである。** **置換による問い合わせ文の組み立ては、 照会の関数ごとにコピーされやすい**</div><div class=la><b>取るべき行動</b> **自組織のコードで、SQL 文を文字列の置換・連結・整形で 組み立てている箇所を一括で探す （`preg_replace` に限らず `sprintf`・文字列の連結・ テンプレートの差し込みも含める）。** **見つかった箇所を、プレースホルダ （プリペアドステートメント）に置き換える。** **置き換えられない箇所は、 「エスケープの実装に依存している箇所」として一覧に残す**</div></li><li><div class=lp>**「エスケープを直す」より「エスケープを要する経路を無くす」を選ぶ**</div><div class=lw>**Roundcube の修正は、エスケープの実装を強化するのではなく、 正規表現の解釈を伴う置換（`preg_replace`）を 文字列の置換（`str_replace`）に替えることだった** （本記録がコミットで確認）。 **本記録の読み**——**エスケープの実装を直す方針では、 次に別の回り込みが見つかる余地が残る。** **解釈の層を1つ減らすほうが、後から破られにくい**</div><div class=la><b>取るべき行動</b> **自組織のコードで、入力を「エスケープしてから別の層へ渡す」 形になっている箇所を洗う （SQL・シェル・正規表現・HTML・LDAP）。** **各箇所について「解釈の層を減らせないか」を検討する** ——**プレースホルダ、引数の配列渡し、 正規表現を使わない文字列操作への置き換えなど。** **減らせない箇所は、その理由を記録に残す**</div></li><li><div class=lp>**Roundcube が使うデータベース利用者の権限を、 必要なテーブルと操作に絞る**</div><div class=lw>**SQL インジェクションが成立したときの影響の範囲は、 アプリケーションが使うデータベース利用者の権限で決まる** （本記録の整理）。 **CVSS は機密性・完全性・可用性のいずれも「高」と 評価している（`C:H/I:H/A:H`）が、 これは一般的な評価であり、 権限を絞った環境では実際の影響が小さくなる余地がある** （本記録の評価）</div><div class=la><b>取るべき行動</b> **Roundcube が接続するデータベース利用者の権限を確認し、 ①他のアプリケーションのデータベースへ到達できないか、 ②`FILE` やストアドプロシージャの実行など 不要な権限が付いていないかを点検する。** **付いていれば外す。** **可能であれば、照会用と管理用（スキーマの変更）の 利用者を分ける**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自組織のドメインで提供されているメール関連のサービスについて、運用主体・製品・版番号・到達範囲の一覧を出せない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Roundcube を使っており、`virtuser_query` プラグインの有効・無効をインスタンスごとに答えられない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 悪用情報の参照先が CISA の KEV のみで、ほかの当局の勧告を運用に入れていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性管理の台帳が CVE 番号を起点にしており、番号の付かない公表を取り込む経路が無い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> Web アプリケーションが接続するデータベース利用者の権限を、必要なテーブルと操作に絞っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 「露出したと仮定した場合の対処」（資格情報の入れ替え・影響範囲の特定）を事前に決めていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年5月24日 Roundcube（Roundcube Webmail プロジェクト）</span> <a href="https://roundcube.net/news/2026/05/24/security-updates-1.6.16-and-1.7.1" target="_blank" rel="noreferrer noopener nofollow">Security updates 1.6.16 and 1.7.1 released</a> <span class="b kind">ニュースリリース</span><span class=sm>（(英語。**本件の一次公表。** **本記録が依拠しているのは次の点である**—— **①「Roundcube Webmail の 1.6 LTS と 1.7 の各版に対する セキュリティ更新を公開した。いずれも最近報告された セキュリティ脆弱性に対する修正を含む」、 ②列挙された8件のうち3番目が 「virtuser_query プラグインにおける `preg_replace` の回り込みによる 認証前 SQL インジェクション」であること、 ③「1.6.x と 1.7.x の本番稼働中の全てのインストールを この新しい版へ更新することを強く勧める」。** **この公表には CVE 番号・CVSS 値・深刻度の区分が含まれていない** ——**本記録はこの点を指摘として記録した)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年6月3日 oss-security メーリングリスト（openwall）</span> <a href="http://www.openwall.com/lists/oss-security/2026/06/03/17" target="_blank" rel="noreferrer noopener nofollow">Roundcube 1.6.16 / 1.7.1 で修正された脆弱性の一覧（投稿）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**NVD が本件の参考情報として挙げている投稿。** **本記録が依拠しているのは次の点である**—— **①本件の記述「virtuser_query プラグインにおける `preg_replace` の バックスラッシュのエスケープの回り込みによる認証前 SQL インジェクションを修正する。skull による報告」、 ②「いつものとおり、CVE 番号は公表には含まれていない」という記述と、 CVE の対応について Debian のセキュリティトラッカーを 参照するよう案内していること。** **本件の深刻度・悪用の前提条件については記述が無い**)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月5日（本記録による参照時点） 米サイバーセキュリティ・インフラストラクチャセキュリティ庁（CISA）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=roundcube" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（Roundcube で検索）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**本記録が「収載されていないこと」を確認するために参照した。** **2026年10月5日の確認時点で、CVE-2026-48842 は KEV カタログの検索結果に現れなかった。** **カタログの総件数は1,734件と表示されていた。** **本記録の判断**——**「収載されていない」ことは 「悪用されていない」ことを意味しない。** **本件については、カナダの当局が実環境での悪用を記載している。** **KEV を更新の起点にしている組織では本件が起点に乗らないことを 指摘するために、この参照を出典として残す**)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年5月25日 NVD（米国国立標準技術研究所）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-48842" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-48842 Detail</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**本記録は NVD の Web ページではなく、 NVD の REST API（services.nvd.nist.gov）から内容を取得して確認した。** **本記録が依拠しているのは次の点である**—— **①登録時刻 2026-05-25T20:16:36、 ②記述「Roundcube Webmail 1.6.16 より前の 1.6.x および 1.7.1 より前の 1.7.x は、`preg_replace()` のバックスラッシュの エスケープの回り込みを通じて、virtuser_query プラグインに 認証前の SQL インジェクションを持つ」、 ③CVSS v3.1 基本値 8.1・ベクタ `CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`・評価元 `cve@mitre.org`、 ④参考情報として挙げられている URL （修正コミット2件・1.6.16 と 1.7.1 のリリースタグ・ Roundcube の公表・oss-security の投稿）。** **NVD の記述には「プラグインを有効にしている環境に限る」という 前提条件が明示されていない** ——**本記録はこれをコミットの内容から確認した)）</span></li></ol></div><div class=rg><div class=rgt>外国当局</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年5月25日（更新1は2026年9月21日） カナダ・サイバーセキュリティセンター（Canadian Centre for Cyber Security）</span> <a href="https://www.cyber.gc.ca/en/alerts-advisories/roundcube-security-advisory-av26-503" target="_blank" rel="noreferrer noopener nofollow">Roundcube security advisory (AV26-503)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**本件の悪用を公的に記載した唯一の資料 （本記録が確認した範囲で）。** **本記録が依拠しているのは次の点である**—— **①勧告の初版が2026年5月25日であること、 ②対象が「1.6.16 より前の Roundcube Webmail」および 「1.7.1 より前の Roundcube Webmail」であること、 ③2026年9月21日の更新1の文言 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」、 ④推奨事項「サイバーセンターは、利用者と管理者が提供された Web リンクを確認し、必要な更新を適用することを勧める」。** **悪用の手口・観測件数・標的、および当局自身の観測によるものかは 記載されていない**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年10月4日 Security Affairs</span> <a href="https://securityaffairs.com/200278/breaking-news/security-affairs-newsletter-round-598-by-pierluigi-paganini-international-edition.html" target="_blank" rel="noreferrer noopener nofollow">Security Affairs newsletter Round 598 by Pierluigi Paganini – INTERNATIONAL EDITION</a> <span class="b kind">記事</span><span class=sm>（(英語。**本記録が本件を認知した経路。** **一覧に「Roundcube SQL injection CVE-2026-48842 is now being exploited in the wild」および 「Roundcube Pre-Auth SQL Injection Flaw Actively Exploited in the Wild」 として掲載されている。** **ニュースレターであるため本件の詳細は含まれていない** ——**本記録は詳細を一次資料（出典1〜5）から取った。** **なお同社の個別記事は、CISA が過去に Roundcube の CVE-2025-49113 と CVE-2025-68461 を悪用が確認された脆弱性として 収載していると述べているが、本記録は収載日を一次資料で確認していない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月5日</span> <span class="b rev">新規作成</span> **新規作成。** Security Affairs の週刊ニュースレター （Round 598・2026年10月4日）の一覧で本件を認知し、 詳細は一次資料から取った。 **一次公表の取得結果**—— **①Roundcube の公表（2026年5月24日「Security updates 1.6.16 and 1.7.1 released」）を取得し、8件の脆弱性の列挙と 「本番稼働中の全てのインストールを更新することを強く勧める」という 記述を確認した、 ②修正コミット （`plugins/virtuser_query/virtuser_query.php`）を取得し、 4関数（`user2email` / `email2user` / `user2host` / `alias2user`）で `preg_replace()` が `str_replace()` に置き換えられていること、 および `virtuser_query` プラグインを有効にしている環境に限るという 前提条件を確認した、 ③カナダ・サイバーセキュリティセンターの勧告 AV26-503 を取得し、 2026年9月21日の更新1の文言 「公開情報による報告は、CVE-2026-48842 が実環境で悪用されていることを 示している」を確認した、 ④NVD の REST API から CVE-2026-48842 の登録内容 （CVSS v3.1 8.1・ベクタ・記述・参考情報）を取得して確認した、 ⑤oss-security の投稿（2026年6月3日）を取得し、 報告者が「skull」であること、および 「いつものとおり、CVE 番号は公表には含まれていない」という記述を 確認した、 ⑥CISA の KEV カタログを検索し、CVE-2026-48842 が 収載されていないことを確認した、 ⑦Roundcube の GitHub のセキュリティアドバイザリ欄に 公開されたアドバイザリが無いことを確認した。** **取得できなかったもの**—— **悪用の具体（手口・ペイロード・観測件数・標的）を示す資料、 および到達可能な未更新のインスタンス数を示す資料** （unknowns と discrepancies に記録）。 **記録の中心に置いたのは2点である**—— **①該当判定が版番号だけでは決まらず、 `virtuser_query` プラグインの有効・無効で分かれること （NVD の記述には明示されていない前提条件）、 ②悪用が始まったのは修正公開から120日後であり、 これは「修正が無かった時間」ではなく 「適用されていなかった時間」であること。** **あわせて、本件が CISA の KEV に収載されていないため KEV を起点にした更新の運用では拾えないことを指摘した**</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

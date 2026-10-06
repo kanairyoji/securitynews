@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>BPFDoor と AVERAT が境界に常駐 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0319</span>BPFDoor と AVERAT が境界に常駐</h1>
+<header class="site-header">
+  <p class="subtitle">Rapid7 が、アジアのメールセキュリティ製品に化けて通信事業者の境界に常駐する Linux のバックドア群を公表した。韓国の迷惑メール対策製品 SpamSniper の PID ファイルとプロセス名を装う新しい BPFDoor 亜種、 送信元・宛先ともポート25だけを見張る BPF フィルタを持つ Rekoobe、 台湾の ShareTech 製アプライアンス向けとみられるドロッパ、 そして同社が AVERAT と呼ぶ Linux インプラントの6種のビルドである。 ドロッパは2つのペイロードを /sbin へ ntpdate・udevds の名で置いて起動し、 10秒後にファイルを削除する——プロセスは走り続け、ディスク上に実体が残らない。 AVERAT は外向きに SMTP（ポート25）を話して C2 とつながり、 中継には台湾の中華電信 HiNet にある第三者被害者の NAS・録画装置・SMB 用機器が 使われていた。Rapid7 は、この機器構成が CISA らの2026年4月の共同勧告 AA26-113A が示した中国に連なる ORB 網の典型と一致するとしつつ、 既知の ORB 網との指標の重なりは見つからなかったとしている</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">脆弱性の放置</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月2日</span>
+  <span>最終更新: 2026年10月4日</span>
+</div>
+
+<div class="lead"><p><strong>狙われたのは、メールサーバの前に立っている箱です。</strong></p>
+<p>Rapid7 が公表したのは、<strong>その箱の中身に合わせて化けた Linux のバックドア群</strong>です。4つの部品があります。</p>
+<table>
+<thead>
+<tr>
+<th>部品</th>
+<th>偽装</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>新しい BPFDoor 亜種</td>
+<td>韓国の迷惑メール対策製品 <strong>SpamSniper</strong> の PID ファイル（<code>/var/run/spamsniper.pid</code>）を装い、10個の Linux デーモン名を使い回す</td>
+</tr>
+<tr>
+<td>BPF Rekoobe</td>
+<td><code>/sniper/bin/crond</code>・<code>/sniper/bin/earsd</code>・<code>/sniper/apache/bin/httpd</code>・<code>/sniper/snipe/bin/snipe-smtpd</code> など<strong>その製品の中にある名前</strong>を使う</td>
+</tr>
+<tr>
+<td>ドロッパ</td>
+<td>暗号鍵を <strong>SHA1("ShareTech") の先頭16バイト</strong>から作る（台湾のアプライアンス製品の名前）</td>
+</tr>
+<tr>
+<td>AVERAT（6種のビルド）</td>
+<td>台湾のアプライアンスに置かれ、<strong>外向きに SMTP を話す</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>共通するのは「その環境でなら不自然に見えない」という設計です。</strong> Rapid7 の表現では<strong>「地域化された偽装（regionalized disguise）」</strong>——どの検体も標的の機器で動いているベンダー製ソフトを把握したうえでプロセス名を偽装しています（原文英語）。</p>
+<p>ドロッパの動きが象徴的です。2つのペイロードを <code>/sbin</code> に <strong><code>ntpdate</code></strong> と <strong><code>udevds</code></strong> という名前で置いて起動し、<strong>10秒後にファイルを削除します。</strong>プロセスは走り続けるので、<strong>ディスク上に実体がありません</strong>（<code>/proc/&lt;pid&gt;/exe</code> は <code>(deleted)</code> を指す）。<strong>ハッシュを取るものも、隔離するものも、提出するものも残らない。</strong>しかも<strong><code>/sbin/ntpdate</code> はドロッパ自身の再実行</strong>で、2つ目のインスタンスは監視役（watchdog）として常駐し、消えたファイルを書き戻します。</p>
+<p>AVERAT の C2 は<strong>ポート25の SMTP</strong> です。<code>EHLO</code> を送り、<code>STARTTLS</code> を要求し、<strong>そのうえで独自の暗号セッションを始めます。</strong>メールセキュリティゲートウェイにとって、<strong>任意のメールサーバへの外向き SMTP は本来の仕事そのもの</strong>です——フロー記録の上では正規の通信と区別がつきません。</p>
+<p>Rekoobe 側はさらに露骨です。BPF フィルタが<strong>送信元ポート25・宛先ポート25</strong>の通信を見張ります。SpamSniper のアプライアンスの前段のファイアウォールには、ふつう <strong><code>ACCEPT tcp --sport 25 --dport 25</code>（MTA 間の中継）</strong>という規則があります。<strong>その規則に合う魔法のパケットは、ステートフル検査の前に生のソケットへ届きます。</strong> Rapid7 の評価では<strong>「このクラスのホストでどんな通信の形なら見えないかを、実装した側は正確に理解していた」</strong>。</p>
+<p>そして C2 の中継は、<strong>他人の機器</strong>でした。3つの IP はいずれも台湾の中華電信 HiNet（AS3462）の、台南・板橋・桃園にある<strong>燃料小売事業者の Synology NAS、組み込みの SMB 用ネットワーク機器、Dahua の録画装置</strong>です。<strong>3台すべてでポート1723に PPTP が動いており、バナーがバイト単位で同一</strong> ——Rapid7 はこれを<strong>攻撃者が入れたもの</strong>と評価しています。つまり各ノードは、<strong>実装の通信を受ける出口</strong>であると同時に、<strong>その LAN へ入る VPN の足場</strong>でもあります。</p>
+<p><strong>本記録の起点は、2026年10月2日に公開された Rapid7 の報告そのものです。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>4</span></div><ul><li><span class=ui>最初の侵入経路（ドロッパが実行される前にどうやって入ったか）</span><span class="b rsn">公表されていない</span><div class=sm>**Rapid7 はドロッパを「アクセスが確立した後に実行されるローカルのインストーラ」 と明記しており、ネットワーク機能を持たないとしている**（原文英語）。 **したがって「どうやってアプライアンスに入ったか」は報告の範囲外である。** 実務上の影響は**入口を塞ぐ対策が書けないこと**で、 防御側にできるのは**常駐と通信の検知**に寄る（本記録の評価）。 なおドロッパの実行には**前提条件**がある—— `/tmp/flag` が既に存在し、かつ `.php` のスクリプトが存在しないときだけ インストールの分岐が動く。**この `/tmp/flag` を誰がいつ作るのかも書かれていない。**</div></li><li><span class=ui>侵害された組織の数と侵害の時期</span><span class="b rsn">公表されていない</span><div class=sm>**報告は被害組織の名称・件数・侵害の開始時期を示していない。** 分かるのは**AVERAT のビルドが6種あること**、 **韓国クラスタと台湾クラスタという2つの地域の集まりがあること**、 **中継に使われた第三者の機器が3台あること**までである。 **「6ビルド＝6組織」ではない**（本記録の注記）。</div></li><li><span class=ui>攻撃者の帰属</span><span class="b rsn">調査したが確定せず</span><div class=sm>**Rapid7 は特定のアクターへ帰属していない。** 示されているのは2点である。 ①**AVERAT の C2 基盤は、CISA・NCSC-UK らの2026年4月の共同勧告 AA26-113A が 「中国に連なる隠蔽／ORB 網の標準的な構成部品」として述べた機器のクラス （保守終了の NAS・エッジのアプライアンス・DVR）と一致する。** ②**一方で、既知の名前の付いた ORB 網（LapDogs/UAT-7810・SPACEHOP・FLORAHOX） との基盤・指標の重なりは見つからなかった**—— それらの標的は SOHO ルータが中心であり、 **AVERAT の基盤は「機器クラスとしての ORB の広いパターンと整合するが、 既知の網への所属が確認されたものではない」。** 報告は結語で**「特定の帰属は、新しい検体と基盤が現れるにつれて 継続的な評価であるべきだ」**としている（原文英語）。</div></li><li><span class=ui>標的のアプライアンス製品の提供元の見解</span><span class="b rsn">公表されていない</span><div class=sm>**本記録は、SpamSniper・ShareTech・NetKlass・Dahua・Synology の 本件に関する公表を確認していない。** **Rapid7 の報告にも、製品提供元との連絡や修正に関する記述が無い。** **重要な区別**——報告が述べているのは**製品の脆弱性ではなく、 製品の名前と慣習を使った偽装**である（本記録の注記）。 ただし中継に使われた機器については、 **保守終了のソフトウェアと期限切れの証明書が露出していたこと**が 具体的に示されている。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Rapid7（Rapid7 Intelligence）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>SpamSniper（韓国の迷惑メール対策製品）</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>ShareTech（台湾のアプライアンス製品）</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>中継に使われた台湾の第三者機器の所有者（3件・名称非公表）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>標的となったメールセキュリティ・アプライアンスの運用組織（韓国・台湾／名称非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>中華電信（Chunghwa Telecom / HiNet・AS3462）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>確認された AVERAT のビルド数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>6<span class=fu>件</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**Rapid7 は「台湾のアプライアンスに対して展開された、 我々が AVERAT として追跡する Linux インプラントの6種のビルド」とし、 IoC 一覧に6つの SHA-256 を挙げている。** **ビルド数であって被害組織数ではない**（組織数は公表されていない）。 **6種のうち MAC 鍵と補助鍵は全てでバイト単位で同一**であり、 **ストリーム鍵が共有されているのは1組だけ**である。</div></div><div class=fig><div class=fh><span class=fl>AVERAT の定期通信の間隔</span><span class="b conf">範囲</span><span class="b org">第三者調査</span></div><div class=fv>600<span class=fu>秒</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**Rapid7 の記述は「600 から 699 秒ごと」。** 本記録は範囲の下限を値に置いた。 各回の通信で**ホスト名・現在の利用者・OS の版・ネットワークインタフェース・ ログイン中の利用者**が報告される。 **間隔は `/var/lib/.db` という隠しファイルに保存され、 攻撃者が変更でき、再起動をまたいで保持される。**</div></div><div class=fig><div class=fh><span class=fl>ドロッパがペイロードのファイルを削除するまでの時間</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>10<span class=fu>秒</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**スクリプトは `/sbin/ntpdate` と `/sbin/udevds` を起動し、 それぞれ `sleep 10` の後に `rm -rf` する。** **プロセスは走り続け、ディスク上に実体が残らない** （`/proc/&lt;pid&gt;/exe` は `(deleted)` を指す）。 **この10秒が、ファイルを証拠として確保できる唯一の窓である** （本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>C2 の中継に使われていた第三者の機器</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>3<span class=fu>台</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**AVERAT の設定から回収された3つの IP。** いずれも台湾の中華電信 HiNet（AS3462）の、台南・板橋・桃園にある機器で、 **Rapid7 は「意図的な攻撃者の資産ではなく第三者の被害者に属する 侵害された CPE」と評価している。** **3台すべてでポート1723の PPTP のバナーがバイト単位で同一**であり、 攻撃者が入れたものと評価されている。</div></div><div class=fig><div class=fh><span class=fl>AVERAT が同時に開けるシェルセッションの数</span><span class="b conf">最大</span><span class="b org">第三者調査</span></div><div class=fv>10<span class=fu>セッション</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**「最大」の意味——コマンド 912 は「対話的なシェルセッションを開く。 最大で10並行」。** Rapid7 は**「10並行のシェルに対応することは、 単一の対話セッションではなく複数の作業者による並行アクセスを 想定していることと整合する」**と評価している（原文英語）。</div></div><div class=fig><div class=fh><span class=fl>報告が対応づけた ATT&amp;CK 技術の数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>30<span class=fu>件</span></div><div class=fa>2026年10月4日 時点</div><div class=fn>**本記録が報告の対応表から数えた概数**（T1584.008・T1133・T1480・T1059.004・ T1129・T1037・T1205・T1205.002・T1070.004・T1070.003・T1070.006・T1036.004・ T1036.005・T1564.001・T1027・T1027.013・T1140・T1562.004・T1083・T1057・ T1082・T1033・T1016・T1005・T1041・T1030・T1105・T1071.003・T1573.001・ T1090・T1008・T1529・T1489）。 **Rapid7 自身が件数を述べているわけではない。** **本記録は技術 ID の検証を行っていない**（表記は報告のままである）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**メールサーバの前段に置かれるアプライアンスを標的に、 その製品の名前と通信の形に合わせて偽装した Linux のバックドアを常駐させる。** 台湾クラスタでは、ローカルのドロッパ（鍵は SHA1(&quot;ShareTech&quot;) 由来）が 2つのペイロードを `/sbin` に `ntpdate`・`udevds` の名で置いて起動し、 **10秒後にファイルを削除してディスク上の実体を消す** ——一方は AVERAT、もう一方はドロッパ自身の再実行による監視役である。 AVERAT は**外向きにポート25で SMTP を話して C2 とつながり**、 設定は RC4 の鍵流で暗号化、コマンドでシェル（最大10並行）・ファイル操作・ 代理・モジュール読み込み・C2 表の上書きが可能。 韓国クラスタでは、**SpamSniper の PID ファイルとプロセス名を装う BPFDoor 亜種**と、 **送信元・宛先ともポート25の通信を見張る BPF Rekoobe** が、 魔法のパケットを待つ受動型の足場として動く。 **C2 の中継は、台湾 HiNet の第三者被害者の NAS・録画装置・SMB 用機器**であり、 3台すべてに攻撃者が入れたとみられる PPTP が動いている。</p><ol class=chain><li><div class=stg><span class="b stage">1. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ドロッパ（SHA-256 2bedc26d…）がアプライアンス上で実行される。** x86-64 の ELF で、インポートは `fopen`・`fwrite`・`fputs`・`fclose`・`chmod`・ `system`・`strlen`・`sleep`・`access`・`memcpy`・`exit` のみ、**ネットワーク機能は無い。** **AES-128-ECB の4つの塊を、SHA1(&quot;ShareTech&quot;) の先頭16バイトを鍵に復号**し、 3つのパスと1つのシェルスクリプトを得る。 **`/tmp/flag` が存在し `.php` のスクリプトが存在しないときだけ** インストールの分岐が動き、スクリプトを `/HDD/ms6x2xTo64/updIptable.php` に 書いて `0777` にし `system()` に渡す。</div><div class=fn>根拠: Rapid7 の検体解析（鍵導出ルーチン・復号された文字列）</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**スクリプトが `/addpkg/sbin/update` を `/sbin/ntpdate` へ、 `/addpkg/sbin/agetty` を `/sbin/udevds` へ複製して起動し、 それぞれ10秒後に削除する。** **プロセスは走り続け、ディスク上に実体が無い** （`/proc/&lt;pid&gt;/exe` は `(deleted)`）。 **`/sbin/ntpdate` はドロッパ自身の再実行**で、 2つ目のインスタンスは門を通れず**2秒間隔の監視役**となり、 `execProcEnd` とスクリプトが消えるたびに作り直す。 Rekoobe 側は `VIMINIT=&quot;set viminfo=&quot;`・`HISTFILE=/dev/null`・`HISTSIZE=0`・ `HISTFILESIZE=0` を設定して**コマンドの履歴を残さない。**</div><div class=fn>根拠: Rapid7 の検体解析（スクリプト本文・監視役の挙動・環境変数の設定）</div></li><li><div class=stg><span class="b stage">3. 永続化</span><span class="b conf">推定</span><span class=srcs></span></div><div>**永続化のコードが無い。** Rapid7 は、**`/addpkg/sbin/` がアプライアンス自身の追加パッケージ用 ディレクトリであるため、ファームウェアのパッケージ起動処理が 再起動時に立ち上げる可能性が高い**と評価している。 **BPFDoor 亜種は `/var/run/spamsniper.pid` をミューテックスとして使い**、 製品の PID ファイルに成りすます。 **AVERAT は通信間隔を隠しファイル（`/var/lib/.db`・`.sencha`・`.us`・`.a`）に 保存し、再起動をまたいで保持する。**</div><div class=fn>根拠: Rapid7 の検体解析（IoC のホスト上の痕跡一覧・監視役の実装）</div></li><li><div class=stg><span class="b stage">4. C2通信</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AVERAT は外向きにポート25へつなぎ SMTP を話す**—— `EHLO` を送り `STARTTLS` を要求し、**そのうえで独自の暗号セッションを始める。** **TLS 層は手作りで、固定の ClientHello テンプレート（40項目の暗号スイート一覧と 固定の拡張順序）がバイナリに埋め込まれている。** 相手の認証は**アプリケーション層の共有秘密の握手に委ね、魔法の値は 1571（0x0623）。** **定期通信は600〜699秒ごと**で、ホスト名・利用者・OS の版・ ネットワークインタフェース・ログイン中の利用者を報告する。 **BPFDoor 亜種は受動型**で、生の `PF_PACKET` ソケットに古典的 BPF フィルタを 付け、**魔法のバイト 0x6693（UDP）・0x4274（TCP）・0x7820（ICMP）**に合致すると 送信元へ接続を返す（パスワード `gZbpx0` なら逆方向シェル、 `sT21xf` ならバインドシェル、それ以外は UDP のノック）。 **Rekoobe は送信元・宛先ともポート25 の TCP/UDP/SCTP IPv4 と UDP IPv6 を 26命令の BPF で見張る。**</div><div class=fn>根拠: Rapid7 の検体解析（通信の流れ・BPF フィルタ・魔法のバイト・握手）</div></li><li><div class=stg><span class="b stage">5. 内部探索</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AVERAT のコマンドで、ディレクトリの列挙（20）、 所有者を解決しながらの再帰走査（30）、 コマンドライン付きのプロセス列挙（629）が可能。** **定期通信そのものがホストの基本情報 （ホスト名・利用者・OS の版・インタフェース・ログイン中の利用者）を運ぶ。**</div><div class=fn>根拠: Rapid7 のコマンド表（表4）と定期通信の解析</div></li><li><div class=stg><span class="b stage">6. 横展開</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AVERAT のコマンド 1618 は、アプライアンスを通した代理・ポート転送の チャネルを開く。** **中継に使われた3台の機器にはポート1723の PPTP が動いており （バナーがバイト単位で同一）、Rapid7 はこれを攻撃者が入れたものと評価する** ——結果として各ノードは**外向きの中継**であると同時に **そのホストの LAN へ入る経路のある VPN の足場**になる。 **「このキャンペーンは接続の両端に中継の能力を持つ」**（Rapid7 の整理）。</div><div class=fn>根拠: Rapid7 のコマンド表と走査データ（PPTP のバナーの一致）</div></li><li><div class=stg><span class="b stage">7. 持ち出し</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AVERAT のコマンドで、再開対応のファイルのダウンロード（21）、 分割アップロード（22）が可能で、転送は C2 のチャネル上で行われる。** **BPFDoor のデータプレーン亜種は Tiny Shell のセッションを開き、 単一バイトの &#x27;S&#x27;/&#x27;U&#x27;/&#x27;D&#x27;（対話シェル・アップロード・ダウンロード）を 処理し、iptables の NAT リダイレクトの設定と撤去のロジックを持つ。** **メールセキュリティアプライアンスは組織の受信・送信の通信を インラインで見られる位置にある**（Rapid7 の指摘）。</div><div class=fn>根拠: Rapid7 のコマンド表、Tiny Shell / Rekoobe 統合の解析</div></li><li><div class=stg><span class="b stage">8. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**破壊・暗号化は報告されていない。** **AVERAT はコマンド 916 で、バッファをディスクへ流し込んでから カーネル経由で再起動を強制できる**（init を経由しない）。 **632 でプロセスを終了（SIGTERM）できる。** 影響は**境界に居続けること**であり、 Rapid7 は**「インラインでメールサーバの前段に置かれるアプライアンスを 標的にすることで、そこに置かれた実装は組織の受信・送信の通信を 見通せる」**としている（原文英語）。</div><div class=fn>根拠: Rapid7 のコマンド表と結語の評価</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Rapid7 は、IoC（ハッシュ・ドメイン・IP・ホスト上の痕跡・暗号定数）と ATT&amp;CK の対応表、検知と緩和の具体的な指針を公開した。** **一方で YARA ルールと追加の IoC は顧客向けの Intelligence Hub に置いている。** **中継に使われた第三者の機器については、IP・機器の種別・所在都市・ 露出していたソフトウェアの版まで公開した**（所有者の名称は出していないが、 業種を1件示している）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 中継の機器の詳細を出せば**同種の機器を持つ組織は自分を点検できる**が、 **その機器は第三者の被害者であり、IP と所在から特定されうる。** 出さなければ所有者は守られるが、**読者は何を探すべきか分からない。**</div></li><li><div class=ui>**帰属について、機器クラスの一致（CISA らの共同勧告 AA26-113A が述べた 中国に連なる ORB 網の構成）は述べ、 既知の名前の付いた ORB 網（LapDogs/UAT-7810・SPACEHOP・FLORAHOX）との 指標の重なりは「見つからなかった」と明記した。** 結語は**「特定の帰属は継続的な評価であるべきだ」。**</div><div class=fn><b>トレードオフ:</b> 既知の網に当てれば**読者は既存の脅威情報と結びつけられる**が、 **根拠が足りなければ誤った帰属が固定化する。** 当てなければ誤りは避けられるが、**読者は「誰が狙っているのか」を 既存の知識に接続できない。**</div></li></ul></div>
+<section id="s6"><h2>その機器にとって正常な通信に、C2 を重ねた<span class="b slot">概観</span></h2><p><strong>この報告の核心は、偽装の精度です。</strong></p>
+<p><strong>① プロセス名を、その製品の中にある名前にする。</strong></p>
+<p>BPF Rekoobe が使う名前はこうです（報告の表2）。</p>
+<table>
+<thead>
+<tr>
+<th>偽装したプロセス名</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/sniper/bin/crond -n</code></td>
+<td>Sniper プラットフォームの cron デーモン</td>
+</tr>
+<tr>
+<td><code>/sniper/bin/earsd --start</code></td>
+<td>earsd——Sniper の EMS／警報デーモン</td>
+</tr>
+<tr>
+<td><code>/usr/lib/polkit-1/polkitd --no-debug</code></td>
+<td>汎用の Linux の偽装（どのディストロでも馴染む）</td>
+</tr>
+<tr>
+<td><code>/sniper/apache/bin/httpd -k start</code></td>
+<td>Sniper に同梱された Apache</td>
+</tr>
+<tr>
+<td><code>/sniper/snipe/bin/snipe-smtpd</code></td>
+<td>Sniper の内部 SMTP デーモン</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>/sniper/</code> 配下の名前は、その製品が入っていないホストでは成立しません。</strong>逆に言えば、<strong>攻撃者は標的に何が入っているかを知っていた</strong>ということです。BPFDoor 亜種の方は <code>/var/run/spamsniper.pid</code> をミューテックスに使い、10個の Linux デーモン名（<code>[watchdogd]</code>・<code>/usr/sbin/chronyd</code>・<code>polkitd</code>・<code>rsyslogd</code>・<code>[scsi_tmf_6]</code>・<code>crond</code>・<code>NetworkManager</code>・<code>python -Es</code>・<code>tuned</code>・<code>[charger_manager]</code>・<code>[kaluad_sync]</code>）を使い回します。</p>
+<p>もう1つの検体は <strong><code>ora_ppmond</code></strong> を装います—— Rapid7 の説明では<strong>Oracle を基盤とする通信事業者の加入者・プロビジョニングプラットフォーム（HSS、OSS/BSS）の命名規則の模倣</strong>で、<strong>その種類の基盤が実際に動いているホストでしか正当に見えない偽装</strong>です。</p>
+<p><strong>② 通信を、その機器の本来の仕事に重ねる。</strong></p>
+<p>AVERAT は外向きに<strong>ポート25</strong>へつなぎ、<strong>SMTP を話します</strong>—— <code>EHLO</code> を送り、<code>STARTTLS</code> を要求し、そのうえで独自の暗号セッションを始めます。<strong>メールセキュリティゲートウェイにとって、任意のメールサーバへの外向き SMTP は本来の機能そのもの</strong>であり、フロー記録では正規の通信と区別がつきません。</p>
+<p>Rekoobe 側は受動型です。<strong>送信元ポート25・宛先ポート25</strong>の通信を BPF フィルタで見張ります。SpamSniper のアプライアンスの前段には、ふつうこういう規則があります。</p>
+<pre><code>ACCEPT tcp --sport 25 --dport 25   (MTA 間の中継)
+ACCEPT tcp --dport 25             (受信メール)
+</code></pre>
+<p><strong>送信元25・宛先25の魔法のパケットは、最初の規則に合致してステートフル検査の前に生のソケットへ届きます。</strong> Rapid7 の評価——<strong>「このクラスのホストでどんな通信の形なら見えないかを、実装した側は正確に理解していた」</strong>（原文英語）。</p>
+<p><strong>③ 受動型だから、開いているポートが無い。</strong></p>
+<p>BPF の受動的な実装は<strong>通常のポート走査に映りません。</strong>外向きの定期通信は<strong>DNS・TCP の通常の通信に隠れ</strong>、<strong>ポート25 を使って視界の下に留まる</strong>とされます。</p></section>
+<section id="s7"><h2>ディスクに実体を残さない——証拠を確保できる窓は10秒である<span class="b slot">原因・手口</span></h2><p><strong>ドロッパの動きを追います。</strong></p>
+<p>鍵の作り方から特徴的です。<strong>AES-128-ECB の鍵は <code>SHA1("ShareTech")</code> の先頭16バイト</strong>（<code>6C CA D5 17 0E 3D B8 17 B3 DF 52 E0 D9 71 B1 48</code>）。<strong>攻撃者は自分の鍵導出に、標的ベンダーの名前を種として入れています。</strong></p>
+<p>復号されるのは3つのパスと1つのスクリプトです。</p>
+<pre><code>/tmp/flag                        （前提条件の門——確認はするが書き込まない）
+/HDD/ms6x2xTo64/updIptable.php   （.php 拡張子のシェルスクリプト）
+/HDD/ms6x2xTo64/execProcEnd      （監視役の目印）
+</code></pre>
+<pre><code class="language-sh">#!/bin/sh
+/bin/cp -f /addpkg/sbin/update /sbin/ntpdate
+chmod 755 /sbin/ntpdate
+/sbin/ntpdate &amp;
+sleep 10
+rm -rf /sbin/ntpdate
+/bin/cp -f /addpkg/sbin/agetty /sbin/udevds
+chmod 755 /sbin/udevds
+/sbin/udevds &amp;
+sleep 10
+rm -rf /sbin/udevds
+</code></pre>
+<p><strong>実行は1つの前提条件で守られています</strong>—— <code>/tmp/flag</code> が既に存在し、かつ <code>.php</code> のスクリプトが存在しないときだけ、インストールの分岐が動きます。門を通ると、スクリプトをバルクストレージのマウントへ書き、<code>0777</code> にして <code>system()</code> に渡して終了します。<strong><code>system()</code> は <code>sh -c</code> でシェバング付きのファイルを実行するため、<code>/HDD</code> は書き込み可能かつ実行可能でなければなりません</strong> ——<code>noexec</code> のマウントでは <code>EACCES</code> が返り、<strong>シェルには代替のインタプリタがありません</strong>（Rapid7 の指摘）。</p>
+<p><strong>そして10秒後、ファイルは消えます。</strong>プロセスは走り続け、<strong><code>/proc/&lt;pid&gt;/exe</code> は <code>(deleted)</code> を指します。</strong> Rapid7 の表現では——<strong>「ハッシュを取るものも、隔離するものも、提出するものも何も無く、<code>/sbin</code> を grep した対応者は何も見つけられない」</strong>（原文英語）。</p>
+<p><strong>巧妙なのは <code>/sbin/ntpdate</code> がドロッパ自身の再実行である点です。</strong> 2つ目のインスタンスは <code>.php</code> が既にあるので門を通れず、<strong>2秒間隔の監視役に落ちて、<code>execProcEnd</code> とスクリプトが消えるたびに作り直します。</strong> <strong>永続化のコードが無いのはそのためです</strong>—— <code>/addpkg/sbin/</code> はアプライアンス自身の追加パッケージ用ディレクトリなので、<strong>ファームウェアのパッケージ起動処理が再起動時に立ち上げる可能性が高い</strong>（Rapid7 の評価）。</p>
+<p><strong>本記録が実務の論点として取り出すのはここです</strong>（本記録の評価）。<strong>ファイルを証拠として確保できるのは、起動から削除までの10秒だけ。</strong>それ以降は<strong>メモリの中にしかありません。</strong> Rapid7 の検知の指針も、<strong>「実行ファイルが unlink されたプロセスを狩る」</strong> ——<code>/proc/&lt;pid&gt;/exe</code> が unlink されたパスを指すもの、<strong>ディスク上の裏付けファイルを持たない実行可能ページ</strong>を探すことから始まります。</p></section>
+<section id="s8"><h2>C2 の中継は、他人の家の古い機械だった<span class="b slot">波及・関係先</span></h2><p><strong>AVERAT の設定から出てきた3つの IP は、攻撃者のサーバではありません。</strong></p>
+<p>Rapid7 の評価では、<strong>第三者の被害者に属する侵害された CPE</strong>です。いずれも台湾の中華電信 HiNet（AS3462）の回線にあります。</p>
+<table>
+<thead>
+<tr>
+<th>IP</th>
+<th>機器</th>
+<th>所在</th>
+<th>露出していたもの</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>59.125.211.65</td>
+<td>Synology NAS（台湾の燃料小売事業者）</td>
+<td>台南</td>
+<td>ポート81/82 で Laravel 製の「クラウド管理システム」、<strong>2021年10月に失効した Let's Encrypt 証明書</strong>、<strong>2020年に保守終了した MariaDB 5.5.62</strong></td>
+</tr>
+<tr>
+<td>122.116.138.33</td>
+<td>組み込みの ADSL/FTTH 向け SMB ネットワーク機器</td>
+<td>板橋</td>
+<td>ポート8000 で gSOAP 2.8 と録画管理のインタフェース、8081/8082/10443 に HTTP Basic 認証領域、<strong>2004〜2014年有効の NetKlass 自己署名証明書（MD5 署名・1024ビット鍵）</strong></td>
+</tr>
+<tr>
+<td>1.34.200.85</td>
+<td>Dahua DH-XVR5116HS-I3 録画装置</td>
+<td>桃園</td>
+<td>——</td>
+</tr>
+</tbody>
+</table>
+<p>Rapid7 の表現では、選定の基準は一貫しています—— <strong>「到達可能、未修正、監視されていない、そして監査されそうにない」</strong>（原文英語）。</p>
+<p><strong>3台を結びつけているのはポート1723の PPTP です。</strong> <strong>バナーがバイト単位で同一</strong>（<code>Firmware: 1, Hostname: local, Vendor: linux</code>、fingerprint 261189147）。<strong>Dahua の XVR は PPTP サーバを搭載せず、Synology は任意パッケージとして提供するのみ（既定で無効・現行版では非推奨）</strong> ——だから Rapid7 は<strong>攻撃者が入れたものと評価</strong>します。</p>
+<p>結果として各ノードは<strong>二役</strong>を負います。<strong>①SMTP に化けた実装の通信を受ける外向きの中継。②そのホストの LAN へ入る、経路のある VPN の足場。</strong> <strong>実装側にも代理（proxy）のコマンドがあるため、このキャンペーンは接続の両端に中継の能力を持っています</strong>（Rapid7 の整理）。</p>
+<p>C2 の宛先の持ち方は2通りに分かれています。</p>
+<table>
+<thead>
+<tr>
+<th>方式</th>
+<th>検体</th>
+<th>得失</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>攻撃者が登録したドメイン</td>
+<td>bf8135f4・2fe2dd40・a65048eb</td>
+<td>IP の入れ替わりに耐え DNS で差し替えられるが、<strong>押収・シンクホール・監視の対象になる名前を残す</strong></td>
+</tr>
+<tr>
+<td>家庭用broadband の IP を直書き</td>
+<td>4925bcca・a4379e11・925c0418</td>
+<td><strong>DNS の痕跡が全く残らない</strong>が、アドレスの変更に弱い</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは、中継の機器クラスです</strong>（本記録の評価）。<strong>NAS・録画装置・SMB 用ルータ</strong>——どれも「セキュリティの対象」として扱われにくく、<strong>所有者は自分の機器が他国の通信事業者への攻撃の中継になっていることを知る手段をほとんど持ちません。</strong></p></section>
+<section id="s9"><h2>AVERAT の作り——設定は暗号化され、未知のコマンドを投げると落ちる<span class="b slot">原因・手口</span></h2><p><strong>AVERAT の名前は、ディスク上の唯一の痕跡から来ています。</strong> <code>var</code> という文字列が、<strong>XOR で符号化すると <code>AVE</code> と読める</strong>（報告の図7）。</p>
+<p><strong>通信</strong>——外向きにポート25、<code>EHLO</code> → <code>STARTTLS</code> → 独自の暗号セッション。<strong>TLS 層は標準の暗号ライブラリを使わず手作り</strong>で、<strong>固定の ClientHello テンプレート（40項目の暗号スイート一覧と固定の拡張の順序）がバイナリに埋め込まれています。</strong>相手の認証は<strong>アプリケーション層の共有秘密の握手</strong>に委ねられ、<strong>魔法の値は 1571（0x0623）</strong>です。</p>
+<p><strong>定期通信は600〜699秒ごと</strong>で、毎回<strong>ホスト名・現在の利用者・OS の版・ネットワークインタフェース・ログイン中の利用者</strong>を報告します。<strong>間隔は隠しファイル <code>/var/lib/.db</code> に保存され、攻撃者が変更でき、再起動をまたいで保持されます。</strong></p>
+<p><strong>設定</strong>——276バイトの暗号化された塊に全ての運用値が入ります。<strong>鍵は塊自身の先頭16バイトから導出</strong>され（さらに1バイトを折り込み、逆順の XOR の連鎖を通す）、<strong>その鍵が RC4 の鍵スケジューリングの種になり、できた S-box をそのまま鍵流として使います。</strong> <strong>各フィールドは鍵流の別の位置から始まり、その位置の偶奇でバイトをビット反転するかニブル回転するかが決まります。</strong>復号すると、<strong>3つの16バイト鍵（転送用・認証用・副次の握手用）、ホスト表、ポート表、3バイトのビルドタグ、タイミングの状態、<code>.db</code> のパス</strong>が出ます。<strong>ホストとポートの枠は3組あり、このビルドでは1つだけ埋まっています。</strong></p>
+<p><strong>Rapid7 は AVERAT の設定抽出ツールを作った</strong>としています。<strong>6種のビルドで MAC 鍵と補助鍵はバイト単位で同一</strong>、<strong>ストリーム鍵が共有されているのは1組だけ</strong>。</p>
+<p><strong>コマンド</strong>は uint16 の値で、機能ごとの帯に分かれています（報告の表4より）。</p>
+<table>
+<thead>
+<tr>
+<th>コード</th>
+<th>機能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20 / 21 / 22 / 25 / 30</td>
+<td>ディレクトリ列挙／再開対応のダウンロード／分割アップロード（再開時は追記）／再帰削除／所有者を解決しながらの再帰走査</td>
+</tr>
+<tr>
+<td>629 / 632</td>
+<td>コマンドライン付きのプロセス列挙／プロセスの終了（SIGTERM）</td>
+</tr>
+<tr>
+<td>842</td>
+<td><strong>実行中に C2 のホスト表・ポート表を上書き</strong></td>
+</tr>
+<tr>
+<td>912 / 914</td>
+<td>対話的シェルを開く（<strong>最大10並行</strong>）／開いているシェルへコマンドを書き込む</td>
+</tr>
+<tr>
+<td>916</td>
+<td><strong>バッファをディスクへ流し込んでからアプライアンスを再起動</strong></td>
+</tr>
+<tr>
+<td>1010</td>
+<td>共有オブジェクトのモジュールを読み込み／取り外し（機能の拡張）</td>
+</tr>
+<tr>
+<td>1576 / 1618</td>
+<td>通信間隔の設定と <code>.db</code> への保存／<strong>アプライアンスを通した代理・ポート転送の開設</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Rapid7 が「運用の成熟」を示すとした設計上の判断は3つです</strong>（原文英語）。</p>
+<ol>
+<li><strong>未知のコマンドコードを受けると、処理系はプロセスを終了する。</strong>実装は安価だが、<strong>生きている実装に対する対話的な探りや自動走査の費用を上げる。</strong></li>
+<li><strong>10並行のシェル</strong>——単一の対話ではなく、<strong>複数の作業者による並行アクセスを想定している。</strong></li>
+<li><strong>再起動は init を経由せず、<code>sync()</code> を呼んでからカーネル経由で強制する。</strong> <strong>揮発する状態を壊す前にファイルシステムのバッファを流し込むのは、どの痕跡が再起動をまたいで残るかを正確に知っている作業者の振る舞い</strong> ——この連鎖では<strong>すべてがメモリで起き、アクセスを再確立するための永続化はディスクにある。</strong></li>
+</ol></section>
+<section id="s10"><h2>帰属は「機器クラスの一致」までで止めてある<span class="b slot">帰属</span></h2><p><strong>報告の帰属の扱いを、正確に引きます。</strong></p>
+<p><strong>一致を述べている部分</strong>—— AVERAT の C2 基盤は、<strong>CISA・NCSC-UK とパートナー機関の2026年4月の共同勧告 AA26-113A</strong> が<strong>「中国に連なる隠蔽／ORB 網の標準的な構成部品」</strong>として述べた機器のクラスと一致する。すなわち<strong>保守終了の NAS、エッジのアプライアンス、DVR</strong>であり、<strong>脆弱性が永久に修正されないことを理由に選ばれる</strong>（原文英語）。</p>
+<p><strong>一致しないと述べている部分</strong>——</p>
+<blockquote>
+<p><strong>「我々は、名前の付いた特定の ORB 網（LapDogs/UAT-7810、SPACEHOP、FLORAHOX）との基盤や指標の重なりを見つけなかった。これらの網の記録された標的はむしろ SOHO ルータを中心にしている。AVERAT の基盤は、既知の網への所属が確認されたというよりも、より広い ORB の機器クラスのパターンと整合する。」</strong>（原文英語）</p>
+</blockquote>
+<p>そして結語は——<strong>「特定の帰属は、新しい検体と基盤が現れるにつれて継続的な評価であるべきだ」。</strong></p>
+<p><strong>本記録はこの書き方を評価します</strong>（本記録の評価）。<strong>「機器の構成が一致する」ことと「その網に属する」ことは別</strong>であり、報告は<strong>両方を同じ段落で区別して書いています。</strong> <strong>読み手が取り違えやすいのはここです</strong>——「中国に連なる ORB 網の典型と一致」という記述だけを抜くと、<strong>帰属が確定したかのように読めます。</strong></p>
+<p>韓国クラスタの裏付けも層が分かれています。<strong>SpamSniper の <code>/var/run/spamsniper.pid</code> というミューテックス</strong>と<strong>検体の出所</strong>が、そのビルドを韓国クラスタに結びつける——これは<strong>技術的な痕跡にもとづく分類</strong>であり、<strong>攻撃者の国籍の推定ではありません。</strong></p></section>
+<section id="s11"><h2>検知は「ファイルを探す」から「消えたファイルのプロセスを探す」へ移る<span class="b slot">対策・注意喚起</span></h2><p><strong>Rapid7 の検知の指針を、実施順に並べます（すべて報告の記述）。</strong></p>
+<p><strong>前提</strong>——<strong>アプライアンス上でのファイルベースの検知は成功しそうにない。</strong> <code>/sbin</code> にペイロードが残らないからである。</p>
+<p><strong>ホスト側</strong></p>
+<ul>
+<li><strong>実行ファイルが unlink されたプロセスを狩る</strong> ——Linux では <code>/proc/&lt;pid&gt;/exe</code> の対象に <code>(deleted)</code> が付く形で現れる</li>
+<li>ファイルを持たない／unlink されたプロセスの実行を捉えるため、<strong>プロセスの記述子を監視し、<code>/proc/&lt;pid&gt;/exe</code> が unlink されたパスを指す場合を見つける。メモリマップを検査し、ディスク上の裏付けファイルを持たない実行可能ページを探す</strong></li>
+<li><strong><code>.db</code> の状態ファイルとドロッパの痕跡を警報にする</strong> ——ディレクトリ <code>/HDD/ms6x2xTo64/</code>、<strong>先頭が <code>#!/bin/sh</code> の <code>.php</code> 拡張子のシェルスクリプト</strong>、<strong><code>end</code> という文字列を含む目印ファイル <code>execProcEnd</code></strong></li>
+<li><strong>プロセスツリーの並び</strong>——<code>.php</code> のパスに対する <code>sh -c</code>、続いて <code>/sbin</code> への <code>cp</code> と <code>chmod</code>、<strong>おおよそ10秒以内の同じパスへの <code>rm -rf</code></strong> ——これが段取りの高精度な検知になる</li>
+</ul>
+<p><strong>ネットワーク側</strong></p>
+<ul>
+<li><strong>アプライアンスからの外向き SMTP のうち、家庭用または組み込み機器に解決されるメール役のホスト名</strong>へ向かうもの——それ自体が調査に値する</li>
+</ul>
+<p><strong>緩和</strong></p>
+<ul>
+<li><strong>パケットキャプチャを必要としない Linux システム上の、予期しない生のパケットソケットと古典的 BPF フィルタを調査する</strong></li>
+<li><strong>メールサービスでないプロセスからの外向き TCP ポート25 の呼び戻しを確認する</strong> ——とくにプロセスが一般的なデーモンの名前に自分を改名している場合、隠れた PID やソケットの目印を作っている場合</li>
+<li><strong>短命な段取りのバイナリを保全し、プロセスの引数・開いているファイル記述子・ソケットのメタデータ・過去の DNS の記録を収集する</strong></li>
+<li><strong>ルータ・DVR・その他のエッジ機器への管理アクセスを制限し、隣接するホストが組み込み機器へ実行ファイルを書き込めるNFS や SMB のマウントを監視する</strong></li>
+</ul>
+<p><strong>本記録が強調したいのは、最後の1つです</strong>（本記録の評価）。<strong>「隣のホストから書き込めるマウント」</strong>は、<strong>組み込み機器に実行ファイルを置く経路</strong>になります。アプライアンスそのものを堅くしても、<strong>同じ LAN の NAS 経由で書き込めるなら意味が薄れます。</strong></p></section>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Rapid7 が BPFDoor コントローラの再構成したソースコードを公表** （本報告は「3月の導入に続いて」と述べている）。 **なお同報告は、冒頭では同じ文献を「2026年4月のブログ 『Stealthy BPFDoor Variants are a Needle That Looks Like Hay』」と 呼んでおり、本文中の「3月」と食い違う**（齟齬に記録した）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA・NCSC-UK とパートナー機関が共同勧告 AA26-113A を公表** （本報告が参照している）。 Rapid7 は、**AVERAT の C2 基盤が、この勧告が 「中国に連なる隠蔽／ORB（Operational Relay Box）網の標準的な構成部品」として 述べた機器のクラスと一致する**とする—— **保守終了の NAS、エッジのアプライアンス、DVR**であり、 **脆弱性が永久に修正されないことを理由に選ばれる**（原文英語）。 **本記録は勧告の原文を確認していない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Rapid7 が報告「SMTP is the key: BPFDoor and AVERAT hitting the network edge」を 公開**（本記録の起点かつ初報）。 内容は、**新しい BPFDoor 亜種、韓国の標的に対して確認された BPF Rekoobe、 ドロッパ、台湾のアプライアンスに対して展開された Linux インプラント AVERAT の 6種のビルド**の解析と、コントローラの新機能、IoC、検知・緩和の指針である。 **攻撃の時期（いつ侵害が始まったか）は報告に書かれていない**（本記録の注記）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Rapid7 の報告ページを取得して全文を確認した。** 日次収集に入っていた記事（RSS 由来）は本文が途中で切れており、 **AVERAT の節・インフラの節・IoC・検知の指針を含む後半は含まれていなかった** ——本記録はページ本文（約28,000字）を取得して補った。 確認できたのは、ドロッパの動作と鍵導出、AVERAT の通信と設定・コマンド表、 中継に使われた3台の機器の詳細と PPTP の一致、 2つの C2 の方式、BPFDoor 亜種と Rekoobe の技術詳細、 ATT&amp;CK の対応表、IoC（ハッシュ・ドメイン・IP・ホスト上の痕跡・暗号定数）、 検知と緩和の指針、帰属に関する記述である。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>先行のコントローラ報告の時期が、同じ報告の中で「3月」と「4月」に食い違っている</span><div class=sm>**報告の冒頭は「2026年4月のブログ 『Stealthy BPFDoor Variants are a Needle That Looks Like Hay』で紹介した Rapid7 の BPFDoor コントローラ」としている。** **一方、技術解析の節の冒頭は「3月に公開した Rapid7 BPFDoor コントローラの 導入に続いて」と書いている。** **同一文書内の食い違いである**（本記録が確認した）。 本記録は timeline で「2026年3月」を先行報告の時点として置き、 勧告 AA26-113A の2026年4月とは別に扱った ——**どちらが正しいかは判断していない。** **影響は小さいが、他の日付の記述も同程度の精度である可能性を示す** （本記録の注記）。</div></li><li><span class="b dk">参照先が変更された</span><span class=ui>日次収集に入っていた記事は本文が途中で切れており、報告の後半が含まれていなかった</span><div class=sm>**本記録の起点は2026年10月2日分の収集に入っていた Rapid7 の記事だが、 保存された本文（約10,400バイト）は RSS 由来で途中で切れていた。** 切れていたのは**「The command interface relies on the same cryptography (HMAC-SHA1, AES-CBC) and opcodes as the standa…」**の箇所で、 **以降の AVERAT の節・インフラの節・運用の成熟・検知の指針・緩和策・ ATT&amp;CK の対応表・IoC の全体が欠けていた。** **本記録はページ本文（約28,000字）を取得して補った。** **本記録が「参照先の内容が変わった」種類の齟齬として記録するのは、 同じ URL の内容が収集時と取得時で量的に異なっていたためである** ——**実際には配信方式（RSS の抜粋）の差であり、 記事が改訂されたわけではない**（本記録の判断）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>ATT&amp;CK の技術 ID を本記録は検証していない</span><div class=sm>**報告は30件前後の ATT&amp;CK 技術を証跡付きで対応づけている （T1584.008・T1133・T1480・T1205.002・T1071.003 など）。** **本記録はこれらの ID が実在し記述と対応しているかを検証していない** ——表記は報告のままである。 **figure の件数も本記録が数えた概数であり、Rapid7 が述べた数ではない。**</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>標的・中継にされた製品の提供元の見解を本記録は確認していない</span><div class=sm>**本記録は、SpamSniper・ShareTech・NetKlass・Dahua・Synology・中華電信の 本件に関する公表を確認していない。** **報告にも製品提供元との連絡や修正に関する記述が無い。** **重要な区別**——報告が述べているのは**製品の脆弱性ではなく、 製品の名前と慣習を使った偽装**である（本記録の注記）。 ただし**中継に使われた機器については、 保守終了のソフトウェアと期限切れの証明書の露出が具体的に示されている。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>侵害された組織の数・国別の内訳・侵害の時期が報告に無い</span><div class=sm>**報告は「電気通信事業者とネットワークエッジの運用者が最も影響を受ける」 と述べるが、被害組織の数・名称・国別の内訳・侵害の開始時期を示していない。** 分かるのは**AVERAT のビルドが6種、クラスタが2つ（韓国・台湾）、 中継の機器が3台**までである。 **「6ビルド＝6組織」と読めないため、本記録は規模を数値化していない** （本記録の判断）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ローカルのドロッパが10秒でディスクの実体を消し、AVERAT が SMTP に化けて他人の NAS・録画装置を経由して C2 とつながる</div><div class=svgwrap><svg viewBox="0 0 1814 426" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,213.0 C193.0,213.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,264.0 C397.0,264.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C499.0,111.0 499.0,213.0 424,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,213.0 C601.0,213.0 601.0,67.0 628,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,213.0 C601.0,213.0 601.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,67.0 C601.0,67.0 601.0,213.0 424,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C907.0,162.0 907.0,213.0 1036,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1213.0,213.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1213.0,213.0 1213.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1213.0,213.0 1213.0,264.0 1240,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,366.0 C1315.0,366.0 1315.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,366.0 C1315.0,366.0 1315.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,366.0 C1315.0,366.0 1315.0,264.0 1240,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,60.0 C1417.0,60.0 1417.0,213.0 1444,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,162.0 C1417.0,162.0 1417.0,213.0 1444,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,264.0 C1417.0,264.0 1417.0,213.0 1444,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,213.0 C397.0,213.0 397.0,257.0 628,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,213.0 C397.0,213.0 397.0,359.0 628,359.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,264.0 C805.0,264.0 805.0,359.0 628,359.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,315.0 C499.0,315.0 499.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,315.0 C601.0,315.0 601.0,257.0 628,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C1213.0,162.0 1213.0,213.0 1648,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1417.0,213.0 1417.0,213.0 1648,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,257.0 C1213.0,257.0 1213.0,213.0 1648,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属は継続評価。</text><text x="91.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">既知の ORB 網との指</text><text x="91.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標の重なりは無し）</text><text x="91.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">機器構成は CISA ら</text><text x="91.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">の AA26-113A </text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「アクセスが確立した後」</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">——最初の侵入経路は公表</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されていない</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">ドロッパはネットワーク機</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">能を持たないローカルのイ</text><rect x="220" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/tmp/flag（前提</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">条件の門——確認はするが</text><text x="295.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">書き込まない）</text><text x="295.0" y="283.0" text-anchor="middle" fill="#ffcc80" font-size="10">誰がいつ作るのかは報告に</text><text x="295.0" y="295.0" text-anchor="middle" fill="#ffcc80" font-size="10">書かれていない</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ドロッパ /addpkg</text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/sbin/update</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（鍵は SHA1(&quot;S…</text><text x="499.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">AES-128-ECB </text><text x="499.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">の4つの塊を復号して3つ</text><rect x="424" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/HDD/ms6x2xT</text><text x="499.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">o64/updIptab</text><text x="499.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">le.php（.php…</text><text x="499.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">0777 で書かれ sy</text><text x="499.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">stem() に渡される</text><rect x="628" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/sbin/ntpdat</text><text x="703.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e（ドロッパ自身の再実行</text><text x="703.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">＝監視役）</text><text x="703.0" y="86.0" text-anchor="middle" fill="#f48fb1" font-size="10">10秒後に削除。2秒間隔</text><text x="703.0" y="98.0" text-anchor="middle" fill="#f48fb1" font-size="10">で execProcEn</text><rect x="628" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/sbin/udevds</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（AVERAT 本体）</text><text x="703.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">10秒後に削除。/pro</text><text x="703.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">c/&lt;pid&gt;/exe </text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">隠しファイル /var/</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">lib/.db（.sen</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">cha・.us・.a）</text><text x="907.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">通信間隔を保存し再起動を</text><text x="907.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">またいで保持</text><rect x="1036" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外向きポート25の SM</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TP（EHLO→STAR</text><text x="1111.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TTLS→独自の暗号セ…</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">手作りの TLS・固定 </text><text x="1111.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">ClientHello・</text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">59.125.211.6</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">5（台南・燃料小売事業者</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の Synology …</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">2021年10月失効の証</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">明書・2020年 EOL</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">122.116.138.</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">33（板橋・組み込みの </text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ADSL/FTTH 向…</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">gSOAP 2.8・20</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">04〜2014年有効の </text><rect x="1240" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1.34.200.85（</text><text x="1315.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">桃園・Dahua DH-</text><text x="1315.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">XVR5116HS-I…</text><text x="1315.0" y="283.0" text-anchor="middle" fill="#64b5f6" font-size="10">PPTP サーバを搭載し</text><text x="1315.0" y="295.0" text-anchor="middle" fill="#64b5f6" font-size="10">ない機種</text><rect x="1240" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3台すべてのポート172</text><text x="1315.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3 の PPTP（バナー</text><text x="1315.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">がバイト単位で同一）</text><text x="1315.0" y="385.0" text-anchor="middle" fill="#f48fb1" font-size="10">攻撃者が入れたものと評価</text><text x="1315.0" y="397.0" text-anchor="middle" fill="#f48fb1" font-size="10">。LAN への VPN </text><rect x="1444" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（攻撃者登録ドメイン</text><text x="1519.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> mx.zxopfds.</text><text x="1519.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">com 等／または家庭…</text><text x="1519.0" y="232.0" text-anchor="middle" fill="#64b5f6" font-size="10">6ビルドが2つの方式に分</text><text x="1519.0" y="244.0" text-anchor="middle" fill="#64b5f6" font-size="10">かれる</text><rect x="628" y="213.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">韓国クラスタ：BPFDo</text><text x="703.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">or 亜種（/var/r</text><text x="703.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">un/spamsnip…</text><text x="703.0" y="276.0" text-anchor="middle" fill="#f48fb1" font-size="10">魔法のバイト 0x669</text><text x="703.0" y="288.0" text-anchor="middle" fill="#f48fb1" font-size="10">3/0x4274/0x7</text><rect x="628" y="315.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="337.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BPF Rekoobe（</text><text x="703.0" y="351.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">送信元・宛先とも25番を</text><text x="703.0" y="365.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">見張る26命令の BP…</text><text x="703.0" y="378.0" text-anchor="middle" fill="#f48fb1" font-size="10">/sniper/ 配下の</text><text x="703.0" y="390.0" text-anchor="middle" fill="#f48fb1" font-size="10">名前を装う。履歴を残さな</text><rect x="832" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">前段のファイアウォール規</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">則 ACCEPT tcp</text><text x="907.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> --sport 25…</text><text x="907.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">魔法のパケットがステート</text><text x="907.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">フル検査の前に生のソケッ</text><rect x="424" y="271.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的：メールセキュリティ</text><text x="499.0" y="307.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・アプライアンス（韓国 </text><text x="499.0" y="321.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SpamSniper／…</text><text x="499.0" y="334.0" text-anchor="middle" fill="#64b5f6" font-size="10">インラインでメールサーバ</text><text x="499.0" y="346.0" text-anchor="middle" fill="#64b5f6" font-size="10">の前段。受信・送信の通信</text><rect x="1648" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1723.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">検知点：unlink さ</text><text x="1723.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れたプロセス・メール以外</text><text x="1723.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">からの外向き25番・生…</text><text x="1723.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">Rapid7 の検知指針</text><text x="1723.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">。ファイルベースの検知は</text></svg></div><div class=fn>Rapid7 の報告「SMTP is the key: BPFDoor and AVERAT hitting the network edge」 （2026年10月2日）にもとづく（本記録がページ本文を取得して確認した）。 **報告が示しているのは——①ドロッパの鍵が SHA1(&quot;ShareTech&quot;) 由来であり、 `/tmp/flag` の存在を前提条件とすること、 ②2つのペイロードを `/sbin` に `ntpdate`・`udevds` の名で置いて起動し 10秒後に削除すること（`/proc/&lt;pid&gt;/exe` は `(deleted)`）、 ③`/sbin/ntpdate` はドロッパ自身の再実行で監視役として常駐すること、 ④AVERAT が外向き25番で `EHLO`→`STARTTLS` の後に独自の暗号セッションを始め、 600〜699秒ごとに通信すること、 ⑤設定が RC4 の鍵流で暗号化され、ホスト・ポートの枠が3組あること、 ⑥C2 の中継3台が台湾 HiNet（AS3462）の第三者被害者の機器であり、 3台すべてにバイト単位で同一の PPTP バナーがあること、 ⑦韓国クラスタの BPFDoor 亜種が SpamSniper の PID ファイルとプロセス名を装い、 Rekoobe が送信元・宛先とも25番の BPF フィルタを持つことである。** **最初の侵入経路は公表されていないため、本図はドロッパの実行から始めている。** **「ORB 網の典型と一致するが既知の網への所属は確認されていない」という 帰属の留保は、図の右端に明示した。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**プロセスツリーの並びが高精度の手がかりになる**（Rapid7 の検知指針）—— **`.php` のパスに対する `sh -c`**、続く `/sbin` への `cp` と `chmod`、 **約10秒以内の同じパスへの `rm -rf`。** 加えて**先頭が `#!/bin/sh` の `.php` 拡張子のファイル**という 組み合わせ自体が異常である。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>バルクストレージのマウント（`/HDD` 等）を `noexec` にする。 `system()` は `sh -c` で実行するため、noexec では `EACCES` となり 代替のインタプリタが無い（Rapid7 の指摘）</div><div class=ctl><span class="b eff">検知できた</span>`.php` 拡張子でシェバングが `#!/bin/sh` のファイル、 および `/HDD/ms6x2xTo64/`・`execProcEnd`・`/tmp/flag` の存在を警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ファイルを証拠として確保できるのは起動から削除までの10秒だけである** （本記録の評価）。 それ以降は**メモリの中にしかない**ため、 Rapid7 は**「`/proc/&lt;pid&gt;/exe` が unlink されたパスを指すプロセス」**と **「ディスク上の裏付けファイルを持たない実行可能ページ」**を 探すよう勧めている。</div></td><td><div class=ctl><span class="b eff">検知できた</span>`/proc/&lt;pid&gt;/exe` が `(deleted)` を指すプロセスの定期的な洗い出し （アプライアンスでも実行できる最小の点検）</div><div class=ctl><span class="b eff">復旧を早められた</span>短命な段取りのバイナリの保全（メモリからの回収手順を用意する）</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**`/var/lib/` 配下の隠しファイル（`.db`・`.sencha`・`.us`・`.a`）が 痕跡として残る**（Rapid7 の IoC）。 **ファイルを消す設計でありながら、 状態の保存のためにディスクを使っている**—— Rapid7 の評価どおり、**メモリで動く部分と ディスクに残る部分が分かれている**（本記録の整理）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>アプライアンスの追加パッケージ用ディレクトリの内容と起動対象を点検する</div><div class=ctl><span class="b eff">検知できた</span>`/var/lib/` 配下の隠しファイルと `/var/run/` の PID ファイルの 正当性（当該サービスが実際に動いているか）を確認する</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ここが本件で最も実用的な検知点である**（Rapid7 の指針と本記録の評価が一致）。 **①メールサービスでないプロセスからの外向き TCP ポート25。** **②アプライアンスからの外向き SMTP のうち、 家庭用・組み込み機器に解決されるメール役のホスト名**へ向かうもの。 **③パケットキャプチャを必要としないホスト上の、 予期しない生のパケットソケットと古典的 BPF フィルタ。** **一方で、ポート走査では見えない**——受動型は開いているポートを持たない。</div></td><td><div class=ctl><span class="b eff">検知できた</span>メールサービス以外のプロセスからの外向き25番を遮断し、警報にする （プロセス単位で見る。ポート単位では本来の通信と区別できない）</div><div class=ctl><span class="b eff">検知できた</span>生のパケットソケットと BPF フィルタの存在を点検する （パケットキャプチャを要しないホストでは異常）</div><div class=ctl><span class="b eff">検知できた</span>外向き SMTP の宛先について、解決先が家庭用・組み込み機器の アドレス帯であるものを調査する</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**報告は、これらのコマンドが実際にどの環境で使われたかを示していない** ——解析されたのは実装の能力である。 **アプライアンス上のコマンド実行の監査ログが取れていなければ、 痕跡は残らない**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>アプライアンス上のプロセス実行とシェル起動の監査ログを外部へ転送する</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**外部から観測可能な痕跡である**（本記録の評価）—— **本来 PPTP サーバを持たない機器（Dahua の XVR）でポート1723 が開いている** という事実は、所有者が自分の機器を外から見るだけで分かる。 **問題は、誰もその機器を見ていないことである。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>自組織の外向きに出ている機器のポートを外部から確認する （とくに NAS・DVR・ルータの1723/管理ポート）</div><div class=ctl><span class="b eff">侵入を防げた</span>エッジ機器への管理アクセスを制限する（Rapid7 の緩和策）</div><div class=ctl><span class="b eff">侵入を防げた</span>隣接するホストが組み込み機器へ実行ファイルを書き込める NFS / SMB のマウントを監視する（Rapid7 の緩和策）</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**転送は、その機器にとって正常なポートの上で行われる**（本記録の評価）。 **宛先の素性（家庭用・組み込み機器）と転送量が手がかりになる。** Rapid7 は**「アプライアンスからの外向き SMTP で、 メール役のホスト名が家庭用・組み込み機器に解決されるもの」**を それ自体で調査に値するとしている。</div></td><td><div class=ctl><span class="b eff">検知できた</span>アプライアンスからの外向き通信量の基準値を持ち、逸脱を警報にする</div><div class=ctl><span class="b eff">検知できた</span>iptables の規則の変更を監視する（NAT リダイレクトの追加・削除）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**「居続けること」は事象として現れない**（本記録の評価）。 再起動は正常な運用でも起きるため、 **916 の使用を単体で検知することは期待できない。** **だからこそ常駐と通信の検知が要点になる。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>境界アプライアンスの構成とプロセス一覧の定期的な取得と比較 （変化を見るための基準を持つ）</div><div class=ctl><span class="b eff">影響を限定できた</span>メールの経路のアプライアンスを、侵害を前提に設計する （資格情報を置かない・内部網への到達範囲を限定する）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Rapid7 は、IoC（ハッシュ・ドメイン・IP・ホスト上の痕跡・暗号定数）と ATT&amp;CK の対応表、検知と緩和の具体的な指針を公開した。** **一方で YARA ルールと追加の IoC は顧客向けの Intelligence Hub に置いている。** **中継に使われた第三者の機器については、IP・機器の種別・所在都市・ 露出していたソフトウェアの版まで公開した**（所有者の名称は出していないが、 業種を1件示している）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** **検知の指針は実務に落ちる水準で、とくに 「`/proc/&lt;pid&gt;/exe` が unlink されたパスを指すプロセスを狩る」 「メールサービスでないプロセスからの外向き25番」 「パケットキャプチャを要しないホストの生のパケットソケットと BPF フィルタ」 は、そのまま点検項目にできる。** **一方で、被害者である中継機器の扱いには留保が残る**（本記録の評価）—— IP・機器の型番・所在都市・業種（燃料小売）まで出ており、 **所有者が特定されうる粒度である。** 中継の機器クラスを示す目的には、**型番と露出していた版だけで足りたはずである。** なお**本記録もこの情報を引用しているが、 所有者を特定しうる組み合わせ（業種と都市と IP）は 報告が公開した範囲を超えて補っていない。**</td></tr><tr><td>**帰属について、機器クラスの一致（CISA らの共同勧告 AA26-113A が述べた 中国に連なる ORB 網の構成）は述べ、 既知の名前の付いた ORB 網（LapDogs/UAT-7810・SPACEHOP・FLORAHOX）との 指標の重なりは「見つからなかった」と明記した。** 結語は**「特定の帰属は継続的な評価であるべきだ」。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** **一致と不一致を同じ段落で書き分けた点を評価する。** 「機器の構成が ORB 網の典型と一致する」と 「既知の ORB 網への所属は確認されていない」は両立し、 **読者が自分の判断の強さを調整できる形になっている。** **ただし抜き出されると誤読される**（本記録の注記）—— 前半だけを引けば帰属が確定したように読めるため、 本記録は本文の帰属の節で原文の両面を引いた。</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>境界のアプライアンスは、侵害されたときに最も見えない場所にある</div><div class=lw>標的は**インラインでメールサーバの前段に置かれる機器**で、 Rapid7 は**そこに置かれた実装は組織の受信・送信の通信を見通せる**とする。 そして**ファイルベースの検知は成功しそうにない** （ペイロードがディスクに残らない）、 **受動型は開いているポートを持たない**ため走査にも映らない。 **多くの組織で、この種の機器は EDR の対象外である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織の境界アプライアンス（メール・VPN・プロキシ・WAF）について、 ①ベンダーが提供する侵害確認の手段があるか、 ②プロセス一覧と外向き通信のログを外部へ出せるか、 ③侵害が疑われたときに誰がどう調べるかを確認する。** **「ベンダーの箱だから」を理由に調査の計画から外さない。** 少なくとも**構成とプロセス一覧の定期取得**を始め、 **変化を見る基準を持つ。**</div></li><li><div class=lp>自組織の古い機器が、他国への攻撃の中継にされる</div><div class=lw>C2 の中継は**台湾の第三者被害者の NAS・録画装置・SMB 用機器**だった。 選定の基準は**到達可能・未修正・監視されていない・監査されそうにない** （Rapid7 の評価）。 **2021年10月に失効した証明書、2020年に保守終了した MariaDB、 2014年に期限が切れた自己署名証明書**が露出していた。 **所有者が被害に気づく手段はほとんど無い**—— 自分のデータが取られたわけではないため（本記録の評価）。</div><div class=la><b>取るべき行動</b> **外部に出ている自社の機器を、外部から見る。** NAS・録画装置・ルータ・複合機について、 **開いているポート（とくに1723・管理ポート）と証明書の有効期限、 搭載ソフトの保守状況**を一覧にする。 **保守が終わった機器は、ネットワークから外すか到達範囲を限定する** ——更新できないものは守れない。</div></li><li><div class=lp>偽装の精度は「相手が自社の構成を知っている」ことの証拠である</div><div class=lw>プロセス名は `/sniper/` 配下の実在しそうな名前、 ミューテックスは `/var/run/spamsniper.pid`、 ドロッパの鍵は `SHA1(&quot;ShareTech&quot;)`、 別の検体は Oracle 基盤の通信事業者システムの命名規則（`ora_ppmond`）を模倣する。 Rapid7 の表現では**「地域化された偽装」**であり、 **どの検体も標的の機器で動いているベンダー製ソフトを把握している。** **つまり偵察が済んでいる**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **自組織の構成情報（導入製品・バージョン・運用の慣習）が どこまで外部から見えるかを点検する。** 求人票・技術ブログ・展示会の事例・サポート窓口への問い合わせ、 そして**インターネットに露出したバナー**。 **構成が分かれば偽装が作れる**という前提で、 **プロセス名の正当性を機械的に検証できる仕組み**（正規のサービスが 実際に動いているか）を用意する。</div></li><li><div class=lp>帰属の表現は、抜き出されると強まる</div><div class=lw>報告は**「機器の構成は中国に連なる ORB 網の典型と一致する」**と **「既知の名前の付いた ORB 網との指標の重なりは見つからなかった」**を 同じ段落で書き分け、結語で**「特定の帰属は継続的な評価であるべきだ」**と している。 **前半だけを引けば、帰属が確定したように読める**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脅威情報を社内で回すとき、帰属の記述は一次資料の両面を引く。** **「確認されていない」という記述を落とさない。** 帰属の確度は対応の優先度を変える（国家に連なる長期の居座りか、 金銭目的の短期の侵害かで、調査の深さが変わる）。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>探すのはファイルではなく、ファイルを失ったプロセスである</div><div class=lw>ドロッパはペイロードを `/sbin` に置いて起動し、**10秒後に削除する。** **プロセスは走り続け、`/proc/&lt;pid&gt;/exe` は `(deleted)` を指す。** Rapid7 は**「ハッシュを取るものも、隔離するものも、提出するものも何も無い」** と書いている（原文英語）。 **ファイルを前提にした運用（ハッシュ照合・隔離・提出）がそのまま空振りする。**</div><div class=la><b>取るべき行動</b> **Linux の境界機器とサーバで、 `/proc/&lt;pid&gt;/exe` が `(deleted)` を指すプロセスを定期的に洗い出す。** **メモリマップを見て、ディスク上の裏付けファイルを持たない 実行可能ページを探す。** 見つけたら**メモリから回収する手順**を用意する （ファイルは既に無いため、後から取れない）。</div></li><li><div class=lp>ポート25は、メールサービス以外のプロセスが使ってはいけない</div><div class=lw>AVERAT は**外向きに25番で SMTP を話し、 `EHLO` → `STARTTLS` の後に独自の暗号セッションを始める。** Rekoobe は**送信元・宛先ともポート25**の通信を BPF で見張り、 **MTA 間中継を許す既存のファイアウォール規則 （`ACCEPT tcp --sport 25 --dport 25`）に合致して ステートフル検査の前に生のソケットへ届く。** **ポート単位の規則では区別できない**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **外向き25番を、プロセス単位で許可する** （メールサービスのプロセス以外は遮断・警報）。 **宛先のホスト名の解決先を見る** ——Rapid7 は「メール役のホスト名が家庭用・組み込み機器に解決されるもの」を それ自体で調査に値するとしている。 **送信元ポートを25に固定した受信通信**を許す規則を見直す。</div></li><li><div class=lp>パケットキャプチャを必要としないホストに、生のパケットソケットは要らない</div><div class=lw>BPFDoor と Rekoobe は**生の `PF_PACKET` ソケットに古典的 BPF フィルタを 付けて魔法のパケットを待つ。** **開いているポートを持たないため、ポート走査では見えない。** Rapid7 の緩和策の筆頭は **「パケットキャプチャを必要としない Linux システム上の、 予期しない生のパケットソケットと古典的 BPF フィルタを調査する」**である。</div><div class=la><b>取るべき行動</b> **サーバと境界機器で、生のパケットソケットを持つプロセスを列挙する** （`ss -0 -p` や `/proc/net/packet` を見る）。 **パケットキャプチャが業務上必要なホストの一覧を作り、 それ以外で見つかったものを調査する。** **魔法のバイト（0x6693・0x4274・0x7820）や ポート25 の BPF フィルタは、検体ごとに変わる**—— **仕組み（生ソケット＋BPF）で見る方が持続する。**</div></li><li><div class=lp>組み込み機器への書き込み経路は、隣のホストにある</div><div class=lw>Rapid7 の緩和策には **「隣接するホストが組み込み機器へ実行ファイルを書き込める NFS や SMB のマウントを監視する」**がある。 ドロッパも**アプライアンスのバルクストレージのマウント `/HDD` に スクリプトを書いており、`/HDD` が書き込み可能かつ実行可能であることに 依存している**——**`noexec` なら `EACCES` で止まる**（Rapid7 の指摘）。</div><div class=la><b>取るべき行動</b> **組み込み機器・アプライアンスのマウントを確認し、 書き込み可能かつ実行可能な領域を減らす（`noexec` を付ける）。** **同じ LAN のホストから組み込み機器へ書き込める共有を洗い出し、 不要なら外す。** 機器の管理アクセスを限定する。</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 境界のアプライアンス（メール・VPN・プロキシ）のプロセス一覧と外向き通信のログを取得できない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 外向きのポート25を、プロセス単位ではなくポート単位で許可している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サーバ・境界機器で、生のパケットソケットと BPF フィルタを持つプロセスを把握していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 保守の終わった NAS・録画装置・ルータが外部に露出したままである</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 隣接ホストから組み込み機器・アプライアンスへ実行ファイルを書き込める共有がある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 境界アプライアンスの侵害を前提にした設計（資格情報を置かない・到達範囲の限定）になっていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年4月 CISA・NCSC-UK およびパートナー機関</span> <a href="https://www.cisa.gov/news-events/cybersecurity-advisories" target="_blank" rel="noreferrer noopener nofollow">共同勧告 AA26-113A（中国に連なる隠蔽／ORB 網の構成に関するもの）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**Rapid7 が帰属の比較に用いた勧告。** **本記録は原文を取得・確認していない**—— 本記録が引いたのは Rapid7 の要約（保守終了の NAS・エッジのアプライアンス・DVR が 「脆弱性が永久に修正されない」ことを理由に選ばれ、 中国に連なる隠蔽／ORB 網の標準的な構成部品になっている）である。 **URL は CISA の勧告一覧であり、当該勧告の個別ページを本記録は特定していない** （齟齬に記録した事項に準じる）。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月2日 13:00 UTC Rapid7（Rapid7 Intelligence）</span> <a href="https://www.rapid7.com/blog/post/tr-smtp-is-the-key-bpfdoor-averat-hitting-the-network-edge/" target="_blank" rel="noreferrer noopener nofollow">SMTP is the key: BPFDoor and AVERAT hitting the network edge</a> <span class="b kind">調査レポート</span><span class=sm>（(英語。**本記録の事実関係の中核かつ唯一の一次資料。 ページ本文（約28,000字）を取得して確認した。** **日次収集に入っていた記事は RSS 由来で途中で切れており、 AVERAT の節以降が欠けていた**（齟齬に記録した）。 確認した内容——**①構成（新しい BPFDoor 亜種、韓国の標的に対する BPF Rekoobe、 ドロッパ、AVERAT の6ビルド）。** **②ドロッパ——鍵は SHA1(&quot;ShareTech&quot;) の先頭16バイト、 前提条件 `/tmp/flag`、`/HDD/ms6x2xTo64/updIptable.php`（.php のシェルスクリプト）、 `execProcEnd`、`/sbin/ntpdate`・`/sbin/udevds` を10秒後に削除、 `/proc/&lt;pid&gt;/exe` が `(deleted)`、監視役による再作成、 永続化コードの不在と `/addpkg/sbin/` による再起動時の立ち上げ。** **③AVERAT——外向き25番で `EHLO`→`STARTTLS`→独自の暗号セッション、 手作りの TLS と固定 ClientHello（40項目の暗号スイート）、 共有秘密の握手（魔法の値 1571／0x0623）、600〜699秒の定期通信、 `/var/lib/.db` への保存、276バイトの設定と RC4 鍵流による復号、 3組のホスト・ポートの枠、コマンド表（20/21/22/25/30/629/632/842/912/914/916/ 1010/1576/1618）、10並行のシェル、`sync()` 後のカーネル経由の再起動、 未知コードでプロセス終了。** **④インフラ——3つの IP は台湾 HiNet（AS3462）の第三者被害者の侵害された CPE （59.125.211.65＝台南の燃料小売事業者の Synology NAS、 122.116.138.33＝板橋の組み込み SMB 機器、 1.34.200.85＝桃園の Dahua DH-XVR5116HS-I3）、 3台すべてのポート1723 の PPTP バナーの一致と「攻撃者が入れた」という評価、 2つの C2 方式。** **⑤韓国クラスタ——BPFDoor 亜種の魔法のバイト（0x6693/0x4274/0x7820）、 パスワード（gZbpx0／sT21xf）、`/var/run/spamsniper.pid`、10個のデーモン名、 データプレーン亜種（`ora_ppmond` の偽装・Tiny Shell の &#x27;S&#x27;/&#x27;U&#x27;/&#x27;D&#x27;）、 Rekoobe（26命令の BPF で送信元・宛先とも25番、XOR 鍵 uvTIgh47,@#R、 `/sniper/` 配下の偽装名、HMAC-SHA1／AES-CBC、履歴を残さない環境変数、 rblsmtpd を装う逆方向シェル）。** **⑥コントローラの新機能（HTTPS POST トンネリング `-g`、 &quot;9999&quot; をオフセット26に固定する詰め物、`dogetlogin`、 `/usr/sbin/abrtd` へのプロセス名偽装）。** **⑦帰属——AA26-113A の機器クラスとの一致と、 LapDogs/UAT-7810・SPACEHOP・FLORAHOX との重なりの不在、 「特定の帰属は継続的な評価であるべきだ」。** **⑧検知と緩和の指針、ATT&amp;CK の対応表、IoC（ハッシュ・ドメイン mx.zxopfds.com・spam.suwaccqi.com・mx1.wwstifsteel.com、IP、 ホスト上の痕跡、暗号定数）。** **記載が無かったもの——最初の侵入経路、被害組織の数と国別の内訳、 侵害の時期、製品提供元との連絡。** 本記録では引用を日本語に訳して「（原文英語）」を添えた。)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月4日</span> <span class="b rev">新規作成</span> 新規作成。**2026年10月2日分の収集に入っていた Rapid7 の記事を起点に、 ページ本文（約28,000字）を取得して裏取りを行った** ——**収集された記事は RSS 由来で途中（Rekoobe の節の末尾）で切れており、 AVERAT の節・インフラの節・検知の指針・ATT&amp;CK・IoC の全体が欠けていた** （齟齬に記録した）。 **本記録が本文の軸に置いたのは4点である。** ①**偽装が「その環境でなら不自然に見えない」水準で作られていること** ——`/sniper/` 配下のプロセス名、`/var/run/spamsniper.pid`、 SHA1(&quot;ShareTech&quot;) の鍵、`ora_ppmond` という Oracle 基盤の命名の模倣。 ②**ディスク上の実体を10秒で消す設計** ——ファイルを前提にした運用（ハッシュ照合・隔離・提出）が空振りし、 検知は「実行ファイルを失ったプロセスを探す」側へ移る。 ③**C2 の中継が他人の古い機器であること** ——台湾 HiNet の NAS・録画装置・SMB 用機器で、 3台すべてに攻撃者が入れたとみられる PPTP が動き、 外向きの中継と LAN への VPN 足場という二役を負っていた。 ④**帰属が「機器クラスの一致」までで止めてあること** ——AA26-113A の構成との一致と、既知の ORB 網との重なりの不在を 書き分けている点を、本記録も両面引いた。 **確認できなかったのは——最初の侵入経路、被害組織の数・国別の内訳・侵害の時期、 製品提供元の見解であり、unknowns と齟齬に記録した。** **なお報告が公開した中継機器の情報（IP・型番・所在都市・業種）は 所有者が特定されうる粒度であり、本記録は報告の範囲を超えて補っていない** （対応の評価にその旨を記した）。 英語の記述は日本語に訳して「（原文英語）」を添えた。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">BPFDoor</span><span class="b tag">AVERAT</span><span class="b tag">Rekoobe</span><span class="b tag">SpamSniper</span><span class="b tag">ShareTech</span><span class="b tag">メールセキュリティアプライアンス</span><span class="b tag">ネットワークエッジ</span><span class="b tag">SMTP を使った C2</span><span class="b tag">BPF フィルタ</span><span class="b tag">ファイルを残さない実行</span><span class="b tag">ORB 網</span><span class="b tag">侵害された CPE</span><span class="b tag">中華電信 HiNet</span><span class="b tag">帰属の留保</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

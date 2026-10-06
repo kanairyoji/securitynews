@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>BambooToken が MQTT を C2 に使う — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0318</span>BambooToken が MQTT を C2 に使う</h1>
+<header class="site-header">
+  <p class="subtitle">Lumen の Black Lotus Labs が、IoT 向けの MQTT 通信プロトコルを C2 に使う 未記載のマルウェアファミリ「BambooToken」を公表した。Windows 版は 中国の金融・政府機関で使われる USB トークン製品 Tendyron「OnKey」の DLL サイドローディングで入り、金山（Kingsoft）Office を装う版もある。 2023年2月から2026年7月まで活動し、モバイルアプリのバックエンド・法律事務所・ 金融・生体医療・ホテル・GitLab サーバなどアジアと南米の組織で感染が観測された。 感染端末は攻撃者のサーバへ直接つながらず MQTT のブローカー経由で指令を受け取り、 C2 ドメインは Cloudflare を代理に置いて背後の基盤を隠す。 Lumen は公開済みの既知の活動クラスタとの対応づけができず「新興の脅威クラスタ」と 位置づけたが、検体の多くが中国の IP 空間からアップロードされていることを示した</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月（本記録は正確な日付を確認できていない）</span>
+  <span>最終更新: 2026年10月4日</span>
+</div>
+
+<div class="lead"><p><strong>C2 に IoT 用のプロトコルを使うと、通信の相手が攻撃者のサーバでなくなります。</strong></p>
+<p>Lumen の Black Lotus Labs が公表した <strong>BambooToken</strong> は、<strong>MQTT</strong>（Message Queueing and Telemetry Transport）を指令経路に使うWindows / Linux 両対応のマルウェアです。MQTT は IoT 機器と制御側の通信に使われる「発行・購読（publish-and-subscribe）」方式で、<strong>メッセージは「トピック」へ発行され、購読者が受け取り、配送は「ブローカー」という中継点が管理します。</strong></p>
+<p>攻撃者から見た利点を、Lumen は3つ挙げています（原文英語）。<strong>①ブローカーの背後に残りの基盤を隠せる——感染した機器は C2 サーバと直接通信しない。②非同期の通信ができる。③ボットがトピックを購読しようとしても、ブローカーが承認しなければメッセージを受け取れない。</strong> <strong>マルウェアで MQTT を使う例は稀で、Lumen が過去に確認したのは3件だけです</strong>（IOCONTROL・Korplug（PlugX）・WailingCrab）。</p>
+<p>侵入の実行経路は<strong>DLL サイドローディング</strong>です。担ぎ手にされたのは <strong>Tendyron「OnKey」</strong>——USB ドライブに置いた暗号素材で端末へのアクセスを検証するハードウェアトークンの製品で、<strong>同社のサイトは中国の金融・政府分野の顧客を挙げています。</strong> <strong>Lumen は、Tendyron のコード署名証明書もビルド環境も侵害されていないと評価</strong>し、<strong>標的のネットワークに元からあるサイドローディングに脆弱なファイルを悪用していると疑っています。</strong> <strong>珠海金山办公软件（Kingsoft Office）を装う版</strong>もあります。</p>
+<p>活動期間は<strong>2023年2月から2026年7月</strong>。観測された感染は、<strong>モバイルアプリのバックエンドサーバ（少なくとも4台）、法律・金融、スマートウォッチ関連のソフトウェア企業、ホテル、GitLab サーバ1台</strong>。個別に挙げられた標的は、<strong>香港の GitLab サーバ、ベトナムの機器開発企業、ベトナムのホテル、アルゼンチンの生体医療企業、チリの法律事務所、リトアニアの暗号資産サイト、マレーシアの金融組織</strong>です。</p>
+<p><strong>帰属について、Lumen は踏み込んでいません。</strong> <strong>「このマルウェアのフレームワークを公開されている既知の活動クラスタと対応づけることができず、新興の脅威クラスタとして位置づける」</strong>としたうえで、<strong>検体の多くが中国の IP 空間からアップロードされ、テレメトリも中国国内のサーバから対応して得られている</strong>ことを示しています（原文英語）。</p>
+<p><strong>本記録の起点は、2026年10月2日の台湾 iThome の報道です。</strong>事実関係は Black Lotus Labs の報告本文で裏取りしました。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>最初の侵入手段（サイドローディングに至る前の経路）</span><span class="b rsn">公表されていない</span><div class=sm>**報告本文の記述は、正規プログラム（Tendyron OnKey）の読み込みを使った 実行（サイドローディング）までである。** **そのファイルをどうやって標的の端末に置いたのか—— フィッシング・既存の侵害・持ち込み媒体・供給網のいずれか——は示されていない。** Lumen は**「標的のネットワークに元から存在する、サイドローディングに脆弱な ファイルを悪用していると疑う」**としており、 **これは「侵入後に使える手段」の説明である**（本記録の読み）。 実務上の影響は、**入口を塞ぐ対策が書けないこと**で、 防御側にできるのは実行と通信の検知に寄ることになる。</div></li><li><span class=ui>感染した組織の総数</span><span class="b rsn">公表されていない</span><div class=sm>**報告本文は「少なくとも4台のバックエンドサーバ」と個別の標的の列挙にとどまり、 組織数の合計を示していない。** **報道は「十多家企業受害」（十数社が被害）と伝えているが、 本記録が確認した報告本文にこの数値は見つからなかった**（齟齬に記録した）。 一方で Lumen は、**C2 ドメインが Cloudflare Radar の上位50万・上位100万に 入っていたことを「広範な感染」の根拠**としており、 **実際の規模は列挙された組織より大きい可能性を示している。**</div></li><li><span class=ui>攻撃者の帰属</span><span class="b rsn">調査したが確定せず</span><div class=sm>**Lumen は「このマルウェアのフレームワークを公開されている既知の活動クラスタと 対応づけることができず、新興の脅威クラスタとして位置づける」と明記している** （原文英語）。 示されているのは状況証拠である——**検体の多くが中国の IP 空間からアップロードされ、 テレメトリも中国国内のサーバから対応して得られていること**、 **PRC に基盤を持つ活動クラスタが、世界規模の標的へ移る前に 目立たない場所で新しい能力を試すという過去の例** （Volt Typhoon・GhostEmperor・ZuoRAT の背後のアクターを挙げている）、 **近年 PRC に連なるアクターがラテンアメリカへ標的を移している観測**。 **「中国に関連するとみられる」は Lumen の断定ではない**（本記録の注記）。</div></li><li><span class=ui>未実行コードに現れる機能が実際に使われたか</span><span class="b rsn">調査したが確定せず</span><div class=sm>**Lumen は、鍵入力の記録（文字列「KEY_RECOURD」）・クリップボードへのアクセス・ 録音・カメラと画面の取得を示す文字列を発見したが、 これらは未実行のコード（dead code）に現れるものである。** **実装・有効化されているかは確認されていない。** Lumen は別途、**アンチウイルス製品を WMI で列挙して C2 へ返すプラグイン**を 回収しており、**プラグイン機構そのものは動いている。** **本記録は「監視機能が存在した」とは書かず、 「その文字列が検体に含まれていた」までを事実として扱う。**</div></li><li><span class=ui>台湾の被害組織の有無</span><span class="b rsn">検証できない</span><div class=sm>**報道（iThome）は「Lumen が公表した企業の被害分布図は台湾も含む」としつつ、 「研究の本文は台湾の被害組織の身元や業種を説明していない」と書いている。** **本記録が確認した報告本文の文章には、台湾への言及が見つからなかった。** **図の中身は本記録が確認できていない**（図はページ上の画像であり、 本記録はテキストのみを取得した）。 **したがって本記録は、台湾の被害を事実として記録しない**（齟齬に記録した）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Lumen Technologies / Black Lotus Labs</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Tendyron（「OnKey」USB トークン製品）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>珠海金山办公软件（Kingsoft Office）</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Cloudflare</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>感染・標的とされた組織（いずれも名称非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>確認された活動期間</span><span class="b conf">最少</span><span class="b org">本記録の算出</span></div><div class=fv>41<span class=fu>か月</span></div><div class=fa>2026年10月4日 時点</div><div class=fn>**本記録の算出。** 2023年2月から2026年7月までを月数で数えた概数。 **Lumen の表現は「少なくとも2023年2月から活動しており2026年7月まで続いた」**で、 **始点は「少なくとも」付きである**（それ以前に遡る可能性を否定していない）。</div></div><div class=fig><div class=fh><span class=fl>感染が観測されたバックエンドサーバの台数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>台</span></div><div class=fa>2026年9月 時点</div><div class=fn>**Lumen の表現は「少なくとも4台の異なるバックエンドサーバへの感染を示す ネットワークテレメトリを観測した」**（モバイルアプリ向け、法律・金融サービス、 スマートウォッチ関連のソフトウェア企業、ホテル、GitLab インスタンス1台を含む）。 **「台数」であって組織数ではない**—— 本記録が確認した報告本文には**組織数の合計が示されていない。**</div></div><div class=fig><div class=fh><span class=fl>個別に業種と国が示された標的の数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>7<span class=fu>組織</span></div><div class=fa>2026年10月4日 時点</div><div class=fn>**本記録が報告本文から数えた数**——香港の GitLab サーバ、 ベトナムの機器開発企業、ベトナムのホテル、アルゼンチンの生体医療企業、 チリの法律事務所、リトアニアの暗号資産サイト、マレーシアの金融組織。 **Lumen 自身が「7組織」と述べているわけではない。** **報道が伝える「十数社」とは一致しない**（齟齬に記録した）。</div></div><div class=fig><div class=fh><span class=fl>MQTT を使った既知の先行キャンペーンの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>3<span class=fu>件</span></div><div class=fa>2026年9月 時点</div><div class=fn>**Lumen の調査で確認された先行例は3件** ——IoT マルウェア IOCONTROL、Korplug（別名 PlugX）、 サイバー犯罪のマルウェアファミリ WailingCrab。 **Korplug は中国に関連するとみられる脅威アクターと結びつけられているが、 Lumen は技術的指標にもとづく追加の重なりは確認していないとしている。**</div></div><div class=fig><div class=fh><span class=fl>走査が観測されたルータの台数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>150<span class=fu>台</span></div><div class=fa>2026年9月 時点</div><div class=fn>**12月15日 07:30〜23:45 UTC に観測された走査の対象台数。** **このうち C2 と持続的に通信していたのは「数台（a handful）」で、 正確な台数は示されていない。** **機器は主に MikroTik と DrayTek のルータ**で、 所在はシンガポール・カンボジア・ベトナム。 **Lumen はこれらを中継ではなく被害者とみている。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**正規の署名付きプログラム（Tendyron「OnKey」）の DLL サイドローディング、 あるいは Kingsoft Office を装う形で Windows 端末に入り、 感染端末の環境情報を収集したうえで、IoT 向けの MQTT を C2 経路に使う。** 感染端末はブローカーと通信するだけで攻撃者のサーバへ直接つながらず、 C2 ドメインは Cloudflare を代理に置いて背後の基盤を隠す。 Windows 版はプラグインを読み込んで機能を足し（確認されたのは WMI でアンチウイルス製品を列挙するもの）、 **Linux 版はシェルコマンドの実行とファイルの上り下り・削除を行う。** **活動期間は2023年2月から2026年7月。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**正規の署名付きプログラム Tendyron「OnKey」が悪性の DLL を読み込む （DLL サイドローディング）。** OnKey は USB ドライブに置いた暗号素材を取り出して端末へのアクセスを検証する製品で、 中国の銀行・政府のネットワークで広く使われているとされる。 **別の版は珠海金山办公软件（Kingsoft Office）を装っていた。** **初期の版（2023年2月）では `Update.log` というファイル名から始まり、 リモートスレッドを呼んでメモリへ注入する形だった。** エージェントは C++ 製で、**XOR で復号した GUID 文字列をミューテックスに使う。**</div><div class=fn>根拠: Black Lotus Labs の報告（検体解析・VirusTotal の投稿記録）</div></li><li><div class=stg><span class="b stage">2. 内部探索</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**感染後、ハンドラ `ONLINE` が端末の環境情報を収集して C2 へ送る。** あわせて**回収されたプラグインは、Windows Management Instrumentation（WMI）を 使ってローカルで動作しているアンチウイルス製品の情報を収集し、 C2 へ返す。**</div><div class=fn>根拠: Black Lotus Labs の報告（ハンドラとプラグインの解析）</div></li><li><div class=stg><span class="b stage">3. C2通信</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**MQTT を指令経路に使う。** トピックの構造（版 2.0 以降）は**全体への配信用トピックと `{GUID}/unPlugin`・`{GUID}/removePlugin`・`{GUID}/Plugin`・`{GUID}/`**で、 エージェントは `{&quot;op&quot;: &quot;offline&quot;, &quot;gid&quot;: &quot;{算出されたホストの GUID}&quot;}` のような 状態メッセージを発行する。 **感染端末はブローカーと通信するだけで、C2 サーバへ直接つながらない。** **C2 ドメインは Cloudflare を代理に置く**（api80.c2iznja[.]com、 live-hk.c2iznja[.]com、turbo.c2iznja[.]com、ccc80.c2iznja[.]com、 古いものは chat5188[.]tk 系）。 **使われたポートは 1883・2883（MQTT）および 8883（SSL MQTT）、 加えて 63196 / 63916 が SSH として観測されている。**</div><div class=fn>根拠: Black Lotus Labs の報告（トピック構造・IoC 一覧・Censys / VirusTotal の記録）</div></li><li><div class=stg><span class="b stage">4. 収集</span><span class="b conf">推定</span><span class=srcs></span></div><div>**Windows 版はプラグインを読み込んで機能を拡張できる （`Plugin` / `unPlugin` / `removePlugin` のトピック）。** **確認されたプラグインはアンチウイルス製品の列挙である。** **検体の未実行コード（dead code）には、鍵入力の記録（文字列「KEY_RECOURD」）・ クリップボードへのアクセス・録音・カメラと画面の取得を示す文字列が残っていたが、 実装・有効化は確認されていない。**</div><div class=fn>根拠: Black Lotus Labs の報告（プラグインの回収と文字列の解析）</div></li><li><div class=stg><span class="b stage">5. 持ち出し</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ハンドラ `FILEEX` がファイルのダウンロード・アップロード・削除を行い、 `SHELL` がコマンドシェルを起動する。** **Linux 版はシェルコマンドの実行とファイルの上り下り・削除を実行できる。** **感染先に GitLab サーバ・ソフトウェア企業・モバイルアプリの バックエンドが含まれており、Lumen は供給網への含意を指摘している。**</div><div class=fn>根拠: Black Lotus Labs の報告（ハンドラの解析・被害の構成）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Lumen は、被害組織を業種と国で示し、組織名は出さなかった。** **一方で悪用された製品名（Tendyron「OnKey」・Kingsoft Office）は明示し、 同時に「証明書もビルド環境も侵害されていない」という評価を併記した。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 製品名を出せば**読者は自社に該当する資産を探せる**が、 **製品そのものが危険だという誤解を招きうる。** 出さなければ誤解は避けられるが、**防御側は何を探せばよいか分からない。**</div></li><li><div class=ui>**帰属については「公開されている既知の活動クラスタと対応づけできない」とし、 新興の脅威クラスタとして位置づけた。** 特定のアクター名を当てずに、**検体のアップロード元・テレメトリの所在・ 過去の PRC 関連クラスタの行動様式という状況証拠を並べる形を採った。**</div><div class=fn><b>トレードオフ:</b> アクター名を当てれば**読者は既存の脅威情報と結びつけられる**が、 **根拠が足りなければ誤った帰属が固定化する。** 当てなければ誤りは避けられるが、**読者は「誰が狙っているのか」を 既存の知識に接続できない。**</div></li></ul></div>
+<section id="s6"><h2>C2 をブローカーの後ろに隠すと、感染端末は攻撃者と直接つながらなくなる<span class="b slot">概観</span></h2><p><strong>本件で記録しておく価値があるのは、設計の選択です。</strong></p>
+<p>BambooToken は、指令の受け渡しに <strong>MQTT</strong> を使います。IoT 機器と制御側の通信に使われるプロトコルで、<strong>メッセージは「トピック」へ発行（publish）され、購読（subscribe）している側が受け取り、配送は「ブローカー」が管理します。</strong></p>
+<p>Lumen が挙げた攻撃者側の利点は3つです（原文英語）。</p>
+<table>
+<thead>
+<tr>
+<th>利点</th>
+<th>意味</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>基盤を隠せる</td>
+<td><strong>感染した機器は C2 サーバと直接通信しない</strong>（相手はブローカー）</td>
+</tr>
+<tr>
+<td>非同期</td>
+<td>指令と応答の時刻が噛み合わなくてよい</td>
+</tr>
+<tr>
+<td>購読の承認</td>
+<td><strong>ボットがトピックを購読しようとしても、ブローカーが承認しなければ受け取れない</strong></td>
+</tr>
+</tbody>
+</table>
+<p>3番目は防御側から見ると厄介です。<strong>検体を手に入れて C2 につないでも、承認されなければ指令が流れてこない</strong> ——解析側が指令の全体像を得にくい構造です（本記録の整理）。</p>
+<p><strong>マルウェアで MQTT を使う例は稀です。</strong> Lumen の調査で見つかった先行例は3件のみ—— <strong>IOCONTROL（IoT マルウェア）、Korplug（別名 PlugX）、WailingCrab（サイバー犯罪のマルウェアファミリ）</strong>。<strong>Korplug は中国に関連するとみられるアクターと結びついていますが、Lumen は技術的指標にもとづく追加の重なりは確認していないとしています。</strong></p>
+<p>そして、<strong>C2 ドメインは Cloudflare を代理に置いています。</strong> Lumen は、<strong>1つのドメインが Cloudflare Radar の上位50万に入り、もう1つは最盛期に上位100万に入っていた</strong>ことを、感染の広がりを示す材料として挙げています—— <strong>順位に出るほどの通信量があった、ということです。</strong></p></section>
+<section id="s7"><h2>担ぎ手にされたのは「本物の署名付きプログラム」だが、供給網は汚れていない<span class="b slot">原因・手口</span></h2><p><strong>Windows 版の実行経路は DLL サイドローディングです。</strong></p>
+<p>担ぎ手は <strong>Tendyron「OnKey」</strong>——USB ドライブに置いた暗号素材を取り出して端末へのアクセスを検証する製品で、<strong>Tendyron はワークステーションの利用者認証に使うハードウェアトークンを作っており、同社サイトは中国の金融・政府分野の顧客を挙げています。</strong></p>
+<p>ここで Lumen が明記している評価が重要です（原文英語）。</p>
+<blockquote>
+<p><strong>「Tendyron のコード署名証明書もビルド環境も、いずれも侵害されていないと評価する。攻撃者は、サイドローディングに脆弱なファイルであって、標的のネットワーク内に元から存在している可能性が高いものを悪用していると疑われる。」</strong></p>
+</blockquote>
+<p><strong>つまりこれは供給網の汚染ではありません</strong>（本記録の整理）。正規の署名付き実行ファイルが、<strong>同じフォルダに置かれた悪性の DLL を読み込んでしまう</strong>という古典的な構造です。<strong>「正規の製品が入っていること自体が、攻撃者の足場になる」</strong>という話であり、Tendyron の製品に限った問題ではありません。</p>
+<p>別の版は<strong>珠海金山办公软件（Kingsoft Office）を装っていました。</strong></p>
+<p><strong>一方で、最初の侵入——そのファイルをどうやって端末に置いたのか——は公表されていません。</strong> Lumen の記述は「標的のネットワークに元からあるファイルを悪用している」という推定までで、<strong>入口を塞ぐ対策は書けません。</strong> <strong>防御側に残るのは、実行と通信の検知です</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>感染していたのは「開発とデータが集まる場所」が多い<span class="b slot">被害規模・影響範囲</span></h2><p>Lumen が観測した感染と標的を整理します（いずれも組織名は非公表）。</p>
+<p><strong>ネットワークテレメトリで観測された感染</strong> ——<strong>少なくとも4台の異なるバックエンドサーバ。</strong>内訳として挙げられているのは、<strong>モバイルアプリのバックエンド、法律・金融サービス、スマートウォッチ関連のソフトウェア企業、ホテル、GitLab インスタンス1台。</strong></p>
+<p><strong>個別に国と業種が示された標的</strong></p>
+<table>
+<thead>
+<tr>
+<th>所在</th>
+<th>対象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>香港</td>
+<td>GitLab サーバ</td>
+</tr>
+<tr>
+<td>ベトナム</td>
+<td>携帯型ライフスタイル管理機器を開発する企業</td>
+</tr>
+<tr>
+<td>ベトナム</td>
+<td>ホテル</td>
+</tr>
+<tr>
+<td>アルゼンチン</td>
+<td>生体医療企業</td>
+</tr>
+<tr>
+<td>チリ</td>
+<td>法律事務所</td>
+</tr>
+<tr>
+<td>リトアニア</td>
+<td>暗号資産サイト</td>
+</tr>
+<tr>
+<td>マレーシア</td>
+<td>金融組織</td>
+</tr>
+</tbody>
+</table>
+<p><strong>さらに、ルータが被害側として出てきます。</strong> 12月15日 07:30〜23:45 UTC に<strong>150台のルータへの走査</strong>が観測され、そのうち数台が<strong>MQTT ポート（1883）で C2 ノード 202.144.192[.]149 と持続的に通信</strong>していました。所在は<strong>シンガポール・カンボジア・ベトナム</strong>、機器は主に<strong>MikroTik と DrayTek</strong>。<strong>Lumen は、implant が MQTT で通信する性質から、これらは中継ではなく被害者とみられるとしています。</strong></p>
+<p><strong>本記録が注目するのは、被害の並びに「開発基盤」が複数あることです</strong>（本記録の評価）。<strong>GitLab サーバ・ソフトウェア企業・モバイルアプリのバックエンド</strong>—— Lumen 自身も<strong>「このキャンペーンの供給網への含意を認めないわけにはいかない」</strong>と書いています（原文英語）。ここが取られると、<strong>影響はその組織の中で終わりません。</strong></p></section>
+<section id="s9"><h2>日本の読者にとっての実務上の論点は、C2 の所在地が示す「見え方」である<span class="b slot">評価・解釈</span></h2><p><strong>本件に日本の被害組織は挙がっていません。</strong>一方で、<strong>C2 ノードとして挙げられた IP の一部は日本の IP 空間にあります。</strong></p>
+<p>報告の IoC 一覧から（本記録が確認した記述）——</p>
+<table>
+<thead>
+<tr>
+<th>IP</th>
+<th>記述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>202.144.192[.]23</td>
+<td>ASN:63916、geo Japan。ポート 1883・2883（MQTT）、63196（SSH）</td>
+</tr>
+<tr>
+<td>202.144.192[.]149</td>
+<td>ASN:63916、geo Japan。ポート 1883・2883、8883（SSL MQTT）、63916（SSH）</td>
+</tr>
+<tr>
+<td>210.1.226[.]238</td>
+<td>ポート 8883（SSL MQTT）、63196（SSH）</td>
+</tr>
+<tr>
+<td>210.1.231[.]13</td>
+<td>turbo[.]c2iznja[.]com を解決。2026年4月21日時点でも観測</td>
+</tr>
+<tr>
+<td>43.245.198[.]195</td>
+<td>ポート 1883（MQTT）、63196（SSH）。2026年3月3日〜7月2日</td>
+</tr>
+<tr>
+<td>43.245.198[.]238</td>
+<td>ポート 1883（MQTT）、63196（SSH）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ここから読み取れる実務上の論点は2つです</strong>（いずれも本記録の評価）。</p>
+<p><strong>① 「国外への不審な通信」という見方では引っかからない。</strong>日本の組織から見れば、<strong>日本の IP 空間への発信は「国内向け」に見えます。</strong>地理情報を使った絞り込みでは落ちます。<strong>見るべきは宛先の国ではなく、プロトコルとポートです。</strong></p>
+<p><strong>② MQTT が外向きに出ていく必要がある端末は限られる。</strong> Lumen の推奨もここを突いています—— <strong>「MQTT のような異常なプロトコルがネットワークの外へ出ていくことを検知するルール」</strong>（原文英語）。ポート <strong>1883（平文）・2883・8883（SSL）</strong>は、<strong>IoT 基盤を自社で運用していない組織では、出ていく理由がありません。</strong></p>
+<p>Lumen が挙げた防御側への推奨は、ほかに<strong>供給網とコード依存関係の把握（CI/CD パイプラインの整備）、ルータの定期的なパッチ適用と SNMP の堅牢化、調整された EDR、匿名の通信を探す集中型ファイアウォール、そして「宛先 IP が地理的に同じ地域にある場合でも、ネットワーク外への大量のデータ転送を把握すること」</strong>です。<strong>最後の1つは、①と同じ問題を別の言い方で指しています。</strong></p></section>
+<section id="s10"><h2>帰属について、Lumen は「できない」と書いている<span class="b slot">帰属</span></h2><p><strong>報告の帰属の扱いを、正確に引いておきます。</strong></p>
+<blockquote>
+<p><strong>「我々はこのマルウェアのフレームワークを、公開されている既知の活動クラスタのいずれにも対応づけることができず、新興の脅威クラスタ（emerging threat cluster）として位置づける。」</strong>（原文英語）</p>
+</blockquote>
+<p>示されているのは状況証拠です。</p>
+<ul>
+<li><strong>検体の多くは中国の IP 空間からアップロードされ、対応するテレメトリも中国国内に所在するサーバから得られている</strong> ——Lumen はこれを<strong>中国および近隣国の利用者層を対象としたデータ収集キャンペーン</strong>を示すものとする</li>
+<li><strong>現在の活動は東南アジアと南米に向いているが、PRC に基盤を持つ活動クラスタが、世界規模の標的へ移る前に目立たない場所で新しい能力を試す例を見てきた</strong>（Volt Typhoon・GhostEmperor・ZuoRAT の背後のアクターを挙げる）</li>
+<li><strong>近年、PRC に連なるアクターがラテンアメリカへ標的を移す動きを観測している</strong></li>
+<li>悪用された Tendyron の製品は<strong>中国の銀行・政府のネットワークで広く使われている</strong></li>
+</ul>
+<p><strong>報道（iThome）は「Lumen は、その攻撃目標と活動の様式が中国に関連する脅威活動の特徴に合致するとみている」と伝えています。</strong> <strong>本記録はこれを、上記の状況証拠を要約した表現として扱います</strong> ——<strong>Lumen は特定のアクターへの帰属を述べていません</strong>（本記録の整理）。</p>
+<p><strong>この区別を落とすと、「中国の国家支援アクターによる攻撃」という確定した事実があるかのように読めてしまいます。</strong>本記録の立場は、<strong>層を分けて書くことです</strong>—— ①観測（検体のアップロード元・テレメトリ・標的の所在）、②比較（過去の PRC 関連クラスタの行動様式）、③結論（対応づけできない＝新興クラスタ）。</p></section>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**BambooToken のフレームワークの最初の版が現れる** （VirusTotal への最初の投稿にもとづく Lumen の判断）。 **当初の感染は `Update.log` というファイル名から始まり、 リモートスレッドを呼んでメモリへ注入する形だった。** エージェントは C++ で書かれ、**XOR で復号した文字列が感染端末の GUID を表し、 ミューテックスとして機能する**（既に存在すれば重複実行を避ける）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**古い C2 ドメイン（chat5188[.]tk 系）が、 活動の最盛期に Cloudflare Radar の上位100万に入っていた。** Lumen はこれを**「この活動クラスタのキャンペーンをまたいだ広範な感染」**を 示すものとしている（原文英語）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**150台のルータに対する走査が観測され、そのうち数台が MQTT ポート（1883）で C2 ノード 202.144.192[.]149 と持続的に通信していた。** 該当 IP はシンガポール・カンボジア・ベトナムに所在し、 機器は主に **MikroTik と DrayTek のルータ**だった。 **Lumen は、BambooToken の implant が MQTT で通信するため、 これらのルータは中継ではなく被害者とみられるとしている。** **報告本文は日付を「12月15日」としており年を明示していない** ——**本記録は前後の記述から2025年と解したが、確認できていない**（齟齬に記録した）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**C2 IP 202.144.192[.]149 が api80.c2iznja[.]com を解決し始める** （VirusTotal の記録にもとづく）。 同じ IP には、**古いドメイン api06[.]chat5188[.]tk に関連する X.509 証明書が2つ**あった——**Lumen が新旧キャンペーンの関連を示す根拠とした点である。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">判明</span></td><td>**Lumen の能動的な探索で、VirusTotal にアップロードされた 未記載のマルウェアファミリが見つかる**（調査の起点）。 **最新の版を特定して「BambooToken」と名付けた。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**「SoftEthernet」と名付けられた VPS（38.180.150[.]19・対応国は香港）からの 接続が C2 ノードに対して観測され始める**（最終観測は2026年7月27日20:02:22）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**C2 IP 202.144.192[.]149 が ccc80.c2iznja[.]com も解決し始める。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**Lumen が確認した活動の終期。** 報告は**「技術的な痕跡にもとづき、このキャンペーンは少なくとも2023年2月から 活動しており2026年7月まで続いたと考える」**としている（原文英語）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Black Lotus Labs が報告「The banana stand: brokering and managing infections across Asia using MQTT」を公開。** **本記録はページ上で公開日を特定できなかった**—— HTML に公開日の記載が見つからず、二次的な紹介記事の日付は9月中旬〜下旬に 分かれている（齟齬に記録した）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**台湾の iThome が報道**（本記録の起点）。 MQTT を C2 に使う点、Tendyron OnKey の DLL サイドローディング、 金山 Office を装う版、活動期間（2023年2月〜2026年7月）、 アジアと南米の十数社の被害、Linux 版の機能、 未実行コード（dead code）に残る鍵入力記録・クリップボード・録音・ カメラ・画面取得の文字列を伝えている。 **あわせて「Lumen が公表した被害分布図は台湾も含む」**とし、 **「研究の本文は台湾の被害組織の身元や業種を説明していない」**と書いている ——**本記録が確認した報告本文にも台湾への言及は見つからなかった**（齟齬に記録した）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Black Lotus Labs の報告本文を取得して確認した。** 確認できたのは——活動期間、感染したサーバの種別と件数、 個別に挙げられた標的（香港・ベトナム・アルゼンチン・チリ・リトアニア・マレーシア）、 Tendyron OnKey のサイドローディングと証明書・ビルド環境が侵害されていない旨の評価、 Kingsoft Office を装う版、MQTT のトピック構造とハンドラ（SHELL / FILEEX / ONLINE）、 アンチウイルス列挙プラグイン（WMI 利用）、未実行コードの文字列、 C2 ドメインと IP・ポート、Cloudflare の利用と Radar の順位、 既知クラスタとの対応づけができないという帰属の記述、防御側への推奨である。 **確認できなかったのは報告の公開日、台湾の被害、および「十数社」という件数である。**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>Black Lotus Labs の報告の公開日を本記録は特定できていない</span><div class=sm>**本記録は報告ページを取得したが、HTML 内に公開日の記載を見つけられなかった。** **二次的な紹介記事の日付は2026年9月中旬から下旬に分かれており、 本記録はいずれも裏取りしていない。** **起点となった台湾 iThome の報道（10月2日）の表現は「近日揭露」（最近公表した）**で、 日付を示していない。 そのため本記録は、**初報の日付を「2026年9月」（月の精度）として記録した。** **影響は、キャンペーンの終期（2026年7月）から公表までの間隔を正確に測れないこと** である（本記録の注記）。</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>報道の「十数社が被害」という件数が、報告本文に見つからない</span><div class=sm>**iThome は「已有十多家企業受害」（すでに十数社の企業が被害を受けた）と伝え、 業種として「モバイルアプリのバックエンド、ホテル、生体医療、法律、金融、 暗号資産、ソフトウェア開発」を挙げている。** **本記録が確認した報告本文の記述は「少なくとも4台の異なるバックエンドサーバへの 感染を示すネットワークテレメトリを観測した」と、 個別の標的の列挙（本記録が数えて7組織）である。** **「十数社」という合計は報告本文に見つからなかった。** **検索結果の要約には「約十数社の侵害された企業」という記述もあるが、 本記録は出所を確認できていない。** **本記録は確認できた数値のみを figure として持ち、 「十数社」は採らない**（本記録の判断）。</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>報道が伝える「台湾も被害分布に含まれる」を本記録は確認できていない</span><div class=sm>**iThome は「Lumen が公表した企業の被害分布図は台湾も含む」としつつ、 「研究の本文は台湾の被害組織の身元や業種をさらに説明していない」と書いている。** **本記録が取得した報告本文のテキストには、台湾への言及が見つからなかった。** **図は画像であり、本記録はその内容を確認していない** ——したがって**否定もできない。** **本記録は台湾の被害を事実として記録せず、未確認事項として残す**（本記録の判断）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>150台のルータへの走査が観測された「12月15日」の年が報告本文に明示されていない</span><div class=sm>**報告本文の記述は「12月15日 07:30〜23:45 UTC に発生した走査」であり、 年が書かれていない。** **本記録は、前後の記述（2026年1月以降の C2 の観測、 2023年2月以降の活動期間）から2025年と解した**が、 **確認できていない。** timeline の日付はこの解釈にもとづく暫定値である。 **影響は、ルータへの走査が C2 の切り替え（2026年1月）の前なのか後なのかが 確定しないこと**である（本記録の注記）。</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>悪用された製品の提供元（Tendyron・Kingsoft）の見解を本記録は確認していない</span><div class=sm>**本記録は、Tendyron および珠海金山办公软件（Kingsoft Office）の 本件に関する公表を探していない／確認していない。** **Lumen は「Tendyron のコード署名証明書もビルド環境も侵害されていないと評価する」 と明記しており、製品側の責めを述べていない。** **したがって本記録に製品提供元の立場は反映されていない** ——この点は読者が留意すべき偏りである（本記録の注記）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>正規の署名付きプログラムに担がれて入り、MQTT のブローカー越しに指令を受け取る——感染端末は攻撃者のサーバへ直接つながらない</div><div class=svgwrap><svg viewBox="0 0 2018 412" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,206.0 C193.0,206.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,206.0 C193.0,206.0 193.0,257.0 220,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,206.0 424,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,257.0 C397.0,257.0 397.0,206.0 424,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,206.0 C601.0,206.0 601.0,206.0 628,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C805.0,206.0 805.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C805.0,206.0 805.0,148.0 832,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C805.0,206.0 805.0,250.0 832,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C805.0,206.0 805.0,352.0 832,352.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C907.0,206.0 907.0,206.0 1036,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,206.0 C1213.0,206.0 1213.0,206.0 1240,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,206.0 C1417.0,206.0 1417.0,206.0 1444,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,206.0 C1315.0,206.0 1315.0,206.0 1036,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,352.0 C1315.0,352.0 1315.0,104.0 1648,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C1213.0,206.0 1213.0,104.0 1648,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C1213.0,206.0 1213.0,206.0 1648,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,206.0 C1213.0,206.0 1213.0,308.0 1648,308.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,206.0 C1519.0,206.0 1519.0,206.0 1852,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（既知の活動クラス</text><text x="91.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タと対応づけできない新興</text><text x="91.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタ）</text><text x="91.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">検体の多くは中国の IP</text><text x="91.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10"> 空間からアップロード。</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Tendyron「OnK</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ey」（正規・署名付きの</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> USB トークン製品）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">中国の銀行・政府ネットワ</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">ークで広く使われる。証明</text><rect x="220" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Kingsoft Off</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ice を装う版</text><text x="295.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">珠海金山办公软件を装う。</text><text x="295.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">同社製品の侵害は報告され</text><rect x="424" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪性 DLL のサイドロ</text><text x="499.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーディング</text><text x="499.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">初期の版は Update</text><text x="499.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10">.log から始まりリモ</text><rect x="628" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BambooToken </text><text x="703.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エージェント（Windo</text><text x="703.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ws / Linux）</text><text x="703.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">C++ 製。XOR 復号</text><text x="703.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">した GUID をミュー</text><rect x="832" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ハンドラ ONLINE（</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">端末の環境情報を収集）</text><text x="907.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">感染端末の情報を C2 </text><text x="907.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">へ送る</text><rect x="832" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アンチウイルス製品を列挙</text><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">するプラグイン（WMI </text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用）</text><text x="907.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">実際に回収された唯一のプ</text><text x="907.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">ラグイン</text><rect x="832" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未実行コードの文字列（鍵</text><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">入力記録・クリップボード</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・録音・カメラ・画面取…</text><text x="907.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">実装・有効化は確認されて</text><text x="907.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">いない</text><rect x="832" y="308.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ハンドラ SHELL /</text><text x="907.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> FILEEX（シェル実</text><text x="907.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">行・ファイルの上り下り…</text><text x="907.0" y="371.0" text-anchor="middle" fill="#f48fb1" font-size="10">Linux 版も同等の操</text><text x="907.0" y="383.0" text-anchor="middle" fill="#f48fb1" font-size="10">作が可能</text><rect x="1036" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MQTT ブローカー（発</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">行・購読の中継点）</text><text x="1111.0" y="218.0" text-anchor="middle" fill="#64b5f6" font-size="10">購読はブローカーの承認が</text><text x="1111.0" y="230.0" text-anchor="middle" fill="#64b5f6" font-size="10">必要。感染端末は C2 </text><rect x="1240" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Cloudflare に</text><text x="1315.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">よる代理</text><text x="1315.0" y="218.0" text-anchor="middle" fill="#64b5f6" font-size="10">背後の基盤を隠す。1ドメ</text><text x="1315.0" y="230.0" text-anchor="middle" fill="#64b5f6" font-size="10">インは Radar 上位</text><rect x="1444" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2 ドメイン・IP（a</text><text x="1519.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">pi80.c2iznja</text><text x="1519.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">[.]com ほか／2…</text><text x="1519.0" y="225.0" text-anchor="middle" fill="#64b5f6" font-size="10">ポート 1883・288</text><text x="1519.0" y="237.0" text-anchor="middle" fill="#64b5f6" font-size="10">3・8883。一部の I</text><rect x="1648" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1723.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開発基盤（香港の Git</text><text x="1723.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Lab サーバ・ソフトウ</text><text x="1723.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ェア企業・モバイルアプ…</text><text x="1723.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">Lumen は供給網への</text><text x="1723.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">含意を指摘</text><rect x="1648" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1723.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">その他の標的（ベトナムの</text><text x="1723.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ホテル・アルゼンチンの生</text><text x="1723.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">体医療・チリの法律事務…</text><text x="1723.0" y="225.0" text-anchor="middle" fill="#80cbc4" font-size="10">組織名・被害の内容は非公</text><text x="1723.0" y="237.0" text-anchor="middle" fill="#80cbc4" font-size="10">表</text><rect x="1648" y="264.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1723.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルータ（MikroTik</text><text x="1723.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・DrayTek／シンガ</text><text x="1723.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ポール・カンボジア・ベ…</text><text x="1723.0" y="327.0" text-anchor="middle" fill="#f48fb1" font-size="10">150台への走査が観測。</text><text x="1723.0" y="339.0" text-anchor="middle" fill="#f48fb1" font-size="10">中継ではなく被害者とみら</text><rect x="1852" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1927.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">検知の要点：外向きの M</text><text x="1927.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">QTT と転送量（宛先の</text><text x="1927.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">国では見えない）</text><text x="1927.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">Lumen の推奨。本記</text><text x="1927.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">録が実務上の論点として強</text></svg></div><div class=fn>Lumen / Black Lotus Labs の報告 「The banana stand: brokering and managing infections across Asia using MQTT」 にもとづく（本記録が報告本文を取得して確認した）。 **報告が示しているのは——①Tendyron「OnKey」の DLL サイドローディング、 および Kingsoft Office を装う版、 ②Tendyron のコード署名証明書もビルド環境も侵害されていないという評価、 ③MQTT のトピック構造とハンドラ（SHELL / FILEEX / ONLINE）、 ④C2 ドメインが Cloudflare を代理に置いていること、 ⑤活動期間（2023年2月〜2026年7月）、 ⑥感染・標的の構成（モバイルアプリのバックエンド・GitLab・法律・金融・ 生体医療・ホテル・暗号資産サイト・ルータ）、 ⑦既知の活動クラスタと対応づけできないという帰属の記述である。** **「最初の侵入手段」は公表されていないため、本図は実行の段階から始めている。** **未実行コードに現れる監視機能（鍵入力・クリップボード・録音・カメラ・画面）は、 実装・有効化が確認されていない**——図では区別して示した。 **台湾の被害は本記録が確認できていないため、本図に含めていない。**</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**サイドローディングは、親プロセスと読み込み元のパスの組み合わせで見える** （本記録の評価）—— 正規の署名付き実行ファイルが、**標準でない場所に置かれた DLL を読み込む。** **署名の検証だけでは止まらない**（実行ファイル自体は本物である）。 Lumen は防御側への推奨に**調整された EDR**を挙げている。</div></td><td><div class=ctl><span class="b eff">検知できた</span>署名付きプロセスによる非標準パスからの DLL 読み込みを検知する EDR ルール （読み込み元のディレクトリを見る）</div><div class=ctl><span class="b eff">侵入を防げた</span>アプリケーションの許可制御（WDAC / AppLocker）で、 実行ファイルのあるディレクトリへの書き込みを禁じる</div><div class=ctl><span class="b eff">侵入を防げた</span>USB トークン等の常駐ソフトの導入先ディレクトリの権限を点検する （利用者が書き込めるなら担ぎ手になりうる）</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**WMI によるアンチウイルス製品の列挙（`SELECT * FROM AntiVirusProduct` 系の 問い合わせ）は、正常な業務ではほとんど行われない**（本記録の評価）。 **防御側の構成を調べる行為は、攻撃の初期に集中する。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>WMI の `root\SecurityCenter2` 名前空間への問い合わせを検知する</div><div class=ctl><span class="b eff">検知できた</span>スクリプトブロックログと WMI 活動のログ取得を有効にする</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">検知した</span><div class=sm>**ここが本件で最も実用的な検知点である**（本記録の評価）。 **MQTT が組織のネットワークの外へ出ていく必要がある端末は限られる。** Lumen 自身が**「MQTT のような異常なプロトコルがネットワークの外へ 出ていくことを検知するルール」**を推奨している（原文英語）。 **一方で、宛先 IP の地理情報に頼る検知は効かない**—— C2 ノードの一部は日本の IP 空間（ASN 63916）にあり、 日本の組織からは「国内向けの通信」に見える。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>外向きの MQTT（TCP 1883 / 2883 / 8883）を既定で遮断し、 必要な端末だけを許可一覧に載せる</div><div class=ctl><span class="b eff">検知できた</span>宛先の国ではなくプロトコルとポートで異常を見る （Lumen は「宛先が同じ地域にあっても大量のデータ転送を把握する」ことを推奨）</div><div class=ctl><span class="b eff">検知できた</span>Cloudflare を代理に置くドメインへの通信について、 新規に観測されたドメインの頻度を監視する</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**プラグイン方式のため、端末に現れる機能は時期によって変わる** （本記録の評価）。 **「この検体にこの機能がある」という前提で検知を組むと、 次の版で外れる。** **Lumen が確認していない機能について、本記録は存在を主張しない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>機能ではなく常駐と通信の形で検知する （プラグインの読み込みは C2 経路を通るため、通信側の検知が有効）</div><div class=ctl><span class="b eff">影響を限定できた</span>カメラ・マイクへのアクセス権限をアプリケーション単位で管理する</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**Lumen は「宛先 IP が地理的に同じ地域にある場合でも、 ネットワーク外への大量のデータ転送を把握すること」を推奨している**（原文英語）。 **転送量という指標は、プロトコルを変えられても残る**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>外向きの転送量の基準値を持ち、逸脱を警報にする</div><div class=ctl><span class="b eff">影響を限定できた</span>ソースコード基盤（GitLab 等）へのアクセスを限定し、 クローン・ダウンロードの監査ログを取る</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Lumen は、被害組織を業種と国で示し、組織名は出さなかった。** **一方で悪用された製品名（Tendyron「OnKey」・Kingsoft Office）は明示し、 同時に「証明書もビルド環境も侵害されていない」という評価を併記した。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** この組み合わせは適切だと考える。 **「製品名を出す」と「製品は侵害されていないと明記する」を同時に行うこと**が 要点で——サイドローディングの事案では、 **担ぎ手の名前が無いと資産の洗い出しができない**一方、 **名前だけを出すと供給網の汚染と読み違えられる。** Lumen は後者を**「コード署名証明書もビルド環境も侵害されていないと評価する」**と 明示的に否定した（原文英語）。</td></tr><tr><td>**帰属については「公開されている既知の活動クラスタと対応づけできない」とし、 新興の脅威クラスタとして位置づけた。** 特定のアクター名を当てずに、**検体のアップロード元・テレメトリの所在・ 過去の PRC 関連クラスタの行動様式という状況証拠を並べる形を採った。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** **「できない」と書いたことを評価する。** 共有ツールや言語・時間帯だけで帰属を語る報告は多いが、 本報告は**対応づけの失敗を結論として明示し、 状況証拠を状況証拠として並べた。** **ただし読者側には読み替えの危険が残る**—— 報道は「中国に関連する脅威活動の特徴に合致する」と要約しており、 **元の留保が落ちやすい**（本記録の評価。本文の帰属の節で層を分けて示した）。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>正規の製品が入っていること自体が、攻撃者の足場になりうる</div><div class=lw>本件で悪用されたのは**正規の署名付きプログラム（Tendyron「OnKey」）**で、 **Lumen は証明書もビルド環境も侵害されていないと評価している。** 攻撃者が使ったのは**「サイドローディングに脆弱で、 標的のネットワークに元からあるファイル」**である。 **つまり資産台帳に正しく載っているソフトウェアが担ぎ手になった** （本記録の整理）。 **供給網の汚染への備え（署名検証・SBOM）では、この経路は止まらない。**</div><div class=la><b>取るべき行動</b> **常駐するクライアントソフト（USB トークン・VPN・印刷・会議・セキュリティ製品）の 導入先ディレクトリの権限を点検する。** **利用者が書き込めるディレクトリから署名付き実行ファイルが起動していないか**を 確認し、該当するものはアプリケーション許可制御（WDAC / AppLocker）の 対象に入れる。 **「正規の製品だから」を理由に点検対象から外さない。**</div></li><li><div class=lp>外部に出ていくプロトコルの一覧を持っていないと、珍しい C2 は見えない</div><div class=lw>BambooToken は**IoT 用の MQTT**を C2 に使い、 **感染端末はブローカーとだけ通信して攻撃者のサーバへ直接つながらない。** Lumen が確認した先行例は3件のみで、**検知ルールが整っていない領域である。** 加えて**C2 ノードの一部は日本の IP 空間（ASN 63916）にあり、 日本の組織からは国内向けの通信に見える**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織から外部へ出てよいプロトコルとポートを明文化し、 それ以外を既定で遮断する。** **MQTT（1883 / 2883 / 8883）が外へ出る必要のある端末を特定し、 無ければ遮断する。** **検知の条件を「宛先の国」に依存させない** ——Lumen も「宛先が同じ地域にあっても大量のデータ転送を把握する」ことを 推奨している。</div></li><li><div class=lp>開発基盤が感染先に並ぶ事案は、自社の外側まで影響する</div><div class=lw>感染先には**香港の GitLab サーバ、スマートウォッチ関連のソフトウェア企業、 モバイルアプリのバックエンドサーバ（少なくとも4台）**が含まれ、 **Lumen 自身が供給網への含意を指摘している**（原文英語）。 **開発基盤が取られると、そこで作られた成果物を通じて 影響が下流へ広がりうる**（本記録の評価。本件で下流への波及が 確認されたという記述は無い）。</div><div class=la><b>取るべき行動</b> **自社の開発基盤（ソースコード管理・CI/CD・ビルド環境）について、 外部通信の許可範囲と資格情報の保管場所を点検する。** Lumen の推奨にある**供給網とコード依存関係の把握**を、 自社が「供給する側」の立場でも実施する ——**顧客に渡す成果物のビルド環境が感染していた場合に、 何を確認して何を伝えるかを先に決めておく。**</div></li><li><div class=lp>帰属の表現は、報道を経ると留保が落ちる</div><div class=lw>Lumen は**「公開されている既知の活動クラスタと対応づけることができず、 新興の脅威クラスタとして位置づける」**と明記したうえで、 検体のアップロード元・テレメトリの所在・過去の PRC 関連クラスタの行動様式を 状況証拠として並べている。 **報道は「中国に関連する脅威活動の特徴に合致するとみている」と要約しており、 元の留保が見えにくくなっている**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **脅威情報を社内で回すとき、「誰が」の部分は一次資料の表現で引く。** 報告書が「対応づけできない」と書いているものを、 **社内資料で国家名に置き換えない。** 帰属の確度は対策の優先度を変えるため（国家支援の標的型か、 広く無差別かで対応が変わる）、**層を分けて記録する。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>サイドローディングは、実行ファイルではなく読み込み元のパスで見る</div><div class=lw>担ぎ手は**正規の署名付き実行ファイル**であり、 **署名の検証では止まらない**（本記録の整理）。 見えるのは、**その実行ファイルが標準でない場所に置かれた DLL を 読み込んだという組み合わせ**である。 初期の版では `Update.log` というファイル名から始まり、 **リモートスレッドを呼んでメモリへ注入する**形も使われていた。</div><div class=la><b>取るべき行動</b> **EDR に「署名付きプロセスが非標準パスの DLL を読み込んだ」という 検知を入れる。** 加えて**リモートスレッドの生成（CreateRemoteThread 系）**を監視する。 ふだんの運用で、**常駐ソフトの導入ディレクトリに 利用者が書き込めないことを確認する。**</div></li><li><div class=lp>WMI でのアンチウイルス列挙は、攻撃の初期にしか出てこない行動である</div><div class=lw>回収されたプラグインは、**WMI を使ってローカルのアンチウイルス製品の 情報を収集し C2 へ返す**ものだった。 **防御側の構成を調べる行動は、正常な業務ではほとんど現れない** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **WMI の `root\SecurityCenter2` 名前空間への問い合わせを検知対象にする。** スクリプトブロックログと WMI 活動のログを有効にし、 **「どのプロセスが問い合わせたか」まで残す。**</div></li><li><div class=lp>ルータは中継だけでなく被害者にもなる</div><div class=lw>Lumen は、**MQTT ポートで C2 と持続的に通信していた MikroTik・DrayTek の ルータについて、implant が MQTT で通信する性質から 「中継ではなく被害者とみられる」**としている。 **150台への走査が1日のうちに観測されている**（12月15日 07:30〜23:45 UTC）。 Lumen の推奨にも**ルータの定期的なパッチ適用と SNMP の堅牢化**がある。</div><div class=la><b>取るべき行動</b> **境界のルータ・SMB 向け機器のファームウェアの更新状況を一覧にし、 管理インタフェースを外部に出していないか確認する。** **SNMP の公開コミュニティ名とアクセス元を点検する。** 機器自身の外向き通信（とくに見慣れないポート）をログで確認する。</div></li><li><div class=lp>検体にある文字列を「機能がある」と読まない</div><div class=lw>鍵入力の記録・クリップボード・録音・カメラと画面の取得を示す文字列は、 **未実行のコード（dead code）に現れたものである。** **Lumen は実装・有効化を確認していない。** **一方でプラグイン機構は動いており、機能は後から足せる** （本記録の整理）—— つまり**「いま無い」は「次の版にも無い」の根拠にならない。**</div><div class=la><b>取るべき行動</b> **検知を機能単位ではなく、常駐と通信の形で組む。** プラグインの読み込みは C2 経路を通るため、 **通信側の検知（外向き MQTT・新規ドメイン）の方が持続する。** 脅威情報を社内で共有するときは、 **「確認された機能」と「文字列が見つかった機能」を書き分ける。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自組織から外部へ出てよいプロトコル・ポートの一覧が無い（既定が許可になっている）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 不審な通信の判定を宛先の国・地域に依存させている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 常駐するクライアントソフトの導入先ディレクトリの権限を点検していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 開発基盤（ソースコード管理・CI/CD・モバイルアプリのバックエンド）が、他の業務系と同じ出口を共有している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 境界のルータ・SMB 向け機器のファームウェア更新状況と管理インタフェースの露出を把握していない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月（本記録は正確な日付を確認できていない） Lumen Technologies / Black Lotus Labs</span> <a href="https://www.lumen.com/blog/en-us/the-banana-stand-brokering-and-managing-infections-across-asia-using-mqtt" target="_blank" rel="noreferrer noopener nofollow">The banana stand: brokering and managing infections across Asia using MQTT</a> <span class="b kind">調査レポート</span><span class=sm>（(英語。**本記録の事実関係の中核の出典。報告本文を取得して確認した。** 確認した内容——**①活動期間「少なくとも2023年2月から活動し2026年7月まで続いた」。** **②調査の起点は2026年初めに VirusTotal へアップロードされた 未記載のマルウェアファミリ。** **③「少なくとも4台の異なるバックエンドサーバへの感染を示す ネットワークテレメトリを観測した」（モバイルアプリ向け、法律・金融サービス、 スマートウォッチ関連のソフトウェア企業、ホテル、GitLab インスタンス1台）。** **④個別の標的——香港の GitLab サーバ、携帯型ライフスタイル管理機器を開発する ベトナム企業、ベトナムのホテル、アルゼンチンの生体医療企業、 チリの法律事務所、リトアニアの暗号資産サイト、マレーシアの金融組織。** **⑤Tendyron「OnKey」による DLL サイドローディングと、 「Tendyron のコード署名証明書もビルド環境も侵害されていないと評価する」 という明示。Kingsoft Office を装う版の存在。** **⑥MQTT の利点3点（ブローカーの背後に基盤を隠せる・非同期・ 購読にブローカーの承認が必要）と、先行例3件 （IOCONTROL・Korplug/PlugX・WailingCrab）。** **⑦トピック構造（`{GUID}/unPlugin`・`{GUID}/removePlugin`・`{GUID}/Plugin`・ `{GUID}/`）とハンドラ（SHELL / FILEEX / ONLINE）、 WMI でアンチウイルスを列挙するプラグイン、 未実行コードの文字列（KEY_RECOURD 等）。** **⑧C2 ドメイン（api80.c2iznja[.]com・live-hk・turbo・ccc80、 古い chat5188[.]tk 系）と IP（202.144.192[.]23 / .149＝ASN 63916 geo Japan、 210.1.226[.]238、210.1.231[.]13、43.245.198[.]195 / .238）、 ポート 1883・2883・8883、SSH 63196 / 63916。** **⑨Cloudflare の代理利用と Radar の順位（上位50万・上位100万）。** **⑩12月15日 07:30〜23:45 UTC の150台のルータへの走査、 MikroTik・DrayTek、シンガポール・カンボジア・ベトナム、 「中継ではなく被害者とみられる」。** **⑪「SoftEthernet」の VPS（38.180.150[.]19・2026年3月18日〜7月27日・香港）。** **⑫帰属——「公開されている既知の活動クラスタと対応づけることができず、 新興の脅威クラスタとして位置づける」。検体の多くは中国の IP 空間から アップロード。Volt Typhoon・GhostEmperor・ZuoRAT の例への言及。** **⑬防御側への推奨（供給網とコード依存関係の把握、ルータのパッチと SNMP の堅牢化、 調整された EDR、MQTT のような異常なプロトコルの外向き通信の検知、 宛先が同じ地域でも大量のデータ転送を把握すること）。** **確認できなかったもの——報告の公開日、台湾の被害、感染組織の総数。** 本記録では引用を日本語に訳して「（原文英語）」を添えた。)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月2日 12:54 UTC iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179370" target="_blank" rel="noreferrer noopener nofollow">研究人員揭露惡意軟體BambooToken，透過MQTT通訊協定控制Windows與Linux電腦</a> <span class="b kind">記事</span><span class=sm>（(中国語繁体字。**本記録の起点になった報道。** 活動期間（2023年2月〜2026年7月）、アジアと南米での被害、 Tendyron OnKey の DLL サイドローディングと Kingsoft Office を装う版、 MQTT を C2 に使う点、Cloudflare の代理、Windows 版のプラグインと Linux 版の機能、 未実行コードの文字列を伝えている。 **報告本文と一致しない記述が2点ある**—— **①「十多家企業受害」（十数社が被害）という件数、 ②「公表された被害分布図は台湾も含む」**（いずれも齟齬に記録した）。 なお②については、記事自身が**「研究の本文は台湾の被害組織の身元や業種を さらに説明していない」**と留保を付けている。 本記録では引用を日本語に訳して用いた。)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月4日</span> <span class="b rev">新規作成</span> 新規作成。**2026年10月2日分の収集に入っていた台湾 iThome の報道（10月2日公開）を 起点に、Lumen / Black Lotus Labs の報告本文を取得して裏取りを行った。** **一次資料（ベンダー報告）で確認できたのは——活動期間（少なくとも2023年2月〜 2026年7月）、感染したバックエンドサーバ（少なくとも4台）と個別の標的 （香港の GitLab・ベトナムの機器開発企業とホテル・アルゼンチンの生体医療・ チリの法律事務所・リトアニアの暗号資産サイト・マレーシアの金融）、 Tendyron「OnKey」の DLL サイドローディングと「証明書もビルド環境も 侵害されていない」という評価、Kingsoft Office を装う版、 MQTT のトピック構造とハンドラ、WMI でアンチウイルスを列挙するプラグイン、 未実行コードの文字列、C2 ドメインと IP・ポート、Cloudflare の代理利用、 ルータ150台への走査、帰属が既知クラスタと対応づけできないこと、 防御側への推奨である。** **確認できなかったのは——報告の公開日、報道が伝える「十数社」という件数、 台湾の被害、ルータ走査の年であり、いずれも齟齬または unknowns に記録した。** **本記録が本文の軸に置いたのは4点である。** ①**MQTT を C2 に使うと感染端末が攻撃者のサーバへ直接つながらないこと** （購読にブローカーの承認が必要なため解析側も指令を得にくい）。 ②**担ぎ手が正規の署名付きプログラムであり、供給網の汚染ではないこと** ——Lumen が証明書とビルド環境の非侵害を明記した点を落とさずに書いた。 ③**C2 ノードの一部が日本の IP 空間（ASN 63916）にあり、 日本の組織からは国内向けの通信に見えること**（本記録が実務上の論点として強調）。 ④**帰属について Lumen が「対応づけできない」と書いていること** ——報道の要約では留保が落ちるため、観測・比較・結論の層を分けて示した。 中国語・英語の記述は日本語に訳して原文の言語を添えた。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">BambooToken</span><span class="b tag">MQTT</span><span class="b tag">DLLサイドローディング</span><span class="b tag">Tendyron OnKey</span><span class="b tag">Kingsoft Office</span><span class="b tag">Black Lotus Labs</span><span class="b tag">Cloudflare の代理</span><span class="b tag">開発基盤の侵害</span><span class="b tag">ルータの侵害</span><span class="b tag">帰属の留保</span><span class="b tag">新興の脅威クラスタ</span><span class="b tag">外向き通信の検知</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

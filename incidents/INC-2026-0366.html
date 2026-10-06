@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Bromcom 旧SSO機能から情報流出 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0366</span>Bromcom 旧SSO機能から情報流出</h1>
+<header class="site-header">
+  <p class="subtitle">英国の学校向け校務システム（MIS）大手 Bromcom で、後継機能に置き換えたあとも「内部システムから呼ばれていたため」本番に残っていたレガシーなシングルサインオン（SSO）登録機能が第三者にアクセスされ、教職員と児童・生徒の SSO 登録に紐づくメールアドレス・利用した SSO プロバイダ・登録日と最終サインイン日・内部参照番号が取得された——同社は2026年9月6日に SSO のアクセス不具合の報告から事案を把握し、当該機能を本番から撤去。パスワードと認証トークンは当該機能に保持されておらず、MIS 本体の侵害の証拠は無いとしている。対象件数は未確定で、同社は処理者の立場から ICO への届出は行っていない</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">ガバナンス・組織文化（ガイドライン理解不足・丸投げ等）</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月24日</span>
+  <span>最終更新: 2026年10月6日</span>
+</div>
+
+<div class="lead"><p>英国の学校向け校務システム（MIS: Management Information System）大手 <strong>Bromcom</strong> は2026年9月30日、顧客向けの FAQ で<strong>個人データ侵害</strong>を公表しました。侵害されたのは、同社の <strong>Communication Server 環境にあったレガシーな SSO（シングルサインオン）登録機能</strong>です。同社の説明によれば、<strong>権限のない第三者が、SSO 登録に紐づくメールアドレスと限られた情報にアクセスし、取得した</strong>とされています。</p>
+<p>取得された項目は、<strong>SSO 登録に紐づくメールアドレス</strong>、<strong>利用した SSO プロバイダ（Microsoft・Google など）</strong>、<strong>記録がある場合の登録日と最終サインイン日</strong>、<strong>内部の利用者参照番号と登録参照番号</strong>です。対象には<strong>教職員と児童・生徒の SSO 登録</strong>が含まれ、<strong>児童・生徒の一部は学校発行ではなく個人のメールアドレス</strong>で登録していたとされています。保護者は別のサービスを使うため対象外です。</p>
+<p>同社は、当該機能に<strong>パスワードと認証トークンは保持されていなかった</strong>こと、<strong>MIS 本体（児童・生徒のデータ、出欠、行動記録、校務）の侵害の証拠は見つかっていない</strong>こと、<strong>Microsoft や Google のアカウントへのアクセスを可能にするものではない</strong>こと、<strong>不正なサインインの成功は確認されていない</strong>ことを示しています。一方で<strong>データが複製・ダウンロード・外部へ持ち出されたかは調査中</strong>です。</p>
+<p>発端は <strong>2026年9月6日</strong>で、<strong>SSO でサインインできないという報告</strong>を受けて事案を把握しました。同社はレガシー機能を本番から撤去し、外部のフォレンジック専門家と調査を進めています。問題の機能が残っていた理由は「<strong>内部システムからまだ呼ばれていたため</strong>」と説明されています。</p>
+<p>本記録は、<strong>「廃止したはずの機能が本番に残っていた」という最も古典的な型</strong>が、5,000校以上が使う校務システムの事業者で起きた事案として整理します。また同社は<strong>自らを処理者（data processor）と位置づけ、ICO（英情報コミッショナー事務局）への届出は管理者（各学校）の判断</strong>としています。クラウド型校務システムが広がる日本でも、<strong>事故時に誰が届け出るのかという責任分界</strong>は同じ論点です。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="法務・コンプライアンスへの示唆">法務・コンプライアンスへの示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>影響を受けた学校数・教職員数・児童生徒数</span><span class="b rsn">調査中</span><div class=sm>Bromcom は「影響の性質と範囲は学校ごとに異なる」とし、件数を示していない。 対象レコードの一覧と正確な人数は調査完了後とされている</div></li><li><span class=ui>データが複製・ダウンロード・外部へ持ち出されたか</span><span class="b rsn">調査中</span><div class=sm>FAQ は「取得された（accessed and retrieved）」と記す一方、複製・ダウンロード・ 外部への持ち出しについては「調査中」としている</div></li><li><span class=ui>第三者がどのようにレガシー機能へ到達・利用したか（根本原因）</span><span class="b rsn">調査中</span><div class=sm>FAQ は根本原因の分析が調査中であるとしている。対策に「認可の検査の強化」と 「自己削除権限の制限」が挙げられていることから、当該機能の認可の不備が疑われるが、 公表はそう述べていない（本記録の推定）</div></li><li><span class=ui>第三者のアクセスが行われた期間（開始・終了）</span><span class="b rsn">公表されていない</span><div class=sm>把握は9月6日だが、アクセスがいつから行われていたかは公表されていない。 レガシー機能が本番に残っていた期間も示されていない</div></li><li><span class=ui>実行者の特定と帰属</span><span class="b rsn">公表されていない</span><div class=sm>「権限のない第三者」とのみ記され、帰属・動機への言及は無い</div></li><li><span class=ui>本人（教職員・児童生徒・保護者）への通知を誰がどう行うか</span><span class="b rsn">公表されていない</span><div class=sm>Bromcom は顧客（学校）向けに FAQ を出し、フィッシングへの警戒を促している。 本人通知の実施主体・方法は示されていない（管理者である学校の判断に委ねられる構図）</div></li><li><span class=ui>SSO でサインインできなくなった事象と第三者のアクセスの因果関係</span><span class="b rsn">公表されていない</span><div class=sm>把握の端緒は「SSO のアクセス不具合の報告」であり、対策に自己削除権限の制限が含まれる。 不具合が第三者の操作（登録の削除等）の結果だったのかは公表されていない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Bromcom Computers plc</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年9月24日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>英国の学校・教育分野向け校務システム（MIS）の提供事業者。侵害されたレガシー SSO 登録機能の 保有・運用者。本件では自らを処理者（data processor）と位置づけている</p><p class=org-p><span class=org-l>影響</span>Communication Server 環境のレガシー SSO 登録機能に第三者がアクセスし、SSO 登録に紐づく メールアドレスと限られた情報が取得された。当該機能を本番から撤去し、外部フォレンジック専門家と 調査中。MIS 本体の侵害の証拠は見つかっていないとしている</p></div></div><div class=org><div class=org-h><span class=org-n>Bromcom の MIS を利用する学校・マルチアカデミートラスト（影響を受けた学校数は非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Bromcom の顧客。本件では個人データの管理者（data controller）の立場に置かれる</p><p class=org-p><span class=org-l>影響</span>自校の教職員・児童生徒の SSO 登録情報が対象となった。影響の性質と範囲は学校ごとに異なると 説明されている。ICO への届出を行うかの判断は各学校に委ねられた</p></div></div><div class=org><div class=org-h><span class=org-n>教職員および児童・生徒（SSO 登録の利用者。人数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Bromcom の SSO に登録していた利用者</p><p class=org-p><span class=org-l>影響</span>メールアドレス・利用した SSO プロバイダ・登録日と最終サインイン日・内部参照番号が取得された。 児童・生徒の一部は学校発行ではなく個人のメールアドレスで登録していた。 保護者は別サービスのため対象外</p></div></div><div class=org><div class=org-h><span class=org-n>外部のフォレンジック専門家（名称非公表）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Bromcom が起用し、影響範囲とデータの性質の特定にあたっている</p></div></div><div class=org><div class=org-h><span class=org-n>ICO（英情報コミッショナー事務局）</span><span class="b role">監督官庁</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>英国の個人データ保護の監督機関。Bromcom は処理者の立場であるとして自らは届出を行わず、 届出の判断は管理者（各学校）にあるとしている</p></div></div><div class=org><div class=org-h><span class=org-n>（レガシー SSO 登録機能へアクセスした第三者・実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>権限なく当該機能へアクセスし、メールアドレス等を取得した者。帰属・手口は公表されていない</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>事案の把握（9月6日）から顧客向け FAQ の公開（9月30日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>24<span class=fu>日</span></div><div class=fn>本記録の作成者が算出した。EduGeek への投稿（9月24日）までは18日である。 GDPR の管理者による届出期限（72時間）は管理者である学校側の起算であり、 学校が通知を受けた日は公表されていない</div></div><div class=fig><div class=fh><span class=fl>事案の把握（9月6日）から EduGeek への投稿（9月24日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>18<span class=fu>日</span></div><div class=fn>本記録の作成者が算出した</div></div><div class=fig><div class=fh><span class=fl>Bromcom のソフトウェアを利用する学校数（規模感を示す背景値）</span><span class="b conf">最少</span><span class="b org">報道値</span></div><div class=fv>5,000<span class=fu>校</span></div><div class=fn>The Register による「more than 5,000 schools」。**本件の影響を受けた学校数ではない。** 影響を受けた学校数・利用者数は公表されていない</div></div><div class=fig><div class=fh><span class=fl>Bromcom を利用するマルチアカデミートラスト（複数校を運営する組織）の数</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>390<span class=fu>組織</span></div><div class=fn>The Register による。**本件の影響範囲ではなく、顧客基盤の規模を示す背景値である**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>後継機能に置き換えられた後も「内部システムから呼ばれていた」ため本番に残っていた レガシーな SSO 登録機能に、権限のない第三者がアクセスし、SSO 登録に紐づくメールアドレス・ SSO プロバイダ種別・登録日と最終サインイン日・内部参照番号を取得した。 当該機能にパスワードと認証トークンは無く、MIS 本体の侵害の証拠は見つかっていない。 到達・利用の手段（根本原因）は調査中である。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>権限のない第三者が、本番環境に残っていたレガシーな SSO 登録機能へアクセスした。 **どのように到達・利用したか（認可の不備・推測可能な識別子・資格情報のいずれか）は 調査中**である。対策に「認可の検査の強化」が含まれることから、認可の不備が疑われる （本記録の推定）</div><div class=fn>根拠: Bromcom の FAQ および EduGeek への投稿</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>SSO 登録に紐づく**メールアドレス**、**利用した SSO プロバイダ（Microsoft・Google 等）**、 **記録がある場合の登録日と最終サインイン日**、**内部の利用者参照番号・登録参照番号**が 取得された。対象は教職員と児童・生徒の登録で、児童生徒の一部は個人のメールアドレスだった。 **パスワードと認証トークンは当該機能に保持されていなかった**</div><div class=fn>根拠: Bromcom の FAQ（取得項目の列挙）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>**2026年9月6日、SSO でサインインできないという報告**を受けて事案が把握された。 Bromcom は不正なサインインの成功は確認されておらず、Microsoft・Google のアカウントへの アクセスを可能にするものでもないとしている。**不具合と第三者のアクセスの因果関係は 公表されていない**（対策に自己削除権限の制限が含まれることから、登録の削除が 不具合として現れた可能性があるが、本記録の推定である）</div><div class=fn>根拠: Bromcom の FAQ（把握の端緒・対策の内容）／The Register の報道</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 実行 / 永続化 / 権限昇格 / 検知回避 / 認証情報アクセス / 内部探索 / 横展開 / C2通信 / 持ち出し</span><div class=sm>攻撃者の挙動はほぼ全段階が非公表である。持ち出し（exfiltration）の有無も調査中とされる</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>第三者のアクセス開始から把握まで</div><div class=mv>アクセスの開始時期が公表されていないため算出できない</div></div><div class=met><div class=ml>把握（9月6日）からレガシー機能の本番撤去まで</div><div class=mv>撤去の日付が公表されていないため算出できない（把握後であることのみ分かる）</div></div><div class=met><div class=ml>把握（9月6日）から顧客向け FAQ の公開（9月30日）まで</div><div class=mv>24日（EduGeek への投稿は9月24日・18日後）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>外部のフォレンジック専門家を起用し、影響データの性質と範囲を調査している</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 自社調査より時間と費用がかかるが、処理者として顧客（管理者）へ示す内容の確からしさが上がる</div></li><li><div class=ui>取得された項目を列挙し、含まれなかったもの（パスワード・認証トークン・MIS データ・保護者情報）も 明示し、持ち出しの有無は「調査中」と書いた</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 「調査中」を残すと不安は消えないが、確定していないことを確定したように書くより後の訂正が少ない</div></li><li><div class=ui>自社は処理者であるとして ICO への届出は行わず、届出の判断を管理者（各学校）に委ねた</div><div class=fn><b>トレードオフ:</b> 英国 GDPR の役割分担としては整合する。一方で、件数と対象者が未確定のままでは、 管理者である学校は届出の判断材料を持てない</div></li><li><div class=ui>レガシー SSO 登録機能を本番環境から撤去した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 当該機能を呼んでいた内部システムへの影響が生じうるが、到達経路そのものを消せる</div></li></ul></div>
+<section id="s6"><h2>置き換えたはずの SSO 登録機能が「内部システムから呼ばれていたため」本番に残り、そこから情報が出た<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>Bromcom の FAQ と EduGeek への投稿に基づく事実は次のとおりである。</p>
+<ul>
+<li>侵害されたのは <strong>Communication Server 環境にあったレガシーな SSO 登録機能</strong></li>
+<li><strong>権限のない第三者</strong>が、SSO 登録に紐づく<strong>メールアドレスと限られた情報</strong>に<strong>アクセスし、取得した</strong></li>
+<li>取得された項目は、<strong>メールアドレス／利用した SSO プロバイダ（Microsoft・Google 等）／記録がある場合の登録日と最終サインイン日／内部の利用者参照番号と登録参照番号</strong></li>
+<li>対象は<strong>教職員と児童・生徒の SSO 登録</strong>。<strong>児童・生徒の一部は学校発行ではなく個人のメールアドレス</strong>で登録していた。<strong>保護者は別サービスのため対象外</strong></li>
+<li><strong>当該機能にパスワードと認証トークンは保持されていなかった</strong></li>
+<li><strong>MIS 本体（児童生徒データ・出欠・行動記録・校務）の侵害の証拠は無い</strong></li>
+<li><strong>Microsoft・Google のアカウントへのアクセスを可能にするものではない</strong>（認証はこれらの事業者側で行われるため）</li>
+<li><strong>不正なサインインの成功は確認されていない</strong></li>
+<li><strong>データの複製・ダウンロード・外部への持ち出しの有無は調査中</strong></li>
+<li>把握は <strong>2026年9月6日</strong>、端緒は <strong>SSO でサインインできないという報告</strong></li>
+<li>レガシー機能は<strong>本番環境から撤去</strong>済み。<strong>外部のフォレンジック専門家</strong>と調査中</li>
+</ul>
+<p>レガシー機能が残っていた理由について、同社は「<strong>後継の仕組みに置き換えられたあとも、内部システムからまだ呼ばれていたため</strong>」と説明している。</p></section>
+<section id="s7"><h2>出たのは「メールアドレスと紐づけ情報」だが、相手は学校であり、児童の個人アドレスを含む<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p>取得された項目はパスワードを含まず、単体では認証に使えない。しかし本件の読みどころは、<strong>項目の少なさではなく、その組み合わせと対象者</strong>である（本記録の評価）。</p>
+<ul>
+<li><strong>メールアドレス＋SSO プロバイダ＋最終サインイン日</strong>は、<strong>そのアドレスが現に使われている学校アカウントであること</strong>と、<strong>Microsoft か Google のどちらの認証画面を見慣れているか</strong>を攻撃者に教える。偽のサインイン画面を用意する側から見れば、宛先リストと文面の選択肢が同時に手に入る</li>
+<li><strong>児童・生徒の一部は個人のメールアドレス</strong>で登録していた。学校が管理していないアドレスへ、学校の文脈を装うメールが届きうる</li>
+<li><strong>教職員のアドレス</strong>は、校務システムの利用者であることが確定している宛先である</li>
+</ul>
+<p>Bromcom が顧客に求めている対応も「<strong>フィッシングへの警戒を続けること</strong>」であり、これ以外の特段の措置（パスワード変更等）は求めていない。当該機能にパスワードも認証トークンも無く、不正サインインの成功も確認されていないためである。</p></section>
+<section id="s8"><h2>対象件数・持ち出しの有無・根本原因・アクセスの期間はいずれも調査中である<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p>2026年10月6日時点で、次の点は公表されていない。</p>
+<ul>
+<li><strong>影響を受けた学校数・教職員数・児童生徒数</strong>。「影響の性質と範囲は学校ごとに異なる」とされる</li>
+<li><strong>データが複製・ダウンロード・持ち出されたか</strong>（調査中）</li>
+<li><strong>第三者がどのようにレガシー機能へ到達・利用したか</strong>（根本原因は調査中）</li>
+<li><strong>第三者のアクセスが行われた期間</strong>、および<strong>レガシー機能が本番に残っていた期間</strong></li>
+<li><strong>実行者の特定・帰属</strong></li>
+<li><strong>本人通知を誰がどう行うか</strong></li>
+<li><strong>「SSO でサインインできない」という最初の症状と、第三者のアクセスの因果関係</strong></li>
+</ul>
+<p>最後の点について本記録は推定を記しておく。把握の端緒が<strong>アクセス不具合</strong>であり、実施された対策に<strong>自己削除権限の制限</strong>が含まれることから、<strong>当該機能を通じて SSO 登録が削除され、それがサインイン不能として現れた可能性</strong>がある。ただし<strong>公表はそう述べていない</strong>（本記録の推定であり、事実としては扱わない）。</p></section>
+<section id="s9"><h2>「処理者だから ICO へは届け出ない」は法的に成り立つが、管理者が届け出るための材料は要る（本記録の評価）<span class="b slot">当局対応</span><span class=srcs>出典 [1] [2]</span></h2><p>Bromcom は FAQ で、<strong>自社は処理者（data processor）であり、ICO への届出を行うかの判断は管理者（data controller、すなわち各学校）にある</strong>という立場を示している。英国 GDPR の枠組みでは、処理者は侵害を知ったら遅滞なく管理者へ通知する義務を負い、<strong>監督機関への72時間以内の届出は管理者の義務</strong>である。立場としては整合している。</p>
+<p>ただし実務では次の問題が残る（本記録の評価）。</p>
+<ol>
+<li><strong>管理者（学校）は、自校の対象者が誰で何件かを知らなければ届出の判断ができない。</strong>本件では件数が未確定で、「学校ごとに異なる」とされている</li>
+<li><strong>72時間の起算は管理者が知った時点</strong>である。把握（9月6日）から顧客向け FAQ（9月30日）まで24日が経っており、各学校がいつ通知を受けたかは公表されていない</li>
+<li><strong>学校側に専任の情報管理体制がある前提</strong>になっている。英国では多くの学校がマルチアカデミートラスト単位でこれを担うが、単独校では負荷が重い</li>
+</ol>
+<p>日本の読者にとっての含意は、<strong>クラウド型の校務・業務システムを調達する側が、契約の時点で「事故時に事業者から何が、いつまでに、どの粒度で出てくるか」を決めているか</strong>という点にある。「委託先が調べて教えてくれる」では、自組織が負う通知・届出の義務を果たせない。</p></section>
+<section id="s10"><h2>この型は「技術的負債の棚卸し」の問題であり、どの組織にも同じ場所がある（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>本件の原因は、新しい攻撃手法でも未知の脆弱性でもない。<strong>後継に置き換えたのに、内部システムがまだ呼んでいたので消せなかった機能</strong>である。この状況は次の3つが重なったときに生まれる。</p>
+<ol>
+<li><strong>置き換えの完了判定が「新機能が動くこと」になっている。</strong>旧機能の呼び出し元を洗い出して断つところまでが完了条件になっていない</li>
+<li><strong>呼び出し元が内部システムであるため、外部からの到達可能性が意識されない。</strong>「内部からしか使われない」は、<strong>外部から到達できないこと</strong>を意味しない</li>
+<li><strong>残した機能が、現役の機能と同じ監視・認可の更新を受けない。</strong> Bromcom が事後に実施した対策（認可の検査の強化・ログの改善）は、現役機能なら以前から入っていたはずの類のものである（本記録の読み）</li>
+</ol>
+<p>自組織で確認するなら、問いは「レガシーな機能はあるか」ではなく<strong>「置き換えたはずの機能のうち、まだ到達可能なものはどれか」</strong>である。前者は「ある」で終わるが、後者は一覧を作らないと答えられない。</p>
+<p>あわせて、本件は<strong>認証の周辺（登録・プロビジョニングの記録）が、認証そのものとは別の保護水準で扱われていた</strong>例でもある。パスワードとトークンは正しく置かれていなかったが、<strong>誰がどのプロバイダでいつサインインしたかという記録</strong>は残っていた。SSO を導入した組織は、<strong>IdP 側の守りだけでなく、SP 側に溜まる登録情報</strong>を棚卸しの対象に入れる必要がある。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>発覚の端緒</th><td>Bromcom の Communication Server 環境に残っていたレガシーな SSO 登録機能 （第三者がどのように到達・利用したかは調査中）<span class="b rsn">stated</span></td></tr><tr><th>affected_assets</th><td><ul class=cl><li>レガシーな SSO 登録機能（Communication Server 環境）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>data_types</th><td><ul class=cl><li>SSO 登録に紐づくメールアドレス（教職員・児童生徒。児童生徒の一部は個人のアドレス）</li><li>利用した SSO プロバイダの種別（Microsoft・Google 等）</li><li>登録日・最終サインイン日（記録がある場合）</li><li>内部の利用者参照番号・登録参照番号</li></ul><span class="b rsn">stated</span></td></tr><tr><th>含まれていない情報</th><td><ul class=cl><li>アカウントのパスワード</li><li>認証トークン</li><li>MIS 本体のデータ（児童生徒情報・出欠・行動記録・校務）</li><li>保護者の情報（別サービスを利用しているため）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>exposure</th><td><b>開始の公表状況:</b> 公表されていない　<b>終了の公表状況:</b> 公表されていない　<b>補足:</b> 第三者のアクセスが行われた期間は公表されていない。 把握は2026年9月6日で、その後レガシー機能を本番から撤去した（撤去日は非公表）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 調査中　<b>時点:</b> 2026年9月30日　<b>補足:</b> データが複製・ダウンロード・外部へ持ち出されたかは調査中。 不正なサインインの成功は確認されていないとされる。 フィッシングへの悪用が確認されたという公表も無い</td></tr><tr><th>ログの有無</th><td>対策として「セキュリティログの改善」が挙げられていることから、 当該レガシー機能のログが十分でなかった可能性がある（本記録の推定）。 対象レコードの一覧と正確な人数が未確定であることも、この推定と整合する</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> レガシーな SSO 登録機能を本番環境から撤去した　<b>状況:</b> 実施済み　<b>副作用:</b> 当該機能を呼んでいた「内部システム」側の動作に影響しうるが、影響の有無は公表されていない　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> 認可の検査を強化した（enhanced authorization checks）　<b>状況:</b> 実施済み　<b>副作用:</b> 公表されていない　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 自己削除（self-service deletion）の権限を制限した　<b>状況:</b> 実施済み　<b>副作用:</b> 利用者・学校管理者が自分で登録を削除できる範囲が狭まり、運用の手数が増えうる　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> セキュリティログを改善した　<b>状況:</b> 実施済み　<b>副作用:</b> 公表されていない　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 外部のフォレンジック専門家を起用し、影響データの性質と範囲を調査している　<b>状況:</b> 実施中　<b>副作用:</b> 公表されていない　<b>出典:</b> 1、2</div></td></tr><tr><th>通知</th><td><b>手法の公表状況:</b> stated　<b>補足:</b> 顧客（学校）向けに FAQ を公開し、EduGeek のコミュニティでも説明している。 本人（教職員・児童生徒）への通知は、管理者である学校の判断に委ねられる構図で、 実施主体・方法は公表されていない。顧客に求めているのはフィッシングへの警戒の継続である</td></tr><tr><th>当局対応</th><td><div class=sub><b>対応:</b> ICO への届出は行っていない。自社は処理者であり、届出の判断は管理者（各学校）にあるとしている　<b>状況:</b> 方針表明　<b>出典:</b> 1</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期は公表されていない（2026年9月6日より前）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>SSO 登録機能が後継の仕組みに置き換えられたが、「内部システムからまだ呼ばれていた」ため レガシー機能が本番環境に残され続けた</td></tr><tr><td class="sm nowrap tw">時期は公表されていない</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>権限のない第三者がレガシー SSO 登録機能へアクセスし、SSO 登録に紐づくメールアドレスと 限られた情報を取得した（アクセスが行われた期間は公表されていない）</td></tr><tr><td class="sm nowrap tw">2026年9月6日</td><td class=nowrap><span class="b kind">検知</span></td><td>SSO でサインインできないという報告を受け、Bromcom が事案を把握した</td></tr><tr><td class="sm nowrap tw">日付は公表されていない（9月6日以降）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Bromcom がレガシー SSO 登録機能を本番環境から撤去した。認可の検査の強化、 自己削除権限の制限、セキュリティログの改善も実施したとしている</td></tr><tr><td class="sm nowrap tw">2026年9月24日</td><td class=nowrap><span class="b kind">公表</span></td><td>教育 IT 管理者のコミュニティ EduGeek に、Bromcom_Alastair 名義の投稿で、 権限のない第三者が影響を受けた SSO 登録に紐づくメールアドレスと限られた情報へ アクセスし取得したことが示された</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">公表</span></td><td>Bromcom が顧客向けの「SSO Personal Data Breach FAQs」を公開した。 取得された項目、パスワード・認証トークンが含まれないこと、MIS の侵害の証拠が無いこと、 対象が教職員と児童・生徒であること、保護者が対象外であること、 データの持ち出しの有無は調査中であること、ICO への届出は管理者の判断であることを示した</td></tr><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Register が本件を報じた。レガシー機能が「内部システムからまだ呼ばれていた」ため 本番に残っていたこと、Bromcom の MIS が5,000校超・390のマルチアカデミートラストで 使われていることを伝えた。同紙は Bromcom へさらなるコメントを求めている</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が Bromcom の FAQ を取得して裏取りした。対象の学校数・利用者数は FAQ にも記されていない。EduGeek の該当スレッドは取得できなかった（HTTP 403）</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">本記録による推定</span><span class=ui>「SSO にサインインできない」という症状と第三者のアクセスの因果関係</span><div class=sm>把握の端緒がアクセス不具合であり、対策に「自己削除権限の制限」が含まれることから、 **当該機能を通じて登録が削除され、それがサインイン不能として現れた可能性**がある。 **これは本記録の作成者の推定であり、Bromcom はそう説明していない**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>当該機能の認可の不備</span><div class=sm>対策に「認可の検査の強化」が挙げられていることから認可の不備が疑われるが、 FAQ は根本原因を「調査中」としており、原因として認可の不備を明言していない。 本記録の推定である</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>対象件数が示されていないこと</span><div class=sm>FAQ は「影響の性質と範囲は学校ごとに異なる」として件数を示していない。 管理者（学校）が監督機関への届出を判断するには自校分の対象者と件数が必要であり、 この沈黙は実務上の論点になる（本記録の評価）</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>EduGeek への投稿の原文</span><div class=sm>2026年9月24日の EduGeek の該当スレッドは、本記録の作成者が取得できなかった（HTTP 403）。 投稿の内容は The Register の報道と Bromcom の FAQ を通じて確認している</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が引用した英語資料</span><div class=sm>Bromcom の FAQ と The Register の記事は英語である。本記録の作成者は原文を取得して 要点を確認したが、引用は日本語訳で示しており、訳の責任は本記録にある</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>置き換え後も本番に残ったレガシー SSO 登録機能から、教職員・児童生徒のメールアドレスが出るまで</div><div class=svgwrap><svg viewBox="0 0 998 298" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,149.0 C193.0,149.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,200.0 C295.0,200.0 295.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,149.0 424,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,149.0 C601.0,149.0 601.0,39.0 628,39.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,149.0 C601.0,149.0 601.0,101.0 628,101.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C499.0,111.0 499.0,172.0 628,172.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,149.0 C601.0,149.0 601.0,250.0 628,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,110.0 C601.0,110.0 601.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,110.0 C907.0,110.0 907.0,188.0 832,188.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,188.0 C805.0,188.0 805.0,39.0 628,39.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="124.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">権限のない第三者（実体非</text><text x="91.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表）</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レガシー SSO 登録機</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">能（Communicat</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ion Server …</text><text x="295.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">後継へ置き換え後も本番に</text><text x="295.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">残存</text><rect x="220" y="169.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">当該機能を呼び続けていた</text><text x="295.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部システム</text><text x="295.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">残されていた理由</text><rect x="424" y="117.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="139.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SSO 登録情報（メール</text><text x="499.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アドレス・プロバイダ種別</text><text x="499.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・登録日/最終サインイ…</text><rect x="628" y="16.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">教職員（人数非公表）</text><rect x="628" y="76.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">児童・生徒（一部は個人の</text><text x="703.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メールアドレス）</text><rect x="628" y="140.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MIS 本体（児童生徒デ</text><text x="703.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ータ・出欠・校務）＝侵害</text><text x="703.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の証拠なし</text><rect x="628" y="218.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="240.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Microsoft / </text><text x="703.0" y="254.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Google のアカウン</text><text x="703.0" y="268.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト＝アクセス不可</text><rect x="832" y="78.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="100.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Bromcom（9/6 </text><text x="907.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">把握・機能撤去・認可強化</text><text x="907.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・ログ改善・外部調査）</text><rect x="832" y="156.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">学校・マルチアカデミート</text><text x="907.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ラスト（管理者。ICO </text><text x="907.0" y="206.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">届出の判断を委ねられた）</text></svg></div><div class=fn>layer 0 は権限のない第三者。layer 1 は Communication Server 環境に残っていたレガシー SSO 登録機能と、 それを呼び続けていた内部システム。layer 2 は取得された登録情報。layer 3 は対象者と、 対象外とされた領域（MIS 本体・保護者・IdP のアカウント）。layer 4 は Bromcom の対応と、 管理者である学校。到達・利用の手段は調査中である。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>当該機能のアクセスログの状況は公表されていない。 対策に「セキュリティログの改善」が含まれることから、十分でなかった可能性がある（本記録の推定）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。本件の機能は内部システムから呼ばれていたため残されていた</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。「内部からしか使われない」は「外部から到達できない」ではない</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断</span></div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>大量の登録情報の読み出しを異常として検知できたかは公表されていない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。IdP 側の守りを固めても、SP 側の登録記録は別に残る</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**検知は監視ではなく利用者からの不具合報告だった。** 当該機能のログが十分なら、もっと早く気づける種類の事象である（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断</span></div><div class=ctl><span class="b eff">復旧を早められた</span><span class=sm>　本記録の判断</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>外部のフォレンジック専門家を起用し、影響データの性質と範囲を調査している</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。対象件数を確定できていない段階で外部調査を入れている点は妥当である</td></tr><tr><td>取得された項目を列挙し、含まれなかったもの（パスワード・認証トークン・MIS データ・保護者情報）も 明示し、持ち出しの有無は「調査中」と書いた</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。**含まれなかった項目を列挙した**点は、学校側が自校の リスクを見積もるうえで有用である。一方で**件数が無い**ため、管理者としての届出判断には足りない</td></tr><tr><td>自社は処理者であるとして ICO への届出は行わず、届出の判断を管理者（各学校）に委ねた</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。立場としては正しいが、**管理者の義務を果たせる形の情報提供 （自校分の対象者と件数）が伴って初めて機能する**。把握から顧客向け FAQ まで24日が 経っている点も、管理者側の72時間の起算に影響する</td></tr><tr><td>レガシー SSO 登録機能を本番環境から撤去した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。根本原因の確定を待たずに経路を断つ順序は妥当である</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>機能の「置き換え完了」の定義を、呼び出し元を断つところまで広げる</div><div class=lw>本件のレガシー SSO 登録機能は、後継に置き換えられた後も「内部システムからまだ 呼ばれていた」ために本番に残り、そこから情報が出た</div><div class=la><b>取るべき行動</b> システム更改の完了条件に「旧機能の呼び出し元の洗い出しと停止」「旧エンドポイントの撤去」を 明記し、**完了判定の承認者を決める**。移行プロジェクトの完了報告の様式に項目として入れる</div></li><li><div class=lp>クラウド事業者との契約に「事故時に何を、いつまでに、どの粒度で出すか」を書く</div><div class=lw>Bromcom は処理者の立場から ICO への届出を行わず、判断を管理者（学校）に委ねた。 一方で対象件数は公表時点でも未確定だった</div><div class=la><b>取るべき行動</b> 委託・SaaS 契約に、①侵害を知った後の通知期限（時間単位）、②自組織分の対象者・件数の提供、 ③監督機関への届出に必要な情報の提供、④調査報告の提出時期を明記する。 **「調査して教える」では期限のある義務を果たせない**</div></li><li><div class=lp>個人情報の「重要度」を項目ではなく対象者で評価する</div><div class=lw>流出したのはメールアドレスと紐づけ情報だが、対象には教職員と児童・生徒が含まれ、 児童生徒の一部は学校が管理していない個人アドレスだった</div><div class=la><b>取るべき行動</b> インシデント等級の判定に「対象者の属性」（未成年・患者・従業員・公職者）の軸を入れる。 **項目の機微性が低くても、対象者によって対応の重さは変わる**</div></li><li><div class=lp>検知の端緒が「利用者からの不具合報告」だった事案を、自組織の検知力の試験紙にする</div><div class=lw>本件の把握は、SSO でサインインできないという報告からだった</div><div class=la><b>取るべき行動</b> 過去1年の自組織のインシデント・障害について、**端緒が監視だったか申告だったかを集計**する。 申告が多い領域は、ログと警報の設計が追いついていない領域である</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>「置き換えたはずで、まだ到達可能な」エンドポイントの一覧を作る</div><div class=lw>原因は未知の脆弱性ではなく、本番に残り続けたレガシー機能だった</div><div class=la><b>取るべき行動</b> 公開しているエンドポイント・API を外部からの到達可否で棚卸しし、 **設計上は使われていないはずのもの**に印を付ける。印の付いたものについて、 呼び出し元・認可の検査・ログの有無を1行ずつ埋める。埋まらないものは撤去の候補にする</div></li><li><div class=lp>「内部システムからしか呼ばれない」を到達不能の根拠にしない</div><div class=lw>当該機能が残された理由は内部システムからの呼び出しだったが、 結果として権限のない第三者がアクセスしている</div><div class=la><b>取るべき行動</b> 内部向けの機能にも認証・認可を課し、到達経路（ネットワーク到達性）と認可の2層で守る。 内部向けであることを理由に認可検査を省いている箇所を洗い出す</div></li><li><div class=lp>SSO は IdP 側だけでなく、SP 側に溜まる登録情報を守る対象に入れる</div><div class=lw>流出したのはパスワードやトークンではなく、**SP（Bromcom）側に溜まっていた 登録情報**（アドレス・プロバイダ種別・登録日・最終サインイン日・内部参照番号）だった</div><div class=la><b>取るべき行動</b> 自社サービスが SSO 登録時に保存している項目を列挙し、保持の必要性と保持期間を決める。 **最終サインイン日時やプロバイダ種別は、フィッシングの材料になる**ことを前提に扱う</div></li><li><div class=lp>認証・登録機能の異常を、利用者の申告より先に捉える指標を持つ</div><div class=lw>把握の端緒はサインイン不能の報告であり、対策には「セキュリティログの改善」が含まれる</div><div class=la><b>取るべき行動</b> サインインの成功率・失敗率、登録の作成/削除件数、1クライアントあたりの登録参照件数を 時系列で監視し、閾値を超えたら警報にする。**削除は論理削除にして復元できる形**にしておく</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>法務・コンプライアンスへの示唆</div><ul><li><div class=lp>処理者・管理者の役割分担を、事故が起きる前に「誰が届け出るか」まで具体化する</div><div class=lw>Bromcom は処理者の立場から ICO への届出を行わず、判断を各学校に委ねた。 英国 GDPR では管理者が72時間以内に届け出る義務を負う</div><div class=la><b>取るべき行動</b> 自組織が管理者となる委託先について、**事故時の届出主体と、そのために事業者から受け取る 情報の一覧**を契約・覚書に書く。自組織が処理者となる取引では、 通知の期限と提供する情報の粒度を自ら定義して提示する</div></li><li><div class=lp>本人通知の実施主体をあらかじめ決めておく</div><div class=lw>本件では本人（教職員・児童生徒）への通知の実施主体と方法が公表されていない</div><div class=la><b>取るべき行動</b> 委託先での事故を想定し、本人通知の文面・送付経路・費用負担を誰が持つかを決める。 **未成年が対象の場合の通知先（本人か保護者か）**も事前に整理する</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 後継機能に置き換えたあとも、旧機能・旧エンドポイントが本番に残っている</td><td class=sm>本件の原因は「内部システムから呼ばれていたため残されたレガシー SSO 登録機能」だった</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> SSO を導入しており、SP 側に登録情報（アドレス・プロバイダ・サインイン日時）を保存している</td><td class=sm>流出したのはパスワードではなく SP 側の登録情報だった</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 内部向けの機能に認可検査を課しておらず、ネットワーク到達性だけで守っている</td><td class=sm>内部システムからの呼び出し専用だった機能に、権限のない第三者が到達した</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 校務・業務の基幹システムを SaaS で調達しており、事故時の情報提供の粒度と期限が契約に無い</td><td class=sm>処理者が届出を行わない立場を取ると、管理者は自力で判断材料を得る必要がある</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 認証・登録機能の異常（サインイン失敗率・登録削除件数）を監視していない</td><td class=sm>本件の把握は監視ではなく利用者からの不具合報告だった</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 利用者の個人メールアドレス（組織が管理していないもの）を保持している</td><td class=sm>児童・生徒の一部は学校発行ではなく個人のアドレスで登録していた</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月30日 Bromcom Computers plc</span> <a href="https://docs.bromcom.com/knowledge-base/sso-personal-data-breach-faqs/" target="_blank" rel="noreferrer noopener nofollow">SSO Personal Data Breach FAQs</a> <span class="b kind">FAQ・よくあるご質問</span><span class=sm>（(一次公表。本記録の作成者が2026年10月6日に取得して確認した。2026年9月6日の把握、 取得された項目（メールアドレス・SSO プロバイダ種別・登録日と最終サインイン日・内部参照番号）、 パスワードと認証トークンが含まれないこと、MIS 侵害の証拠が無いこと、対象が教職員と児童生徒で 保護者は別サービスのため対象外であること、不正サインインの成功が確認されていないこと、 持ち出しの有無と根本原因が調査中であること、レガシー機能の撤去・認可検査の強化・ 自己削除権限の制限・ログの改善、外部フォレンジック専門家の起用、 ICO への届出は処理者ではなく管理者の判断であること、顧客にはフィッシングへの警戒を求めることの出典。 原文英語)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年9月24日 Bromcom_Alastair（EduGeek のスレッド &quot;Bromcom SSO breach&quot;）</span> <a href="https://www.edugeek.net/forums/topic/227307-bromcom-sso-breach/" target="_blank" rel="noreferrer noopener nofollow">Bromcom SSO breach（EduGeek MIS Systems フォーラム）</a> <span class="b kind">SNS投稿</span><span class=sm>（(当事者の担当者名義による最初の説明。**本記録の作成者は取得できなかった（HTTP 403）。** 内容は The Register の報道と Bromcom の FAQ を通じて確認している)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月5日 The Register</span> <a href="https://www.theregister.com/security/2026/10/05/legacy-sign-on-service-comes-back-to-bite-school-software-provider-bromcom/5301156" target="_blank" rel="noreferrer noopener nofollow">Legacy sign-on service comes back to bite school software provider Bromcom</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事。2026年9月24日の EduGeek への Bromcom_Alastair 名義の投稿、 レガシー機能が「内部システムからまだ呼ばれていた」ため本番に残っていたこと、 Bromcom の MIS が5,000校超・390のマルチアカデミートラストで使われていること、 近年の顧客に Newport City Council・国防省・Warwickshire County Council・ 北アイルランド教育局が含まれることの出典。原文英語)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月6日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月5日の日次収集（The Register）を起点に、Bromcom の 「SSO Personal Data Breach FAQs」（2026年9月30日・英語）を取得して裏取りした。 把握日・取得項目・含まれなかった項目・対象者・対策・外部調査・ICO への届出方針は 一次公表で確認した。EduGeek の該当スレッドは HTTP 403 で取得できず、 その旨を出典に記録した。認可の不備と「サインイン不能の原因が登録削除であった可能性」は 対策の内容からの推定であり、本記録の推定として齟齬に明記した。 対象件数・持ち出しの有無・根本原因・アクセス期間は未確定事項とした。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">英国</span><span class="b tag">教育</span><span class="b tag">学校</span><span class="b tag">Bromcom</span><span class="b tag">MIS</span><span class="b tag">校務システム</span><span class="b tag">SSO</span><span class="b tag">シングルサインオン</span><span class="b tag">レガシー機能</span><span class="b tag">技術的負債</span><span class="b tag">認可の不備</span><span class="b tag">メールアドレス流出</span><span class="b tag">児童生徒</span><span class="b tag">フィッシングの材料</span><span class="b tag">処理者と管理者</span><span class="b tag">GDPR</span><span class="b tag">ICO</span><span class="b tag">件数非公表</span><span class="b tag">調査中</span><span class="b tag">海外事例</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

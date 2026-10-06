@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HFS の認証回避、公開翌日に悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0330</span>HFS の認証回避、公開翌日に悪用</h1>
+<header class="site-header">
+  <p class="subtitle">Rejetto HFS（HTTP File Server）の認証回避の欠陥 CVE-2026-61500 について、 2026年9月30日に Horizon3.ai が技術解説を公開した**翌日**、悪用が観測された—— VulnCheck のおとり（canary）は2026年10月1日の夜に悪用を検知し、 **中国の1つの IP アドレスから、米国と日本にある実際に脆弱な host が狙われていた**。 欠陥の中身は、**セッション Cookie の署名鍵を `Math.random()` から作っており、 しかも同じ乱数生成器の出力を未認証の client に漏らしていた**こと—— V8 の `xorshift128+` は反転可能なため、攻撃者は数回のログイン応答から内部状態を復元して 署名鍵を割り出し、**管理者のセッション Cookie を偽造して完全な管理者権限と 遠隔コード実行に到達できる**。発見したのは人ではなく Anthropic の攻撃的セキュリティ向け モデル **Claude Mythos**（Project Glasswing）で、**Mythos / Glasswing 由来の CVE で 実地の悪用が確認されたのはこれが2件目**である。 **重要な点は、修正が2026年7月13日の v3.2.1 で既に出ていたことである**—— 公開された技術解説が引火したのは、**79日前に直っていた欠陥を当てていない インターネット上の host** だった</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月30日</span>
+  <span>最終更新: 2026年10月4日</span>
+</div>
+
+<div class="lead"><p><strong>2026年9月30日（水）、Horizon3.ai の研究者 Zach Hanley が、Rejetto HFS（HTTP File Server）の認証回避の欠陥を技術解説として公開しました。</strong>識別子は <strong>CVE-2026-61500</strong>。管理者のセッション Cookie を偽造でき、<strong>完全な管理者権限と遠隔コード実行</strong>に到達します。</p>
+<p><strong>翌日の2026年10月1日（木）の夜、悪用が観測されました。</strong> VulnCheck の研究者 Patrick Garrity は LinkedIn に「今晩、Rejetto HFS の CVE-2026-61500 の悪用を検知しはじめた」と投稿し、<strong>「我々のおとり（canary）が、米国にある実際に脆弱な host を狙う中国の行為者を検知した」</strong>（原文英語）と述べました。同氏が The Register に語ったところでは、<strong>この夜の活動は中国の1つの IP から発しており、米国と日本にある脆弱なサーバを狙っていました。</strong>翌日の金曜（10月2日）には<strong>米国の2つの IP（173.239.211[.]248 と173.239.211[.]249。同一のサブネットで、プロキシとみられる）から4件</strong>が観測されています。</p>
+<p><strong>欠陥の機構は、2つの弱点が噛み合ったものです。</strong> HFS は利用者の認証に使うセッション Cookie を、<strong><code>Math.random()</code> で作ったランダム値を署名鍵として</strong> Koa（Node.js のウェブフレームワーク）に渡し、keygrip で署名させていました。<strong>攻撃者が署名鍵を割り出せれば、有効なセッション Cookie を偽造できます。</strong>これは <code>Math.random()</code> が安全な疑似乱数生成器であれば成り立ちません。ところが <strong>V8 の <code>Math.random()</code> が使う <code>xorshift128+</code> は完全に反転可能</strong>で、しかも<strong>アプリケーション側が同じ乱数生成器の生の出力を別の経路で漏らしていました</strong>（client が受け取る <code>Set-Cookie</code> にそれが載っていた）。Mythos は、<strong>漏れている値から Microsoft の SMT ソルバ Z3 を使って内部状態（種）を復元できる</strong>と判断しました。Hanley は「暗号上の欠陥を突いて実際のアプリケーションの認証を回避するためにSMT ソルバがこう使われたのを、我々の研究者は見た覚えがない」と書いています。</p>
+<p><strong>発見したのは人ではなくモデルです。</strong> Horizon3.ai は2026年7月にAnthropic の <strong>Project Glasswing</strong> に参加して以来、攻撃的セキュリティ向けモデル<strong>Claude Mythos</strong> を自社の脆弱性研究に使っており、「多くの重大な脆弱性を見つけてきた」としています。Garrity の集計では、<strong>Mythos と Project Glasswing 由来のCVE は2026年10月2日時点で286件</strong>あり、<strong>そのうち実地で悪用されたのは本件より前に1件だけ</strong>でした——<strong>本件は2件目です。</strong></p>
+<p><strong>ただし、本記録が最も重く見るのはここではありません。</strong> <strong>修正版 v3.2.1 は2026年7月13日に公開されていました。</strong> Rejetto 自身のリリースノートは「これまでのすべての版で複数のセキュリティ脆弱性が見つかり、攻撃者が HFS の管理者権限を得られる可能性がある」として、<strong>Hanley と「Claude および Anthropic Research との共同」に謝意を記しています。</strong>つまり <strong>9月30日の技術解説は、79日前に直っていた欠陥の解説</strong>でした。<strong>10月1日に狙われたのは、その79日間に当てていなかった host です。</strong> <strong>本件は「ゼロデイの悪用」ではなく「公開された解説が、放置された修正に引火した」事案として読むべきです</strong>（本記録の判断）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>日本国内で実際に侵害された組織があるか</span><span class="b rsn">公表されていない</span><div class=sm>**公表されているのは「日本にある脆弱な host が狙われた」という VulnCheck のおとりによる観測までである。** **侵害の成立・被害組織・件数はいずれも公表されていない。** HFS は個人・部門が独自に立てることが多く、**侵害に気づく手段も 通報の経路も乏しい**ため、**「報告が無い」ことの意味は弱い**（本記録の評価）。 **日本国内の露出台数も本記録では確認していない**</div></li><li><span class=ui>攻撃者の帰属</span><span class="b rsn">公表されていない</span><div class=sm>**最初の観測は中国の1つの IP、翌日は米国の2つの IP（同一サブネット）**で、 後者は Garrity 氏自身が**「プロキシから来ているように見える」**としている。 **主体の特定は行われていない。** **本記録は「中国からの攻撃」とは書かない**—— 最初の発信元が中国の IP だったことと、どの主体の作戦かは別の問いである</div></li><li><span class=ui>CVE-2026-61500 の CVSS 値と影響する版の範囲（公式の原票を確認できていない）</span><span class="b rsn">検証できない</span><div class=sm>**本記録の作成者は NVD（nvd.nist.gov）と CVE.org の CVE-2026-61500 の原票を 取得できなかった**（いずれも本文が返らない）。 集計サイトの記載として **CVSS 9.8**、影響範囲として **「HFS 3.0.0 から 3.2.0 まで」**という値が流通しているが、 **本記録はこれを確認していない。** **The Register の記事も CVSS 値を示していない。** **修正が v3.2.1（2026年7月13日）であることは Rejetto のリリースノートで 確認できているため、本記録は「3.2.1 より前の 3.x」という形で記す**</div></li><li><span class=ui>v3.2.1 で修正された脆弱性の全件と、それぞれの識別子</span><span class="b rsn">公表されていない</span><div class=sm>Rejetto のリリースノートは**「これまでのすべての版で複数のセキュリティ脆弱性が 見つかった」**と書くだけで、**件数も CVE 番号も挙げていない。** The Register は「v3.2.1 以降に更新すれば、本件と他のセキュリティ上の欠陥も 直る」と記す。 **したがって CVE-2026-61500 以外に何が直されたのかは分からない**—— **利用者は「どの欠陥に自分が晒されていたか」を知ることができない**（本記録の評価）</div></li><li><span class=ui>悪用の成否と、成功した場合に攻撃者が何をしたか</span><span class="b rsn">公表されていない</span><div class=sm>**観測されたのは、おとりへの到達である。** 実環境で管理者 Cookie の偽造が成立したか、遠隔コード実行まで至ったか、 その後どう使われたか（暗号化・持ち出し・踏み台化のいずれか）は **いずれも公表されていない**</div></li><li><span class=ui>Project Glasswing の対象選定と、開示までの調整の仕組み</span><span class="b rsn">公表されていない</span><div class=sm>**本件では、修正（7月13日）から技術解説（9月30日）までに79日あった。** この間隔が合意にもとづくものか、各研究者の判断なのかは示されていない。 **Project Glasswing 側に、見つけた欠陥の公表の時期や詳細度についての 共通の方針があるのかも公表されていない**—— **モデルが実証コードまで作れる以上、公表の設計が結果を左右する** （本記録の評価）</div></li><li><span class=ui>2024年の KEV 収載との関係</span><span class="b rsn">公表されていない</span><div class=sm>The Register は**「HFS は2024年に CISA の悪用された脆弱性カタログ（KEV）に 載ったことがある」**と触れているが、**その CVE 番号は記事に書かれておらず、 本記録も確認していない。** **本件とは別の脆弱性である**（本記録の読み）。 **本件 CVE-2026-61500 が KEV に収載されたかどうかも、 本記録の確認時点では分からない**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Rejetto HFS（HTTP File Server・開発者 Rejetto）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>欠陥のある製品の開発元。**個人が開発しているオープンソースのウェブファイルサーバ**で、 3.x 系は TypeScript で書き直されている。 **修正版 v3.2.1 を2026年7月13日に公開**し、リリースノートに 「これまでのすべての版で複数のセキュリティ脆弱性が見つかり、 攻撃者が HFS の管理者権限を得られる可能性がある」と記して、 Zach Hanley（Horizon3.ai）および「Claude と Anthropic Research」への謝意を添えた。 **リリースノートに CVE 番号・件数・影響する版の明示は無い。** 本記録の確認時点の最新版は **v3.3.4（2026年9月30日・「セキュリティ修正」）**である</p></div></div><div class=org><div class=org-h><span class=org-n>Horizon3.ai（研究者 Zach Hanley）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>欠陥を報告し、2026年9月30日に技術解説を公開した。 **2026年7月に Anthropic の Project Glasswing に参加**し、 以後 Claude Mythos を脆弱性研究に使っていると述べている。 **CVE 採番のために VulnCheck へ報告した。** 同社は実際に動く実証コードを Mythos が作ったとし、 The Register によれば**遠隔コード実行までの手順を示す動画も公開**している</p></div></div><div class=org><div class=org-h><span class=org-n>Anthropic（Claude Mythos・Project Glasswing）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>欠陥を見つけたモデル **Claude Mythos** の提供元。 **Project Glasswing は、重要ソフトウェアの脆弱性を見つけるために 選ばれた協力先へモデルを提供する取り組み**で、2026年4月に公表された。 **Mythos は一般公開されていない。** Garrity の集計では Mythos / Glasswing 由来の CVE は286件（2026年10月2日時点）で、 **実地で悪用されたのは本件が2件目**である</p></div></div><div class=org><div class=org-h><span class=org-n>VulnCheck（研究者 Patrick Garrity）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**CVE 番号の採番を行った CNA であり、同時に悪用を最初に観測した主体**でもある。 **自社のおとり（canary）で2026年10月1日の夜に悪用を検知**し、 中国の1つの IP が米国と日本の脆弱な host を狙っていたこと、 翌日に米国の2つの IP から4件の到達があったことを The Register に伝えた。 **Mythos / Project Glasswing 由来の CVE を一覧として追跡している**</p></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（帰属は行われていない）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**最初の観測は中国の1つの IP から**で、**翌日は米国の2つの IP （173.239.211[.]248・173.239.211[.]249。同一サブネットでプロキシとみられる）** からだった。**どの主体かは示されていない。** The Register は、中国に関係する侵入者が侵害済みの機器をプロキシとして 経路を隠すのが常であるという一般論と、2026年4月の10か国共同勧告 （中国関係の作戦がプロキシ網を「戦略的に、かつ大規模に」使うという警告）に 触れているが、**本件の帰属ではない**（本記録の留保）</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>修正版の公開から、技術解説の公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>79<span class=fu>日</span></div><div class=fa>2026年9月30日 時点</div><div class=fn>**本記録の作成者が算出した。** 2026年7月13日（v3.2.1 の公開）から 2026年9月30日（Horizon3.ai の技術解説）まで。 **この79日が本件の性格を決めている**—— 悪用されたのは未知の欠陥ではなく、**79日間当てられていなかった既知の修正**である （本記録の評価）。 **Horizon3.ai も Rejetto も、この間隔を説明していない**</div></div><div class=fig><div class=fh><span class=fl>技術解説の公開から、悪用の観測までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>日</span></div><div class=fa>2026年10月1日 時点</div><div class=fn>**本記録の作成者が算出した。** 2026年9月30日（技術解説と実証コードの公開）から 2026年10月1日の夜（VulnCheck のおとりによる悪用の検知）まで。 **「1日」は検知された時点であり、悪用の開始時刻ではない。** **また、おとりに届いたことは、実環境での侵害の成立を意味しない**（本記録の留保）</div></div><div class=fig><div class=fh><span class=fl>2026年10月2日に観測された到達の件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>件</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>VulnCheck の Garrity 氏が The Register に述べた「今日は4件の到達を見た」。 **同社のおとりに届いた件数であり、世の中の攻撃の総量ではない。** **発信元は米国の2つの IP（同一サブネット・プロキシとみられる）**である。 **実際に侵害された host の数は公表されていない**</div></div><div class=fig><div class=fh><span class=fl>Mythos / Project Glasswing 由来の CVE の件数（背景値）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>286<span class=fu>件</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>**本事案単独の数ではない。** VulnCheck の Garrity 氏が公開している 追跡一覧の値として The Register が報じた。 **このうち実地の悪用が確認されたのは、本件を含めて2件である**—— 286件のうち2件という比率そのものは**モデルが見つけた欠陥の危険度を 測る指標にはならない**（露出台数・製品の性質・解説の公開の有無がすべて違う。 本記録の評価）。 **本記録は追跡一覧の原本を取得していない**</div></div><div class=fig><div class=fh><span class=fl>Mythos / Glasswing 由来で実地の悪用が確認された脆弱性の通し番号</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>件目</span></div><div class=fa>2026年10月2日 時点</div><div class=fn>The Register は「木曜までは、これらの欠陥のうち実世界の攻撃で悪用されたのは 1件だけだった」と記している——**本件がその2件目にあたる。** **1件目がどの CVE かは記事に書かれていない**（公表されていない）</div></div></div></div>
+<section id="s4"><h2>悪用されたのはゼロデイではない——79日前に出ていた修正が当たっていなかった<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>時点を並べると、本件の性格がはっきりします。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>起きたこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2026年7月13日</strong></td>
+<td><strong>修正版 v3.2.1 が公開</strong>（「これまでのすべての版で複数のセキュリティ脆弱性」）</td>
+</tr>
+<tr>
+<td>2026年9月30日（水）</td>
+<td>Horizon3.ai が<strong>技術解説と実証コード</strong>を公開（CVE-2026-61500）</td>
+</tr>
+<tr>
+<td><strong>2026年10月1日（木）夜</strong></td>
+<td><strong>VulnCheck のおとりが悪用を検知</strong>（中国の1 IP／米国と日本の host を狙う）</td>
+</tr>
+<tr>
+<td>2026年10月2日（金）</td>
+<td><strong>4件の到達</strong>（米国の2 IP・同一サブネット・プロキシとみられる）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正から技術解説まで79日、技術解説から悪用の観測まで1日です</strong>（いずれも本記録の算出）。</p>
+<p>ここから読めることは1つです。<strong>攻撃者が待っていたのは欠陥ではなく、作り方の説明でした。</strong>修正が出た7月13日の時点で、差分を読んで機構を復元することは原理的には可能でした。しかし実際に悪用が始まったのは、<strong>暗号上の間違いの連鎖（弱い乱数と出力の漏えい）と、Z3 を使った状態復元という手順</strong>が公開された翌日です。<strong>公開が変えたのは欠陥の有無ではなく、攻撃の費用です</strong>（本記録の評価）。</p>
+<p><strong>日本にとっての位置づけ</strong>——VulnCheck のおとりは<strong>日本にある脆弱な host が狙われたこと</strong>を観測しています。ただし<strong>侵害された組織があるかは公表されていません。</strong> HFS は資産台帳に載りにくい種類のソフトウェアであり、<strong>「報告が無いこと」は「無事であること」を意味しません</strong>（本記録の読み）。</p></section>
+<section id="s5"><h2>弱い乱数と出力の漏えいが同じ製品の中で噛み合うと、署名鍵は計算できる<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p>Horizon3.ai の技術解説にもとづく機構です（本記録の作成者が本文を確認）。</p>
+<ol>
+<li><strong>署名鍵が乱数任せだった</strong>——HFS のコードでは<code>COOKIE_SIGN_KEYS</code> がどこにも設定されておらず、<code>keys=[randomId(30)]</code> として <strong><code>Math.random()</code></strong> に落ちていました。この値が Koa（Node.js のウェブフレームワーク）に渡され、<strong>keygrip がすべてのセッション Cookie をその鍵で署名</strong>します。</li>
+<li><strong>その乱数は反転できた</strong>——V8 の <code>Math.random()</code> が使う<strong><code>xorshift128+</code> は暗号用途向けではなく、出力から内部状態を逆算できます。</strong></li>
+<li><strong>出力が外に漏れていた</strong>——アプリケーションは<strong>別の経路で<code>Math.random()</code> の生の出力を client に渡していました</strong>（client が受け取る <code>Set-Cookie</code> にそれが載る）。</li>
+<li><strong>状態を解く</strong>——Mythos は、漏れた値から<strong>Microsoft の SMT ソルバ Z3</strong> を使って内部状態（種）を復元できると判断しました。</li>
+<li><strong>鍵が分かれば Cookie を偽造できる</strong>——署名鍵が割れるので、<strong>管理者のセッション Cookie を作れます。</strong>結果は<strong>完全な管理者権限と遠隔コード実行</strong>です。</li>
+</ol>
+<p><strong>1つだけなら攻撃にならない点が重要です。</strong>弱い乱数を使っていても、出力が外に出ていなければ状態は解けません。逆に乱数の出力が漏れていても、それが鍵に使われていなければ害はありません。Hanley の説明もそこを指しています—— <strong>「印象的なのは、Mythos が安全でない疑似乱数生成器を単独で指摘しただけでなく、アプリケーションが別のコード経路から生の <code>Math.random()</code> の出力を漏らしていることを同時に見つけ、その2つを連鎖として認識し、その漏えいが状態復元を可能にするのにちょうど必要な観測を生むと判断したことだ」</strong>（原文英語）。</p>
+<p><strong>本記録の評価として、ここが設計レビューの実務に効きます。</strong>単体の指摘（「<code>Math.random()</code> を使うな」）は静的解析でも出ます。見つけにくいのは<strong>組み合わせ</strong>です。<strong>「この値はどこから来て、どこへ出ていくか」</strong>を2つの経路にまたがって追う作業は、人のレビューでは工数の壁に当たりやすい。<strong>モデルが得意なのはまさにそこだった</strong>という読み方ができます。</p></section>
+<section id="s6"><h2>当てるべき版は v3.2.1 以降だが、探すべきは「台帳に無いサーバ」である<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>対処そのものは単純です。</strong></p>
+<ul>
+<li><strong>Rejetto HFS を v3.2.1 以降へ更新する</strong>（本件と、同時に直された他のセキュリティ上の欠陥に対して）。<strong>本記録の確認時点の最新安定版は v3.3.4（2026年9月30日公開）</strong>です。</li>
+<li><strong>インターネットへの露出をやめる</strong>（到達できなければ成立しません）。</li>
+</ul>
+<p><strong>難しいのは、どこで動いているかを知ることです</strong>（本記録の判断）。HFS がよく置かれる場所は、たいていこういう所です。</p>
+<ul>
+<li>取引先に大きなファイルを渡すために、<strong>部門が一時的に立てたもの</strong></li>
+<li>検証用に立てて、<strong>そのまま残っているもの</strong></li>
+<li>個人の判断で入れたもの（<strong>ソフトウェアの購買記録に残らない</strong>）</li>
+</ul>
+<p>つまり、<strong>資産管理台帳とも、脆弱性スキャンの対象リストともずれた場所にあります。</strong> そして HFS はオープンソースの個人開発であり、<strong>「ベンダーからの通知」が来ません。</strong> <strong>公表を見ている人が組織内にいないまま、インターネットに面して動き続ける</strong>——これが本件の実務上の形です。</p>
+<p><strong>したがって、取るべき手は更新作業ではなく探索です。</strong></p>
+<ol>
+<li><strong>外から見える自組織の資産を、外から数える</strong>（保有 IP レンジと、クラウドの一時的な公開端点を含める）。HFS は既定で <strong>HTTP の応答に製品名が出る</strong>ため、<strong>外部からの観測で見つけられる種類のソフトウェアです。</strong></li>
+<li><strong>見つかったものに、持ち主を割り当てる</strong>——本件の更新は数分の作業ですが、<strong>持ち主が分からない資産は更新されません。</strong></li>
+<li><strong>「ファイルを外へ渡す」業務に、組織として用意した手段を与える。</strong>禁止だけでは、同じものがまた立ちます（本記録の判断）。</li>
+</ol>
+<p><strong>なお、更新しただけでは侵害の有無は分かりません。</strong>管理者 Cookie を偽造された場合、<strong>攻撃者は正規の管理者として振る舞います。</strong>本記録が確認した資料には、<strong>侵害を見分けるための痕跡（ログの行・設置されるファイル）は示されていません。</strong>最低限の手当ては、<strong>①管理画面のアクセスログで見覚えのない操作を探す、②設定の変更履歴を確認する、③更新後にセッションと管理者資格情報を入れ替える</strong>ことです（本記録の整理。供給元がそう案内しているわけではありません）。</p></section>
+<section id="s7"><h2>モデルが見つけた欠陥は、解説と実証コードを連れて来る（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [3]</span></h2><p>本件で新しいのは、<strong>欠陥の性質ではなく、欠陥が世に出るときの形</strong>です。</p>
+<p>Garrity の集計では、<strong>Mythos / Project Glasswing 由来の CVE は286件</strong>（2026年10月2日時点）で、<strong>実地の悪用が確認されたのは本件を含めて2件</strong>です。比率としては小さい。しかし本件が示したのは、<strong>モデルが見つけた欠陥は「実際に動く実証コード」とともに公開されうる</strong>ということです。Horizon3.ai は <strong>Mythos が実証コードを作り、任意のコマンドの実行まで実演した</strong>と書いており、The Register によれば<strong>手順を示す動画も公開</strong>されています。</p>
+<p><strong>防御側が使える時間は、公開の設計で決まります。</strong>本件では、<strong>修正が79日前に出ていた</strong>という点が救いでした。当てていれば、10月1日の到達は何も起こしません。<strong>逆に言えば、修正が出ていない状態で同じ水準の解説が出た場合、防御側に時間は残りません</strong>（本記録の評価）。</p>
+<p><strong>日本の CISO にとっての含意は2つです</strong>（本記録の判断）。</p>
+<ol>
+<li><strong>「パッチが出た」と「当たっている」の差が、これまでより高くつく。</strong>本件の79日は、<strong>攻撃の費用が下がるまでの猶予</strong>でした。同じ猶予が次もあるとは限りません。</li>
+<li><strong>自組織が「モデルによる脆弱性探索」を導入する場合も、同じ問題が起きる。</strong>見つけた欠陥の扱い（供給元への通知、公表の時期、実証コードの保管）に方針が無いと、<strong>自社の検査結果が攻撃の材料になりえます。</strong></li>
+</ol>
+<p>なお本記録は、同じ Project Glasswing の枠組みで見つかった欠陥の事案として<strong>INC-2026-0326（Epic Systems が MyChart の欠陥修正のために製品開発を約6週間止めた件）</strong>を記録しています。<strong>あちらは CVE 番号も対象版も公表されず、利用側が該否を判定できませんでした。</strong> <strong>本件は識別子と修正版があり、やるべきことがはっきりしています。</strong> <strong>モデルが見つけること自体より、見つけたものをどう公表するかで利用側の対処可能性が決まる</strong>——2件を並べると、そこが共通の論点として残ります。</p></section>
+<section id="s8"><h2>分かっていないこと——侵害の有無・帰属・公式の CVSS<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>本記録が<strong>確認できていないこと</strong>を明示します。</p>
+<ul>
+<li><strong>日本で侵害された組織があるか</strong>——観測されているのは「日本の脆弱な host が狙われた」ところまでです。<strong>被害の公表はありません。</strong></li>
+<li><strong>攻撃者の帰属</strong>——最初の発信元は中国の1 IP、翌日は米国の2 IP で、後者は<strong>プロキシとみられる</strong>と観測者自身が述べています。<strong>主体の特定は行われていません。</strong></li>
+<li><strong>公式の CVSS 値と影響版の範囲</strong>——<strong>NVD と CVE.org の原票を本記録の取得手段では参照できませんでした。</strong>集計サイトには CVSS 9.8、影響範囲「3.0.0 から 3.2.0」という値がありますが、<strong>本記録は確認していません。</strong></li>
+<li><strong>v3.2.1 で直された脆弱性の全件</strong>——リリースノートは「複数」と書くだけで、件数も識別子も示していません。</li>
+<li><strong>悪用の成否とその後</strong>——おとりへの到達が観測されただけで、実環境での成立は公表されていません。</li>
+</ul>
+<p><strong>「確認されていない」は「起きていない」ではありません。</strong>本件の場合、<strong>気づく手段と通報の経路がどちらも乏しい種類の資産</strong>が対象であるため、<strong>報告の不在から安全を導かない</strong>ことが特に重要です（本記録の判断）。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-61500　<b>概要:</b> **Rejetto HFS 3.x のセッション Cookie 署名鍵の予測可能性による セッション偽造（認証回避）。** 署名鍵が `Math.random()`（V8 の `xorshift128+`）由来であり、 **同じ乱数生成器の生の出力が未認証の client へ漏れていた**ため、 少数のログイン応答を集めれば内部状態を復元して署名鍵を割り出せる。 結果として**管理者のセッション Cookie を偽造でき、 完全な管理者権限と遠隔コード実行に至る。** **採番は VulnCheck（CNA）。** **CVSS 値と CWE 番号、影響版の範囲は、本記録では公式の原票で確認できていない。** **修正は v3.2.1（2026年7月13日公開）**　<b>exploited:</b> はい</div></td></tr><tr><th>affected_product</th><td>**Rejetto HFS（HTTP File Server）3.x 系**—— 個人が開発しているオープンソースのウェブファイルサーバで、 3.x 系は TypeScript による書き直し（2.x 系は Delphi）。 **Node.js の Koa と keygrip を使ってセッション Cookie を署名している。**</td></tr><tr><th>affected_versions</th><td>**v3.2.1 より前の 3.x 系**（**修正は v3.2.1・2026年7月13日 15:31 UTC 公開**。 本記録は GitHub の公開 API で公開時刻とリリースノートを確認した）。 **集計サイトには「3.0.0 から 3.2.0 まで」という範囲が流通しているが、 本記録は公式の原票で確認できていない。** **本記録の確認時点の最新安定版は v3.3.4（2026年9月30日・別の報告者による セキュリティ修正を含む）。** ほかに v3.4.0-alpha2（2026年10月1日）がある。 **Rejetto のリリースノートは影響版を列挙していない** （「これまでのすべての版」という表現にとどまる）</td></tr><tr><th>exploitation_status</th><td>**実地の悪用が観測されている。** **2026年10月1日（木）の夜**、VulnCheck のおとり（canary）が **中国の1つの IP から、米国と日本にある実際に脆弱な host を狙う活動**を検知した。 **2026年10月2日（金）には4件の到達**が観測され、発信元は **米国の2つの IP（173.239.211[.]248・173.239.211[.]249。同一サブネットで プロキシとみられる）**であった。 **技術解説の公開（2026年9月30日）から1日である。** **ただし観測されたのはおとりへの到達であり、実環境での侵害の成立・ 被害組織・件数はいずれも公表されていない。** **実証コードは公開済み**（Horizon3.ai は Mythos が作った実証コードで 任意のコマンド実行を実演したとし、The Register は手順を示す動画の公開に触れている）</td></tr><tr><th>discovery_method</th><td>**Anthropic の攻撃的セキュリティ向けモデル Claude Mythos による発見。** Horizon3.ai は**2026年7月に Project Glasswing に参加**して以来、 Mythos を自社の脆弱性研究に使っており「多くの重大な脆弱性を見つけてきた」と述べている。 Hanley は**「数学的な蒸留と科学的な作業、とくに計算機科学と オペレーティングシステムに関わるものに秀でている」**ことが本件の発見に つながったとし、**「悪用可能な暗号上の過ちの組み合わせを見つけ、 遠隔コード実行に至るよう制約を解いた」**と書いている。 **Horizon3.ai の研究者は、SMT ソルバがこの形で実際のアプリケーションの 認証回避に使われたのを見た覚えがないとしている**</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> Rejetto HFS を v3.2.1 以降（できれば最新安定版の v3.3.4）へ更新する　<b>副作用:</b> **3.2.1 から 3.3.4 の間に機能の変更が入っている**ため、 設定や連携の確認が要る。 **更新しても、すでに管理者 Cookie を偽造されていた場合の後始末にはならない** （本記録の評価。供給元はそう案内していない）—— **セッションの無効化と管理者資格情報の入れ替えを併せて行う必要がある**</div><div class=sub><b>item:</b> HFS をインターネットから到達できない位置に移す（VPN の内側・社内限定）　<b>副作用:</b> **外部の取引先へファイルを渡す用途が成立しなくなる。** **代替手段（組織が用意した受け渡しの仕組み）を同時に出さないと、 同じものが別の場所に立つ**（本記録の判断）</div><div class=sub><b>item:</b> 外部から見える自組織の資産を数え直し、HFS の稼働を探す　<b>副作用:</b> **棚卸しそのものに工数がかかる。** **保有 IP レンジの外（クラウドの一時的な公開端点・個人契約の回線）に あるものは見つけられない**——この穴は残る</div><div class=sub><b>item:</b> 更新後にセッションを無効化し、管理者の資格情報を入れ替える　<b>副作用:</b> **稼働中の共有リンクや自動処理が切れる可能性がある。** **本記録の整理であり、供給元の案内ではない**</div></td></tr><tr><th>indicators</th><td><div class=sub>173.239.211[.]248</div><div class=sub>173.239.211[.]249</div><div class=sub>最初の観測は中国の1つの IP（アドレスは公表されていない）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年4月</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**背景。** Anthropic が **Project Glasswing**（選ばれた協力先に 攻撃的セキュリティ向けモデル Claude Mythos を提供し、重要ソフトウェアの 脆弱性を見つける取り組み）を公表した。 VulnCheck の Patrick Garrity は、公表の直後から **Mythos に帰属する CVE の追跡を始めている**</td></tr><tr><td class="sm nowrap tw">2026年7月</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Horizon3.ai が Project Glasswing に参加**し、以後 Claude Mythos を 自社の脆弱性研究に使い始めた（同社の記述。日付は示されていない）</td></tr><tr><td class="sm nowrap tw">2026年7月13日 15:31 UTC</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正版 v3.2.1 が公開された**（本記録の作成者が GitHub の公開 API で 公開時刻を確認）。リリースノートは **「これまでのすべての版で複数のセキュリティ脆弱性が見つかり、 攻撃者が HFS の管理者権限を得られる可能性がある」**とし、 **Zach Hanley（Horizon3.ai）および「Claude と Anthropic Research との共同」**に 謝意を記している。 **CVE 番号・件数・影響する版の明示は無い。** **この時点で修正は利用者に届く状態にあった**—— 技術解説の公開（9月30日）より**79日前**である</td></tr><tr><td class="sm nowrap tw">2026年9月30日 13:48 UTC</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**v3.3.4 が公開された**（「セキュリティ修正。報告してくれた @Motan1337 に感謝」）。 **本件 CVE-2026-61500 とは別の報告者による別の修正であり、 本記録は同一の修正として扱わない。** 本記録の確認時点でこれが最新の安定版であり、 ほかに v3.4.0-alpha2（2026年10月1日）がある</td></tr><tr><td class="sm nowrap tw">2026年9月30日（水）</td><td class=nowrap><span class="b kind">公表</span></td><td>**Horizon3.ai の Zach Hanley が技術解説を公開した**（開示日）。 内容は、**①`COOKIE_SIGN_KEYS` がコードのどこにも設定されておらず `keys=[randomId(30)]` として `Math.random()` に落ちていること、 ②V8 の `xorshift128+` が暗号用途に使えず反転可能であること、 ③アプリケーションが同じ乱数生成器の生の出力を別の経路で漏らしており client が `Set-Cookie` で受け取っていること、 ④漏れた値から Z3（SMT ソルバ）で内部状態を復元できること**である。 **Mythos が実際に動く実証コードを作り、任意のコマンドの実行まで実演した**と 同社は記している。**The Register によれば、遠隔コード実行までの手順を示す 動画も公開された**</td></tr><tr><td class="sm nowrap tw">2026年10月1日（木）夜</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>**悪用が観測された。** VulnCheck の Patrick Garrity が LinkedIn に 「今晩、Rejetto HFS の CVE-2026-61500 の悪用を検知しはじめた」と投稿し、 **「我々のおとり（canary）が、米国にある実際に脆弱な host を狙う 中国の行為者を検知した」**（原文英語）と述べた。 同氏が The Register に語ったところでは、**この夜の活動は中国の1つの IP から 発しており、米国と日本にある脆弱なサーバを狙っていた。** **技術解説の公開（9月30日）から1日である**</td></tr><tr><td class="sm nowrap tw">2026年10月2日（金）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**到達が続いた。** Garrity は The Register に **「今日は4件の到達を見た」**と述べ、発信元は**米国の2つの IP （173.239.211[.]248 と 173.239.211[.]249）**で、 **同一のサブネットにあり「プロキシから来ているように見える」**と付け加えた。 同日時点で、**Mythos / Project Glasswing 由来の CVE は286件**であり、 **実地の悪用が確認されたのは本件を含めて2件目**である</td></tr><tr><td class="sm nowrap tw">2026年10月3日 15:27 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Register が報じた**（本記録の起点）。 記事は上記の観測に加え、**HFS が2024年に CISA の悪用された脆弱性カタログ（KEV）に 載った経緯があること**、**Anthropic が Mythos を一般公開するには強力すぎると 述べていること**、**2026年4月の10か国共同勧告が中国関係の作戦による プロキシ網の大規模な利用を警告していたこと**を伝えた</td></tr><tr><td class="sm nowrap tw">2026年10月4日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が一次資料の裏取りを行った。** **①Horizon3.ai の技術解説の本文を取得し、機構（`Math.random()` の署名鍵・ `xorshift128+` の反転可能性・`Set-Cookie` 経由の漏えい・Z3 による状態復元）と 開示日（2026年9月30日）を確認した。** **②Rejetto HFS の GitHub のリリース一覧を公開 API で取得し、 v3.2.1 の公開時刻（2026年7月13日 15:31 UTC）とリリースノートの本文 （「これまでのすべての版で複数のセキュリティ脆弱性」「Zach Hanley と Claude・Anthropic Research への謝意」）、および最新版が v3.3.4 （2026年9月30日）であることを確認した。** **③NVD（nvd.nist.gov）と CVE.org の CVE-2026-61500 の原票は取得できなかった** （いずれも本文が返らない）——**CVSS 値と影響版の範囲は確認できていない**（齟齬に記録）。 **④VulnCheck の Garrity 氏の LinkedIn 投稿そのものは取得していない**—— 引用はすべて The Register を通じた把握である</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>NVD と CVE.org の原票を取得できておらず、CVSS 値と影響版の範囲を確認していない</span><div class=sm>**本記録の作成者は2026年10月4日に nvd.nist.gov と cve.org の CVE-2026-61500 のページを取得したが、いずれも本文が返らなかった。** 集計サイトには **CVSS 9.8**、影響範囲**「HFS 3.0.0 から 3.2.0 まで」**という 値が流通しているが、**本記録はこれを一次の原票で確認していないため 本文に確定値として書かない。** **The Register の記事も CVSS 値を示していない。** **修正版が v3.2.1 であることは Rejetto のリリースノート（出典2）で 確認できているため、本記録は影響範囲を「v3.2.1 より前の 3.x」と記す**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>「公開翌日に悪用」という枠組みと、修正が79日前に出ていた事実の関係</span><div class=sm>**「公開の翌日に悪用された」という記述は報道のとおりである。** ただし**公開されたのは技術解説（2026年9月30日）であり、 修正そのものは2026年7月13日の v3.2.1 で出ていた**—— **この79日の間隔は本記録の作成者が GitHub の公開 API で リリースの公開時刻を確認して算出したものである。** **The Register の記事は「v3.2.1 以降に更新せよ」と書くが、 その版がいつ出たのかには触れていない。** **したがって「ゼロデイではなく、放置された既知の修正が狙われた」という 本記録の整理は、資料から導いた本記録の読みである**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>VulnCheck の観測の原文（LinkedIn の投稿）を取得していない</span><div class=sm>**Patrick Garrity 氏の LinkedIn 投稿、および同氏が公開している Mythos / Project Glasswing 由来の CVE の追跡一覧は、本記録では取得していない。** **「今晩、CVE-2026-61500 の悪用を検知しはじめた」「おとりが米国にある 実際に脆弱な host を狙う中国の行為者を検知した」「今日は4件の到達を見た」 「2つの IP は同一サブネットでプロキシから来ているように見える」 「286件」といった記述はすべて The Register を通じた把握である。** **おとりの配置（どの国にいくつ置かれているか）も公表されていないため、 「米国と日本が狙われた」という観測の母数が分からない**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>日本が狙われたという記述の性質</span><div class=sm>**「米国と日本にある脆弱なサーバを狙っていた」のは、 VulnCheck のおとりによる観測である。** **第三者による検証は無く、侵害された組織の公表も無い。** **おとりに届いたことは、実環境での侵害の成立を意味しない。** **本記録はこれを「日本の host が標的に含まれていた」という水準で記録し、 「日本で被害が出た」とは書かない**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Rejetto のリリースノートが CVE 番号にも件数にも触れていない</span><div class=sm>**v3.2.1 のリリースノートは「これまでのすべての版で複数の セキュリティ脆弱性が見つかり、攻撃者が HFS の管理者権限を得られる 可能性がある」と書くだけで、CVE 番号・件数・影響版の一覧を示していない。** 報告者（Zach Hanley・Horizon3.ai）と「Claude および Anthropic Research」への 謝意は記されている。 **したがって利用者は、リリースノートだけでは 「自分がどの欠陥に晒されていたか」「いくつ直ったか」を知ることができない** （本記録の評価）。 **なお v3.3.4（2026年9月30日）のリリースノートも「セキュリティ修正」の 一言と別の報告者への謝意のみである**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>弱い乱数で作った署名鍵と、その乱数の出力の漏えいが噛み合うと、 管理者セッションは計算で作れる</div><div class=svgwrap><svg viewBox="0 0 1202 400" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,149.0 C193.0,149.0 193.0,53.0 220,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,53.0 C295.0,53.0 295.0,142.0 220,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,142.0 C397.0,142.0 397.0,200.0 424,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,238.0 C397.0,238.0 397.0,200.0 424,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,200.0 C601.0,200.0 601.0,200.0 628,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,200.0 C805.0,200.0 805.0,149.0 832,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,149.0 C1009.0,149.0 1009.0,200.0 1036,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,340.0 C295.0,340.0 295.0,238.0 220,238.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,245.0 C91.0,245.0 91.0,149.0 16,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,244.0 C907.0,244.0 907.0,149.0 832,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="111.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（最初の観測は中国</text><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の1 IP／翌日は米国の</text><text x="91.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2 IP・プロキシとみ…</text><text x="91.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">帰属は行われていない</text><rect x="220" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HFS のログイン応答（</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証でも取得できる）</text><text x="295.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">数回の応答を集めるだけで</text><text x="295.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">よい</text><rect x="220" y="104.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱点① Math.ran</text><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">dom() の生の出力が</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Set-Cookie…</text><text x="295.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">単独では害が小さい</text><rect x="220" y="194.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱点② セッション署名鍵</text><text x="295.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">が Math.rando</text><text x="295.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">m()（V8 の xo…</text><text x="295.0" y="257.0" text-anchor="middle" fill="#f48fb1" font-size="10">COOKIE_SIGN_</text><text x="295.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">KEYS が未設定のまま</text><rect x="424" y="163.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Z3（SMT ソルバ）で</text><text x="499.0" y="199.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部状態（種）を復元</text><text x="499.0" y="212.0" text-anchor="middle" fill="#f48fb1" font-size="10">Mythos が可能と判</text><text x="499.0" y="224.0" text-anchor="middle" fill="#f48fb1" font-size="10">断し実証コードを作った</text><rect x="628" y="163.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理者のセッション Co</text><text x="703.0" y="199.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">okie を偽造</text><text x="703.0" y="212.0" text-anchor="middle" fill="#ffcc80" font-size="10">keygrip の署名が</text><text x="703.0" y="224.0" text-anchor="middle" fill="#ffcc80" font-size="10">通る</text><rect x="832" y="112.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HFS の完全な管理者権</text><text x="907.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">限 → 遠隔コード実行</text><text x="907.0" y="161.0" text-anchor="middle" fill="#64b5f6" font-size="10">攻撃者は正規の管理者とし</text><text x="907.0" y="173.0" text-anchor="middle" fill="#64b5f6" font-size="10">て振る舞う</text><rect x="1036" y="163.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開されたファイルと、サ</text><text x="1111.0" y="199.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーバが置かれた区画</text><text x="1111.0" y="212.0" text-anchor="middle" fill="#ffcc80" font-size="10">侵害の成立は公表されてい</text><text x="1111.0" y="224.0" text-anchor="middle" fill="#ffcc80" font-size="10">ない</text><rect x="220" y="296.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避①: v3.2.1 </text><text x="295.0" y="332.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">以降へ更新（2026年7</text><text x="295.0" y="346.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">月13日に公開済み）</text><text x="295.0" y="359.0" text-anchor="middle" fill="#f48fb1" font-size="10">当てていれば成立しない。</text><text x="295.0" y="371.0" text-anchor="middle" fill="#f48fb1" font-size="10">79日間の猶予があった</text><rect x="16" y="201.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="223.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避②: インターネット</text><text x="91.0" y="237.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">から到達できない位置へ移</text><text x="91.0" y="251.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">す</text><text x="91.0" y="264.0" text-anchor="middle" fill="#f48fb1" font-size="10">到達できなければ成立しな</text><text x="91.0" y="276.0" text-anchor="middle" fill="#f48fb1" font-size="10">い。受け渡しの代替手段が</text><rect x="832" y="200.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避③: 管理操作の記録</text><text x="907.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">とセッション・資格情報の</text><text x="907.0" y="250.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">入れ替え</text><text x="907.0" y="263.0" text-anchor="middle" fill="#f48fb1" font-size="10">本記録の整理。偽造は認証</text><text x="907.0" y="275.0" text-anchor="middle" fill="#f48fb1" font-size="10">に成功するため失敗監視で</text></svg></div><div class=fn>Horizon3.ai の技術解説（2026年9月30日）と The Register の報道（2026年10月3日）に もとづく（本記録が2026年10月4日に本文を取得して確認）。 **点線の2つの弱点は、どちらか一方だけでは攻撃に至らない**—— 噛み合ったときに鍵の復元が現実的になる。 **「修正は79日前に出ていた」という整理と、回避の位置づけは本記録の評価であり、 Rejetto も Horizon3.ai もその形では説明していない。** **実環境での侵害の成立は公表されていない**（観測されたのはおとりへの到達）</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「ゼロデイだったから防げなかった」という説明が成り立たない事案である。** 悪用されたのは79日前に修正が出ていた欠陥であり、 **公開された解説が引火したのは放置された修正だった**</div><div class=lw>公表のあとで被害が出ると「新しい攻撃だった」という整理に流れやすい。 本件の時点を並べると、**修正公開（7月13日）→技術解説（9月30日）→ 悪用の観測（10月1日）**であり、**当てていれば成立しない。** モデルによる脆弱性発見が増えるほど、**解説と実証コードが同時に出る**ため、 **この種の「既知だが当たっていない」資産が狙われる速度が上がる**（本記録の評価）</div><div class=la><b>取るべき行動</b> **直近3か月で「修正が出たことは把握したが、適用の確認をしていない」 資産の一覧を出させる。** とくに**インターネットに面したもの**に限って、 適用済みかどうかを機械的に確認できる状態（版の取得手段）があるかを問う。 無ければ**「版を外から確認できること」を調達・構築の要件に加える**</div></li><li><div class=lp>**台帳に無いソフトウェアが、台帳にあるものより先に狙われる。** HFS は個人・部門が立てる種類の道具であり、 **購買記録にも資産台帳にも載らない**</div><div class=lw>本件の対象は、商用製品ではなく**1人の開発者によるオープンソース**である。 **ベンダーからの通知が来ず、公表を見る担当者が組織内にいない。** それでもインターネットに面して動き、**既定で製品名が応答に出る**ため、 **攻撃者からは見つけやすい**（本記録の評価）</div><div class=la><b>取るべき行動</b> **外部からの資産観測（自組織の IP レンジに対する定期的な外形スキャン）を 仕組みとして持つ。** 見つかった資産に**持ち主を割り当てるまでを手順に含める** （持ち主が決まらない資産は更新されない）。 あわせて**「ファイルを外へ渡す」業務に、組織として用意した手段を与える**—— 禁止だけでは同じものが別の場所に立つ</div></li><li><div class=lp>**自組織がモデルによる脆弱性探索を導入するなら、 「見つけたあと」の方針を先に決める必要がある**</div><div class=lw>本件では、モデルが**実際に動く実証コード**まで作っている。 **探索の成果物は、そのまま攻撃の材料になりうる。** 供給元への通知の経路、公表の時期、実証コードの保管と共有範囲に 方針が無いまま始めると、**自社の検査結果が流出したときの被害が大きい** （本記録の判断）</div><div class=la><b>取るべき行動</b> **検査の委託契約と社内規程に、①発見の通知先と期限、②実証コードの 取り扱い（保管場所・共有範囲・保存期間）、③第三者製品の欠陥を見つけた場合の 公表方針を明記する。** 既に検査を外部に委託している場合は、 **成果物の保管の仕方を確認する**</div></li><li><div class=lp>**「報告が無いこと」を安全の根拠にしない。** 本件の対象資産は、侵害に気づく手段も通報の経路も乏しい</div><div class=lw>HFS を立てた部門には監視の仕組みが無いことが多く、 **管理者 Cookie を偽造された場合、攻撃者は正規の管理者として振る舞う。** **侵害を見分ける痕跡は、本記録が確認した資料には示されていない。** 日本の host が狙われたことは観測されているが、**被害の公表は無い**</div><div class=la><b>取るべき行動</b> **自組織の該当資産について「侵害されていないと言える根拠」を 1行で書けるかを確認する。** 書けないなら、 **更新と同時にセッション無効化と管理者資格情報の入れ替えを行う** （疑わしきは入れ替える。費用は小さい）</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**署名鍵・トークン・セッション識別子を `Math.random()` 系の 非暗号用途の乱数から作っていないかを、コードで確認する**</div><div class=lw>本件の起点は、`COOKIE_SIGN_KEYS` が設定されず `keys=[randomId(30)]` として `Math.random()` に落ちていたことである。 **V8 の `xorshift128+` は反転可能であり、出力が分かれば内部状態が解ける。** **「既定値のまま動いてしまう」作りだったことが本質である**（本記録の読み）</div><div class=la><b>取るべき行動</b> **`Math.random`・`rand()`・`mt_rand()` などの呼び出しを全コードで検索し、 鍵・トークン・セッション・CSRF・パスワード再設定に使われていないかを確認する。** 該当があれば **`crypto.randomBytes`（Node.js）等の暗号用途の生成器へ置き換える。** あわせて**署名鍵が未設定のまま起動できる作りを禁止する** （起動時に必須の設定として検査し、無ければ落とす）</div></li><li><div class=lp>**「漏らしてはいけない値」が別の経路から出ていないかを、 値の流れとして追う。** 単体の指摘では本件は見つからない</div><div class=lw>弱い乱数だけでも、出力の漏えいだけでも、実用的な攻撃には届かない。 **2つが同じ製品の中で噛み合ったときに鍵の復元が現実的になる。** Hanley が「印象的だ」と書いたのは、**モデルがこの2点を連鎖として 認識した**ことである</div><div class=la><b>取るべき行動</b> **レビューの観点に「この値はどこから来て、どこへ出ていくか」を追う作業を 明示的に入れる。** とくに**乱数・内部識別子・サーバ側の状態**が、 応答ヘッダ（`Set-Cookie` を含む）・エラーメッセージ・デバッグ端点から 外へ出ていないかを確認する。 **応答に出る値の一覧を作り、それぞれの出所を書く**のが具体的な手である</div></li><li><div class=lp>**セッション Cookie が偽造されたときに気づける記録を持つ。** 本件では攻撃者は正規の管理者として振る舞う</div><div class=lw>管理者 Cookie を偽造された場合、**認証は「成功」する。** 認証失敗の監視では引っかからない。 **本記録が確認した資料には、侵害を見分ける痕跡が示されていない**—— つまり**利用側が自前で記録を持っていないと判定できない**（本記録の評価）</div><div class=la><b>取るべき行動</b> **管理操作（設定変更・利用者追加・ファイル操作）を、 誰が・いつ・どの IP からという形で記録し、保存期間を確認する。** あわせて**管理セッションの発行元 IP・UA の急な変化を警報にする。** 記録が無い製品を外に出すときは、**前段（リバースプロキシ）側で取る**</div></li><li><div class=lp>**外から見える自組織の資産を、外から数える手段を持つ。** HFS は応答から製品名が分かる種類のソフトウェアである</div><div class=lw>内側の台帳は、部門が立てたものを映さない。 **攻撃者は外から探している**——本件の観測は 「実際に脆弱な host を狙っていた」というものであり、 **相手は該当する host を特定できている**（本記録の読み）</div><div class=la><b>取るべき行動</b> **保有 IP レンジに対する定期的な外形スキャンを回し、 「応答に出る製品名と版」の一覧を作る。** クラウドの一時的な公開端点も対象に含める。 **見つかった資産は、台帳に登録するまでを1つの作業にする**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> インターネットから到達できる位置に、ファイル共有・ファイル受け渡しのための小さなサーバを置いている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> セッション Cookie・API トークン・CSRF トークンの生成や署名に使っている乱数の出所を、コードで確認していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> サーバ側の内部状態（乱数の出力・内部識別子・デバッグ情報）が応答ヘッダやエラーに出ていないかを棚卸ししていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 「修正が出たこと」は把握できるが、「適用されたこと」を外から機械的に確認できない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 管理操作の記録（誰が・いつ・どの IP から）が無い、または保存期間が短い製品を外に出している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 自組織または委託先が、モデルを使った脆弱性探索を導入している（または検討している）</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年7月13日 15:31 UTC Rejetto（HFS の開発者・GitHub のリリース）</span> <a href="https://github.com/rejetto/hfs/releases" target="_blank" rel="noreferrer noopener nofollow">rejetto/hfs リリース v3.2.1（および v3.3.4・2026年9月30日）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**供給元の一次資料。本記録の作成者が2026年10月4日に GitHub の 公開 API（`repos/rejetto/hfs/releases`）でリリース一覧と本文を取得して確認した。** **確認した内容**—— **①v3.2.1 の公開時刻が 2026-07-13T15:31:17Z であること、 ②そのリリースノートが「これまでのすべての版で複数のセキュリティ脆弱性が 見つかり、攻撃者が HFS の管理者権限を得られる可能性がある」とし、 「Horizon3.ai の Zach Hanley（@hacks_zach）に、Claude および Anthropic Research との共同に対して深く感謝する」と記していること、 ③最新の安定版が v3.3.4（2026-09-30T13:48:20Z・「セキュリティ修正。 報告してくれた @Motan1337 に感謝」）であり、ほかに v3.4.0-alpha2 （2026-10-01）があること、④v3.2.0 の公開が 2026-07-05 であること。** **CVE 番号・脆弱性の件数・影響版の一覧は、リリースノートに書かれていない**)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月30日 Horizon3.ai（Zach Hanley）</span> <a href="https://horizon3.ai/attack-research/disclosures/anthropic-mythos-rejetto-hfs-rce/" target="_blank" rel="noreferrer noopener nofollow">Anthropic Mythos Finds Rejetto HFS RCE</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(英語。**発見側の技術解説。本記録の作成者が2026年10月4日に本文を取得して 確認した。** 次の点はここに依拠している—— **①開示日が2026年9月30日であること、②対象が TypeScript で書き直された HFS 3.x であること（2.x は Delphi）、③`COOKIE_SIGN_KEYS` がコードのどこにも 設定されておらず `keys=[randomId(30)]` として `Math.random()` に落ちていること、 ④V8 の `xorshift128+` が非暗号用途で反転可能であること、 ⑤アプリケーションが別のコード経路から生の `Math.random()` の出力を漏らし、 client が `Set-Cookie` でそれを受け取っていること、 ⑥Z3（SMT ソルバ）で内部状態を復元できると Mythos が判断したこと、 ⑦Mythos が実際に動く実証コードを作り、任意のコマンドの実行を実演したこと、 ⑧Horizon3.ai が2026年7月に Project Glasswing に参加して以来 Mythos を 脆弱性研究に使っていること。** **修正版の版番号と公開日、CVSS 値、影響版の範囲、実地の悪用については この資料では確認できなかった**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月3日 15:27 UTC The Register - Security</span> <a href="https://www.theregister.com/security/2026/10/03/anthropics-super-bug-hunting-model-mythos-is-hardcore-good-at-math-as-latest-vuln-under-attack-shows/5300933" target="_blank" rel="noreferrer noopener nofollow">Anthropic&#x27;s super bug-hunting model Mythos is hardcore good at math, as latest vuln under attack shows</a> <span class="b kind">記事</span><span class=sm>（(英語。**本記録の起点。** 次の点はこの記事に依拠している—— **①CVE 番号が CVE-2026-61500 であり、採番のために Horizon3.ai が VulnCheck へ報告したこと、②v3.2.1 以降へ更新すれば本件と他の欠陥も直ること、 ③Hanley が遠隔コード実行までの手順を示す動画を公開したこと、 ④VulnCheck の Patrick Garrity が木曜に LinkedIn で 「今晩、Rejetto HFS の CVE-2026-61500 の悪用を検知しはじめた」 「我々のおとりが、米国にある実際に脆弱な host を狙う中国の行為者を検知した」 と述べたこと、⑤木曜夜の活動が中国の1つの IP から発し、米国と日本にある 脆弱なサーバを狙っていたこと、⑥金曜に「4件の到達」があり、発信元が 173.239.211[.]248 と 173.239.211[.]249（同一サブネット・プロキシとみられる） であったこと、⑦Mythos / Project Glasswing 由来の CVE が286件で、 木曜まで実地の悪用は1件だけだったこと、⑧HFS が2024年に CISA の KEV に 載った経緯があること、⑨Project Glasswing が2026年4月に公表され、 Anthropic が Mythos を一般公開するには強力すぎると述べていること、 ⑩2026年4月の10か国共同勧告が中国関係の作戦によるプロキシ網の 大規模な利用を警告していたこと。** **CVSS 値・影響版の範囲・修正版の公開日、および日本国内の被害の有無には 触れていない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月4日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月4日の日次の新着記事（The Register・10月3日）を起点に、 **一次資料として Horizon3.ai の技術解説の本文と、Rejetto HFS の GitHub のリリース一覧（公開 API）を取得して裏を取った。**
+**裏取りで最も効いたのは、修正版の公開日である。** 報道の枠組みは「技術解説の公開翌日に悪用」だが、 **GitHub のリリースを確認すると、修正版 v3.2.1 は2026年7月13日に 公開されていた**——**79日前である。** **本記録はこれを受けて、本件を「ゼロデイの悪用」ではなく 「公開された解説が、放置された既知の修正に引火した」事案として 整理した**（根拠と留保は齟齬に記録した）。 **The Register は「v3.2.1 以降へ更新せよ」と書くが、 その版がいつ出たのかには触れていない。**
+**取得できなかったもの**——**NVD と CVE.org の CVE-2026-61500 の原票** （いずれも本文が返らない。**CVSS 値と影響版の範囲は確認していない**）と、 **VulnCheck の Garrity 氏の LinkedIn 投稿および追跡一覧** （引用はすべて The Register を通じた把握）。いずれも齟齬に記録した。
+**日本との関係**——VulnCheck のおとりによる観測として **日本の脆弱な host が標的に含まれていた**ため `japan_relevance` は `domestic-impact` とした。 **ただし侵害された組織の公表は無く、国内の露出台数も確認していない**—— 「標的に含まれていた」以上のことは書いていない。
+**本文は5節**（①時点を並べて「ゼロデイではない」ことを示す概観、 ②弱い乱数と出力の漏えいが噛み合う機構、③当てるべき版と 「台帳に無いサーバを探す」という実務、④モデルが見つけた欠陥は 解説と実証コードを連れて来るという評価、⑤分かっていないこと）。 **関連として INC-2026-0326（同じ Project Glasswing の枠組みで Epic Systems の MyChart の欠陥が見つかった事案）を links に置いた**—— **あちらは識別子も対象版も公表されず利用側が該否を判定できなかったのに対し、 本件は識別子と修正版がある。** モデルが見つけること自体より、 **見つけたものをどう公表するかで利用側の対処可能性が決まる**という 共通の論点を本文に書いた。
+**status は `new`。** CVE の原票・KEV 収載の有無・侵害の公表のいずれも 動く余地がある。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Rejetto HFS</span><span class="b tag">HTTP File Server</span><span class="b tag">CVE-2026-61500</span><span class="b tag">認証回避</span><span class="b tag">セッション偽造</span><span class="b tag">署名鍵</span><span class="b tag">Math.random</span><span class="b tag">xorshift128+</span><span class="b tag">疑似乱数</span><span class="b tag">Z3</span><span class="b tag">SMTソルバ</span><span class="b tag">遠隔コード実行</span><span class="b tag">Claude Mythos</span><span class="b tag">Project Glasswing</span><span class="b tag">AIによる脆弱性発見</span><span class="b tag">Horizon3.ai</span><span class="b tag">VulnCheck</span><span class="b tag">canary観測</span><span class="b tag">公開翌日の悪用</span><span class="b tag">修正済みだが未適用</span><span class="b tag">パッチ適用の遅れ</span><span class="b tag">日本が標的</span><span class="b tag">プロキシ経由</span><span class="b tag">影のIT</span><span class="b tag">資産棚卸し</span><span class="b tag">オープンソース</span><span class="b tag">個人開発</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-06 10:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
