@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Unsloth Studioがモデル閲覧だけでRCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0388</span>Unsloth Studioがモデル閲覧だけでRCE</h1>
+<header class="site-header">
+  <p class="subtitle">Pillar Security は、LLM の微調整・量子化に使われる OSS ライブラリ **Unsloth** の ブラウザ操作画面 **Unsloth Studio** に任意コード実行の欠陥があったことを 2026年9月29日に公表した。 **Studio がモデルの情報を調べる処理で `trust_remote_code=True` を既定にしていた**ため、 **利用者がモデルを選んだだけで**——**モデルの重みのダウンロードも、 学習や推論の開始も、実行許可の確認も経ずに**—— **攻撃者が Hugging Face のリポジトリに置いた Python コードが Studio の実行側で動く**。 仕掛けは `config.json` の `auto_map` にリポジトリ内の Python ファイルを指すこと。 **影響は Unsloth 2026.6.9 より前の版で Studio を動かしていた利用者。** **修正版 2026.6.9 では、Studio から Hugging Face のモデルを直接読み込む機能そのものを 取り除き、ローカルのモデルファイルについても同等の経路を閉じた。** **CVE は付与されていない**（Studio がベータであることを理由に Unsloth 側が勧告を出さなかった）。 Pillar Security は、実際に悪用された痕跡も、 この手口のために作られた悪性のモデルリポジトリも発見していないとしている</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">設定不備</span><span class="b cause">ガバナンス・組織文化（ガイドライン理解不足・丸投げ等）</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月29日（Pillar Security の公表）</span>
+  <span>最終更新: 2026年10月7日</span>
+</div>
+
+<div class="lead"><p><strong>Pillar Security</strong> は2026年9月29日、<strong>Unsloth Studio</strong> に任意コード実行の欠陥があったことを公表した。<strong>Unsloth は LLM の微調整（ファインチューニング）と量子化に使われるOSS ライブラリで、Studio はそのブラウザ操作画面である。</strong></p>
+<p><strong>成立の条件が極端に軽いことが本件の性格を決める。</strong> <strong>Pillar Security の記述（原文英語の要旨）——「微調整の実行も、推論の呼び出しも、モデルのダウンロードの明示的な確認も要らなかった。Hugging Face のリポジトリの設定メタデータを調べるという行為だけで、Studio の処理側を動かしている計算機でコードの実行を引き起こすのに足りた」</strong>。</p>
+<p><strong>仕組みはこうである。</strong></p>
+<ol>
+<li>攻撃者が Hugging Face に、<strong>独自の Python コードを含むモデルリポジトリ</strong>を作る</li>
+<li><strong><code>config.json</code> の <code>auto_map</code> に、そのリポジトリ内の Python ファイルを指す</strong>（例: <code>"auto_map": { "AutoConfig": "configuration.UnslothPocConfig" }</code>）</li>
+<li>利用者が Studio でそのモデルを選ぶ</li>
+<li><strong>Studio の処理側が <code>load_model_config()</code> でモデル情報を読む</strong></li>
+<li><strong><code>trust_remote_code=True</code> が既定のため、Transformers の<code>AutoConfig.from_pretrained()</code> が参照先のモジュールを取得して取り込む</strong></li>
+<li><strong>取り込み（import）の副作用として、攻撃者のコードが実行される</strong></li>
+</ol>
+<p><strong>Pillar Security が特定した該当箇所は<code>studio/backend/utils/models/model_config.py</code> の <code>load_model_config()</code> で、既定の引数として <code>trust_remote_code=True</code> が宣言されていた。</strong> <strong>新しい Transformers を別プロセスで扱う経路でも、同じ設定が直接書かれていた</strong>（CSA の記述）。</p>
+<p><strong>研究者 Ariel Fogel の言葉</strong>（原文英語）—— <strong>「コードはメタデータの確認以外の何物でもないところから動いた」</strong>、<strong>「モデルの <code>config.json</code> を読むだけで、この悪用を引き起こすのに足りた」</strong>。</p>
+<p><strong>時系列</strong>（CSA の整理による）—— <strong>2026年6月上旬に非公開で開発側へ報告、6月16日までに確認、2026年6月中に修正版 2026.6.9 を公開、2026年9月29日に公開。</strong></p>
+<p><strong>修正の仕方が設定の無効化ではなかった点も記録する価値がある</strong>（CSA の記述。原文英語の要旨）—— <strong>「開発側は単にフラグを無効にするのではなく、モデルの読み込み経路そのものを作り直し、Studio が情報を調べる際に Hugging Face から任意のモデルを直接読み込まないようにし、さらにローカルに保存されたモデルファイルに同梱されたリモートコードも信用しないようにした」</strong>。</p>
+<p><strong>CVE は付与されていない。</strong> <strong>Studio がベータの機能であることを理由に Unsloth 側が勧告を出さなかったためである</strong>（gbhackers の記述）。<strong>ただし CSA は「当該コードは既定の PyPI パッケージに入って配布されていた」と指摘している。</strong></p>
+<p><strong>Pillar Security は、実際に悪用された痕跡も、この手口のために作られた悪性のモデルリポジトリも発見していないとしている</strong>（iThome が Dark Reading を引いて伝えた Ariel Fogel の説明）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="経過">経過</a></li><li><a href="#s10" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s11" title="波及の構造">波及の構造</a></li><li><a href="#s12" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s13" title="対応の評価">対応の評価</a></li><li><a href="#s14" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s15" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s16" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s17" title="出典">出典</a></li><li><a href="#s18" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s19" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>影響を受ける版の正確な範囲</span><span class="b rsn">見解が分かれる</span><div class=sm>**資料間で表現が一致していない**（本記録が突き合わせて確認）。 **iThome は「Unsloth 2026.5.10 およびそれ以前の版で Studio を実行していた者が影響を受ける」としている。** **CSA は「2026.6.9 より前の版（prior to 2026.6.9）」としている。** **gbhackers も「2026.6.9 より前」である。** **2026.5.10 と 2026.6.9 のあいだに版が存在したか、 存在した場合それが影響を受けたかが分からない**（本記録の指摘）。 **実務上は「2026.6.9 以降であること」を基準にすれば足りる** —— **影響の上限がどこであれ、修正版の下限は3資料で一致している。** **ただし「自組織が使っていた版が影響を受けたか」を 事後に判定する場面では、この曖昧さが問題になる**（本記録の評価）。</div></li><li><span class=ui>CVE が付与されなかったことの帰結</span><span class="b rsn">公表されていない</span><div class=sm>**gbhackers は「Unsloth がベータの Studio 機能について 勧告を公表しなかったため、CVE は付与されなかった」としている。** **CSA は「開発側は Studio がベータであることを理由に辞退した。 ただし当該コードは既定の PyPI パッケージに入って配布されていた」と 指摘している。** **本記録はこの判断の是非を論じない**（本記録の立場）。 **記録すべきは、利用者側の帰結である**（本記録の評価）—— **①脆弱性情報の自動収集（CVE・NVD を参照する仕組み）に本件が載らない。** **②依存関係の走査ツールが CVE 番号で判定している場合、 2026.6.9 より前の Unsloth を使っていても警告が出ない。** **③したがって「更新すべきこと」を知る経路が、 ベンダーの勧告でも脆弱性データベースでもなく、 研究者の公表と報道だけになる。** **なお同じプロジェクトの別の欠陥（CVE-2026-93348）には CVE が付与されている** —— **同じ時期・同じ性格（モデルの設定ファイルから任意コードが動く）の 欠陥で扱いが分かれている。**</div></li><li><span class=ui>影響を受けた利用者数・組織数と、日本国内の利用状況</span><span class="b rsn">公表されていない</span><div class=sm>**Pillar Security・Unsloth・CSA のいずれも、 Studio の利用者数・影響を受けた組織数を公表していない**（本記録が確認）。 **日本国内の利用状況への言及も無い。** **参考になるのは CSA の指摘だけである** —— **「Unsloth は Hugging Face Hub における モデル派生物の最大級の供給元であり、 したがって露出は『意図してリモートコードの実行を選んだ利用者』ではなく 『モデルの一覧を見ていた Studio 利用者すべて』に及んだ」** （原文英語の要旨）。 **これは規模の大きさを示唆するが、数ではない**（本記録の整理）。 **なお、Unsloth 本体の利用規模と Studio の利用規模は別である** —— **Studio はベータの機能であり、 本体の利用者のうちどれだけが Studio を使っていたかは分からない。**</div></li><li><span class=ui>修正版 2026.6.9 の正確な公開日</span><span class="b rsn">公表されていない</span><div class=sm>**CSA の整理は「Fix shipped June 2026（version 2026.6.9）」で、 日付を示していない。** **版の付け方（2026.6.9）から2026年6月9日とみられるが、 本記録はこれを確認していない**（discrepancies 参照）。 **これが分からないと、 「修正から公開（2026年9月29日）まで何日あったか」を算出できない** （本記録の指摘）—— **おおよそ3か月半であり、 協調的開示として十分な猶予が取られたことは分かる。**</div></li><li><span class=ui>実際に悪用された事例の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**Pillar Security の Ariel Fogel は 「実際に悪用された痕跡も、この攻撃の仕組みのために作られた 悪性のモデルリポジトリも発見していない」と述べている** （iThome が Dark Reading を引いて伝えた内容）。 **これは「無かった」ではなく「発見していない」である**（本記録の読み）。 **本件の実行は、利用者の側に何の表示も出さず、 モデルの重みのダウンロードも始まらない**（Pillar Security の記述）。 **さらに微調整・量子化の環境は、 多数のパッケージの取得と大量のファイル操作が 平常の動作として常時起きている環境である**（本記録の評価）。 **起きていても気づかれにくい構造である。** **なお、修正から公開までの約3か月半に加えて、 欠陥が存在した期間（いつから `trust_remote_code=True` が 書かれていたか）は公表されていない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Unsloth（OSS プロジェクト・開発元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Pillar Security（AI セキュリティ事業者）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Hugging Face（モデル配布基盤）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Unsloth Studio の利用者（数は公表されていない）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Cloud Security Alliance（CSA）</span><span class="b role">検証者（学術・ファクトチェック機関）</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>修正が入った Unsloth の版</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2,026.6<span class=fu>版（2026.6.9）</span></div><div class=fn>**正確な版の表記は `2026.6.9` である** （数値欄には小数として表せる `2026.6` を置き、 正確な表記は単位の欄に記した。本記録の便宜的な扱い）。 **CSA・iThome・gbhackers の3資料が一致している。** **Pillar Security は 2026.6.9 で再試験し、 攻撃経路が閉じたことを確認している**（iThome の記述）。 **推奨は「2026.6.9 以降への更新」である。**</div></div><div class=fig><div class=fh><span class=fl>影響を受ける版の上限（iThome の表記）</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>2,026.5<span class=fu>版（2026.5.10 およびそれ以前）</span></div><div class=fn>**iThome は「Unsloth 2026.5.10 およびそれ以前の版で Studio を 実行していた者が影響を受ける」としている。** **一方 CSA は「2026.6.9 より前の版（prior to 2026.6.9）」と表現している。** **この2つは同じことを言っているとは限らない**（本記録の指摘。 discrepancies 参照）—— **2026.5.10 と 2026.6.9 のあいだに版が存在したかが分からない。** **confidence を approx としたのは、 影響範囲の境界が資料間で一致していないためである。** **実務上は「2026.6.9 以降であること」を基準にすれば足りる**（本記録の評価）—— **影響の上限がどこであれ、修正版の下限は一致している。**</div></div><div class=fig><div class=fh><span class=fl>別の関連欠陥 CVE-2026-93348 の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.6<span class=fu>点</span></div><div class=fn>**本件とは別の欠陥の値である**（本記録の整理。混同しないよう 「先行事例・比較対象の数値」として扱った）。 **CVE-2026-93348（2026年9月28日公開・CVSS 8.6）は Unsloth Zoo の `get_transformers_model_type()` における コード注入であり、`model_type` の値に改行と任意の Python ソースを 混ぜられることによるものである。** **対象は Unsloth Zoo 2025.9.9 以降 2026.8.14 未満、 Unsloth 2025.9.9 から 2026.8.19。** **本件（Studio の情報取得時の実行）には CVE が付与されていない。** **両者を並べて記録した理由** —— **同じプロジェクトで、同じ時期に、 「モデルの設定ファイルから任意コードが動く」という 同じ性格の欠陥が2件出ている**（本記録の評価）。 **一方には CVE があり、一方には無い。**</div></div><div class=fig><div class=fh><span class=fl>2026年に同種の trust_remote_code の問題が報告された他のフレームワークの数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>**CSA が挙げたのは LMDeploy・vLLM・InstructLab の3つ** （iThome が CSA の分析を引いて伝えている）。 **CSA は別に「本件は、AI の推論・学習のフレームワークが `trust_remote_code=True` をソースに直接書き込んで 利用者の意思を黙って上書きした、2026年の少なくとも4件の 密接に関連する公表のうちの1つである」としている**（原文英語の要旨）—— **本件を含めて4件という数え方である。** **confidence を min としたのは「少なくとも」であるため。** **この数字が本件の読み方を決める**（本記録の評価）—— **単発の不具合ではなく、同じ設計上の誤りが 複数のフレームワークで独立に繰り返されている。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件は実証に基づく記録である** —— **Pillar Security が実際に攻撃経路を成立させ、 修正版で閉じたことまで確認している。** **ただし実際の被害事例ではない** —— **同社は実際に悪用された痕跡も、この手口のために作られた 悪性のモデルリポジトリも発見していないとしている。** **連鎖が短いことが本件の性格である**（本記録の整理）—— **攻撃者が用意するのは Hugging Face 上の1つのモデルリポジトリだけで、 利用者側に要るのは「Studio でそのモデルを選ぶ」という操作1つである。** **モデルの重みのダウンロード・推論の呼び出し・学習の開始・ リモートコードの実行許可の確認はいずれも不要。** **「情報を読むだけ」のはずの処理が、取り込み（import）の副作用として コードを動かす構造になっていた。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class=srcs>[2] [4]</span></div><div>**攻撃者が Hugging Face に、独自の Python コードを含む モデルリポジトリを作る。** **`config.json` の `auto_map` に、 そのリポジトリ内の Python ファイルを指す** （CSA が挙げた例: `&quot;auto_map&quot;: { &quot;AutoConfig&quot;: &quot;configuration.UnslothPocConfig&quot; }`）。 **リポジトリはモデルの重みを含む必要がない**（本記録の整理）—— **設定ファイルと Python ファイルだけで成立する。** **本記録の評価** —— **公開のモデルハブに置く形であるため、 攻撃者は特定の相手を狙う必要がない。** **名前を既存の人気モデルに似せる、 あるいは一覧に現れるようにしておけば、 選んだ利用者の側で勝手に動く。**</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class=srcs>[2] [3] [4]</span></div><div>**利用者が Studio でそのモデルを選ぶ。** **Studio の処理側が `load_model_config()` でモデル情報を読む。** **この関数は `trust_remote_code=True` を既定の引数として宣言していた** （Pillar Security が特定した該当箇所は `studio/backend/utils/models/model_config.py`。 **新しい Transformers を別プロセスで扱う経路でも 同じ設定が直接書かれていた**）。 **`trust_remote_code=True` のとき、Transformers の `AutoConfig.from_pretrained()` は設定データを返す前に 参照先のモジュールを自動的にダウンロードして取り込む。** **取り込み（import）の副作用として、 そのモジュールに含まれるコードが実行される**（CSA の記述）。 **実行は Studio の処理側を動かしている計算機で、 その操作を行った利用者の権限で起きる。**</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class=srcs>[2] [4]</span></div><div>**攻撃者が用意した Python コードが、 Studio の処理側を動かしている計算機で実行される。** **実行される内容は攻撃者の任意である**（本記録の整理）—— **公表資料は「任意コード実行」としており、 具体的に何が可能かは列挙していない。** **実行主体は Studio を動かしている利用者の権限である** （CVE-2026-93348 の記載は「操作を行う利用者の権限で動作する」と 表現している。別の欠陥だが構造は同じ）。 **Pillar Security は、実際に悪用された痕跡も、 この手口のために作られた悪性のモデルリポジトリも 発見していないとしている。**</div></li></ol></div>
+<section id="s5"><h2>「情報を読むだけ」の処理が、取り込みの副作用でコードを動かしていた<span class="b slot">原因・手口</span></h2><p><strong>本件の核心は、2つの動作が同じ呼び出しに同居していたことである</strong>（本記録の整理）。</p>
+<p><strong>CSA の記述</strong>（原文英語の要旨）—— <strong>「<code>trust_remote_code=True</code> が設定されているとき、Transformers の <code>AutoConfig.from_pretrained()</code> 関数は設定データを返す前に、参照されたモジュールを自動的にダウンロードして取り込み、取り込み（import）の副作用としてそのモジュールに含まれるコードを実行する」</strong>。</p>
+<p><strong>Python の <code>import</code> は、モジュールの中身を上から実行する。</strong> <strong>「読み込む」という語感と、実際に起きることが違う</strong>（本記録の評価）。</p>
+<p><strong>Pillar Security が特定した該当箇所</strong>—— <strong><code>studio/backend/utils/models/model_config.py</code> の<code>load_model_config()</code> が <code>trust_remote_code=True</code> を既定の引数として宣言していた。</strong> <strong>さらに、新しい Transformers を別プロセスで扱う経路でも同じ設定が直接書かれていた</strong>（CSA の記述）。</p>
+<p><strong>設計の意図と実際の挙動のずれを並べる</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>工程</th>
+<th>意図</th>
+<th>実際</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>モデルの一覧を見る</td>
+<td>選択肢を表示する</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>モデルを選ぶ</strong></td>
+<td><strong>宣言的なメタデータを読む</strong></td>
+<td><strong>参照先の Python を取得して実行する</strong></td>
+</tr>
+<tr>
+<td>重みをダウンロードする</td>
+<td>モデルを取得する</td>
+<td>（ここまで来ない）</td>
+</tr>
+<tr>
+<td>学習・推論を開始する</td>
+<td>計算する</td>
+<td>（ここまで来ない）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ariel Fogel の言葉がこれを言い当てている</strong>（原文英語）—— <strong>「コードはメタデータの確認以外の何物でもないところから動いた」</strong>、<strong>「モデルの <code>config.json</code> を読むだけで、この悪用を引き起こすのに足りた」</strong>。</p>
+<p><strong>攻撃者が用意するものも軽い</strong>（本記録の整理）—— <strong><code>config.json</code> の <code>auto_map</code> に Python ファイルを指す記述を書き、そのファイルを同じリポジトリに置くだけである。</strong> <strong>モデルの重みは不要。</strong></p>
+<p><strong>CSA が挙げた具体例</strong>—— <code>"auto_map": { "AutoConfig": "configuration.UnslothPocConfig" }</code>。</p></section>
+<section id="s6"><h2>「信用するかどうか」の判断が、道具の側で既に決まっていた<span class="b slot">評価・解釈</span></h2><p><strong><code>trust_remote_code</code> という設定の名前が、本来の設計を表している</strong>（本記録の整理）。</p>
+<p><strong>iThome の記述</strong>（原文中国語の要旨を日本語に訳した）—— <strong>「この設定は本来、モデルのリポジトリが提供するコードを信用するか否かを利用者が決めるべきものである。AI の道具が自ら有効にしてしまうと、利用者が明示的に当該コードを信用すると選んでいないにもかかわらず、モデルを処理する際に直接これらのコードが実行されうる」</strong>。</p>
+<p><strong>つまり「既定で False」であること自体が安全機構である</strong>（本記録の評価）。<strong>利用者が <code>True</code> にするとき、それは「このリポジトリの作者を信用する」という明示的な判断である。</strong> <strong>道具がソースに <code>True</code> を書き込むと、その判断の機会が消える。</strong></p>
+<p><strong>そして、これは1つの製品の不具合ではない。</strong></p>
+<p><strong>CSA の整理</strong>（原文英語の要旨）—— <strong>「本件は、AI の推論・学習のフレームワークが<code>trust_remote_code=True</code> をソースに直接書き込んで利用者の意思を黙って上書きした、2026年の少なくとも4件の密接に関連する公表のうちの1つである」</strong>。<strong>挙げられているのは LMDeploy・vLLM・InstructLab</strong>（iThome が CSA の分析を引いて伝えている）。</p>
+<p><strong>同じ誤りが、独立に、複数のフレームワークで繰り返されている</strong>（事実）。</p>
+<p><strong>なぜ繰り返されるのかを本記録は推定する</strong>（本記録の評価。公表資料に根拠は無い）——</p>
+<ul>
+<li><strong><code>trust_remote_code=False</code> のままでは、新しいアーキテクチャのモデルが読めない。</strong> <strong>「動かない」という不具合として報告される。</strong></li>
+<li><strong>開発側から見ると、<code>True</code> にするのは「対応モデルを増やす」という機能の改善に見える。</strong></li>
+<li><strong>利用者から見ると、何も変わっていない。</strong> <strong>設定を変えた覚えが無いので、変わったことに気づけない。</strong></li>
+</ul>
+<p><strong>実務の結論</strong>（本記録の評価）—— <strong>自組織が使っている AI の推論・学習フレームワークについて、<code>trust_remote_code</code> の既定値をソースで確認する。</strong> <strong>確認は単純である</strong> ——<strong>ソースから語を検索し、既定が <code>True</code> になっている箇所を探すだけでよい。</strong> <strong>これは1回で終わる作業ではなく、更新のたびに確認する対象である</strong> —— <strong>既定値は版で変わりうる。</strong></p></section>
+<section id="s7"><h2>修正はフラグを倒すのではなく、読み込み経路を取り除くことだった<span class="b slot">再発防止</span></h2><p><strong>開発側の対処の仕方が、本件から学べることの1つである</strong>（本記録の評価）。</p>
+<p><strong>CSA の記述</strong>（原文英語の要旨）—— <strong>「開発側は単にフラグを無効にするのではなく、モデルの読み込み経路そのものを作り直し、Studio が情報を調べる際に Hugging Face から任意のモデルを直接読み込まないようにし、さらにローカルに保存されたモデルファイルに同梱されたリモートコードも信用しないようにした」</strong>。</p>
+<p><strong>2つのことをしている</strong>（本記録の整理）。</p>
+<p><strong>① <code>trust_remote_code</code> を <code>False</code> に倒すだけで済ませなかった。</strong> <strong>フラグを倒すと「対応モデルが減る」という不具合として再び報告され、いずれ戻される可能性がある</strong>（本記録の推定）。<strong>読み込み経路を取り除けば、戻すには設計の変更が必要になる。</strong></p>
+<p><strong>② ローカルのモデルファイルについても同じ経路を閉じた。</strong> <strong>これが重要である</strong>（本記録の評価）—— <strong>「Hugging Face から取ってくるのが危ない」という理解だと、手元に落としたモデルファイルは安全に見える。</strong> <strong>しかし <code>config.json</code> の <code>auto_map</code> は、ローカルのファイルにも同じように書ける。</strong> <strong>どこから来たかではなく、「設定ファイルが指す Python を取り込むか」が問題だった。</strong></p>
+<p><strong>一方で、修正には利便性の代償がある</strong>（本記録の指摘）。<strong>「Studio から Hugging Face のモデルを直接読み込む」機能が無くなった</strong> —— <strong>これは Studio の主要な使い勝手の1つだったとみられる。</strong> <strong>開発側は、機能を残して安全にする道ではなく、機能を取り除く道を選んだ。</strong> <strong>公表資料にこの判断の理由の説明は無い</strong>（本記録が確認）。</p>
+<p><strong>更新の推奨は3資料（CSA・iThome・gbhackers）が一致している</strong> —— <strong>2026.6.9 以降への更新。</strong> <strong>Pillar Security は 2026.6.9 で再試験し、攻撃経路が閉じたことを確認している</strong>（iThome の記述）。</p></section>
+<section id="s8"><h2>CVE が無いため、脆弱性情報を自動で集める仕組みには載らない<span class="b slot">未確定事項</span></h2><p><strong>本件に CVE は付与されていない</strong>（事実）。</p>
+<p><strong>理由</strong>—— <strong>gbhackers は「Unsloth がベータの Studio 機能について勧告を公表しなかったため」としている。</strong> <strong>CSA は「開発側は Studio がベータであることを理由に辞退した。ただし当該コードは既定の PyPI パッケージに入って配布されていた」と指摘している。</strong></p>
+<p><strong>本記録はこの判断の是非を論じない</strong>（本記録の立場）。<strong>記録すべきは、利用者側の帰結である</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>脆弱性情報の自動収集（CVE・NVD を参照する仕組み）に本件が載らない。</strong></li>
+<li><strong>依存関係の走査ツールが CVE 番号で判定している場合、2026.6.9 より前の Unsloth を使っていても警告が出ない。</strong></li>
+<li><strong>したがって「更新すべきこと」を知る経路は、ベンダーの勧告でも脆弱性データベースでもなく、研究者の公表と報道だけになる。</strong></li>
+</ul>
+<p><strong>同じプロジェクトの別の欠陥との対比が、この問題を際立たせる</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>本件</th>
+<th>CVE-2026-93348</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>対象</td>
+<td><strong>Unsloth Studio</strong></td>
+<td><strong>Unsloth Zoo / Unsloth</strong></td>
+</tr>
+<tr>
+<td>成立の条件</td>
+<td><strong>モデルを選ぶだけ</strong></td>
+<td>学習・推論のための読み込み</td>
+</tr>
+<tr>
+<td>仕掛け</td>
+<td><code>auto_map</code> の指す Python の取り込み</td>
+<td><code>model_type</code> への改行＋Python ソース</td>
+</tr>
+<tr>
+<td><strong>CVE</strong></td>
+<td><strong>無い</strong></td>
+<td><strong>ある（CVSS 8.6）</strong></td>
+</tr>
+<tr>
+<td>公表</td>
+<td>2026年9月29日</td>
+<td>2026年9月28日</td>
+</tr>
+</tbody>
+</table>
+<p><strong>同じ時期・同じプロジェクトで、「モデルの設定ファイルから任意コードが動く」という同じ性格の欠陥が2件出て、扱いが分かれている</strong>（本記録の評価）。<strong>成立の条件がより軽いほう（本件）に CVE が無い。</strong></p>
+<p><strong>実務の結論</strong>（本記録の評価）—— <strong>AI 関連の OSS については、CVE を起票単位にした脆弱性管理では取りこぼす。</strong> <strong>「ベータ」「実験的」と位置づけられた機能は、既定のパッケージに入って配布されていても勧告の対象外とされることがある。</strong> <strong>したがって、使っている AI 関連パッケージについては版の更新を定期的に行う運用（CVE の有無によらない）が必要になる。</strong></p></section>
+<div class="blk " id="s9"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**Pillar Security（研究者 Ariel Fogel）が Unsloth の開発側へ 非公開で欠陥を報告した。** **報告の具体的な日付は公表されていない**（CSA の整理は「early June 2026」）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Unsloth の開発側が報告の内容を確認した** （CSA の整理は &quot;Acknowledged by June 16, 2026&quot;）。 **報告から確認までの日数は、報告日が公表されていないため算出できない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Unsloth が修正版 2026.6.9 を公開した。** **修正は設定の無効化ではなく、モデルの読み込み経路の作り直しである** —— **Studio が情報を調べる際に Hugging Face から任意のモデルを 直接読み込む機能を取り除き、 ローカルに保存されたモデルファイルに同梱されたリモートコードも 信用しないようにした**（CSA の記述）。 **公開の具体的な日付は公表されていない** （版の番号から2026年6月9日とみられるが、 本記録はこれを確認していない。discrepancies 参照）。 **勧告は公表されていない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**別の欠陥として CVE-2026-93348 が公開された** （Unsloth Zoo 2025.9.9 以降 2026.8.14 未満・ Unsloth 2025.9.9 から 2026.8.19・CVSS 8.6）。 **これは `get_transformers_model_type()` が 入れ子のモデル設定から `model_type` の値を集める際に 文字の許可一覧を強制しておらず、改行と任意の Python ソースが 正規化を生き延びることによるコード注入である。** **本件（Studio の情報取得時の実行）とは別の欠陥である** （本記録が突き合わせて確認。discrepancies 参照）—— **混同しないよう、関係する事実としてのみ記録する。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**Pillar Security が公表した。** **公表の内容は——成立の条件（モデルを選ぶだけ・ 重みのダウンロードや推論・学習の開始は不要）・ 該当箇所（`studio/backend/utils/models/model_config.py` の `load_model_config()`）・`auto_map` を使った仕掛け・ 修正版（2026.6.9）での再試験の結果・ 実際の悪用の痕跡を発見していないこと。** **実際に動作する攻撃用リポジトリは公開していない**（本記録が確認）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Cloud Security Alliance（CSA）が研究ノートとして整理し公表した。** **時系列・該当ファイルと関数名・`auto_map` の具体例・ 修正の中身・CVE が付与されなかった理由（Studio がベータであること、 ただし当該コードは既定の PyPI パッケージに入って配布されていたこと）を 記述している。** **同種の `trust_remote_code` の問題が2026年に LMDeploy・vLLM・InstructLab でも起きていたと整理している。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**iThome（台湾）が報じた。** **影響を受けるのは「Unsloth 2026.5.10 およびそれ以前の版で Studio を動かしていた利用者」とし、 Pillar Security が 2026.6.9 で再試験して攻撃経路が閉じたことを 確認したと伝えている。** **「この脆弱性にはまだ公開された CVE 識別子と CVSS のリスクスコアが無い」 と明記している。** **また Dark Reading を引いて、Ariel Fogel が 「実際に悪用された痕跡も、この攻撃の仕組みのために作られた 悪性のモデルリポジトリも発見していない」と述べたことを伝えている。** **CSA の分析を引いて、LMDeploy・vLLM・InstructLab でも 2026年に同種の問題が起きたと伝えている。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が CSA の研究ノートを直接取得し、 iThome の報道・gbhackers の報道・CVE-2026-93348 の記載と突き合わせた。** **確認できたのは——該当ファイルと関数名・`auto_map` の具体例・ 時系列（6月上旬の報告・6月16日までの確認・6月中の修正・9月29日の公開）・ 修正の中身・CVE が付与されなかった理由・ 研究者名（Ariel Fogel）・同種の先行事案（LMDeploy・vLLM・InstructLab）。** **確認できなかったのは——Pillar Security 自身の公表本体 （本記録は到達していない）・影響を受けた版の正確な範囲 （iThome は 2026.5.10 以前、CSA は 2026.6.9 より前と表現が異なる）・ 修正版の正確な公開日・影響を受けた利用者数。**</td></tr></tbody></table></div></div>
+<div id="s10"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>Pillar Security の公表本体に本記録は到達していない</span><div class=sm>**本記録は、Pillar Security 自身の公表（ブログ記事）の本文を 取得できていない**（検索では同社の該当ページが見つからず、 CSA の研究ノート・gbhackers・iThome の報道に依拠した）。 **したがって本記録が確認したのは、第三者が整理した内容である。** **本記録が最も重い根拠として扱ったのは CSA の研究ノート** （2026年10月1日付）—— **該当ファイルと関数名（`studio/backend/utils/models/model_config.py` の `load_model_config()`）・`auto_map` の具体例・ 時系列（6月上旬の報告・6月16日までの確認・6月中の修正・9月29日の公開）・ 修正の中身・CVE が付与されなかった理由を、 最も具体的に記述している。** **本記録が確認していないのは**—— ①**Pillar Security の公表本体の表現**（引用した Ariel Fogel の言葉は いずれも第三者の報道経由である）、 ②**実証に使われたリポジトリの構成**（同社は公開していないとみられる）、 ③**同社が 2026.6.9 で再試験した手順。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>本件と CVE-2026-93348 は別の欠陥である</span><div class=sm>**同じ時期・同じプロジェクトで、性格の似た欠陥が2件ある。** **混同しやすいため、違いを明示する**（本記録が突き合わせて確認）。
+**本件（Studio の情報取得時の実行）**—— 対象は **Unsloth Studio**。 仕掛けは **`config.json` の `auto_map` が指す Python モジュールが `trust_remote_code=True` により取り込まれ、 取り込みの副作用で実行される。** 成立の条件は **モデルを選ぶだけ**（学習も推論も不要）。 **CVE は付与されていない。** 公表は **2026年9月29日**（Pillar Security）。 修正は **2026.6.9**。
+**CVE-2026-93348**—— 対象は **Unsloth Zoo**（2025.9.9 以降 2026.8.14 未満）と **Unsloth**（2025.9.9 から 2026.8.19）。 仕掛けは **`get_transformers_model_type()` が 入れ子のモデル設定から `model_type` の値を集める際に 文字の許可一覧を強制しておらず、 改行と任意の Python ソースが正規化を生き延びる。** 成立の条件は **学習または推論のためにモデルを読み込むこと。** **CVSS 8.6。** 公開は **2026年9月28日。**
+**共通するのは「モデルの設定ファイルから任意コードが動く」という性格である** （本記録の評価）。 **一方には CVE があり、一方には無い。** **本記録は本件のみを対象とし、 CVE-2026-93348 は関係する事実として記録する。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>修正版の公開日を版番号から推定していない</span><div class=sm>**修正版の番号は `2026.6.9` である。** **Unsloth の版の付け方が「年.月.日」であれば 2026年6月9日の公開となるが、本記録はこれを確認していない** （本記録の限界）。 **CSA の整理も「Fix shipped June 2026」と月までである。** **本記録は時系列の該当項目を「2026年6月」（月の精度）として記録し、 日付を推定で埋めなかった**（本記録の判断）。 **なお、影響を受ける版の上限として iThome が挙げた `2026.5.10` も 同じ付け方なら2026年5月10日となる** —— **そうであれば、2026年5月10日版から2026年6月9日版のあいだに 版が無かったことになるが、これも確認していない。** **影響範囲の境界が資料間で一致していない理由は、 この点にあるとみられる**（本記録の推定。unknowns 参照）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s11"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>モデルを選ぶ操作だけで、Studio の処理側でコードが動く経路</div><div class=svgwrap><svg viewBox="0 0 1202 408" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,78.0 C91.0,78.0 91.0,159.0 16,159.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,159.0 C91.0,159.0 91.0,247.0 16,247.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,159.0 C91.0,159.0 91.0,329.0 16,329.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,247.0 C91.0,247.0 91.0,329.0 16,329.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,159.0 C193.0,159.0 193.0,241.0 220,241.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,166.0 C295.0,166.0 295.0,241.0 220,241.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,241.0 C397.0,241.0 397.0,153.0 424,153.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,153.0 C601.0,153.0 601.0,160.0 628,160.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,248.0 C601.0,248.0 601.0,160.0 628,160.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,247.0 C397.0,247.0 397.0,160.0 628,160.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,160.0 C703.0,160.0 703.0,255.0 628,255.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,329.0 C397.0,329.0 397.0,255.0 628,255.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,255.0 C805.0,255.0 805.0,46.0 832,46.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,46.0 C907.0,46.0 907.0,127.0 832,127.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,46.0 C907.0,46.0 907.0,209.0 832,209.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,46.0 C907.0,46.0 907.0,285.0 832,285.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,46.0 C907.0,46.0 907.0,361.0 832,361.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,99.0 C1111.0,99.0 1111.0,187.0 1036,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,187.0 C1111.0,187.0 1111.0,255.0 1036,255.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,255.0 C805.0,255.0 805.0,153.0 424,153.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,255.0 C601.0,255.0 601.0,329.0 16,329.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,187.0 C1111.0,187.0 1111.0,323.0 1036,323.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,99.0 C1111.0,99.0 1111.0,255.0 1036,255.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="48.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者</text><text x="91.0" y="83.0" text-anchor="middle" fill="#f48fb1" font-size="10">特定の相手を狙う必要がな</text><text x="91.0" y="95.0" text-anchor="middle" fill="#f48fb1" font-size="10">い</text><rect x="16" y="122.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Hugging Face</text><text x="91.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 上のモデルリポジトリ</text><text x="91.0" y="171.0" text-anchor="middle" fill="#ffcc80" font-size="10">重みは不要・設定と Py</text><text x="91.0" y="183.0" text-anchor="middle" fill="#ffcc80" font-size="10">thon だけ</text><rect x="16" y="210.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">config.json </text><text x="91.0" y="246.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の auto_map</text><text x="91.0" y="259.0" text-anchor="middle" fill="#ffcc80" font-size="10">例: AutoConfi</text><text x="91.0" y="271.0" text-anchor="middle" fill="#ffcc80" font-size="10">g → configur</text><rect x="16" y="298.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="320.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リポジトリ内の Pyth</text><text x="91.0" y="334.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">on ファイル</text><text x="91.0" y="347.0" text-anchor="middle" fill="#f48fb1" font-size="10">攻撃者の任意のコード</text><rect x="220" y="136.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="295.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Studio の利用者</text><text x="295.0" y="171.0" text-anchor="middle" fill="#8892b0" font-size="10">操作はモデルを選ぶ1つだ</text><text x="295.0" y="183.0" text-anchor="middle" fill="#8892b0" font-size="10">け</text><rect x="220" y="210.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Studio のモデル一</text><text x="295.0" y="246.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">覧</text><text x="295.0" y="259.0" text-anchor="middle" fill="#64b5f6" font-size="10">任意のモデルを直接選べた</text><rect x="424" y="116.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="138.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">load_model_c</text><text x="499.0" y="152.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">onfig()</text><text x="499.0" y="165.0" text-anchor="middle" fill="#f48fb1" font-size="10">model_config</text><text x="499.0" y="177.0" text-anchor="middle" fill="#f48fb1" font-size="10">.py・trust_re</text><rect x="424" y="204.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="226.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">新しい Transfor</text><text x="499.0" y="240.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">mers の別プロセス経</text><text x="499.0" y="254.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">路</text><text x="499.0" y="267.0" text-anchor="middle" fill="#f48fb1" font-size="10">同じ設定が直接書かれてい</text><text x="499.0" y="279.0" text-anchor="middle" fill="#f48fb1" font-size="10">た</text><rect x="628" y="116.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="138.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AutoConfig.f</text><text x="703.0" y="152.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rom_pretrain</text><text x="703.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ed()</text><text x="703.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">設定を返す前にモジュール</text><text x="703.0" y="191.0" text-anchor="middle" fill="#f48fb1" font-size="10">を取得</text><rect x="628" y="218.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="240.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">モジュールの取り込み（i</text><text x="703.0" y="254.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">mport）</text><text x="703.0" y="267.0" text-anchor="middle" fill="#f48fb1" font-size="10">取り込みの副作用でコード</text><text x="703.0" y="279.0" text-anchor="middle" fill="#f48fb1" font-size="10">が動く</text><rect x="832" y="16.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意コードの実行</text><text x="907.0" y="51.0" text-anchor="middle" fill="#f48fb1" font-size="10">Studio の処理側・</text><text x="907.0" y="63.0" text-anchor="middle" fill="#f48fb1" font-size="10">利用者の権限</text><rect x="832" y="90.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Studio を動かして</text><text x="907.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いる計算機</text><text x="907.0" y="139.0" text-anchor="middle" fill="#64b5f6" font-size="10">GPU を備えた学習環境</text><text x="907.0" y="151.0" text-anchor="middle" fill="#64b5f6" font-size="10">であることが多い</text><rect x="832" y="178.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="200.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">モデルの重みのダウンロー</text><text x="907.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド</text><text x="907.0" y="227.0" text-anchor="middle" fill="#ffcc80" font-size="10">到達しない</text><rect x="832" y="254.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="276.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">推論の呼び出し・学習の開</text><text x="907.0" y="290.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">始</text><text x="907.0" y="303.0" text-anchor="middle" fill="#f48fb1" font-size="10">到達しない</text><rect x="832" y="330.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="352.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リモートコードの実行許可</text><text x="907.0" y="366.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の確認</text><text x="907.0" y="379.0" text-anchor="middle" fill="#8892b0" font-size="10">出ない</text><rect x="1036" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Pillar Secur</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ity（Ariel Fo</text><text x="1111.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gel）</text><text x="1111.0" y="118.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026/6上旬 非公開</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#80cbc4" font-size="10">報告・9/29 公開</text><rect x="1036" y="157.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="179.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Unsloth 開発側</text><text x="1111.0" y="192.0" text-anchor="middle" fill="#80cbc4" font-size="10">6/16までに確認・6月</text><text x="1111.0" y="204.0" text-anchor="middle" fill="#80cbc4" font-size="10">中に 2026.6.9</text><rect x="1036" y="231.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="253.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 2026.6.9</text><text x="1111.0" y="266.0" text-anchor="middle" fill="#f48fb1" font-size="10">読み込み経路の作り直し</text><rect x="1036" y="293.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="315.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE の付与なし</text><text x="1111.0" y="328.0" text-anchor="middle" fill="#ffcc80" font-size="10">ベータを理由に勧告を出さ</text><text x="1111.0" y="340.0" text-anchor="middle" fill="#ffcc80" font-size="10">ず</text></svg></div><div class=fn>layer 0 は攻撃者の準備——Hugging Face に独自の Python コードを含む モデルリポジトリを作り、config.json の auto_map でそのファイルを指す。 モデルの重みは不要。 layer 1 は利用者の操作——Studio でモデルの一覧を見て選ぶ。これ1つだけ。 layer 2 は Studio の処理側——load_model_config() が trust_remote_code=True を既定の引数として宣言しており、 新しい Transformers を別プロセスで扱う経路でも同じ設定が直接書かれていた。 layer 3 は Transformers の動作——AutoConfig.from_pretrained() が 設定を返す前に参照先のモジュールを取得して取り込み、 取り込みの副作用としてコードが実行される。 layer 4 は結果——Studio の処理側を動かしている計算機で、 操作した利用者の権限で任意コードが実行される。 到達しなかった工程（重みのダウンロード・推論・学習・実行許可の確認）を 点線で示す。 layer 5 は報告と修正——2026年6月上旬の非公開報告、6月16日までの確認、 6月中の 2026.6.9 公開（Hugging Face からの直接読み込み機能の除去＋ ローカルファイルの同等経路の閉鎖）、9月29日の公開。CVE は付与されていない。</div></div></div>
+<div class="blk " id="s12"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は、配布基盤側での検出について述べていない。** **本記録の評価** —— **`auto_map` を含むモデルリポジトリは正当な用途でも存在する** （新しいアーキテクチャのモデルは独自のコードを要する）。 **したがって「`auto_map` があること」自体は異常ではない。** **利用側で意味を持つのは 「選ぶ前に `config.json` の `auto_map` を自分で確認する」ことだが、 Studio の一覧から選ぶ操作にその工程は無い**（本記録の整理）—— **これが本件の本質である。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>外部のモデルハブから取得するモデルを、 組織が確認した一覧に限定する（任意のモデルを直接選べる状態にしない）<span class=sm>　**本記録の評価による。** **修正版 2026.6.9 で開発側が取った方針もこれに近い** —— **「Studio が情報を調べる際に Hugging Face から 任意のモデルを直接読み込まないようにした」**（CSA の記述）。 **つまり「どのモデルでも選べる」という利便性そのものが 攻撃面だったという判断である**（本記録の読み）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>モデルを扱う計算機を、他の資産から分離した環境に置く （学習用の共有環境に資格情報や他プロジェクトのデータを同居させない）<span class=sm>　**本記録の評価による。** **コードが動くのは Studio の処理側を動かしている計算機である。** **微調整や量子化のための環境は GPU を備えた共有の学習環境で、 他の学習データや資格情報が同居していることが多い** （本記録の一般的理解。公表資料は環境の性質に言及していない）。 **これは影響範囲の限定であり、実行の防止ではない。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**公表資料は検知について述べていない。** **本記録の評価** —— **利用者の側から見て、現実的な検知の機会が無い。** **理由** —— **①操作は「モデルを選ぶ」だけであり、 利用者には何も特別なことが起きたように見えない。** **②実行許可の確認が出ない**（Pillar Security が 「明示的な実行許可を受け取ることなく」と明記している）。 **③モデルの重みのダウンロードも始まらないため、 待ち時間や通信量の変化という手がかりも無い。** **残るのは端末・サーバ側の記録である** —— **「Studio の処理が、設定に書かれた Python モジュールを 取得して取り込んだ」通信とプロセスの記録。** **ただしこれは正当な動作と区別がつかない** （`auto_map` を持つモデルの読み込みは正常な機能である）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>Unsloth を 2026.6.9 以降へ更新する（唯一の確実な対処）<span class=sm>　**CSA・iThome・gbhackers の3資料が一致して推奨している。** **修正は設定の無効化ではなくモデルの読み込み経路の作り直しである** —— **Studio から Hugging Face のモデルを直接読み込む機能を取り除き、 ローカルのモデルファイルについても同等の経路を閉じた。** **本記録の評価** —— **CVE が付与されていないため、 CVE を起票単位にした脆弱性管理では この更新が台帳に載らない**（lessons 参照）。</span></div><div class=ctl><span class="b eff">検知できた</span>自組織が使う AI の推論・学習フレームワークについて、 `trust_remote_code` の既定値をソースで確認する<span class=sm>　**本記録の評価による。** **CSA は同種の問題が2026年に LMDeploy・vLLM・InstructLab でも起きたと整理しており、 本件を含めて「少なくとも4件」としている。** **つまりこれは1つの製品の不具合ではなく、 同じ誤りが独立に繰り返されている型である。** **したがって対処も「この製品を直す」ではなく 「自分が使っているものを確認する」になる。** **確認の方法は単純である** —— **`trust_remote_code` をソースから検索し、 既定が `True` になっている箇所を探す。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は述べていない。** **本記録の評価** —— **コードが実行された後の検知は、 実行された内容に依存するため一般には言えない。** **ただし本件に固有の点がある** —— **微調整・量子化の環境は、 多数のパッケージをダウンロードし、 大量のファイルを読み書きし、 GPU を長時間使う環境である。** **つまり「見慣れないプロセスが動き、 ネットワークに出て、ファイルを書く」ことが 平常の動作として常時起きている**（本記録の評価）。 **異常として浮かび上がらせるのが難しい環境である。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>モデルを扱う計算機から、他の資産への到達を制限する （クラウドの認証情報・社内ネットワークへの経路を置かない）<span class=sm>　**本記録の評価による。** **任意コードが動く前提に立つと、 対処は「動いた後に何に届くか」を縮めることになる。** **とくに学習環境にクラウドの資格情報が置かれている場合、 そこから先への波及が主要な損害になる** （本記録の評価。公表資料は言及していない）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>モデルを扱う計算機の外向き通信を、 必要な宛先（モデルハブ・パッケージ配布元）のみに限定する<span class=sm>　**本記録の評価による。** **ただしモデルハブとパッケージ配布元への到達は必要であり、 そこからの取得が攻撃の経路そのものである**（本記録の指摘）—— **宛先の限定では本件は止まらない。** **効くのは、実行後に攻撃者の基盤へ通信する段階である。**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s14"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「ベータ」の機能も、既定のパッケージで配布されていれば本番の攻撃面である</div><div class=lw>**Unsloth 側は Studio がベータであることを理由に 勧告を公表せず、CVE も付与されなかった**（gbhackers の記述）。 **一方 CSA は「当該コードは既定の PyPI パッケージに入って 配布されていた」と指摘している**（原文英語の要旨）。 **つまり「ベータ」という位置づけは開発側の自己申告であり、 配布の実態とは別である**（本記録の評価）。 **利用者側から見れば、パッケージを入れた時点で そのコードは自分の環境にある。**</div><div class=la><b>取るべき行動</b> **自組織が使う OSS について、 「ベータ／実験的」と位置づけられた機能が 既定のインストールに含まれるかを確認する。** **含まれる場合は、本番の攻撃面として扱う** （使っていなくても、コードは存在する）。 **ベンダーの位置づけを、自組織のリスク評価の根拠にしない。**</div></li><li><div class=lp>AI 関連 OSS の脆弱性管理を、CVE を起票単位にしない運用へ変える</div><div class=lw>**本件に CVE は付与されていない**（事実）。 **帰結は3つある**（本記録の評価）—— **①脆弱性情報の自動収集（CVE・NVD を参照する仕組み）に載らない、 ②依存関係の走査ツールが CVE で判定していれば警告が出ない、 ③「更新すべきこと」を知る経路が研究者の公表と報道だけになる。** **同じプロジェクトの別の欠陥（CVE-2026-93348・CVSS 8.6）には CVE があり、成立の条件がより軽いほう（本件）に無い** （本記録が突き合わせて確認）。</div><div class=la><b>取るべき行動</b> **AI 関連のパッケージ（モデルの読み込み・推論・学習の フレームワーク）について、 CVE の有無によらず版の更新を定期的に行う運用を作る。** **具体的には、使用しているパッケージの一覧と現在の版を台帳に置き、 上流の新しい版が出たら更新を検討する工程を定める。** **脆弱性管理の台帳に「CVE が無い既知の問題」の区分を作り、 本件を登録する。**</div></li><li><div class=lp>モデルを扱う計算機を、他の資産から分離する判断を経営で行う</div><div class=lw>**コードが動くのは Studio の処理側を動かしている計算機であり、 操作した利用者の権限で実行される**（本記録の整理）。 **微調整や量子化のための環境は GPU を備えた共有の学習環境で、 他の学習データや資格情報が同居していることが多い** （本記録の一般的理解。公表資料は環境の性質に言及していない）。 **さらにこの種の環境は、多数のパッケージの取得と 大量のファイル操作が平常の動作として常時起きているため、 異常を浮かび上がらせにくい**（本記録の評価）。 **「任意コードが動いたとして、そこから何に届くか」を 縮めておくことが、唯一効く備えになる。**</div><div class=la><b>取るべき行動</b> **モデルの取得・微調整・量子化を行う計算機について、 ①クラウドの認証情報を置かない、 ②社内ネットワークへの経路を持たせない、 ③他プロジェクトのデータを同居させない、 の3点を環境の設計要件として決める。** **GPU の調達コストを理由に共有環境へ集約する判断をするときは、 この分離とのトレードオフを明示して記録する。**</div></li><li><div class=lp>利用者の判断を道具が上書きしていないかを、調達・更新の確認項目にする</div><div class=lw>**`trust_remote_code` は本来、 「このリポジトリのコードを信用するか」を利用者が決める設定である** （iThome の記述）。 **道具がソースに `True` を書き込むと、その判断の機会が消える。** **CSA は、同じ誤りが2026年に LMDeploy・vLLM・InstructLab でも起きたと整理しており、 本件を含めて「少なくとも4件」としている。** **1つの製品の不具合ではなく、独立に繰り返されている型である** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **AI 関連のフレームワークの調達・更新の確認項目に 「安全側の既定を、道具が利用者に代わって変更していないか」を加える。** **具体的には `trust_remote_code` を含む 「信用・実行の許可に関する設定」の既定値をソースで確認させる。** **更新のたびに確認する** ——**既定値は版で変わりうる。**</div></li></ul></div></div>
+<div id="s15"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>使っているフレームワークの trust_remote_code の既定値をソースで確認する</div><div class=lw>**本件の原因は、`load_model_config()` が `trust_remote_code=True` を既定の引数として宣言していたことである** （Pillar Security が特定した該当箇所は `studio/backend/utils/models/model_config.py`）。 **さらに、新しい Transformers を別プロセスで扱う経路でも 同じ設定が直接書かれていた**（CSA の記述）—— **1か所直せば済む形ではなかった。** **CSA は同種の問題が2026年に LMDeploy・vLLM・InstructLab でも起きたと整理している。** **つまり「この製品を直す」ではなく 「自分が使っているものを確認する」が対処になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織が使う AI の推論・学習フレームワークのソースから `trust_remote_code` を検索し、 既定が `True` になっている箇所を洗い出す。** **1か所ではなく全箇所を見る**（本件は通常の経路と 別プロセスの経路の2か所にあった）。 **見つかった場合は、その道具を使う環境を分離するか、 既定を変える修正を上流へ報告する。** **この確認を、パッケージの更新手順に組み込む。**</div></li><li><div class=lp>モデルを選ぶ前に config.json の auto_map を自分で確認する工程を置く</div><div class=lw>**攻撃者が用意するのは、`config.json` の `auto_map` に リポジトリ内の Python ファイルを指す記述と、そのファイルだけである** （CSA が挙げた例: `&quot;auto_map&quot;: { &quot;AutoConfig&quot;: &quot;configuration.UnslothPocConfig&quot; }`）。 **モデルの重みは不要。** **`auto_map` を含むモデルは正当な用途でも存在するため、 「あること」自体は異常ではない**（本記録の評価）—— **新しいアーキテクチャのモデルは独自のコードを要する。** **したがって必要なのは「あるかないか」ではなく 「指されている Python を読んだか」である。**</div><div class=la><b>取るべき行動</b> **外部のモデルハブからモデルを取得する前に、 `config.json` を取得して `auto_map` の有無を確認する工程を置く。** **`auto_map` がある場合は、指されている Python ファイルを 読んでから使う**（読まずに使わない）。 **自動化する場合は、 「`auto_map` を含むモデルは人の確認を経てから一覧に載せる」 という形にする。** **組織として使うモデルを確認済みの一覧に限定するのが、 最も確実である**（修正版 2026.6.9 で開発側が取った方針もこれに近い）。</div></li><li><div class=lp>「どこから来たか」ではなく「設定ファイルが何を指すか」で危険を判定する</div><div class=lw>**修正版 2026.6.9 は、 Hugging Face からの直接読み込みを取り除いただけでなく、 ローカルに保存されたモデルファイルに同梱されたリモートコードも 信用しないようにしている**（CSA の記述）。 **これが重要である**（本記録の評価）—— **「外部のハブから取ってくるのが危ない」という理解だと、 手元に落としたモデルファイルは安全に見える。** **しかし `auto_map` はローカルのファイルにも同じように書ける。** **問題は出所ではなく、 「設定ファイルが指す Python を取り込むか」である。**</div><div class=la><b>取るべき行動</b> **社内のモデル保管場所（共有ストレージ・内部のレジストリ）に 置かれたモデルについても、`auto_map` の確認を行う。** **「社内にあるから確認済み」としない** —— **誰かが外部から持ち込んだものが、確認を経ずに置かれていることがある。** **モデルを社内に取り込む工程（ゲート）を1か所に決め、 そこで確認する。**</div></li><li><div class=lp>モデルを扱う環境では、平常の動作が異常の検知を難しくすることを前提に設計する</div><div class=lw>**本件の実行は、利用者の側に何の表示も出さず、 モデルの重みのダウンロードも始まらない** （Pillar Security の記述）—— **待ち時間や通信量の変化という手がかりが無い。** **さらに微調整・量子化の環境は、 多数のパッケージをダウンロードし、 大量のファイルを読み書きし、GPU を長時間使う環境である** （本記録の評価）。 **「見慣れないプロセスが動き、ネットワークに出て、 ファイルを書く」ことが平常の動作として常時起きている。** **異常として浮かび上がらせるのが構造的に難しい。**</div><div class=la><b>取るべき行動</b> **モデルを扱う環境では、検知ではなく封じ込めに重心を置く**—— ①**この環境から到達できる先を列挙し、不要なものを外す** （クラウドの認証情報・社内ネットワークへの経路）、 ②**外向き通信の宛先をモデルハブとパッケージ配布元に絞る**、 ③**環境を使い捨てにする**（作業ごとに作り直し、 永続する状態を持たせない）。 **③は本件の実行そのものは止めないが、 永続化と横展開の余地を無くす。**</div></li></ul></div></div>
+<div class="blk " id="s16"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Unsloth Studio を使っており、Unsloth の版が 2026.6.9 より前である</td><td class=sm>本件の影響を直接受ける。修正版 2026.6.9 では Studio から Hugging Face のモデルを直接読み込む機能そのものが取り除かれている</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 外部のモデルハブ（Hugging Face 等）から任意のモデルを取得して扱える状態になっており、組織が確認した一覧に限定していない</td><td class=sm>本件の成立条件は攻撃者が用意したモデルを選ぶことだけで、重みのダウンロードも学習も推論も不要である</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AI の推論・学習フレームワーク（Unsloth 以外も含む）を使っており、trust_remote_code の既定値をソースで確認していない</td><td class=sm>CSA は同種の問題が2026年に LMDeploy・vLLM・InstructLab でも起きたと整理しており、本件を含めて少なくとも4件が独立に繰り返されている</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> モデルの取得・微調整・量子化を行う計算機に、クラウドの認証情報や他プロジェクトのデータが同居している</td><td class=sm>任意コードが動くのは Studio の処理側を動かしている計算機であり、操作した利用者の権限で実行される</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性管理の起票単位が CVE 番号であり、CVE が付与されない既知の問題を登録する枠が無い</td><td class=sm>本件に CVE は付与されておらず、脆弱性情報の自動収集にも依存関係の走査ツールにも載らない</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 社内のモデル保管場所に外部由来のモデルファイルが置かれており、config.json の auto_map を確認する工程が無い</td><td class=sm>修正版はローカルに保存されたモデルファイルに同梱されたリモートコードも信用しないようにしている。危険の判定基準は出所ではなく設定ファイルが何を指すかである</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> OSS の「ベータ／実験的」と位置づけられた機能を、本番の攻撃面として扱っていない</td><td class=sm>Unsloth 側は Studio がベータであることを理由に勧告を出さず CVE も付与されなかったが、当該コードは既定の PyPI パッケージに入って配布されていた</td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>出典</h3><div class=rg><div class=rgt>学術・ファクトチェック機関</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月1日 Cloud Security Alliance（CSA）</span> <a href="https://labs.cloudsecurityalliance.org/research/csa-research-note-unsloth-model-inspection-rce-20261001-csa/" target="_blank" rel="noreferrer noopener nofollow">Model Inspection as a Code-Execution Vector in Unsloth Studio</a> <span class="b kind">調査レポート</span><span class=sm>（**本記録が直接取得して裏を取った資料。** **本件について最も具体的な記述を持つ**（公表本体に到達できていないため、 本記録はこれを最も重い根拠として扱った）。 確認したのは—— ①**影響を受ける版が「2026.6.9 より前」、修正版が「2026.6.9 以降」**、 ②**時系列** —— **2026年6月上旬に非公開で報告、 2026年6月16日までに開発側が確認、2026年6月中に 2026.6.9 を公開、 2026年9月29日に公開**、 ③**該当箇所** —— **`studio/backend/utils/models/model_config.py` の `load_model_config()` が `trust_remote_code=True` を既定の引数として宣言し、 新しい Transformers を別プロセスで扱う経路でも同じ設定が直接書かれていた**、 ④**仕組み** —— **`trust_remote_code=True` のとき `AutoConfig.from_pretrained()` は設定データを返す前に 参照先のモジュールをダウンロードして取り込み、 取り込みの副作用としてコードが実行される**、 ⑤**`auto_map` の具体例** —— `&quot;auto_map&quot;: { &quot;AutoConfig&quot;: &quot;configuration.UnslothPocConfig&quot; }`、 ⑥**発見者が Pillar Security の Ariel Fogel** であり、 **「コードはメタデータの確認以外の何物でもないところから動いた」 「モデルの `config.json` を読むだけで、この悪用を引き起こすのに足りた」** と述べたこと、 ⑦**CVE が付与されていない理由** —— **開発側が Studio のベータという位置づけを理由に辞退した。 ただし当該コードは既定の PyPI パッケージに入って配布されていた**、 ⑧**修正の中身** —— **フラグの無効化ではなく読み込み経路の作り直しで、 Studio が情報を調べる際に Hugging Face から任意のモデイを 直接読み込まないようにし、ローカルに保存されたモデルファイルに 同梱されたリモートコードも信用しないようにした**、 ⑨**Unsloth が Hugging Face Hub におけるモデル派生物の最大級の供給元であり、 露出は「意図してリモートコードの実行を選んだ利用者」ではなく 「モデルの一覧を見ていた Studio 利用者すべて」に及んだ**こと、 ⑩**本件が、AI の推論・学習フレームワークが `trust_remote_code=True` をソースに直接書き込んで 利用者の意思を黙って上書きした、2026年の少なくとも4件の 密接に関連する公表のうちの1つである**こと。 **記載が無いことも確認した**—— **修正版の正確な公開日・影響を受けた利用者数・ 実際の悪用の有無・欠陥が存在した期間。**）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月29日 Pillar Security（研究者 Ariel Fogel）</span> <a href="https://www.pillar.security/" target="_blank" rel="noreferrer noopener nofollow">Unsloth Studio のモデル情報取得処理における任意コード実行（公表本体・題名は原文を確認できていない）</a> <span class="b kind">ブログ</span><span class=sm>（**本件の発見者による公表本体。** **ただし本記録はこのページに到達できていない**（本記録の限界）—— **検索で同社の該当記事の URL を特定できず、 記載した URL は同社のトップページである。** **したがって本記録は、公表本体の表現を確認していない** —— **引用した Ariel Fogel の言葉はいずれも第三者の報道経由である。** **本記録が依拠したのは、CSA の研究ノート（id: 2）と 報道2件（id: 3・4）である。** **availability を live としたのは同社サイトが参照できるという意味であり、 当該記事に到達できたという意味ではない**（discrepancies 参照）。）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年9月28日 CVE / OpenCVE</span> <a href="https://app.opencve.io/cve/CVE-2026-93348" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-93348（Unsloth Zoo のコード注入）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録が取得して内容を確認した資料。本件とは別の欠陥である。** **混同を避けるため関係する事実として記録した**（discrepancies 参照）。 確認したのは—— ①**対象が Unsloth Zoo（2025.9.9 以降 2026.8.14 未満）と Unsloth（2025.9.9 から 2026.8.19）**、 ②**公開日が2026年9月28日・CVSS 8.6**、 ③**仕掛けが `get_transformers_model_type()` が 入れ子のモデル設定から `model_type` の値を集める際に 文字の許可一覧を強制しておらず、 改行と任意の Python ソースが正規化を生き延びること**、 ④**攻撃者は悪性の `config.json` に改行を埋め込むことで 生成される import 文を終端させ、 学習または推論のためにモデルが読み込まれるときに 任意の Python コードを実行できる**こと、 ⑤**実行は操作を行う利用者の権限で起きる**こと。 **本記録がこれを並べて記録した理由** —— **同じプロジェクトで、同じ時期に、 「モデルの設定ファイルから任意コードが動く」という 同じ性格の欠陥が2件出ており、 一方には CVE があり一方には無い**（本記録の評価）。 **成立の条件がより軽いほう（本件）に CVE が無い。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月30日 GBHackers</span> <a href="https://gbhackers.com/unsloth-fixes-arbitrary-code-execution-flaw/" target="_blank" rel="noreferrer noopener nofollow">Unsloth Fixes Arbitrary Code Execution Flaw</a> <span class="b kind">記事</span><span class=sm>（**本記録が取得して内容を確認した報道。** **CSA の記述と一致する点** —— 発見者（Pillar Security の Ariel Fogel）・ 影響を受ける版（2026.6.9 より前）・修正版（2026.6.9）・ 仕掛け（`config.json` の `auto_map` が Transformers を 攻撃者の Python ファイルへ導く）・ 修正の中身（Hugging Face からの任意のモデル読み込みを許さず、 ローカルのモデルファイルからのリモートコードの信用を制限）。 **本資料のみにある記述** —— **CVE が付与されなかった理由を 「Unsloth がベータの Studio 機能について勧告を公表しなかったため」と 説明している。** **記載が無いことも確認した** —— **Unsloth の開発側の発言・Studio の利用規模・ ダウンロード数。**）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月6日 iThome Security（台湾）</span> <a href="https://www.ithome.com.tw/news/179390" target="_blank" rel="noreferrer noopener nofollow">Unsloth Studio存在任意程式碼執行漏洞，檢查模型資訊時就可能觸發</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった報道。** **本資料のみにある記述が3点ある**（本記録が突き合わせて確認）—— ①**影響を受ける版を「Unsloth 2026.5.10 およびそれ以前」と表現している** （CSA・gbhackers は「2026.6.9 より前」。この差異は未解消。 discrepancies 参照）、 ②**「この脆弱性にはまだ公開された CVE 識別子と CVSS のリスクスコアが無い」と明記している**、 ③**Dark Reading を引いて、Ariel Fogel が 「研究チームは攻撃者がこの脆弱性を実際に悪用した例を発見しておらず、 この攻撃の仕組みのために作られた悪性のモデルリポジトリも 発見していない」と述べたことを伝えている。** **また、`trust_remote_code` の設計上の意図について 「この設定は本来、モデルのリポジトリが提供するコードを信用するか否かを 利用者が決めるべきものであり、AI の道具が自ら有効にしてしまうと、 利用者が明示的に当該コードを信用すると選んでいないにもかかわらず、 モデルを処理する際に直接これらのコードが実行されうる」と 整理している**（原文中国語。本記録が日本語に訳した）。 **CSA の分析を引いて、LMDeploy・vLLM・InstructLab でも 2026年に同種の問題が起きたと伝えている。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s18"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月7日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月6日の iThome（台湾）の報道を起点に、 **CSA の研究ノート（2026年10月1日）を直接取得して裏を取り、 gbhackers の報道と CVE-2026-93348 の記載も突き合わせた。** **Pillar Security 自身の公表本体には到達できていない** —— **検索で該当記事の URL を特定できなかった。** **したがって引用した Ariel Fogel の言葉はいずれも第三者の報道経由であり、 この限界を discrepancies（self_unverified）と references の note に明示した。** **最も重い根拠として扱ったのは CSA の研究ノートである** —— **該当ファイルと関数名・`auto_map` の具体例・時系列・修正の中身・ CVE が付与されなかった理由を最も具体的に記述している。** **一次公表（当事者の発表）は存在しない** —— **Unsloth 側は勧告を公表していない。** **したがって一次情報の欄を「該当なし」とした。** **type は vulnerability、japan_relevance は overseas-watch** （日本国内の利用状況への言及が公表資料に一切無い）。 **root_causes は design-flaw・misconfiguration・governance の3つ。** ①「情報を読むだけ」のはずの処理が取り込みの副作用でコードを動かす構造、 ②`trust_remote_code=True` をソースに直接書き込んで既定にしていたこと、 ③利用者の判断を道具側が上書きしていたこと——を分けた。 **本記録が中心と判断したのは4点。** ①**成立の条件が「モデルを選ぶだけ」であること** —— **重みのダウンロードも推論も学習も実行許可の確認も経ない。** **Python の `import` がモジュールを上から実行するという性質と、 「設定を読む」という語感のずれが原因の全部である**ことを cause のセクションに書いた。 ②**同じ誤りが独立に繰り返されている型であること** —— **CSA は2026年に LMDeploy・vLLM・InstructLab でも 同種の問題が起きたと整理し、本件を含めて「少なくとも4件」としている。** **したがって対処は「この製品を直す」ではなく 「自分が使っているものの `trust_remote_code` の既定値を確認する」になる。** **なぜ繰り返されるかの推定（`False` のままでは新しいモデルが読めず 「動かない」という不具合として報告されるため）は 公表資料に根拠が無いので、本記録の評価として明示した。** ③**修正がフラグを倒すのではなく読み込み経路の除去だったこと** —— **ローカルのモデルファイルについても同等の経路を閉じている点が重要である。** **「外部から取ってくるのが危ない」という理解だと手元のファイルが 安全に見えるが、`auto_map` はローカルにも同じように書ける。** **危険の判定基準は出所ではなく「設定ファイルが何を指すか」である**ことを remediation のセクションと engineer の学びに書いた。 **機能を残して安全にする道ではなく機能を取り除く道を選んだ判断の理由は 公表されていないことも記録した。** ④**CVE が付与されていないこと** —— **脆弱性情報の自動収集にも依存関係の走査ツールにも載らず、 更新すべきことを知る経路が研究者の公表と報道だけになる。** **同じプロジェクトの別の欠陥（CVE-2026-93348・CVSS 8.6）には CVE があり、成立の条件がより軽いほう（本件）に無い**という対比を 表にして示した。 **この CVE-2026-93348 は本件とは別の欠陥であり、 混同しないよう discrepancies で違いを並べ、 references では relevance を prior_case として分けた。** **影響を受ける版の範囲は資料間で一致していない** —— **iThome は「2026.5.10 およびそれ以前」、 CSA と gbhackers は「2026.6.9 より前」。** **これを `disputed` として unknowns に置き、 実務上は「2026.6.9 以降であること」を基準にすれば足りると整理した** （修正版の下限は3資料で一致している）。 **修正版の公開日を版番号（2026.6.9）から2026年6月9日と推定しなかった** —— **Unsloth の版の付け方を確認していないため。** この判断を discrepancies に明示した。 **実際の悪用については、Ariel Fogel が「発見していない」と述べた点を 「無かった」ではなく「発見していない」として記録した** —— **本件の実行は利用者に何の表示も出さず、 微調整・量子化の環境はパッケージの取得と大量のファイル操作が 平常の動作として常時起きているため、起きていても気づかれにくい** （本記録の評価）。</li></ul></div></div>
+<div class="blk " id="s19"><h3>タグ</h3><span class="b tag">任意コード実行</span><span class="b tag">サプライチェーン</span><span class="b tag">OSS</span><span class="b tag">Unsloth</span><span class="b tag">Unsloth Studio</span><span class="b tag">Hugging Face</span><span class="b tag">trust_remote_code の既定有効</span><span class="b tag">config.json の auto_map</span><span class="b tag">機械学習基盤</span><span class="b tag">CVE未付与</span><span class="b tag">AIセキュリティ</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-07 10:27 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
