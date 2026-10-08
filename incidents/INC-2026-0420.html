@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>LMCacheに未修正の事前認証RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0420</span>LMCacheに未修正の事前認証RCE</h1>
+<header class="site-header">
+  <p class="subtitle">JFrog は2026年10月7日、LLM 推論の KV キャッシュ層 **LMCache** に **認証なしで到達できる ZeroMQ ソケットへ1通のメッセージを送るだけで 任意コードが実行できる欠陥（CVE-2026-105192・CVSS 9.8・Critical）**を公表した （JFSA-2026-001694382）。 **原因は、認証のないネットワークソケットから受け取ったデータを `pickle.loads` に渡していたことである**（出典1）—— **メッセージ種別の判定より前、引数のデコード中に展開されるため、 細工したメッセージはハンドラに届く前に実行される。** **影響は 0.3.9（2025年10月）以降で、最新安定版 0.5.5・0.5.6 の リリース候補（rc1〜rc3）・開発ブランチにも残る。修正版は存在しない。** **既定では localhost にのみ待ち受けるため、外部から到達するのは 運用者が `--host` でルーティング可能なアドレスを指定した場合に限る** —— **ただし LMCache 自身の Kubernetes の例が全インタフェースで待ち受ける形になっている** （出典3）。 **公式コンテナイメージではこのプロセスが root で動く**（出典1）。 **LMCache 側はセキュリティ勧告を出していない**（本記録が確認）。</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月7日（JFrog の脆弱性公表）</span>
+  <span>最終更新: 2026年10月8日</span>
+</div>
+
+<div class="lead"><p><strong>認証のないソケットに1通送るだけで、キャッシュサーバの上でコードが動く。</strong> JFrog は2026年10月7日、LLM 推論の KV キャッシュ層 LMCache の 脆弱性 CVE-2026-105192（JFSA-2026-001694382・CVSS 9.8・Critical）を公表した。 <strong>multiprocess（分散）モードでは、ワーカープロセスが登録と KV キャッシュブロックの共有を行うために ZeroMQ の ROUTER ソケットが開く</strong> —— <strong>JFrog の記述では「そのソケットには CURVE・ZAP・パスワード・ メッセージ認証のいずれも無い」</strong>（出典1。原文英語）。 <strong>msgpack の拡張コード 1 が <code>pickle.loads</code> を呼ぶ経路につながっており、 それが <code>REGISTER_KV_CACHE</code> の引数のデコード中、 メッセージ種別の検査より前に動く</strong>（出典1）。 <strong>本記録が最も重く見るのは、修正版が無いことと、 到達可能性が1つの設定で決まることである</strong>（本記録の評価）。 <strong>既定は localhost への待ち受けで、外部から到達するのは 運用者が <code>--host</code> にルーティング可能なアドレスを指定した場合だけ</strong> —— <strong>ところが LMCache 自身の Kubernetes の例が、 全インタフェースで待ち受ける形になっている</strong>（出典3）。 <strong>「例をそのまま使った構成が、そのまま到達可能になる」</strong>（本記録の読み）。 <strong>さらに公式のコンテナイメージではこのプロセスが root で動く</strong>（出典1）。 <strong>JFrog の緩和策は「<code>--host</code> にルーティング可能なアドレスを与えないこと」で、 ファイアウォールは露出を下げるがコード実行を防がない</strong> —— <strong>接続できるホストが残っていれば、そのホストからは実行できる</strong>（出典1）。 <strong>LMCache 側はセキュリティ勧告を出していない</strong>（本記録が確認）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="経過">経過</a></li><li><a href="#s10" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s11" title="波及の構造">波及の構造</a></li><li><a href="#s12" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s13" title="対応の評価">対応の評価</a></li><li><a href="#s14" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s15" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s16" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s17" title="出典">出典</a></li><li><a href="#s18" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s19" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した資料のいずれも、悪用の有無・観測の有無を 述べていない**（出典1・3・4。本記録が確認）。 **The Hacker News は、JFrog の勧告が 「既に攻撃を受けたかを判定する方法を運用者に提供していない」と 指摘している**（出典3）—— **これは「悪用されていない」という意味ではなく、 「確かめる手立てが示されていない」という意味である**（本記録の読み）。 **したがって本記録は、悪用されていないとも、されたとも書かない。** **実務上の意味** —— **認証が無いソケットでは「誰が接続したか」の記録が残らないため、 事後の確認はネットワーク側のログに依存する**（本記録の評価）。</div></li><li><span class=ui>修正版の公開予定</span><span class="b rsn">公表されていない</span><div class=sm>**JFrog の勧告は「修正版は公開されていない」と述べるだけで、 予定については触れていない**（出典1）。 **LMCache の GitHub Security Advisories には 2026年10月8日時点で公開済みの勧告が無い**（出典4。本記録が確認）—— **「There aren&#x27;t any published security advisories」と表示される。** **したがって、メンテナがこの報告を受け取っているか、 対応を進めているかも、公表資料からは分からない**（本記録の整理）。 **実務上の意味** —— **「更新を待つ」という選択肢が現時点で存在しない**（本記録の評価）—— **構成側の緩和しか手が無い。**</div></li><li><span class=ui>利用者側で ZeroMQ トランスポートに認証を設定できるか</span><span class="b rsn">公表されていない</span><div class=sm>**JFrog は認証の設定（CURVE・メッセージごとの HMAC）を 修正案として挙げているが、これは開発側への提案である**（出典1）。 **利用者が現行バージョンでこれを設定できるかについて、 本記録が確認した資料に記載は無い。** **本記録の整理** —— **設定できないのであれば、利用者に残る手は 待ち受けアドレスと到達経路の制限だけになる。**</div></li><li><span class=ui>2026年10月6日に提出された別の報告6件の成否</span><span class="b rsn">検証できない</span><div class=sm>**The Hacker News によれば、1つのアカウントから6件の セキュリティ報告が提出され、 テナントをまたいだキャッシュデータへの認証なしアクセス、 および認証なしでコマンドを実行する複数のネットワークサービスの 存在が主張されている**（出典3）。 **いずれも CVE の採番・メンテナによる確認・修正が無い**（出典3）。 **本記録はこれらの報告の中身を確認していない。** **別途、`/run_script` エンドポイントが認証なしで POST された Python スクリプトを実行するという CVE-2026-107204（CVSS 9.8）の記載を二次情報で確認したが、 一次資料（NVD・CVE レコード）に到達できなかった** （discrepancies 参照）—— **本件（CVE-2026-105192）とは別の欠陥として扱われている。**</div></li><li><span class=ui>ShadowMQ の一群とコードの出所を共有しているか</span><span class="b rsn">調査したが確定せず</span><div class=sm>**The Hacker News は、認証のないネットワークソケットから `pickle` へデータを渡す誤りが、2025年11月に他の AI 推論 フレームワーク群で見つかったもの（研究者が ShadowMQ と呼んだ一群）と 同じであると指摘している**（出典3）。 **同記事は「LMCache のコードがそれらと共通の出所を持つかは 確立されていない」としている**（出典3）。 **本記録も確認していない。** **ただし、同じ誤りが独立に繰り返されているのであれば、 それ自体が示すものがある**（本記録の評価）—— **AI 推論の部品群は、プロセス間通信を前提に書かれた経路を そのままネットワークへ出す構造を共有している可能性がある。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>LMCache（LMCache/LMCache）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JFrog（JFrog Security Research）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>vLLM</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">間接言及</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-105192 の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fn>**JFrog の重要度は Critical**（出典1）。 **本記録が確認した勧告ページにベクタ文字列の掲載は無い** （discrepancies 参照）—— **したがって各評価軸の内訳を本記録は示せない。** **重要な条件** —— **JFrog はこの 9.8 を「ルーティング可能な設定に対する評価」としている** （出典1・3）。 **既定の localhost 待ち受けのままであれば、 他ホストからは到達しない**（出典1）—— **つまりこの数値は「最悪の構成での値」として読む**（本記録の読み）。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける最も古いバージョン</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>0.3.9<span class=fu>バージョン</span></div><div class=fn>**JFrog は「脆弱な復元経路は v0.3.9 で出荷された」としている**（出典1）。 **0.3.9 の公開は2025年10月**（出典3）—— **公表までおよそ12か月の間、この経路が存在していたことになる** （本記録の算出。T1 と T4 の差）。</div></div><div class=fig><div class=fh><span class=fl>脆弱な経路が存在していた期間（0.3.9 公開から公表まで）</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>12<span class=fu>か月</span></div><div class=fn>**本記録が T1（2025年10月の 0.3.9 公開）と T4（2026年10月7日の公表）から算出した**。 **0.3.9 の公開日は月までしか分かっていないため approx とした。** **この期間は「悪用されていた期間」ではない** —— **悪用の有無はどの資料も述べていない**（unknowns 参照）。</div></div><div class=fig><div class=fh><span class=fl>multiprocess トランスポートの既定ポート</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5,555<span class=fu>番（ポート）</span></div><div class=fn>**JFrog の勧告に記載されている**（出典1）。 **既定の待ち受けは localhost であり、ポートが開いていること自体が 外部からの到達を意味しない**（出典1。本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>2026年10月6日に GitHub へ提出された別の報告の件数</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>6<span class=fu>件</span></div><div class=fn>**The Hacker News の報道による**（出典3）。 **1つのアカウントからの提出で、CVE の採番・メンテナの確認・修正は いずれも無い。** **本記録はこれらの報告の中身を確認していない** （unknowns・discrepancies 参照）—— **したがって成立の有無を本記録は判断しない。**</div></div><div class=fig><div class=fh><span class=fl>関連する vLLM 側の別件（CVE-2026-105756）の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>6.5<span class=fu>点</span></div><div class=fn>**The Hacker News の報道による**（出典3）。 **LMCache の multiprocess コネクタを使う構成で、 細工した `cache_salt` 値を含む1リクエストが エンジンをクラッシュさせるサービス妨害。** **vLLM 0.30.0（2025年9月22日公開）で修正済みで、 コード実行には至らない**（出典3）。 **本件とは別の欠陥であり、比較のために併記した**（本記録の整理）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件は実際の被害事例ではなく、第三者の研究者が発見して公表した 未修正の欠陥の記録である**（本記録の位置づけ）。 **悪用の有無についてはどの資料も述べていない**（本記録が確認）。 **本記録が連鎖として書くのは、公表された技術的条件から導ける経路までであり、 実際に観測された攻撃ではない。** **本件の性格は「プロセス間通信のための信頼が、 ネットワークの境界を越えて持ち出されたこと」である**（本記録の整理）—— **起点は LMCache の ZeroMQ トランスポートに TCP 接続できるホストであり、 到達点は LMCache プロセスの権限（公式イメージでは root）での 任意コード実行である。** **認証の突破は要らない。接続できることが条件のすべてである**（出典1）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class=srcs></span></div><div>**攻撃者は、ルーティング可能なアドレスで待ち受けている LMCache の multiprocess トランスポートを見つける** （本記録が公表された技術的条件から導いた経路。 本件についてそのような探索が行われたかは公表されていない）。 **既定ポートは 5555**（出典1）。 **この段階が成立するかどうかが本件の分かれ目である**（本記録の読み）—— **既定の localhost 待ち受けのままなら、他ホストからは到達しない**（出典1）。 **ところが LMCache 自身の Kubernetes のデプロイ例が 全インタフェースで待ち受ける形になっている**（出典3）—— **「例をそのまま使った構成」がこの段階を通してしまう。**</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class=srcs></span></div><div>**攻撃者は、認証のない ZeroMQ の ROUTER ソケットへ TCP 接続する。** **JFrog の記述**（出典1。原文英語）—— **「そのソケットには CURVE・ZAP・パスワード・ メッセージ認証のいずれも無い」。** **ソケットは、ワーカープロセスが自身を登録し KV キャッシュブロックを共有するために開いている**（出典1）。 **本記録の整理** —— **この段階に「突破」は無い。** **接続が受け付けられること自体が設計どおりの動作である。**</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class=srcs></span></div><div>**攻撃者は、msgpack の拡張コード 1 を含む1通のメッセージを送る。** **JFrog の記述**（出典1。原文英語の要旨）—— **拡張コード 1 は `DeviceIPCWrapper` に割り当てられており、 `lmcache/v1/platform/base/ipc_wrapper.py` の `DeviceIPCWrapper.Deserialize` が `pickle.loads` を呼ぶ。** **その呼び出しは `lmcache/v1/multiprocess/custom_types.py` の `ext_hook` から、`REGISTER_KV_CACHE` の引数をデコードしている最中、 ハンドラが走る前に行われる。** **本記録の整理** —— **「メッセージの種別を見てから処理を分ける」という順序になっていない。** **引数を読む過程で既に実行されるため、 種別に基づく検査をいくら足しても、この経路には届かない。**</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class=srcs></span></div><div>**実行されたコードは、LMCache プロセスを動かしている 利用者の権限で動く**（出典1）。 **JFrog によれば、公式のコンテナイメージでは このプロセスは root である**（出典1）。 **本記録の整理** —— **したがって、公式イメージをそのまま使っている構成では、 この段階は「追加の作業なしに成立している」。** **権限昇格の手順が要らないという意味で、 攻撃者の側に残る仕事が無い。**</div></li></ol></div>
+<section id="s5"><h2>認証の無いソケットから `pickle` へ渡していた。種別の検査より前に動く<span class="b slot">原因・手口</span></h2><p><strong>中心は、処理の順序である。</strong></p>
+<p><strong>JFrog の記述</strong>（出典1。原文英語の要旨）—— <strong>msgpack の拡張コード 1 が <code>DeviceIPCWrapper</code> に割り当てられており、<code>lmcache/v1/platform/base/ipc_wrapper.py</code> の<code>DeviceIPCWrapper.Deserialize</code> が <code>pickle.loads</code> を呼ぶ。その呼び出しは <code>lmcache/v1/multiprocess/custom_types.py</code> の<code>ext_hook</code> から、<code>REGISTER_KV_CACHE</code> の引数をデコードしている最中、ハンドラが走る前に行われる。</strong></p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>起点</strong></td>
+<td><strong>LMCache の ZeroMQ トランスポートに TCP 接続できるホスト</strong></td>
+</tr>
+<tr>
+<td>認証</td>
+<td><strong>無し</strong>（CURVE・ZAP・パスワード・メッセージ認証のいずれも無い）</td>
+</tr>
+<tr>
+<td>経路</td>
+<td>msgpack 拡張コード 1 → <code>DeviceIPCWrapper.Deserialize</code> → <code>pickle.loads</code></td>
+</tr>
+<tr>
+<td>実行の時点</td>
+<td><strong>引数のデコード中・メッセージ種別の検査より前</strong></td>
+</tr>
+<tr>
+<td><strong>到達点</strong></td>
+<td><strong>LMCache プロセスの権限での任意コード実行</strong>（公式イメージでは root）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは「検査より前」の部分である</strong>（本記録の読み）。</p>
+<p><strong>「受け取ったメッセージの種別を見て、不正なものを弾く」という作りであれば、検査を足すことで塞げる。</strong> <strong>しかし本件は、引数を読む過程で既に実行される</strong> —— <strong>種別に基づく検査をいくら足しても、この経路には届かない。</strong></p>
+<p><strong><code>pickle</code> がなぜコード実行になるか</strong>（本記録の一般的理解。公表資料は形式の仕様に触れていない）—— <strong><code>pickle</code> は「バイト列をオブジェクトに戻す」形式だが、戻す手順そのものがバイト列の中に書かれている。</strong> <strong>したがって「どのクラスを呼び出すか」を送り手が指定できる。</strong> <strong>これは欠陥ではなく仕様であり、だからこそ信頼できない入力に使ってはいけない形式である。</strong></p>
+<p><strong>JFrog の修正案も、検査の追加ではなく形式の置き換えである</strong>（出典1）—— <strong>「拡張コード 1 の背後のシリアライザを安全な形式に置き換え、認証されていない相手からのネットワークデータに対して<code>pickle.loads</code> を呼ぶのをやめること」。</strong></p></section>
+<section id="s6"><h2>到達できるかは設定1つで決まる——そしてプロジェクト自身の例が開いている<span class="b slot">被害規模・影響範囲</span></h2><p><strong>本件の重さは、欠陥そのものよりも「到達可能性」で決まる。</strong></p>
+<p><strong>既定では、multiprocess トランスポートは localhost にのみ待ち受ける</strong>（出典1）—— <strong>既定のままの単一ホスト構成は、他のマシンから到達できない。</strong> <strong>単一の vLLM プロセスに取り込まれた LMCache は、そもそもこのポートを開かない</strong>（出典3）。</p>
+<p><strong>到達可能になるのは、運用者が <code>--host</code> にルーティング可能なアドレスを与えた場合である</strong>（出典1）。</p>
+<p><strong>これは例外的な設定ではない</strong>（本記録の読み）—— <strong>複数ノードでキャッシュを共有する構成では、他のノードから到達できなければ意味がない。</strong> <strong>つまり「分散で使う」という選択が、そのまま到達可能性を生む。</strong></p>
+<p><strong>さらに、LMCache 自身の Kubernetes のデプロイ例が、全ネットワークインタフェースで待ち受ける形になっている</strong>（出典3）。</p>
+<p><strong>本記録の評価</strong> —— <strong>これが本件で最も実務に効く事実である。</strong> <strong>「設定を変えなければ安全」という説明は、「例をそのまま使った構成」には当てはまらない。</strong> <strong>確認すべきは自組織の判断の跡ではなく、実際に何のアドレスで待ち受けているかである。</strong></p>
+<p><strong>そして公式のコンテナイメージでは、このプロセスが root で動く</strong>（出典1）—— <strong>権限昇格の手順が要らない。</strong></p>
+<table>
+<thead>
+<tr>
+<th>構成</th>
+<th>外部からの到達</th>
+<th>権限</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>単一の vLLM プロセスに取り込み</td>
+<td><strong>ポートを開かない</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>multiprocess・既定（localhost）</td>
+<td><strong>他ホストからは不可</strong></td>
+<td>プロセスの権限</td>
+</tr>
+<tr>
+<td>multiprocess・<code>--host</code> にルーティング可能なアドレス</td>
+<td><strong>可能</strong></td>
+<td>プロセスの権限</td>
+</tr>
+<tr>
+<td>上記＋公式コンテナイメージ</td>
+<td><strong>可能</strong></td>
+<td><strong>root</strong></td>
+</tr>
+</tbody>
+</table></section>
+<section id="s7"><h2>修正版が無い。待つという選択肢が現時点で存在しない<span class="b slot">対策・注意喚起</span></h2><p><strong>JFrog の勧告は「修正版は公開されていない（No fixed version has been published）」と明記している</strong>（出典1。本記録が逐語で確認）。</p>
+<p><strong>LMCache の GitHub Security Advisories も、2026年10月8日時点で「公開済みの勧告は無い（There aren't any published security advisories）」のままである</strong>（出典4。本記録が確認）。</p>
+<p><strong>つまり、メンテナがこの報告を受け取っているか、対応を進めているかも、公表資料からは分からない</strong>（本記録の整理。unknowns 参照）。</p>
+<p><strong>JFrog が運用者に示した緩和策</strong>（出典1）——</p>
+<ol>
+<li><strong>修正版が出るまで、<code>--host</code> にルーティング可能なアドレスを与えないこと。</strong></li>
+<li><strong>ポートを localhost か、信頼できるクラスタネットワークに留めること。</strong></li>
+</ol>
+<p><strong>ただし JFrog は同時に、重要な留保を置いている</strong>（出典1・3）—— <strong>「ファイアウォールは露出を下げるが、コード実行を防がない。接続できるホストは、なお実行できる。」</strong></p>
+<p><strong>本記録の評価</strong> —— <strong>これは「ネットワーク制限は対策ではなく緩和である」という明示である。</strong> <strong>クラスタ内の別のコンテナが侵害された場合、その内側からは到達できる。</strong> <strong>したがって、到達経路の制限は「クラスタの内側を信頼する」という前提の上に立っている。</strong></p>
+<p><strong>さらに The Hacker News は、JFrog の勧告が「既に攻撃を受けたかを判定する方法を運用者に提供していない」と指摘している</strong>（出典3）。</p>
+<p><strong>本記録もこれを重く見る</strong> —— <strong>認証が無いソケットでは「誰が接続したか」の記録が残らない。</strong> <strong>事後の確認は、ネットワーク側のログに依存する</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>AI 推論基盤は、プロセス間通信の前提をネットワークへ持ち出している<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価であり、公表資料には無い。</strong></p>
+<p><strong>本件の構造を一般化すると、こうなる</strong> —— <strong>「同一ホスト内のプロセス間で使うつもりの経路が、分散構成のためにネットワークへ出され、そのとき認証と形式の前提が見直されなかった。」</strong></p>
+<p><strong><code>pickle</code> は Python のプロセス間でオブジェクトを渡すには便利な形式で、同一ホスト内の信頼できる相手に対してなら合理的な選択である</strong>（本記録の一般的理解）。<strong>認証を省くことも、同じ前提の上では合理的に見える。</strong></p>
+<p><strong>問題は、その前提が構成の変更で静かに失われることである。</strong></p>
+<p><strong>The Hacker News は、認証のないネットワークソケットから<code>pickle</code> へデータを渡す誤りが、2025年11月に他の AI 推論フレームワーク群で見つかったもの（研究者が ShadowMQ と呼んだ一群）と同じであると指摘している</strong>（出典3）—— <strong>同記事は、LMCache のコードがそれらと共通の出所を持つかは確立されていないとしている。</strong></p>
+<p><strong>本記録の読み</strong> —— <strong>コードの出所が共通でないのであれば、むしろ事態は重い。</strong> <strong>同じ誤りが独立に繰り返されているということは、この分野の部品が同じ構造の圧力を受けているということである。</strong></p>
+<p><strong>推論基盤に固有の事情</strong>（本記録の一般的理解）——</p>
+<ul>
+<li><strong>性能が最優先される領域である。</strong> 認証やシリアライズの検証はオーバーヘッドとして真っ先に削られる候補になる。</li>
+<li><strong>GPU の性能への影響を理由に、EDR の除外対象にされていることがある。</strong>正規プロセス内でのコード実行を捉える手がかりが、そこで失われる。</li>
+<li><strong>「社内向けの実験環境」として立ち上がり、そのまま本番で使われることがある。</strong> 認証の設計を見直す節目が無い。</li>
+</ul>
+<p><strong>実務上の帰結</strong> —— <strong>AI 推論基盤を自社で運用している組織は、本件を「LMCache の脆弱性」ではなく「推論基盤のプロセス間通信が、どこまでネットワークに出ているか」という問いとして扱うのが有効である</strong>（本記録の評価）。<strong>確認対象は LMCache だけではない。</strong></p></section>
+<div class="blk " id="s9"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**脆弱な復元経路を含む LMCache 0.3.9 が公開された**（出典1・3）。 **JFrog は「この復元経路は v0.3.9 で出荷された」としている**（出典1）—— **以降のバージョンに引き継がれている。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**関連する別件（vLLM 側）が修正された**（出典3）。 **LMCache の multiprocess コネクタを使う構成で 細工した `cache_salt` 値を含む1リクエストがエンジンを クラッシュさせる CVE-2026-105756（CVSS 6.5・サービス妨害）が、 vLLM 0.30.0 で解消された。** **本件（CVE-2026-105192）とは別の欠陥である**（本記録の整理）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**GitHub 上で、LMCache に対する別のセキュリティ報告6件が 1つのアカウントから提出された**（出典3）。 **内容は、テナントをまたいだキャッシュデータへの認証なしアクセス、 および認証なしでコマンドを実行する複数のネットワークサービスの存在の主張。** **いずれも CVE の採番・メンテナによる確認・修正が無く、 概念実証の主張にとどまる**（出典3）—— **本記録はこれらを確認していない**（unknowns 参照）。 **1件は既定値が変更された点を指しており、 0.5.5 で全インタフェースに待ち受けていた管理用 HTTP サーバは 0.5.6 のリリース候補では localhost のみに待ち受ける**（出典3）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**JFrog が CVE-2026-105192（JFSA-2026-001694382）を公表した**（出典1）。 **重要度 Critical・CVSS 9.8。** **影響は 0.3.9 以降で、PyPI の 0.5.5・0.5.6rc1〜rc3・ 開発ブランチに 2026年10月7日時点で残っている。** **「修正版は公開されていない（No fixed version has been published）」と 明記されている**（原文英語）。 **同日が最終更新日でもある。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が報じた**（出典3）—— **「修正版が無い」「既定は localhost だが LMCache 自身の Kubernetes の例が全インタフェースで待ち受ける」 「公式コンテナイメージでは root で動く」 「JFrog の勧告は、既に攻撃を受けたかを判定する方法を 運用者に提供していない」の各点を伝えた。** **同記事は、認証のないネットワークソケットから `pickle` へ データを渡す誤りが、2025年11月に他の AI 推論フレームワーク群で 見つかったもの（研究者が ShadowMQ と呼んだ一群）と同じであると指摘し、 LMCache のコードがそれらと共通の出所を持つかは 確立されていないとしている。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が JFrog の勧告ページと LMCache の GitHub Security Advisories を取得して確認した。** **勧告は「修正版なし」のまま、 GitHub 側は「公開済みの勧告は無い」のままである**（出典1・4）。 **CVSS のベクタ文字列は勧告ページに掲載されていない** （本記録が確認。discrepancies 参照）。</td></tr></tbody></table></div></div>
+<div id="s10"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響を受けるバージョンの表記が資料間で揃っていない</span><div class=sm>**JFrog の勧告ページの「Affected versions」欄の表記は `= 0.3.9` である** （出典1。本記録が確認）—— **一方、同じページの本文は 「脆弱な復元経路は v0.3.9 で出荷され、 PyPI の v0.5.5、v0.5.6rc1〜rc3、開発ブランチに 2026年10月7日時点でなお存在する」と述べている。** **The Hacker News は「0.3.9 から 0.5.5 まで、 および 0.5.6 のリリース候補と開発ブランチ」としている**（出典3）。 **本記録の整理** —— **欄の `= 0.3.9` は「0.3.9 のみ」と読めてしまうが、 本文と報道はいずれも 0.3.9 以降が対象であることを示している。** **本記録は本文の記述に従い「0.3.9 以降」として記録した。** **実務上の帰結** —— **欄の表記だけを見て「0.3.9 を使っていないから無関係」と 判断すると見落とす**（本記録の評価）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>CVSS のベクタ文字列が公表されていない</span><div class=sm>**本記録が取得した JFrog の勧告ページに、 CVSS 9.8 のベクタ文字列の掲載は無い**（出典1。本記録が確認）。 **NVD および CVE.org のレコードページは JavaScript で描画される形式のため、 本記録の取得方法では中身を読み取れなかった**（本記録が確認）。 **したがって本記録は、各評価軸の内訳 （攻撃前提条件・影響の範囲など）を示せない。** **代わりに JFrog の条件付けを記録した** —— **「9.8 はルーティング可能な設定に対する評価である」**（出典1・3）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>CVE-2026-107204 の位置づけを本記録は裏取りできていない</span><div class=sm>**二次情報（thehackerwire.com）には、 LMCache 0.5.5 以下に `/run_script` エンドポイントが 認証も十分な入力検証も無しに POST された Python スクリプトを 実行する欠陥 CVE-2026-107204（CWE-94・CVSS 9.8）がある、 という記載がある**（出典5。本記録が確認）—— **同ページは本件（CVE-2026-105192）を「関連する別の脆弱性」として 挙げており、同一の欠陥とはしていない。** **本記録はこの CVE を一次資料で確認できていない** —— **NVD・CVE.org のレコードページから中身を取得できなかった**（前項参照）。 **また JFrog の勧告・The Hacker News の記事のいずれにも この CVE への言及は無い**（出典1・3）。 **本記録の扱い** —— **存在する可能性のある別件として unknowns に置き、 本件の記述には混ぜない。** **実務上の意味** —— **もし成立しているなら、`--host` を localhost に留める緩和は この別件には効かない**（エンドポイントの種類が違うため）—— **緩和の範囲を「本件に限る」と理解しておく必要がある**（本記録の評価）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は JFrog 勧告の原文を逐語で保持していない</span><div class=sm>**本記録は出典1（JFrog の勧告ページ）を取得して裏を取ったが、 原文の全文を逐語で保持していない**（本記録の明示）。 **逐語で確認できたのは、 「そのソケットには CURVE・ZAP・パスワード・ メッセージ認証のいずれも無い」 および「修正版は公開されていない」の2文である。** **それ以外の引用は、いずれも原文英語の要旨である。** **ファイル名・関数名（`lmcache/v1/platform/base/ipc_wrapper.py`・ `DeviceIPCWrapper.Deserialize`・ `lmcache/v1/multiprocess/custom_types.py`・`ext_hook`・ `REGISTER_KV_CACHE`）は、勧告ページの記載をそのまま写した。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s11"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証の無い ZeroMQ トランスポートから root 権限でのコード実行に至る経路</div><div class=svgwrap><svg viewBox="0 0 1202 722" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,361.0 C193.0,361.0 193.0,348.0 220,348.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,361.0 C193.0,361.0 193.0,266.0 220,266.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,443.0 C295.0,443.0 295.0,348.0 220,348.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,348.0 C397.0,348.0 397.0,164.0 424,164.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,164.0 C499.0,164.0 499.0,266.0 424,266.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,266.0 C499.0,266.0 499.0,368.0 424,368.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,368.0 C601.0,368.0 601.0,361.0 628,361.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,361.0 C805.0,361.0 805.0,273.0 832,273.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,361.0 C805.0,361.0 805.0,354.0 832,354.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,273.0 C907.0,273.0 907.0,442.0 832,442.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,361.0 C295.0,361.0 295.0,470.0 424,470.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,361.0 C295.0,361.0 295.0,565.0 424,565.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,53.0 C703.0,53.0 703.0,348.0 220,348.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,148.0 C703.0,148.0 703.0,443.0 220,443.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,236.0 C805.0,236.0 805.0,164.0 424,164.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,310.0 C1009.0,310.0 1009.0,273.0 832,273.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,391.0 C805.0,391.0 805.0,368.0 424,368.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,479.0 C805.0,479.0 805.0,368.0 424,368.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,574.0 C805.0,574.0 805.0,368.0 424,368.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,669.0 C1111.0,669.0 1111.0,479.0 1036,479.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="324.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="346.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トランスポートに接続でき</text><text x="91.0" y="360.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">るホスト</text><text x="91.0" y="373.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証が無いため「突破」の</text><text x="91.0" y="385.0" text-anchor="middle" fill="#f48fb1" font-size="10">段階が無い</text><rect x="220" y="235.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="257.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">既定の待ち受け（loca</text><text x="295.0" y="271.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">lhost）</text><text x="295.0" y="284.0" text-anchor="middle" fill="#f48fb1" font-size="10">他ホストからは到達しない</text><rect x="220" y="311.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="333.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">`--host` にルー</text><text x="295.0" y="347.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティング可能なアドレス</text><text x="295.0" y="360.0" text-anchor="middle" fill="#f48fb1" font-size="10">分散構成で実際に使われる</text><text x="295.0" y="372.0" text-anchor="middle" fill="#f48fb1" font-size="10">形</text><rect x="220" y="399.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="421.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LMCache 自身の </text><text x="295.0" y="435.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Kubernetes の</text><text x="295.0" y="449.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">例</text><text x="295.0" y="462.0" text-anchor="middle" fill="#f48fb1" font-size="10">全インタフェースで待ち受</text><text x="295.0" y="474.0" text-anchor="middle" fill="#f48fb1" font-size="10">ける</text><rect x="424" y="120.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ZeroMQ ROUTE</text><text x="499.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">R ソケット（既定 55</text><text x="499.0" y="170.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">55）</text><text x="499.0" y="183.0" text-anchor="middle" fill="#f48fb1" font-size="10">CURVE・ZAP・パス</text><text x="499.0" y="195.0" text-anchor="middle" fill="#f48fb1" font-size="10">ワード・メッセージ認証の</text><rect x="424" y="222.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">msgpack 拡張コー</text><text x="499.0" y="258.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド 1（DeviceIP</text><text x="499.0" y="272.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CWrapper）</text><text x="499.0" y="285.0" text-anchor="middle" fill="#ffcc80" font-size="10">`REGISTER_KV</text><text x="499.0" y="297.0" text-anchor="middle" fill="#ffcc80" font-size="10">_CACHE` の引数デ</text><rect x="424" y="324.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="346.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">`pickle.load</text><text x="499.0" y="360.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s`（CVE-2026-</text><text x="499.0" y="374.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">105192）</text><text x="499.0" y="387.0" text-anchor="middle" fill="#ffcc80" font-size="10">CVSS 9.8・メッセ</text><text x="499.0" y="399.0" text-anchor="middle" fill="#ffcc80" font-size="10">ージ種別の検査より前に動</text><rect x="628" y="324.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="346.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LMCache プロセス</text><text x="703.0" y="360.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の権限での任意コード実行</text><text x="703.0" y="373.0" text-anchor="middle" fill="#64b5f6" font-size="10">公式コンテナイメージでは</text><text x="703.0" y="385.0" text-anchor="middle" fill="#64b5f6" font-size="10"> root</text><rect x="424" y="426.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="448.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-107</text><text x="499.0" y="462.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">204（`/run_sc</text><text x="499.0" y="476.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ript`）の主張</text><text x="499.0" y="489.0" text-anchor="middle" fill="#ffcc80" font-size="10">二次情報のみ・本記録は未</text><text x="499.0" y="501.0" text-anchor="middle" fill="#ffcc80" font-size="10">確認・別の欠陥</text><rect x="424" y="528.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="550.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026/10/6 提出</text><text x="499.0" y="564.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の別報告6件</text><text x="499.0" y="577.0" text-anchor="middle" fill="#ffcc80" font-size="10">CVE なし・メンテナ未</text><text x="499.0" y="589.0" text-anchor="middle" fill="#ffcc80" font-size="10">確認・本記録は未確認</text><rect x="832" y="243.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="265.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コンテナ全体の制御</text><text x="907.0" y="278.0" text-anchor="middle" fill="#64b5f6" font-size="10">root 実行では昇格の</text><text x="907.0" y="290.0" text-anchor="middle" fill="#64b5f6" font-size="10">手順が要らない</text><rect x="832" y="317.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="339.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KV キャッシュ上のプロ</text><text x="907.0" y="353.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ンプトと応答</text><text x="907.0" y="366.0" text-anchor="middle" fill="#ffcc80" font-size="10">キャッシュ層が保持する内</text><text x="907.0" y="378.0" text-anchor="middle" fill="#ffcc80" font-size="10">容</text><rect x="832" y="405.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="427.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">基盤が持つ資格情報からの</text><text x="907.0" y="441.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">横展開</text><text x="907.0" y="454.0" text-anchor="middle" fill="#f48fb1" font-size="10">モデル取得先・ログ送信先</text><text x="907.0" y="466.0" text-anchor="middle" fill="#f48fb1" font-size="10">などの資格情報</text><rect x="1036" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">`--host` の引数</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の点検</text><text x="1111.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">JFrog の緩和策・こ</text><text x="1111.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">の段階で止める</text><rect x="1036" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Kubernetes マ</text><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ニフェストの待ち受けアド</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レス確認</text><text x="1111.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">例をそのまま使った構成を</text><text x="1111.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">洗い出す</text><rect x="1036" y="206.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達経路の限定</text><text x="1111.0" y="241.0" text-anchor="middle" fill="#f48fb1" font-size="10">緩和であって対策ではない</text><text x="1111.0" y="253.0" text-anchor="middle" fill="#f48fb1" font-size="10">（接続できるホストは実行</text><rect x="1036" y="280.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="302.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非 root での実行</text><text x="1111.0" y="315.0" text-anchor="middle" fill="#f48fb1" font-size="10">実行は防げないが範囲を区</text><text x="1111.0" y="327.0" text-anchor="middle" fill="#f48fb1" font-size="10">切る</text><rect x="1036" y="354.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="376.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">EDR の除外設定の見直</text><text x="1111.0" y="390.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">し</text><text x="1111.0" y="403.0" text-anchor="middle" fill="#f48fb1" font-size="10">正規プロセス内の実行を捉</text><text x="1111.0" y="415.0" text-anchor="middle" fill="#f48fb1" font-size="10">える</text><rect x="1036" y="442.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="464.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開発側の修正（形式の置き</text><text x="1111.0" y="478.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">換え・認証の導入）</text><text x="1111.0" y="491.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026/10/8 時点</text><text x="1111.0" y="503.0" text-anchor="middle" fill="#f48fb1" font-size="10">で未公開</text><rect x="1036" y="530.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="552.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JFrog（JFSA-2</text><text x="1111.0" y="566.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">026-00169438</text><text x="1111.0" y="580.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2）</text><text x="1111.0" y="593.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026/10/7 公表</text><text x="1111.0" y="605.0" text-anchor="middle" fill="#80cbc4" font-size="10">・発見者 Yuval M</text><rect x="1036" y="632.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="654.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LMCache プロジェ</text><text x="1111.0" y="668.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クト</text><text x="1111.0" y="681.0" text-anchor="middle" fill="#80cbc4" font-size="10">GitHub に公開済み</text><text x="1111.0" y="693.0" text-anchor="middle" fill="#80cbc4" font-size="10">勧告なし・修正版なし</text></svg></div><div class=fn>layer 0 は起点——LMCache の multiprocess トランスポートに TCP 接続できるホスト。認証は無いので「突破」の段階が存在しない。 layer 1 は到達可能性を決める設定——既定の localhost 待ち受けなら 他ホストからは届かず、`--host` にルーティング可能なアドレスを 与えた場合に届く。LMCache 自身の Kubernetes の例が 全インタフェースで待ち受ける形になっている。 layer 2 は欠陥の経路——msgpack 拡張コード 1 から `DeviceIPCWrapper.Deserialize`、そして `pickle.loads`。 `REGISTER_KV_CACHE` の引数のデコード中、 メッセージ種別の検査より前に動く。 layer 3 は到達点——LMCache プロセスの権限での任意コード実行。 公式コンテナイメージではこのプロセスが root である。 layer 4 は帰結——コンテナ全体の制御、KV キャッシュに載った プロンプトと応答への到達、基盤が持つ資格情報からの横展開。 layer 5 は対処——`--host` の点検、Kubernetes マニフェストの確認、 到達経路の限定（緩和であって対策ではない）、非 root での実行、 EDR の除外設定の見直し。開発側の修正（形式の置き換え・認証の導入）は 2026年10月8日時点で未公開。 別系統として、2026年10月6日に提出された別の報告6件と CVE-2026-107204 の主張を点線で併記する（いずれも本記録は未確認）。</div></div></div>
+<div class="blk " id="s12"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は検知について述べていない。** **本記録の評価** —— **この段階は自組織側から確認できる。** **「どのポートが、どのアドレスで待ち受けているか」は 攻撃を待たずに棚卸しできる**（本記録の整理）—— **検知の問題ではなく、構成の確認の問題である。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>LMCache の multiprocess サーバを起動している引数を確認し、 `--host` にルーティング可能なアドレスを与えていないかを点検する<span class=sm>　**JFrog が示した緩和策である**（出典1）。 **「修正版が存在するまでは、`--host` にルーティング可能な アドレスを設定しないこと」**（原文英語の要旨）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>Kubernetes のマニフェストが待ち受けアドレスを 全インタフェースにしていないかを確認する<span class=sm>　**本記録の評価による。** **LMCache 自身の例がその形になっている**（出典3）—— **例を出発点にした構成が多いと想定されるため、 個別の設定より先にここを見るのが早い**（本記録の読み）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は検知について述べていない。** **本記録の評価** —— **正規のワーカーの接続と攻撃者の接続は、 接続の形では区別できない**（認証が無いため、 そもそも「誰が接続したか」の情報が残らない）。 **区別しうるのは送信元アドレスだけである** —— **したがって、ネットワーク側で「このポートへ接続してよい 送信元の一覧」を持っていなければ、手がかりが無い。** **The Hacker News は、JFrog の勧告が 「既に攻撃を受けたかを判定する方法を運用者に提供していない」と 指摘している**（出典3）—— **本記録もこれを重く見る。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>トランスポートのポートへの到達を、 クラスタ内の正規のワーカーの送信元に限定する<span class=sm>　**JFrog の記述に沿う**（出典1）—— **「ポートを localhost か信頼できるクラスタネットワークに 留めること」。** **ただし JFrog は同時に、 「ファイアウォールは露出を下げるがコード実行を防がない。 接続できるホストはなお実行できる」と明記している**（出典1・3）—— **緩和であって対策ではない**（本記録の読み）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>ZeroMQ トランスポートに認証を設定する （CURVE またはメッセージごとの HMAC）<span class=sm>　**JFrog が開発側への修正案として挙げたものである**（出典1）。 **利用者側で設定できるかは、 LMCache がその設定を提供しているかに依存する** —— **本記録が確認した資料に、利用者が設定できるという記載は無い** （unknowns 参照）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は検知について述べていない。** **本記録の評価** —— **`pickle` 経由の実行は、正規のサービスプロセスの中で起きる。** **したがって「不審なプロセスが起動した」形では現れず、 LMCache のプロセスから子プロセスが起動する、 あるいは外部へ通信するという形で現れる。** **推論基盤は GPU の性能への影響を理由に EDR の除外対象にされていることがある**（本記録の一般的理解）—— **その構成ではこの手がかりが取れない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>推論基盤のコンテナを EDR の監視対象に含め、 除外設定を見直す<span class=sm>　**本記録の評価による。** **正規プロセス内での実行であるため、 プロセスの系譜（LMCache から何が起動したか）を 見られるかどうかが分かれ目になる**（本記録の整理）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>拡張コード 1 の背後のシリアライザを安全な形式に置き換える （開発側の修正）<span class=sm>　**JFrog が示した修正案である**（出典1）—— **「認証されていない相手からのネットワークデータに対して `pickle.loads` を呼ぶのをやめること」。** **2026年10月8日時点で修正版は公開されていない**（出典1・4）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価** —— **昇格の操作そのものが行われないため、 「昇格を検知する」という形の機会は存在しない。** **公表資料はこの点に触れていない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>推論基盤のコンテナを非 root の利用者で動かす<span class=sm>　**本記録の評価による。** **コード実行そのものは防げないが、 到達できる範囲がプロセスの権限で区切られる**（出典1 の記述に基づく）。 **副作用** —— **GPU デバイスへのアクセスやキャッシュの保存先の権限を 合わせて調整する必要があり、 公式イメージの前提から外れる**（本記録の一般的理解）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>推論基盤のコンテナから到達できる範囲 （ネットワーク・資格情報・マウント）を限定する<span class=sm>　**本記録の評価による。** **推論基盤は、モデルの取得先やログの送信先などの 資格情報を持っていることがある**（本記録の一般的理解）—— **そこに到達されると影響が基盤の外へ出る。**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s14"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「修正版が無い脆弱性」を、構成変更の意思決定として扱う体制を持つ</div><div class=lw>**本件は修正版が存在しない**（出典1。本記録が逐語で確認）—— **「更新を待つ」という選択肢が現時点で無い。** **残る手は、待ち受けアドレスの変更・到達経路の制限・ 非 root 化といった構成側の変更である**（出典1。本記録の整理）。 **構成の変更は、更新と違って業務側の判断が必要になる** （本記録の評価）—— **分散キャッシュを localhost 待ち受けに戻せば、 複数ノードでキャッシュを共有する構成が成立しなくなる。** **つまり「性能を落とす判断」を誰がするかの問題になる。**</div><div class=la><b>取るべき行動</b> **①AI 推論基盤について「修正版が無い脆弱性が出たときに 誰が構成変更を決めるか」を事前に決めておく。** **②その際に落ちる機能・性能と、受け入れる期間を 記録に残す形にする。** **③LMCache については、`--host` の設定と Kubernetes マニフェストの待ち受けアドレスを即座に確認させる。** **④修正版が出るまでの緩和であることを明示し、 再確認の期限を置く。**</div></li><li><div class=lp>AI 推論基盤を「実験環境」の棚卸し対象から外していないか確認する</div><div class=lw>**本件の到達可能性は、運用者が `--host` に ルーティング可能なアドレスを与えたかどうかで決まる**（出典1）。 **そしてプロジェクト自身の Kubernetes の例が 全インタフェースで待ち受ける形になっている**（出典3）。 **本記録の評価** —— **AI 推論基盤は「社内向けの実験」として立ち上がり、 そのまま使われ続けることがある**（本記録の一般的理解）—— **その経路で入ったものは、資産台帳にも脆弱性管理の対象にも 載っていないことがある。** **公式コンテナイメージが root で動く点も、 「とりあえず動かす」構成では見直されない**（出典1）。</div><div class=la><b>取るべき行動</b> **①自組織で動いている LLM 推論基盤を、 本番・検証・個人の実験を問わず一覧にする。** **②各々について、待ち受けているアドレスとポート、 実行している利用者（root か否か）、 到達できるネットワークの範囲を記録する。** **③一覧に載っていないものが出てきた経路 （誰がどの権限で立ち上げられるか）を確認する。**</div></li><li><div class=lp>「攻撃を受けたか確かめられない」ことを、報告の前提に組み込む</div><div class=lw>**The Hacker News は、JFrog の勧告が 「既に攻撃を受けたかを判定する方法を運用者に提供していない」と 指摘している**（出典3）。 **本記録の評価** —— **認証の無いソケットでは「誰が接続したか」の記録が残らない。** **したがって事後の確認は、ネットワーク側のログに依存する。** **ネットワーク側のログを取っていなければ、 「侵害されていない」とも「されていた」とも言えない状態になる。** **これは経営報告の場で「影響なし」と書けないことを意味する** （本記録の読み）。</div><div class=la><b>取るべき行動</b> **①AI 推論基盤について、ネットワーク側の接続ログ （どの送信元がどのポートへ接続したか）を取得しているか確認する。** **②取得していない場合、本件の影響判定が 「不明」になることを経営報告に明示する。** **③「不明」を減らすために、まず接続ログの取得を始める。**</div></li><li><div class=lp>部品の選定基準に「信頼できない入力に何を使っているか」を入れる</div><div class=lw>**本件の原因は、認証の無いネットワークソケットから 受け取ったデータを `pickle` で復元していたことである**（出典1）。 **同じ誤りが2025年11月に他の AI 推論フレームワーク群で 見つかっている**（出典3。研究者が ShadowMQ と呼んだ一群）—— **コードの出所を共有するかは確立されていない**（出典3）。 **本記録の評価** —— **出所が共通でないなら、同じ誤りが独立に繰り返されている。** **これは個別の製品の品質ではなく、 この分野の部品が共有している構造の問題である**（本記録の読み）。</div><div class=la><b>取るべき行動</b> **①AI 基盤に新しい部品を入れるとき、 「プロセス間通信の経路をネットワークに出す設定があるか」 「その経路に認証があるか」を確認項目にする。** **②特に、分散構成のための設定が 「認証なしのまま外に出す」形になっていないかを見る。** **③確認できない部品は、ネットワークの区画で囲う前提で導入する。**</div></li></ul></div></div>
+<div id="s15"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>まず `--host` の実際の値と、待ち受けアドレスの実測を取る</div><div class=lw>**既定では multiprocess トランスポートは localhost にのみ 待ち受ける**（出典1）—— **既定のままなら他ホストからは到達しない。** **到達可能になるのは `--host` にルーティング可能な アドレスを与えた場合である**（出典1）。 **ただし LMCache 自身の Kubernetes の例が 全インタフェースで待ち受ける形になっている**（出典3）—— **「自分は変えていない」が安全の根拠にならない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①起動引数ではなく、実際の待ち受け状態を測る （`ss -ltnp` 等で、どのアドレス・ポートで待ち受けているかを見る）。** **②Kubernetes の場合は、マニフェストの引数と Service の公開範囲の両方を確認する。** **③`0.0.0.0` や全インタフェースでの待ち受けが見つかったら、 修正版が無いことを前提に localhost へ戻せるかを検討する。** **④戻せない場合は、到達できる送信元の一覧を作り、 それ以外を落とす。**</div></li><li><div class=lp>ネットワーク制限を「対策」と報告しない。JFrog 自身が否定している</div><div class=lw>**JFrog は「ファイアウォールは露出を下げるが コード実行を防がない。接続できるホストはなお実行できる」と 明記している**（出典1・3）。 **本記録の整理** —— **これは、クラスタ内の別のコンテナが侵害された場合に その内側からは到達できることを意味する。** **到達経路の制限は「クラスタの内側を信頼する」という 前提の上に立っている**（本記録の読み）。</div><div class=la><b>取るべき行動</b> **①ネットワーク制限を実施したら、 「緩和・残存リスクあり」と記録する（「対処済み」としない）。** **②同じクラスタ内のどのワークロードが このポートに到達できるかを列挙する。** **③その一覧を、推論基盤以外のワークロードが 侵害された場合の影響範囲として扱う。**</div></li><li><div class=lp>推論基盤のコンテナを非 root で動かし、EDR の除外から外す</div><div class=lw>**実行されたコードは LMCache プロセスの権限で動き、 公式コンテナイメージではそれが root である**（出典1）。 **本記録の評価** —— **root 実行では権限昇格の手順が要らないため、 攻撃者の側に残る仕事が無い。** **また `pickle` 経由の実行は正規のサービスプロセスの中で起きるため、 「不審なプロセスが起動した」形では現れない**（本記録の整理）—— **LMCache のプロセスから子プロセスが起動する、 あるいは外部へ通信するという形で現れる。** **推論基盤は GPU の性能への影響を理由に EDR の除外対象にされていることがある**（本記録の一般的理解）。</div><div class=la><b>取るべき行動</b> **①推論基盤のコンテナの実行利用者を確認し、 root であれば非 root 化を検討する （GPU デバイスとキャッシュ保存先の権限調整が伴う）。** **②EDR の除外設定に推論基盤が入っていないか確認する。** **③入っている場合、プロセスの系譜 （LMCache から何が起動したか）だけでも取れる設定を探す。**</div></li><li><div class=lp>検査の追加では塞げない型の欠陥であることを理解して対処を選ぶ</div><div class=lw>**`pickle.loads` の呼び出しは、 `REGISTER_KV_CACHE` の引数をデコードしている最中、 ハンドラが走る前に行われる**（出典1）。 **本記録の整理** —— **メッセージ種別に基づく検査をいくら足しても、 この経路には届かない。** **実行は「引数を読む」過程で起きるためである。** **JFrog の修正案も検査の追加ではなく形式の置き換えである**（出典1）。</div><div class=la><b>取るべき行動</b> **①自前でパッチを当てる場合、 「種別の検査を前に出す」方向では解決しないことを前提にする。** **②拡張コード 1 の経路を無効化できるか、 あるいは `pickle` を使わない形式に差し替えられるかを見る。** **③自前の改変を入れる場合は、 上流の修正が出たときに戻せる形（パッチの管理）にしておく。**</div></li><li><div class=lp>同じ型の欠陥を他の推論部品にも探す</div><div class=lw>**The Hacker News は、認証のないネットワークソケットから `pickle` へデータを渡す誤りが、2025年11月に 他の AI 推論フレームワーク群で見つかったもの （研究者が ShadowMQ と呼んだ一群）と同じであると指摘している**（出典3）。 **コードの出所を共有するかは確立されていない**（出典3）。 **本記録の評価** —— **出所が共通でないなら、同じ誤りが独立に繰り返されている。** **したがって、他の部品にも同じ構造がある可能性を 前提に探すのが有効である。**</div><div class=la><b>取るべき行動</b> **①自組織の推論基盤で使っている部品について、 プロセス間通信の経路をネットワークへ出す設定の有無を確認する。** **②その経路の認証の有無と、使っているシリアライズ形式を見る。** **③`pickle`・`dill`・`joblib` などを ネットワーク入力に使っている箇所を洗い出す。**</div></li></ul></div></div>
+<div class="blk " id="s16"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> LMCache 0.3.9 以降を multiprocess（分散）モードで動かしている</td><td class=sm>脆弱な復元経路は 0.3.9 で出荷され、0.5.5・0.5.6rc1〜rc3・開発ブランチに残る。修正版は無いため、該当すれば構成側の緩和しか手が無い</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> multiprocess トランスポートの待ち受けアドレスを実測しておらず、起動引数の記載だけで判断している</td><td class=sm>LMCache 自身の Kubernetes の例が全インタフェースで待ち受ける形になっている。「自分は変えていない」が安全の根拠にならない</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 推論基盤のコンテナを公式イメージのまま root で動かしている</td><td class=sm>実行されたコードはプロセスの権限で動く。公式イメージは root であり、権限昇格の手順が要らない状態になっている</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 推論基盤について、ネットワーク側の接続ログ（送信元とポートの組）を取得していない</td><td class=sm>認証の無いソケットでは「誰が接続したか」が残らない。接続ログが無いと、攻撃を受けたかを事後に判定できず「影響なし」と報告できない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 推論基盤のコンテナを EDR の監視対象から除外している</td><td class=sm>`pickle` 経由の実行は正規プロセス内で起きるため外形に出ない。プロセスの系譜が取れないと、実行された痕跡を掴む手がかりが無い</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> AI 推論の部品を資産台帳・脆弱性管理の対象に含めておらず、検証環境や個人の実験として立ち上がったものを把握していない</td><td class=sm>本件の到達可能性は設定1つで決まる。把握していない基盤については、その1つを確認する相手がいない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 「修正版が無い脆弱性」が出たときに構成変更（性能や機能を落とす判断）を誰が決めるかを定めていない</td><td class=sm>本件は更新で塞げない。localhost 待ち受けに戻すと分散キャッシュの構成が成立しなくなるため、業務側の判断が必要になる</td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>（公開済みの勧告が存在しない） LMCache（LMCache/LMCache）</span> <a href="https://github.com/LMCache/LMCache/security/advisories" target="_blank" rel="noreferrer noopener nofollow">LMCache — Security Advisories（公開済みの勧告なし）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本記録が取得して「無いこと」を確認した。** **2026年10月8日時点の表示は 「There aren&#x27;t any published security advisories」である。** **本件について当事者による公表は存在しない** （unknowns・primary_source_disclosure_note 参照）。 **このエントリは「一次公表が無い」ことを記録として残すために置いた** （本記録の判断）。）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月8日（本記録の確認時点） LMCache（GitHub）</span> <a href="https://github.com/LMCache/LMCache/security/advisories" target="_blank" rel="noreferrer noopener nofollow">LMCache/LMCache — Security Advisories ページの状態（本記録の確認）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**出典2と同じ URL だが、 「本記録が確認した時点の状態」を独立したエントリとして置いた** （本記録の判断）。 **2026年10月8日時点で公開済みの勧告は無い。** **本記録は、修正版の公開予定・メンテナの対応状況を ここから読み取ることができなかった**（unknowns 参照）。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月7日（同日最終更新） JFrog Security Research</span> <a href="https://research.jfrog.com/vulnerabilities/lmcache-is-vulnerable-to-unauthenticated-remote-code-execution-via-pickle-deserialization-on-the-multiprocess-zmq-transport-cve-2026-105192-jfsa-2026-001694382/" target="_blank" rel="noreferrer noopener nofollow">JFSA-2026-001694382 / CVE-2026-105192 — LMCache is vulnerable to Unauthenticated Remote Code Execution via Pickle Deserialization on the Multiprocess ZMQ Transport</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録が直接取得して裏を取った、発見者による公表。** 確認したのは—— **①勧告ID（JFSA-2026-001694382）と CVE ID（CVE-2026-105192）、 ②CVSS 9.8・重要度 Critical（ベクタ文字列の掲載は無い）、 ③発見者（JFrog セキュリティ研究チームの Yuval Moravchick）、 ④公表日と最終更新日（いずれも2026年10月7日）、 ⑤影響コンポーネント（github.com/LMCache/LMCache）と バージョン（欄は `= 0.3.9`、本文では 0.3.9 で出荷され PyPI の 0.5.5・0.5.6rc1〜rc3・ 開発ブランチに2026年10月7日時点で残存）、 ⑥「修正版は公開されていない（No fixed version has been published）」、 ⑦技術的経路（multiprocess（分散）モードが 認証の無い ZeroMQ の ROUTER ソケットを開く／ 既定ポート 5555 ／既定は localhost 待ち受けで 9.8 は `--host` でルーティング可能にした構成への評価／ msgpack 拡張コード 1 が `DeviceIPCWrapper` に割り当てられ `lmcache/v1/platform/base/ipc_wrapper.py` の `DeviceIPCWrapper.Deserialize` が `pickle.loads` を呼ぶ／ `lmcache/v1/multiprocess/custom_types.py` の `ext_hook` から `REGISTER_KV_CACHE` の引数のデコード中・ハンドラ実行前に動く）、 ⑧権限（LMCache を動かしている利用者の権限で実行され、 公式コンテナイメージでは root）、 ⑨緩和策（拡張コード 1 の背後のシリアライザを安全な形式に置き換える／ ZMQ トランスポートを認証する（CURVE・メッセージごとの HMAC）／ 認証が設定されていなければルーティング可能な bind を拒否する／ 修正版が無い間は `--host` にルーティング可能なアドレスを与えず ポートを localhost か信頼できるクラスタネットワークに留める／ ファイアウォールは露出を下げるが接続できるホストによる コード実行は防がない）、 ⑩野生での悪用についての記載が無いこと。** **逐語で確認した文は 「There is no CURVE, ZAP, password, or message authentication on that socket.」と 「No fixed version has been published.」の2つで、 それ以外の引用は原文英語の要旨である**（discrepancies 参照）。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月7日 15:34 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/10/unpatched-critical-lmcache-flaw-lets.html" target="_blank" rel="noreferrer noopener nofollow">Unpatched Critical LMCache Flaw Lets Unauthenticated Attackers Run Code Remotely</a> <span class="b kind">記事</span><span class=sm>（**本記録がこの記事を起点に JFrog の勧告へ辿った。** **確認した内容** —— **①影響バージョンを「0.3.9（2025年10月公開）から 0.5.5 まで、 および 0.5.6 のリリース候補と開発ブランチ」としていること、 ②既定は localhost 待ち受けで、 運用者がルーティング可能なアドレスで起動したときに 他ホストから到達できるとしていること、 ③LMCache 自身の Kubernetes のデプロイ例が 全ネットワークインタフェースで待ち受ける形になっていること、 ④単一の vLLM プロセス内の LMCache はポートを開かないこと、 ⑤公式コンテナイメージでは root で動くこと（JFrog による）、 ⑥LMCache がセキュリティ勧告を出しておらず、 JFrog の勧告は「既に攻撃を受けたかを判定する方法」を 運用者に提供していないこと、 ⑦2026年10月6日に1つのアカウントから6件の別の報告が 提出されたこと（CVE なし・メンテナ未確認・修正なし）、 ⑧0.5.5 で全インタフェースに待ち受けていた管理用 HTTP サーバが 0.5.6 のリリース候補では localhost のみになったこと、 ⑨vLLM 側の別件 CVE-2026-105756（CVSS 6.5・サービス妨害・ 0.30.0（2025年9月22日公開）で修正済み）、 ⑩2025年11月に他の AI 推論フレームワーク群で見つかった 同種の誤り（ShadowMQ）との関係が確立されていないこと。**）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月7日 The Hacker Wire</span> <a href="https://www.thehackerwire.com/cve-2026-107204-critical-lmcache-rce-exposes-systems-to-unauthenticated-python-code-execution/" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-107204: Critical LMCache RCE Exposes Systems to Unauthenticated Python Code Execution</a> <span class="b kind">記事</span><span class=sm>（**二次情報。本記録は裏取りできていない**（discrepancies 参照）。 **記載内容** —— **LMCache 0.5.5 以下の `/run_script` エンドポイントが 認証も十分な入力検証も無しに POST された Python スクリプトを 実行する（CWE-94・CVSS 9.8）。** **同ページは本件（CVE-2026-105192）を 「関連する別の脆弱性」として挙げており、 同一の欠陥とはしていない。** **本記録はこの CVE を一次資料（NVD・CVE.org）で確認できなかったため、 本文の記述には混ぜず unknowns に置いた。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s18"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月8日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月7日の The Hacker News の記事を起点に、 **JFrog の勧告（JFSA-2026-001694382）を直接取得して裏を取り、 LMCache の GitHub Security Advisories も取得して 「当事者の公表が存在しない」ことを確認した。** **NVD・CVE.org のレコードページは JavaScript 描画のため 本記録の取得方法では中身を読み取れず、 CVSS のベクタ文字列を確認できなかった** （discrepancies に `source_silent` として置いた）。 **type は vulnerability、japan_relevance は overseas-watch** （日本国内の利用状況について本記録が確認した資料に記載が無い）。 **root_causes は design-flaw と privilege-management の2つ** —— **①認証の無いネットワークソケットから受け取ったデータを `pickle` で復元していたこと、 ②そのプロセスが公式イメージでは root で動くこと。** **本記録が中心と判断したのは4点。** ①**処理の順序が核心であること** —— **`pickle.loads` は `REGISTER_KV_CACHE` の引数のデコード中、 メッセージ種別の検査より前に動く。** **したがって「検査を足して塞ぐ」方向では解決しない**ことを cause のセクションと engineer の lesson に書いた。 ②**到達可能性が設定1つで決まり、しかもプロジェクト自身の Kubernetes の例が開いていること** —— **「既定は localhost だから安全」という説明が 「例をそのまま使った構成」には当てはまらない。** **確認対象は判断の跡ではなく実測である**ことを scope のセクションに独立して書いた。 ③**修正版が存在しないこと** —— **「更新を待つ」という選択肢が無く、構成変更の判断になる。** **JFrog 自身が「ファイアウォールは露出を下げるが コード実行を防がない」と留保を置いているため、 ネットワーク制限を「対処済み」と報告しないことを lesson に入れた。** ④**「攻撃を受けたか確かめる方法が示されていない」こと** —— **認証が無いソケットでは接続元の記録が残らないため、 事後の確認がネットワーク側のログに依存する。** **これを経営報告の前提（「影響なし」と書けない）として ciso の lesson に書いた。** **悪用の有無はどの資料も述べていないため unknowns に置いた。** **2026年10月6日に提出された別の報告6件と、 二次情報にある CVE-2026-107204（`/run_script`）は、 いずれも本記録が確認できていないため 本文の記述に混ぜず unknowns と discrepancies に分けた** —— **特に後者は、`--host` を localhost に留める緩和が 効かない可能性のある別経路であるため、 緩和の範囲を「本件に限る」と理解する必要がある点を明示した。** **ShadowMQ との関係は確立されていないという出典3の記述をそのまま残し、 「出所が共通でないならむしろ重い」という読みは 本記録の評価として analysis のセクションに分離した。**</li></ul></div></div>
+<div class="blk " id="s19"><h3>タグ</h3><span class="b tag">LMCache</span><span class="b tag">vLLM</span><span class="b tag">LLM 推論基盤</span><span class="b tag">KV キャッシュ</span><span class="b tag">pickle</span><span class="b tag">デシリアライズ</span><span class="b tag">ZeroMQ</span><span class="b tag">事前認証RCE</span><span class="b tag">未修正</span><span class="b tag">JFrog</span><span class="b tag">ShadowMQ</span><span class="b tag">Kubernetes</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-08 15:01 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
