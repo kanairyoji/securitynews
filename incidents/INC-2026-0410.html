@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Ninja Forms ほかXSS悪用で4系統の裏口 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0410</span>Ninja Forms ほかXSS悪用で4系統の裏口</h1>
+<header class="site-header">
+  <p class="subtitle">WordPress プラグイン Ninja Forms（CVE-2026-94504・3.15.3 以前）と WPC Product Bundles for WooCommerce（CVE-2026-93836・8.6.6 以前）の格納型XSSが実地で悪用され、管理者の画面で実行された JavaScript が偽プラグイン「WP Smart Thumbnails」を導入して4系統の裏口を作る——Patchstack が10月4日と5日に同一の攻撃者による活動として観測した。Ninja Forms の修正版は観測の14日前に出ていた</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月6日</span>
+  <span>最終更新: 2026年10月7日</span>
+</div>
+
+<div class="lead"><p><strong>WordPress プラグインの格納型XSSが、実地で裏口の設置に使われた。</strong> WordPress セキュリティのベンダーである Patchstack は2026年10月6日、2つの無関係なプラグインの格納型XSSを悪用する攻撃を観測したと公表した。</p>
+<ul>
+<li><strong>WPC Product Bundles for WooCommerce</strong>（CVE-2026-93836・8.6.6 以前・導入3万サイト超）への悪用を<strong>10月4日</strong>に観測</li>
+<li>翌<strong>10月5日</strong>、<strong>Ninja Forms</strong>（CVE-2026-94504・3.15.3 以前・導入50万サイト超）への同一の活動を観測</li>
+</ul>
+<p><strong>どちらも同じドメイン（imgcdn1[.]com）から同じ JavaScript（/fz/x.js）が配られており、同一の攻撃者とみられる</strong>。このドメインは<strong>2026年10月1日に登録</strong>されている。</p>
+<p>攻撃の形が、脆弱性の分類から受ける印象と違う。<strong>格納型XSSは「サイトの見た目が書き換わる」程度に受け取られがちだが、本件で起きたのは管理権限の恒久的な奪取である。</strong>攻撃者は認証なしで注文データや問い合わせの送信内容に JavaScript を仕込む。<strong>ログイン中の管理者がその内容を管理画面で開いた瞬間、スクリプトは管理者のセッションで動く。</strong> Cookie は盗まれない——盗む必要がない。スクリプトはプラグイン導入用の nonce を取得し、「WP Smart Thumbnails」1.2.4（作者名「MediaPress Labs」）を名乗る偽プラグインを導入し、管理者アカウントを作る。</p>
+<p><strong>残されるのは4系統の裏口である。</strong></p>
+<ol>
+<li>管理画面から見える管理者アカウント（認証情報はC2が指定）</li>
+<li><strong>管理画面の一覧に表示されない隠し管理者</strong>（must-use プラグインで非表示化）</li>
+<li><strong>マジックログインURL</strong>（サイト最古の管理者としてログインできる）</li>
+<li>プラグイン内の<strong>認証なしファイルマネージャー</strong></li>
+</ol>
+<p><strong>偽プラグインを削除しても 3 と 4 は残る。</strong> 永続化の部品は must-use プラグインとして別に置かれ、<strong>ファイルの日時は偽装されている</strong>。Patchstack は「侵害の判定は更新日時ではなく内容で行え」としている。</p>
+<p>観測規模は限定的だが継続している。送信元IPは5件確認され、<strong>うち4件は Tor の出口ノード</strong>である。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>4</span></div><ul><li><span class=ui>侵害されたサイトの数と、具体的なサイト名</span><span class="b rsn">公表されていない</span></li><li><span class=ui>WPC Product Bundles for WooCommerce 8.6.7 の公開日</span><span class="b rsn">探索したが未発見</span></li><li><span class=ui>攻撃者の実体・目的（最終的に何をするための裏口なのか）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>脆弱性の報告から修正版の公開までの経緯と、提供元のセキュリティ勧告の有無</span><span class="b rsn">探索したが未発見</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Patchstack</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WordPress のセキュリティを扱うベンダー。両脆弱性のデータベース登録元であり、 実地での悪用を観測して2026年10月6日に記事として公表した</p></div></div><div class=org><div class=org-h><span class=org-n>Saturday Drive（Ninja Forms の提供元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Ninja Forms の提供元。修正版 3.15.4 を2026年9月21日に公開し、 変更履歴の「Security Enhancements」に出力エスケープの強化を記載した</p><p class=org-p><span class=org-l>影響</span>自社プラグインの脆弱性が実地で悪用された。 **提供元としてのセキュリティ勧告は確認できず、修正の記述は変更履歴にのみある**</p></div></div><div class=org><div class=org-h><span class=org-n>WPClever（WPC Product Bundles for WooCommerce の提供元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WPC Product Bundles for WooCommerce の提供元。修正版 8.6.7 の変更履歴に 「Fixed: Vulnerability reported by lhking from Wordfence」と記載した</p><p class=org-p><span class=org-l>影響</span>自社プラグインの脆弱性が実地で悪用された。 **8.6.7 の公開日は変更履歴から確認できない**</p></div></div><div class=org><div class=org-h><span class=org-n>Wordfence</span><span class="b role">発見・通報した主体</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>WPC Product Bundles の脆弱性の報告元。提供元の変更履歴に 「lhking from Wordfence」として報告者が記載されている</p></div></div><div class=org><div class=org-h><span class=org-n>（imgcdn1[.]com から JavaScript を配った攻撃者・実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>両プラグインへの攻撃で**同一の JavaScript を同一のドメインから配信**しており、 Patchstack は同一の攻撃者によるものとみている。 送信元IPは5件確認され、うち4件は Tor の出口ノードである</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Ninja Forms の導入サイト数（母数）</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>500,000<span class=fu>サイト</span></div><div class=fn>Patchstack・BleepingComputer の記述による「50万サイト超」。 **これは導入サイト数（母数）であり、被害サイト数ではない**。 被害サイト数は公表されていない</div></div><div class=fig><div class=fh><span class=fl>WPC Product Bundles for WooCommerce の導入サイト数（母数）</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>30,000<span class=fu>サイト</span></div><div class=fn>Patchstack・BleepingComputer の記述による「3万サイト超」。 **導入サイト数（母数）であり、被害サイト数ではない**</div></div><div class=fig><div class=fh><span class=fl>攻撃の送信元として確認されたIPアドレスの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>Patchstack の記述。**うち4件は Tor の出口ノード**であり、 送信元IPでの遮断は攻撃者の所在を示さない</div></div><div class=fig><div class=fh><span class=fl>送信元IPのうち Tor の出口ノードであったものの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>件</span></div><div class=fn>Patchstack の記述。5件中4件</div></div><div class=fig><div class=fh><span class=fl>Ninja Forms の修正版の公開から実地の悪用の観測までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**本記録の作成者が算出した値**。2026年9月21日（3.15.4 公開）→10月5日（悪用の観測）。 修正版が2週間出ている状態で悪用が始まったことを意味する。 WPC Product Bundles 側は 8.6.7 の公開日が変更履歴から確認できないため算出していない</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>認証なしで保存できる入力に仕込まれた格納型XSSが、管理者の管理画面で管理者のセッションごと 実行され、WordPress の正規の機能で偽プラグインの導入と管理者アカウントの作成に至る。 最後に must-use プラグインで4系統の裏口を残し、偽プラグインを削除しても2系統が生き残る</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>攻撃者が**認証なしで**、WooCommerce の注文データまたは Ninja Forms の送信内容に 悪意ある JavaScript（x.js の読み込み）を保存する。この時点では何も起きない。 **保存された文字列は、管理者が管理画面で開くのを待つ**</div><div class=fn>根拠: Patchstack の記事（両プラグインの格納型XSS・CVE-2026-93836／CVE-2026-94504）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ログイン中の管理者が当該内容を管理画面で開く**と、 `https://imgcdn1.com/fz/x.js` が**管理者のセッションの中で実行される**。 Patchstack は「Cookie は盗まれず、管理者のセッションを流用する」と明記している</div><div class=fn>根拠: Patchstack の記事（攻撃の流れ 1.）</div></li><li><div class=stg><span class="b stage">3. C2通信</span><span class="b conf">確認済</span><span class=srcs></span></div><div>スクリプトは攻撃者のサーバー（`/fz/c.php`）に対象サイトの状態を問い合わせ、 **すでに処理済みの段階を判定する**。最後に実行結果をC2へ送信する</div><div class=fn>根拠: Patchstack の記事（攻撃の流れ 2. および 6.）</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">確認済</span><span class=srcs></span></div><div>スクリプトは管理者のセッションを使って**プラグインのアップロード用 nonce を取得**し、 WordPress の正規の機能で偽プラグイン **「WP Smart Thumbnails」1.2.4（作者名「MediaPress Labs」・スラッグ wp-smart-thumbnails）** を導入する。続いて**管理者の権限で管理者アカウントを作成**する （認証情報はC2が指定したもの）</div><div class=fn>根拠: Patchstack の記事（攻撃の流れ 3. および 4.）</div></li><li><div class=stg><span class="b stage">5. 永続化</span><span class="b conf">確認済</span><span class=srcs></span></div><div>`emer-run.php` を実行し、**①管理画面から見える管理者アカウント ②管理画面の一覧に表示されない隠し管理者（must-use プラグインで非表示化） ③サイト最古の管理者としてログインできるマジックログインURL ④認証なしのファイルマネージャー**の4系統を設置する。 部品は `wp-content/mu-plugins/` に `class-wp-token-validate.php`・ `class-wp-query-&lt;8桁16進&gt;.php` として置かれ、**ファイルの日時は偽装される**。 **偽プラグインを削除しても ③ と ④ は残る**</div><div class=fn>根拠: Patchstack の記事（攻撃の流れ 5.・永続化の4つの経路）</div></li><li><div class=stg><span class="b stage">6. 検知回避</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>隠し管理者は must-use プラグインによって 「ユーザー → ユーザー一覧に表示されず、管理者フィルタにも現れず、 一覧の上の合計数にも数えられない」状態にされる（Patchstack・原文英語）。 永続化の部品は**日時を過去に偽装**して置かれる</div><div class=fn>根拠: Patchstack の記事（隠し管理者の説明・日時の偽装）</div></li></ol></div>
+<section id="s5"><h2>認証なしで保存した文字列が、ログイン中の管理者のブラウザで管理者の権限ごと動いた<span class="b slot">原因・手口</span></h2><p><strong>格納型XSSは、本件では「管理権限の奪取」として実現した。</strong></p>
+<p>両脆弱性に共通するのは、<strong>攻撃者が認証なしに保存できる場所</strong>（WooCommerce の注文データ、Ninja Forms の送信内容）に入れた文字列が、<strong>管理画面に出力されるときエスケープされていなかった</strong>ことである。Ninja Forms 3.15.4 の変更履歴に「strengthen output escaping in admin submission edit screen」（管理画面の送信内容編集画面における出力エスケープの強化／原文英語）とあり、出力側の不備であったことは提供元自身の記述から読み取れる。</p>
+<p>攻撃の成立には<strong>管理者がその内容を管理画面で開く</strong>ことが要る。そこで何が起きるか。</p>
+<ul>
+<li>スクリプトは <code>https://imgcdn1.com/fz/x.js</code> から読み込まれ、<strong>ログイン中の管理者のセッションの中で実行される</strong></li>
+<li><strong>Cookie は盗まれない。</strong> 盗む必要がない。スクリプトは管理者の画面の中にいるため、管理者ができることを直接行える</li>
+<li>プラグイン導入用の <strong>nonce を取得</strong>し、WordPress の正規の機能を使って偽プラグインを導入する</li>
+</ul>
+<p>ここが本件の要点である。<strong>WordPress の管理画面を狙うXSSは、セッションを外に持ち出す攻撃ではなく、管理者の手を借りて正規の操作を行わせる攻撃になる。</strong>多要素認証は入口を守るが、<strong>すでにログインしている管理者の画面の中で動くスクリプトは多要素認証を通り抜ける</strong>（本記録の評価）。</p></section>
+<section id="s6"><h2>偽プラグインを削除しても2系統の裏口が残る——日時が偽装されているため、更新日時では侵害を判定できない<span class="b slot">被害規模・影響範囲</span></h2><p>導入される偽プラグインは <strong>「WP Smart Thumbnails」バージョン1.2.4</strong>、作者名 <strong>「MediaPress Labs」</strong>、スラッグ <code>wp-smart-thumbnails</code> である。スクリプトは続いて <code>emer-run.php</code> を実行し、永続化の部品を置く。</p>
+<p><strong>残るのは4系統である。</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>裏口</th>
+<th>偽プラグイン削除後</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>管理画面から見える管理者アカウント（認証情報はC2が指定）</td>
+<td>消える（見えるので気づける）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>管理画面の一覧に表示されない隠し管理者</td>
+<td><strong>残る</strong></td>
+</tr>
+<tr>
+<td>3</td>
+<td>マジックログインURL（サイト最古の管理者としてログイン）</td>
+<td><strong>残る</strong></td>
+</tr>
+<tr>
+<td>4</td>
+<td>プラグイン内の認証なしファイルマネージャー</td>
+<td>削除で消える</td>
+</tr>
+</tbody>
+</table>
+<p>Patchstack によれば、<strong>プラグインを削除しても 3 と 4 の経路は残る</strong>。永続化の部品は <strong>must-use プラグイン</strong>として <code>wp-content/mu-plugins/</code> に<code>class-wp-token-validate.php</code> や <code>class-wp-query-&lt;8桁の16進数&gt;.php</code> の名前で置かれる。must-use プラグインは<strong>管理画面から無効化できない</strong>。</p>
+<p>隠し管理者について、Patchstack はこう書いている——「そのアカウントは ユーザー → ユーザー一覧 に表示されず、管理者フィルタにも現れず、一覧の上に出る合計数にも数えられない。サイト所有者が見ることのできない、完全な権限を持つ管理者である」（原文英語）。</p>
+<p><strong>侵害の判定を更新日時で行ってはいけない。</strong> 置かれるファイルの日時は過去に偽装されている。Patchstack は「日時ではなく内容で確認せよ」としている。</p></section>
+<section id="s7"><h2>修正版は観測の14日前に出ていた——踏まれたのは「まだ直っていない脆弱性」ではない<span class="b slot">評価・解釈</span></h2><p>本件で見落としてはいけないのは、<strong>攻撃が始まったとき修正版はすでにあった</strong>ことである。</p>
+<ul>
+<li>Ninja Forms <strong>3.15.4</strong> の公開は <strong>2026年9月21日</strong></li>
+<li>Patchstack が Ninja Forms への悪用を観測したのは <strong>10月5日</strong></li>
+<li>差は <strong>14日</strong>（本記録の作成者による算出）</li>
+</ul>
+<p>つまり踏まれたサイトが抱えていたのはゼロデイではなく、<strong>2週間前に修正版が出ていた既知の脆弱性</strong>である。配信元ドメイン imgcdn1[.]com の登録は <strong>10月1日</strong>で、修正版の公開より後である。これは攻撃者が<strong>公開された修正の内容から攻撃可能な箇所を知って準備した</strong>可能性を示す（本記録の推定。Patchstack はこの点に言及していない）。</p>
+<p><strong>WPC Product Bundles 側については同じことが言えない。</strong> 8.6.7 の公開日が変更履歴に記載されておらず、本記録の作成者も確認できなかった。片方で成り立った推論をもう片方にも当てはめないため、unknowns に残した。</p>
+<p>なお両提供元の修正の記述は<strong>変更履歴の中にのみ</strong>あり、独立したセキュリティ勧告は見つけられなかった。WPC 8.6.7 の記述は「Fixed: Vulnerability reported by lhking from Wordfence」の一行である。<strong>変更履歴の一行を読まないと、自分が緊急に上げるべき更新なのか判断できない。</strong></p></section>
+<section id="s8"><h2>脆弱性の「認証の要否」をめぐって報道と登録情報が食い違っている<span class="b slot">未確定事項</span></h2><p>同じ2つの脆弱性について、資料の記述が揃っていない。</p>
+<ul>
+<li><strong>Patchstack</strong> は両方を <strong>「認証不要の格納型XSS」</strong>（unauthenticated stored XSS）として記載している</li>
+<li><strong>BleepingComputer</strong> は「どちらも高い深刻度の評点を受け、<strong>悪用には認証済みのセッションが必要</strong>である」と書いている</li>
+<li>Patchstack のデータベース側の記述は CVSS <strong>7.1</strong> で、「悪用の成功には特権を持つ利用者の操作（悪意あるリンクのクリックやフォームの送信等）が要る」と説明している</li>
+</ul>
+<p>これは<strong>同じ事実の別の面を指している</strong>と本記録は読む（本記録の評価）。<strong>投入（保存）は認証なしでできる。実行には管理者が管理画面で開く操作が要る。</strong>「認証が必要」を「攻撃者がログインできなければ成立しない」と読むと、対処の緊急度を下げる判断につながりかねない。<strong>攻撃者側に認証は要らない。</strong></p>
+<p>修正版の番号についても、Patchstack のデータベース内でNinja Forms の修正版を 3.15.4 とするものと 3.15.5 とするものがある。本記録は<strong>記事側の記述（3.15.4 以降）</strong>を採り、discrepancies に残した。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>発覚の端緒</th><td>認証なしで保存できる入力（WooCommerce の注文データ／Ninja Forms の送信内容）に 仕込まれた JavaScript が、管理者が管理画面で当該内容を開いたときに 管理者のセッションで実行される（格納型XSS）<span class="b rsn">stated</span></td></tr><tr><th>affected_products</th><td><div class=sub><b>名称:</b> Ninja Forms　<b>CVE番号:</b> CVE-2026-94504　<b>vulnerable_versions:</b> 3.15.3 以前　<b>fixed_version:</b> 3.15.4 以降　<b>installs:</b> 50万サイト超　<b>vulnerability_type:</b> 認証不要の格納型クロスサイトスクリプティング（格納型XSS）</div><div class=sub><b>名称:</b> WPC Product Bundles for WooCommerce　<b>CVE番号:</b> CVE-2026-93836　<b>vulnerable_versions:</b> 8.6.6 以前　<b>fixed_version:</b> 8.6.7　<b>installs:</b> 3万サイト超　<b>vulnerability_type:</b> 認証不要の格納型クロスサイトスクリプティング（格納型XSS）</div><span class="b rsn">stated</span></td></tr><tr><th>exploitation</th><td><b>状況:</b> exploited_in_the_wild　<b>時点:</b> 2026年10月6日　<b>補足:</b> Patchstack が実地での悪用を観測している（WPC: 10月4日／Ninja Forms: 10月5日）。 規模は「限定的だが継続している」とされ、**件数は公表されていない**。 Patchstack は「確認されたのは2件の脆弱性だが、これは最終的な件数ではない」としている</td></tr><tr><th>indicators</th><td><div class=sub>imgcdn1[.]com</div><div class=sub>/fz/x.js</div><div class=sub>/fz/c.php</div><div class=sub>wp-content/plugins/wp-smart-thumbnails/</div><div class=sub>wp-content/mu-plugins/class-wp-token-validate.php</div><div class=sub>wp-content/mu-plugins/class-wp-query-&lt;8桁の16進数&gt;.php</div><div class=sub>emer-run.php</div><div class=sub>fz_emer_done_v1</div><div class=sub>fz_emer_login_tokens</div><div class=sub>wp-login.php に付く _wplogin パラメータ</div><span class="b rsn">stated</span><div class=fn>**これらは Patchstack が公表した侵害の痕跡であり、本記録の作成者が悪性を検証したものではない。** 照合先のテレメトリを持たないため、検知そのものの根拠には使えない</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> Ninja Forms を 3.15.4 以降に、WPC Product Bundles for WooCommerce を 8.6.7 以降に更新する　<b>副作用:</b> **更新は以後の悪用を防ぐだけで、すでに入られたサイトは掃除されない** （Patchstack・BleepingComputer がともに明記している）。 「更新したから終わり」と判断すると、2系統の裏口が残る</div><div class=sub><b>数え方:</b> HTTPログで imgcdn1[.]com・/fz/x.js・/fz/c.php を検索し、 wp-login.php への _wplogin パラメータ付きのアクセスを探す　<b>副作用:</b> ログの保持期間が短いと確認できない。初観測は10月4日である</div><div class=sub><b>数え方:</b> wp-content/plugins/wp-smart-thumbnails/ の有無と、wp-content/mu-plugins/ の class-wp-token-validate.php・class-wp-query-&lt;8桁16進&gt;.php の有無を、 **更新日時ではなく内容で**確認する　<b>副作用:</b> 日時が偽装されているため、更新日時での選別は空振りする。 内容確認は手作業になりやすい</div><div class=sub><b>数え方:</b> データベースで管理者を直接列挙し、管理画面の一覧と**突き合わせる**。 wp_options に残る実行済みの印とマジックログイン用トークンの2項目 （値は detail.indicators に記載）の有無を確認する　<b>副作用:</b> 隠し管理者は管理画面に出ないため、管理画面だけを見ていると 「異常なし」と読めてしまう</div><div class=sub><b>数え方:</b> 不正なアカウントと偽プラグインを削除し、mu-plugins の該当ファイルを消去し、 上記2つの option を削除する　<b>副作用:</b> **mu-plugins を消さずに option だけ消すと、新しいトークンが再発行されうる** （Patchstack の記述）。順序を誤ると掃除が完了しない</div><div class=sub><b>数え方:</b> 特権アカウントの認証情報を更新し、WordPress の認証用ソルトを再生成する。 **サイト最古の管理者のパスワードは、直接盗まれていなくても侵害されたものとして扱う**　<b>副作用:</b> ソルトの再生成は全利用者のログインセッションを失効させる。 会員サイトでは利用者からの問い合わせが増える</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年10月6日　<b>補足:</b> 脆弱性の悪用そのものが観測されている（裏口の設置まで到達）。 一方、**設置された裏口を使ってその後何が行われたかは公表されていない**</td></tr><tr><th>ログの有無</th><td>Patchstack が侵害の痕跡として HTTPログ・ファイル・データベースの確認箇所を公表しており、 サイト運営者側で確認する手順は示されている。 ただし**初観測は10月4日であり、それ以前の活動の有無は分からない**</td></tr><tr><th>再発防止策</th><td><ul class=cl><li>両プラグインの修正版の適用（提供元の変更履歴に修正を記載）</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月21日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Ninja Forms 3.15.4 が公開された。変更履歴の「Security Enhancements」に 「管理画面の送信内容編集画面における出力エスケープの強化」が記載されている （報告者として Venkateswara Reddy Challa の名がある）</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">発生</span></td><td>配信元ドメイン imgcdn1[.]com が登録された（Patchstack の記述）</td></tr><tr><td class="sm nowrap tw">2026年10月4日</td><td class=nowrap><span class="b kind">検知</span></td><td>Patchstack が WPC Product Bundles for WooCommerce（CVE-2026-93836）への 実地の悪用を観測した（初観測）</td></tr><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">検知</span></td><td>Patchstack が Ninja Forms（CVE-2026-94504）に対する同一の活動を観測した。 同じドメインから同じ JavaScript が配られていた</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>Patchstack が記事「Four ways back in: the WordPress XSS campaign that hides its own admin account」を公表し、攻撃の流れ・4系統の永続化・侵害判定の手順を示した</td></tr><tr><td class="sm nowrap tw">2026年10月6日21時00分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>BleepingComputer が報道した</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>悪用に攻撃者側の認証が必要かどうか</span><div class=sm>**Patchstack** は両脆弱性を「認証不要の格納型XSS」（unauthenticated stored XSS／原文英語） として記載している。一方**BleepingComputer** は 「どちらも高い深刻度の評点を受け、悪用には認証済みのセッションが必要である」 （原文英語）と書いている。Patchstack のデータベース側の記述は CVSS 7.1 で、 「悪用の成功には特権を持つ利用者の操作が要る」と説明している。
+本記録はこれを**同じ事実の別の面**と読む（本記録の評価）。 **投入（保存）は認証なしでできる。実行には管理者が管理画面で開く操作が要る。** 「認証が必要」という表現を「攻撃者がログインできなければ成立しない」と読むと 対処の緊急度を誤るため、本記録は影響製品の記載において 「認証不要の格納型XSS」を採った</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Ninja Forms の修正版の番号（3.15.4 か 3.15.5 か）</span><div class=sm>Patchstack の記事は修正版を**3.15.4 以降**としている。 一方、本記録の作成者が検索した範囲では、Patchstack のデータベース内の Ninja Forms のXSS関連の項目に**3.15.5 以降への更新を促すもの**も見られた。 本記録は**記事側の記述（3.15.4 以降）**を採った。 なお提供元の変更履歴では 3.15.4（2026年9月21日）に 出力エスケープの強化が記載されており、記事の記述と整合する</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>脆弱性の報告者と、Patchstack による悪用の観測のつながり</span><div class=sm>提供元の変更履歴では、報告者として Ninja Forms 側に 「Venkateswara Reddy Challa」、WPC Product Bundles 側に 「lhking from Wordfence」の名が記載されている。 一方、実地の悪用を観測・公表したのは Patchstack である。 **両者の関係（報告から修正・公表までの経緯、調整された開示の有無）は どの資料も述べていない**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>WPC Product Bundles for WooCommerce 8.6.7 の公開日</span><div class=sm>本記録の作成者が2026年10月8日に WordPress.org の変更履歴を確認したが、 **8.6.7 の項目に公開日が記載されていなかった**。 このため「修正版の公開から悪用の観測までの日数」を WPC 側については算出していない。Ninja Forms 側（14日）のみ算出した</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証なしで保存した文字列が、管理者の画面を経由して4系統の裏口に至る経路</div><div class=svgwrap><svg viewBox="0 0 1202 474" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,186.0 C91.0,186.0 91.0,276.0 16,276.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,186.0 C193.0,186.0 193.0,186.0 220,186.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,186.0 C193.0,186.0 193.0,288.0 220,288.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,186.0 C397.0,186.0 397.0,237.0 424,237.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,288.0 C397.0,288.0 397.0,237.0 424,237.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,276.0 C295.0,276.0 295.0,237.0 424,237.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,237.0 C295.0,237.0 295.0,276.0 16,276.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,237.0 C601.0,237.0 601.0,154.0 628,154.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,154.0 C703.0,154.0 703.0,244.0 628,244.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,244.0 C703.0,244.0 703.0,327.0 628,327.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,244.0 C805.0,244.0 805.0,414.0 832,414.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,327.0 C805.0,327.0 805.0,47.0 832,47.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,414.0 C907.0,414.0 907.0,129.0 832,129.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,414.0 C907.0,414.0 907.0,224.0 832,224.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,244.0 C805.0,244.0 805.0,319.0 832,319.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,129.0 C1009.0,129.0 1009.0,198.0 1036,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,224.0 C1009.0,224.0 1009.0,198.0 1036,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,276.0 C1111.0,276.0 1111.0,198.0 1036,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="154.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（実体非公表・送信</text><text x="91.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">元IP5件のうち4件は </text><text x="91.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Tor 出口ノード）</text><rect x="16" y="232.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="91.0" y="254.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">imgcdn1[.]co</text><text x="91.0" y="268.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">m（/fz/x.js の</text><text x="91.0" y="282.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配信と /fz/c.p…</text><text x="91.0" y="295.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年10月1日登録</text><text x="91.0" y="307.0" text-anchor="middle" fill="#64b5f6" font-size="10">＝修正版の公開より後</text><rect x="220" y="142.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="164.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WooCommerce </text><text x="295.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の注文データ（WPC P</text><text x="295.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">roduct Bund…</text><text x="295.0" y="205.0" text-anchor="middle" fill="#f48fb1" font-size="10">10/4 初観測／導入3</text><text x="295.0" y="217.0" text-anchor="middle" fill="#f48fb1" font-size="10">万サイト超</text><rect x="220" y="244.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="266.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ninja Forms </text><text x="295.0" y="280.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の送信内容（≤3.15.</text><text x="295.0" y="294.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3・CVE-2026-…</text><text x="295.0" y="307.0" text-anchor="middle" fill="#f48fb1" font-size="10">10/5 初観測／導入5</text><text x="295.0" y="319.0" text-anchor="middle" fill="#f48fb1" font-size="10">0万サイト超／修正版は9</text><rect x="424" y="193.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="215.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログイン中の管理者のブラ</text><text x="499.0" y="229.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウザ（管理画面で当該内容</text><text x="499.0" y="243.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を開く）</text><text x="499.0" y="256.0" text-anchor="middle" fill="#8892b0" font-size="10">Cookie は盗まれな</text><text x="499.0" y="268.0" text-anchor="middle" fill="#8892b0" font-size="10">い——管理者のセッション</text><rect x="628" y="122.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プラグイン導入用 non</text><text x="703.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ce の取得（WordP</text><text x="703.0" y="172.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ress の正規機能）</text><rect x="628" y="200.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">偽プラグイン「WP Sm</text><text x="703.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">art Thumbnai</text><text x="703.0" y="250.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ls」1.2.4（Me…</text><text x="703.0" y="263.0" text-anchor="middle" fill="#f48fb1" font-size="10">スラッグ wp-smar</text><text x="703.0" y="275.0" text-anchor="middle" fill="#f48fb1" font-size="10">t-thumbnails</text><rect x="628" y="302.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="324.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理者アカウントの作成（</text><text x="703.0" y="338.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証情報はC2が指定）</text><rect x="832" y="16.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">①管理画面から見える管理</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者</text><text x="907.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">削除で消える</text><rect x="832" y="92.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**②管理画面に表示され</text><text x="907.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ない隠し管理者**</text><text x="907.0" y="141.0" text-anchor="middle" fill="#f48fb1" font-size="10">must-use プラグ</text><text x="907.0" y="153.0" text-anchor="middle" fill="#f48fb1" font-size="10">インで非表示化／一覧・フ</text><rect x="832" y="180.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**③マジックログインU</text><text x="907.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">RL（最古の管理者として</text><text x="907.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログイン）**</text><text x="907.0" y="243.0" text-anchor="middle" fill="#f48fb1" font-size="10">偽プラグイン削除後も残る</text><text x="907.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">／_wplogin パラ</text><rect x="832" y="282.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">④認証なしファイルマネー</text><text x="907.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジャー</text><text x="907.0" y="331.0" text-anchor="middle" fill="#f48fb1" font-size="10">コマンド実行は不可・追加</text><text x="907.0" y="343.0" text-anchor="middle" fill="#f48fb1" font-size="10">ペイロードの持ち込みに使</text><rect x="832" y="370.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="392.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">wp-content/m</text><text x="907.0" y="406.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">u-plugins/ の</text><text x="907.0" y="420.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">永続化部品（日時を偽装）</text><text x="907.0" y="433.0" text-anchor="middle" fill="#f48fb1" font-size="10">class-wp-tok</text><text x="907.0" y="445.0" text-anchor="middle" fill="#f48fb1" font-size="10">en-validate.</text><rect x="1036" y="166.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="188.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害された WordPr</text><text x="1111.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ess サイト（件数・サ</text><text x="1111.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イト名は非公表）</text><rect x="1036" y="244.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="266.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Patchstack（1</text><text x="1111.0" y="280.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0/4・10/5 観測／</text><text x="1111.0" y="294.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">10/6 公表・侵害判…</text></svg></div><div class=fn>layer 0 は攻撃者と配信基盤（imgcdn1[.]com・2026年10月1日登録）。 layer 1 は認証なしで保存できる投入口（WooCommerce の注文データ／Ninja Forms の送信内容）。 layer 2 は**管理者のブラウザ**——ここで管理者のセッションごとスクリプトが動く。 layer 3 は正規の機能を使って置かれる偽プラグインと作成される管理者。 layer 4 は残される4系統の裏口で、**太字の2つは偽プラグインを削除しても残る**。 **検知の機会が最も素直に残るのは layer 3（プラグイン導入と管理者作成）であり、 layer 4 に到達すると管理画面という観測面そのものが汚染される。** 攻撃者の実体・最終目的・被害サイト数は公表されていない。</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>投入そのものは正規のフォーム送信・注文として届くため、 入力の時点での検知は難しい（本記録の評価）。 ただし送信内容に `&lt;script&gt;` や外部ドメインのURLが含まれることは 機械的に判定できる性質のものである</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　Ninja Forms については**悪用の観測の14日前に修正版が出ていた**。 本件で最も効いたはずの対策である</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。出力側のエスケープが抜けていても、 保存側で落としていれば管理画面で実行されない</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>管理画面から外部ドメインへの JavaScript 読み込みが発生する。 **コンテンツセキュリティポリシーがあればここで止まる**が、 WordPress の管理画面に CSP を敷いている運用は多くない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。外部ドメインからのスクリプト読み込みを拒めば、 格納型XSSが保存されていても実行に至らない</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。管理者セッションを持つブラウザで不要な内容を開かない運用にする</span></div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>管理者のブラウザから imgcdn1[.]com への通信が発生する。 **ドメインは2026年10月1日に登録されており、新規登録ドメインへの通信は それ自体が検知の手がかりになる**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。imgcdn1[.]com は悪用の3日前に登録されている。 この種の使い捨てドメインに対して効く</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>プラグインの新規導入と管理者アカウントの新規作成は、 **どちらも通常は人が意図して行う、頻度の低い操作**である。 ここは検知の機会として最も素直な位置にある（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**管理者のセッションを奪われても、 管理画面からプラグインを置けなければこの段階で止まる**。 本件の連鎖を断つ最も効く一手である</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。見える側の管理者アカウント（裏口1）はここで露見する</span></div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**管理画面を見るだけでは検知できない。** 隠し管理者は一覧・フィルタ・ 合計数のいずれにも現れない。must-use プラグインは管理画面から無効化もできない。 検知するにはデータベースの直接列挙とファイルシステムの確認が要る（Patchstack の手順）</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。本件は日時を偽装するため、 日時ベースの監視では検出できない</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　Patchstack が公表した確認手順。隠し管理者はこの突き合わせでのみ見える</span></div><div class=ctl><span class="b eff">復旧を早められた</span><span class=sm>　Patchstack の記述による。**option だけ消すと新しいトークンが 再発行されうる**ため、順序が結果を変える</span></div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**管理画面という観測面そのものが汚染されている**ため、 その面の中に現実的な検知機会はない（本記録の評価）。 観測を管理画面の外（データベース・ファイルシステム・HTTPログ）へ 出さない限り見えない</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**「管理画面で見て異常がない」は本件では無意味である**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「プラグインの脆弱性」を軽い分類として扱っていると、 本件の形（管理権限の恒久的な奪取）を取り違える</div><div class=lw>2件とも格納型XSSであり、評点は CVSS 7.1 である。 しかし実際に起きたのは、偽プラグインの導入・管理者アカウントの作成・ 4系統の裏口の設置であり、**うち2系統は偽プラグインを削除しても残る**</div><div class=la><b>取るべき行動</b> 公開サイトで使っているプラグインの一覧と版を台帳にし、 **「管理画面に利用者の入力を表示するプラグイン」に印を付ける**。 この種のプラグインのXSSは管理権限の奪取と同じ重さで扱うと決め、 更新の緊急度の基準に書き込む</div></li><li><div class=lp>修正版が2週間出ていた。本件で問われたのは脆弱性の発見速度ではなく、 自社が更新を適用する速度である</div><div class=lw>Ninja Forms 3.15.4 の公開は2026年9月21日、悪用の観測は10月5日で、 差は14日である（本記録の作成者による算出）。 配信元ドメインの登録は10月1日で、修正版の公開より後である</div><div class=la><b>取るべき行動</b> 公開サイトのプラグイン更新について、**適用までの目標日数を決めて実測する**。 「更新している」ではなく「公開から何日で当たっているか」を数字で持つ。 本件の14日が自社の実績より短いか長いかを、この四半期のうちに確認する</div></li><li><div class=lp>「更新したから対処済み」という報告を受け取ってはいけない。 更新は以後の悪用を止めるだけで、すでに入られたサイトは掃除されない</div><div class=lw>Patchstack と BleepingComputer がともに 「更新は以後の悪用を防ぐが既存の感染は除去しない」と明記している。 さらに偽プラグインの削除でも2系統の裏口が残る</div><div class=la><b>取るべき行動</b> 脆弱性対応の完了報告の様式を、**「更新した」と「侵害の有無を確認した」の 2項目に分ける**。後者には確認した面（データベース・ファイル・HTTPログ）を 書かせる。公開サイトの運用を外部に委託している場合は、 この2項目を委託先への指示に入れる</div></li><li><div class=lp>提供元のセキュリティ情報が「変更履歴の一行」しかない部品に依存している、 という状態そのものを把握しておく必要がある</div><div class=lw>本記録の作成者が確認した範囲では、両提供元の修正の記述は変更履歴の中にのみあり、 独立したセキュリティ勧告は見つけられなかった。 WPC Product Bundles 8.6.7 の記述は 「Fixed: Vulnerability reported by lhking from Wordfence」の一行で、 **公開日も記載されていない**</div><div class=la><b>取るべき行動</b> 利用している部品ごとに**「脆弱性情報がどこに出るか」を台帳に書く**。 勧告を出さない提供元のものは、第三者のデータベース （CVE・プラグインのセキュリティサービス等）を監視対象に加える。 情報源が無い部品は、それ自体を調達のリスクとして記録する</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>管理画面のXSSは「セッションの持ち出し」ではなく 「管理者の手を借りた正規操作」として実現する。多要素認証はここに効かない</div><div class=lw>Patchstack は「Cookie は盗まれず、管理者のセッションを流用する」と明記している。 スクリプトは管理者の画面の中で nonce を取得し、 WordPress の正規のプラグイン導入機能を使っている</div><div class=la><b>取るべき行動</b> 管理画面に**コンテンツセキュリティポリシーを設定し、script-src を自サイトに限定する**。 併せて管理作業用のブラウザプロファイルを日常利用から分離する。 「多要素認証を入れたので管理画面は安全」という整理を見直す</div></li><li><div class=lp>本番サイトで管理画面からプラグインを導入できる状態が、 この攻撃連鎖の成立条件になっている</div><div class=lw>攻撃の中核は、管理者セッションでプラグイン導入用の nonce を取得して 偽プラグインを置くことである。導入ができなければ、 以降の管理者作成・4系統の永続化には進めない</div><div class=la><b>取るべき行動</b> `wp-config.php` で `DISALLOW_FILE_MODS` を有効にし、 プラグインの導入・更新は配備の仕組みを通す構成にする。 **この1点で本件の連鎖は権限昇格の段階で止まる**（本記録の判断）</div></li><li><div class=lp>侵害の判定を更新日時で行うと空振りする。本件は日時を偽装する</div><div class=lw>Patchstack は、永続化のファイルが**日時を偽装して**置かれるため 「更新日時ではなく内容で確認せよ」としている</div><div class=la><b>取るべき行動</b> `wp-content/mu-plugins/` を含めたファイルの完全性監視を、 **ハッシュで**比較する方式に変える。 `class-wp-token-validate.php`・`class-wp-query-&lt;8桁16進&gt;.php` の有無を確認し、 `wp-content/plugins/wp-smart-thumbnails/` を探す</div></li><li><div class=lp>管理者の一覧を管理画面で見ても、隠し管理者は見えない。 観測面を管理画面の外へ出す必要がある</div><div class=lw>隠し管理者は must-use プラグインによって一覧・管理者フィルタ・ 合計数のすべてから除かれる。must-use プラグインは管理画面から無効化できない</div><div class=la><b>取るべき行動</b> **データベースから管理者を直接列挙し、管理画面の一覧と突き合わせる点検**を 定期の作業に入れる。あわせて `wp_options` に残る実行済みの印と マジックログイン用トークンの2項目（値は本記録の痕跡一覧に記載）の有無と、 HTTPログの `imgcdn1[.]com`・ `/fz/x.js`・`/fz/c.php`・`wp-login.php` への `_wplogin` 付きアクセスを確認する</div></li><li><div class=lp>掃除には順序がある。option を先に消すと、裏口が自分を作り直す</div><div class=lw>Patchstack は、mu-plugins の部品を残したまま option を削除すると **新しいトークンが再発行されうる**と述べている。 また最古の管理者のパスワードは直接盗まれていなくても 侵害されたものとして扱うよう求めている</div><div class=la><b>取るべき行動</b> 復旧手順を「①不正アカウントと偽プラグインの削除 → ②mu-plugins の部品の消去 → ③wp_options に残る2項目の削除 → ④特権アカウントの認証情報の更新と 認証用ソルトの再生成」の順で文書化する。 ソルト再生成は全利用者のセッションを失効させるため、周知の文面も用意しておく</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> WordPress で公開サイトを運用しており、管理画面からプラグインの導入・更新ができる状態になっている</td><td class=sm>管理者セッションでのプラグイン導入が、本件の権限昇格と永続化の前提である</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 利用者が入力した内容（注文データ・問い合わせ・応募内容）を管理画面に表示する仕組みがある</td><td class=sm>本件の投入口は、認証なしで保存できてかつ管理者が管理画面で開く場所である</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> プラグインの更新を、公開から適用までの日数で実測していない</td><td class=sm>本件の Ninja Forms 側は修正版の公開から14日後に悪用が観測されている</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 侵害の点検を管理画面の表示（ユーザー一覧・プラグイン一覧）だけで行っている</td><td class=sm>隠し管理者は一覧・フィルタ・合計数に現れず、must-use プラグインは管理画面から無効化できない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ファイルの変更監視を更新日時で行っている（ハッシュで比較していない）</td><td class=sm>本件の永続化ファイルは日時を過去に偽装して置かれる</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 使っているプラグイン・テーマについて、脆弱性情報がどこに出るかを把握していない</td><td class=sm>両提供元の修正の記述は変更履歴の一行のみで、WPC 側は公開日も記載がない</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年9月21日（3.15.4 の公開日） Saturday Drive（Ninja Forms の提供元）</span> <a href="https://wordpress.org/plugins/ninja-forms/#developers" target="_blank" rel="noreferrer noopener nofollow">Ninja Forms — Changelog（WordPress.org プラグインページ）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(提供元自身の記述。本記録の作成者が2026年10月8日に取得して確認した。 3.15.4 の「Security Enhancements」に 「strengthen output escaping in admin submission edit screen; responsibly reported by Venkateswara Reddy Challa」の記載があり、出力エスケープの不備であったこと、 報告者名、公開日が2026年9月21日であることの出典。 **独立したセキュリティ勧告は見つけられず、修正の記述は変更履歴の中にのみある**)）</span></li><li><span class=rid>[3]</span> <span class=sm>公開日の記載なし（8.6.7） WPClever（WPC Product Bundles for WooCommerce の提供元）</span> <a href="https://wordpress.org/plugins/woo-product-bundle/#developers" target="_blank" rel="noreferrer noopener nofollow">WPC Product Bundles for WooCommerce — Changelog（WordPress.org プラグインページ）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(提供元自身の記述。本記録の作成者が2026年10月8日に取得して確認した。 8.6.7 に「Fixed: Vulnerability reported by lhking from Wordfence」の一行があり、 報告元が Wordfence であることの出典。 **8.6.7 の項目に公開日の記載が無く**、修正版公開から悪用までの日数を算出できない。 8.6.6 にはセキュリティに関する記述は無い)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月6日 Patchstack</span> <a href="https://patchstack.com/articles/four-ways-back-in-the-wordpress-xss-campaign-that-hides-its-own-admin-account/" target="_blank" rel="noreferrer noopener nofollow">Four ways back in: the WordPress XSS campaign that hides its own admin account</a> <span class="b kind">調査レポート</span><span class=sm>（(一次資料。悪用を観測した当事者の公表である。本記録の作成者が2026年10月8日に取得して確認した。 2つのCVE番号・影響版・修正版・導入サイト数・初観測日（10月4日／10月5日）、 攻撃の流れ6段階、永続化の4経路とプラグイン削除後に残る2経路、 偽プラグイン名「WP Smart Thumbnails」1.2.4／作者名「MediaPress Labs」／ スラッグ wp-smart-thumbnails、imgcdn1[.]com の2026年10月1日登録、 /fz/x.js・/fz/c.php、emer-run.php、mu-plugins の class-wp-token-validate.php・class-wp-query-&lt;8桁16進&gt;.php と日時の偽装、 wp_options の fz_emer_done_v1・fz_emer_login_tokens、_wplogin パラメータ、 送信元IP5件のうち4件が Tor 出口ノード、「限定的だが継続」「最終的な件数ではない」、 掃除の順序（mu-plugins を消さずに option だけ消すと新しいトークンが再発行されうる）、 最古の管理者のパスワードを侵害されたものとして扱うこと、 「更新日時ではなく内容で確認せよ」の出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月6日21時00分 UTC BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/ninja-forms-plugin-flaw-exploited-to-hack-wordpress-sites/" target="_blank" rel="noreferrer noopener nofollow">Ninja Forms plugin flaw exploited to hack WordPress sites</a> <span class="b kind">記事</span><span class=sm>（(報道。Patchstack の内容を伝えるもので、4系統の裏口・偽プラグイン名・ ファイルマネージャーがコマンドを実行できないこと・ 「更新は以後の悪用を防ぐが既存の感染は除去しない」の出典。 **「悪用には認証済みのセッションが必要」という記述は Patchstack の 「認証不要の格納型XSS」と食い違う**ため discrepancies に記録した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月8日</span> <span class="b rev">新規作成</span> 新規作成。BleepingComputer の報道（2026年10月6日）を端緒に、 **一次資料である Patchstack の記事を取得して裏取りした**。 あわせて**両プラグイン提供元の変更履歴を確認**し、 Ninja Forms 3.15.4 の公開日（2026年9月21日）と修正内容 （管理画面の出力エスケープの強化）、WPC Product Bundles 8.6.7 の記述 （Wordfence からの報告）を一次の記述として取った。
+この裏取りで**報道だけでは分からなかった2点が出た**。 ①**修正版は悪用の観測の14日前に公開されていた**（9月21日→10月5日。 本記録の作成者による算出）。配信元ドメインの登録は10月1日で修正版の公開より後である。 ②報道の「悪用には認証済みのセッションが必要」は Patchstack の 「認証不要の格納型XSS」と食い違う。**投入は認証なし・実行に管理者の操作が要る** という同一事実の別の面と読み、discrepancies に残した。
+**未確定のまま残したもの**: 侵害サイト数とサイト名、攻撃者の実体と最終目的、 WPC Product Bundles 8.6.7 の公開日、報告者と Patchstack の観測のつながり。 いずれも unknowns に置いた。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">WordPress</span><span class="b tag">プラグイン</span><span class="b tag">Ninja Forms</span><span class="b tag">WPC Product Bundles</span><span class="b tag">WooCommerce</span><span class="b tag">格納型XSS</span><span class="b tag">CVE-2026-94504</span><span class="b tag">CVE-2026-93836</span><span class="b tag">実地悪用</span><span class="b tag">裏口</span><span class="b tag">永続化</span><span class="b tag">must-useプラグイン</span><span class="b tag">隠し管理者</span><span class="b tag">マジックログインURL</span><span class="b tag">nonce</span><span class="b tag">パッチ適用の遅れ</span><span class="b tag">Patchstack</span><span class="b tag">Tor</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-08 09:40 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
