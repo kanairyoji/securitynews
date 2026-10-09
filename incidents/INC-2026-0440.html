@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>JGC Digital の Metabase に侵入 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0440</span>JGC Digital の Metabase に侵入</h1>
+<header class="site-header">
+  <p class="subtitle">JGC Digital（日揮ホールディングスの子会社）が2026年9月18日、データの集計・分析に使っていた **BI ツール「Metabase」の脆弱性を悪用した不正アクセス**を公表した。 9月16日に自社システムで異常を検知し、第三者による不正アクセスと顧客情報の取得を確認。 対象は建設現場向けサービス「アザス」約**4万件**と衣類回収サービス「するーぷ」約**2万件**の **合計約6万件のアカウント**で、**事業の異なる2サービスが同じ BI ツールの下にあった**。 アザス側の項目には**体温情報**と**元請・一次請企業名**が、 するーぷ側には**年収（任意）・子供の有無**が含まれる。 **パスワードは同社が管理していないため漏えいしていない**とされ、 経路は検知と同じ9月16日中に遮断、再発防止として**Metabase の利用自体を終了**した。 **脆弱性の識別子（CVE 番号）・バージョン・侵入時期はいずれも公表されていない**</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">既知の脆弱性の悪用</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月18日</span>
+  <span>最終更新: 2026年10月9日</span>
+</div>
+
+<div class="lead"><p><strong>JGC Digital 株式会社は2026年9月18日、BI ツール「Metabase」への不正アクセスを公表しました。</strong>同社は日揮ホールディングスの子会社で、IT サービスの企画・開発・運用などを手がけています。</p>
+<p>公表されている筋は次のとおりです。</p>
+<ul>
+<li>同社がデータの集計・分析を目的として利用していた BI ツール <strong>「Metabase」</strong>に<strong>存在していたセキュリティ上の脆弱性を悪用した不正アクセス</strong>が発生した</li>
+<li><strong>9月16日</strong>に同社システムで<strong>異常を検知</strong>し、調査の結果、第三者からの不正アクセスと<strong>一部の顧客情報が取得されたこと</strong>を確認した</li>
+<li><strong>同日（9月16日）中に不正アクセス経路を遮断</strong>した</li>
+<li><strong>9月18日</strong>に公表した</li>
+</ul>
+<p>対象となったのは<strong>合計約6万件のアカウント</strong>で、内訳は2つのサービスに分かれます。</p>
+<table>
+<thead>
+<tr>
+<th>サービス</th>
+<th>内容</th>
+<th>件数</th>
+<th>主な項目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>アザス</strong></td>
+<td>建設現場向けサービス</td>
+<td>約<strong>4万件</strong></td>
+<td>氏名・生年月日・性別・メールアドレス・勤務年数・言語・役割・<strong>体温情報</strong>・所属・<strong>元請または一次請企業</strong>・プロジェクト名・プロジェクト期間・称賛回数</td>
+</tr>
+<tr>
+<td><strong>するーぷ</strong></td>
+<td>衣類回収サービス</td>
+<td>約<strong>2万件</strong></td>
+<td>メールアドレス・生年月・性別・郵便番号・<strong>子供の有無</strong>・職業・<strong>年収（任意）</strong>・興味ある事（任意）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ここが本件の構造上の特徴です。</strong>建設現場向けのサービスと衣類回収のサービスは事業として無関係ですが、<strong>同じ BI ツールの下にデータが集まっていました。</strong> 1つの分析ツールの脆弱性で、<strong>事業をまたいで約6万件</strong>が対象になっています。</p>
+<p>同社は、<strong>複数のアカウントを保有している利用者がいるため実人数は件数より少ない見込み</strong>としており、また<strong>パスワードは同社が管理していないため漏えいしていない</strong>と明記しています。</p>
+<p>再発防止策は2点です。</p>
+<ul>
+<li>より高いセキュリティ水準を備えたツール・環境を意識し、<strong>利用ポリシーを厳格化</strong>する</li>
+<li><strong>Metabase の利用を終了</strong>し、より安全な環境を活用する</li>
+</ul>
+<p><strong>公表されていないことも明確です。</strong>悪用された脆弱性の識別子（CVE 番号）、利用していた Metabase のバージョン、侵入の時期、攻撃者はいずれも示されていません。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>悪用された脆弱性の識別子（CVE 番号）と影響したバージョン</span><span class="b rsn">公表されていない</span></li><li><span class=ui>侵入の時期と滞留の長さ</span><span class="b rsn">公表されていない</span></li><li><span class=ui>検知の端緒（「異常」の内容）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>Metabase の設置形態（インターネットへの露出・認証の有無）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>取得された情報の二次的な悪用の有無</span><span class="b rsn">公表されていない</span></li><li><span class=ui>個人情報保護委員会への報告の有無</span><span class="b rsn">公表されていない</span></li><li><span class=ui>元請・一次請企業への影響の扱い</span><span class="b rsn">公表されていない</span></li><li><span class=ui>Metabase の利用終了後の移行先と、厳格化される利用ポリシーの内容</span><span class="b rsn">公表されていない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>JGC Digital 株式会社</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>日揮ホールディングス株式会社</span><span class="b role">親会社</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Metabase（BI ツール）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（「アザス」に登録のあるアカウントの利用者。建設現場の作業者等）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（「するーぷ」に登録のあるアカウントの利用者）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（アザスに記録されていた元請・一次請企業。社名・社数は公表されていない）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>「アザス」の対象アカウント数</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>40,000<span class=fu>アカウント</span></div><div class=fa>2026年9月18日 時点</div><div class=fn>建設現場向けサービス「アザス」に登録のあったアカウント（約4万件）。 **単位はアカウントであり人数ではない**—— 同社は**複数のアカウントを保有している利用者がいるため、 実人数は件数より少ない見込み**としている</div></div><div class=fig><div class=fh><span class=fl>「するーぷ」の対象アカウント数</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>20,000<span class=fu>アカウント</span></div><div class=fa>2026年9月18日 時点</div><div class=fn>衣類回収サービス「するーぷ」に登録のあったアカウント（約2万件）。 **単位はアカウントであり人数ではない**（上記と同じ理由）</div></div><div class=fig><div class=fh><span class=fl>取得が確認された顧客情報の合計</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>60,000<span class=fu>アカウント</span></div><div class=fa>2026年9月18日 時点</div><div class=fn>アザス約4万件とするーぷ約2万件の合計（同社が「合計約6万件」として公表）。 **事業の異なる2サービスの合計であることが本件の構造上の特徴である。** **実人数は件数より少ない見込み**とされており、 **「約6万人」と読み替えてはならない**</div></div><div class=fig><div class=fh><span class=fl>「アザス」で対象となった個人データの項目数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>13<span class=fu>項目</span></div><div class=fn>公表された項目一覧を数えたもの——氏名・生年月日・性別・Eメールアドレス・ 勤務年数・言語・役割・**体温情報**・所属・**元請または一次請企業**・ プロジェクト名・プロジェクト期間・称賛回数。 **1人について現場での立場・健康・所属企業・従事した工事が一度に読み取れる構成** である（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>「するーぷ」で対象となった個人データの項目数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>項目</span></div><div class=fn>メールアドレス・生年月・性別・郵便番号・**子供の有無**・職業・ **年収（任意）**・興味ある事（任意）。 **氏名は項目一覧に無い**（メールアドレスが識別子になる）。 衣類回収サービスという業態に対し、**世帯の属性に踏み込んだ項目**が含まれる（同）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**データの集計・分析に使われていた BI ツール「Metabase」の脆弱性を悪用して 第三者が不正アクセスし、一部の顧客情報を取得した。** 対象は建設現場向けサービス「アザス」約4万件と衣類回収サービス「するーぷ」約2万件の 合計約6万件のアカウント。 **事業の異なる2サービスのデータが同じ BI ツールの下にあった**ことが、 1つの脆弱性で事業をまたいだ範囲が出た理由である（本記録の評価）。 **9月16日に自社システムで異常を検知し、同日中に経路を遮断**している。 侵入の時期・脆弱性の識別子・攻撃者はいずれも公表されていない</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**「Metabase」に存在していたセキュリティ上の脆弱性を悪用した不正アクセスが成立した。** Metabase は同社がデータの集計・分析を目的として利用していた BI ツールである。 **脆弱性の識別子（CVE 番号）・影響するバージョン・ 当該環境がインターネットに露出していたか・認証を要したかは、 いずれも一次公表に示されていない。** 侵入の時期も示されていない</div><div class=fn>根拠: JGC Digital の公表文（2026年9月18日）</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**2つのサービスの顧客情報が取得された。** 「アザス」に登録のあるアカウント約4万件、 「するーぷ」に登録のあるアカウント約2万件、**合計約6万件**。 アザス側は氏名・生年月日・性別・メールアドレス・勤務年数・言語・役割・ **体温情報**・所属・**元請または一次請企業**・プロジェクト名・ プロジェクト期間・称賛回数の13項目。 するーぷ側はメールアドレス・生年月・性別・郵便番号・**子供の有無**・職業・ **年収（任意）**・興味ある事（任意）の8項目。 **パスワードは同社が管理していないため漏えいしていない**</div><div class=fn>根拠: JGC Digital の公表文</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**検知と同じ9月16日中に不正アクセス経路が遮断された。** その後、対象の顧客にメールで個別に連絡するとし、 再発防止策として**利用ポリシーの厳格化**と **Metabase の利用の終了**を示した。 暗号化・サービス停止・業務停止の記載は無く、 **ランサムウェアの関与にも公表文は触れていない**</div><div class=fn>根拠: JGC Digital の公表文</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml></div><div class=mv></div><div class=fn>**検知（9月16日）と同日中に不正アクセス経路を遮断している。** 一次公表は「9月16日中に、不正アクセス経路を遮断いたしました」と明記する。 **本件で最も明確に評価できる数値である**</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>検知（9月16日）から公表（9月18日）まで。 **この2日の間に、対象サービス・件数・項目の内訳まで確定させている**</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**パスワードの再設定は求められていない。** 同社は**「パスワードは管理していないため漏えいしていない」**と明記している</div><div class=fn><b>トレードオフ:</b> **同社がパスワードを保持していない設計であったため、 利用者に再設定を強いる必要が生じなかった。** 漏えいした項目はメールアドレス・属性・体温情報等で、 **認証情報そのものは含まれない。** 一方、メールアドレスと属性が揃っていることは、 利用者を狙った騙りのメールの材料になる（本記録の評価）</div></li><li><div class=ui>**Metabase の利用自体を終了する。** 修正版への更新ではなく、「より安全な環境の活用」へ移行する判断である。 あわせて「より高いセキュリティ水準を備えたツール・環境を意識し、 利用ポリシーを厳格化」するとした</div><div class=fn><b>トレードオフ:</b> **ツールを捨てる判断は、同じ脆弱性の再発を確実に防ぐ。** 一方、**失われるのは分析の仕組みそのもの**であり、 移行先の環境・移行の期間・分析業務への影響は公表されていない。 また「利用ポリシーの厳格化」の具体的な内容も示されていない（本記録の注記）</div></li><li><div class=ui>**対象となる顧客にメールで個別に連絡する。** あわせて自社サイトで公表した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **漏えいした項目にメールアドレスが含まれているため、 通知の経路と漏えいした連絡先が同じになる。** 利用者から見ると、本物の通知と騙りのメールが同じ経路で届く （本記録の評価）。 一方、同社は氏名を持たない「するーぷ」側の利用者を メール以外で特定できないため、**他の選択肢は限られる**（同）</div></li></ul></div>
+<section id="s6"><h2>事業の違う2サービスが同じ BI ツールの下にあり、1つの脆弱性で約6万件が出た<span class="b slot">原因・手口</span></h2><p>本件の技術的な中身は、公表文の一文に収まっています。</p>
+<blockquote>
+<p>「Metabase」に存在していたセキュリティ上の脆弱性を悪用した不正アクセスが発生した</p>
+</blockquote>
+<p><strong>しかし被害の範囲を決めたのは、脆弱性ではなく構成です。</strong></p>
+<p>対象になった2つのサービスを並べます。</p>
+<table>
+<thead>
+<tr>
+<th>サービス</th>
+<th>内容</th>
+<th>件数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>アザス</strong></td>
+<td>建設現場向けサービス</td>
+<td>約<strong>4万件</strong></td>
+</tr>
+<tr>
+<td><strong>するーぷ</strong></td>
+<td>衣類回収サービス</td>
+<td>約<strong>2万件</strong></td>
+</tr>
+</tbody>
+</table>
+<p>建設現場向けのサービスと衣類回収のサービスは、<strong>事業として無関係</strong>です。顧客層も違い、扱うデータの性質も違います。それでも<strong>同じ BI ツール「Metabase」の下にデータが集まっていました。</strong></p>
+<p>分析ツールを事業横断で1つにまとめるのは、運用としては自然です。ライセンスも、習熟も、ダッシュボードの作り方も1つで済みます。<strong>その集約が、侵害時の範囲をそのまま決めました。</strong> 1つのツールの脆弱性で、<strong>合計約6万件</strong>が同時に対象になっています。</p>
+<p>ここから自社に持ち帰れる問いは単純です（本記録の評価）。</p>
+<ul>
+<li>自社の分析ツールは、<strong>何と何に同時につながっているか</strong></li>
+<li>その集約に、<strong>侵害時の範囲を広げてよいだけの業務上の理由</strong>があるか</li>
+<li>ツールの中で、<strong>事業・サービス単位に権限が分かれているか</strong></li>
+</ul>
+<p>なお、<strong>悪用された脆弱性の識別子（CVE 番号）・影響したバージョン・修正版が提供されていたかは、いずれも公表されていません。</strong> Metabase は広く使われている BI ツールであるため、同じツールを運用している他の組織にとって最も必要な情報が欠けています。</p></section>
+<section id="s7"><h2>検知と同日に経路を遮断し、2日後に項目の内訳まで出した<span class="b slot">組織の対応</span></h2><p>本件で算出できる数値は2つで、どちらも短いです。</p>
+<ul>
+<li><strong>封じ込め</strong>: 検知（9月16日）から経路の遮断まで <strong>同日（0日）</strong></li>
+<li><strong>公表まで</strong>: 検知（9月16日）から公表（9月18日）まで <strong>2日</strong></li>
+</ul>
+<p>一次公表の記述は明確です—— <strong>「9月16日中に、不正アクセス経路を遮断いたしました」。</strong>検知した当日に止めています。</p>
+<p>そして2日後の公表では、対象サービスごとの件数（約4万件・約2万件・合計約6万件）と、<strong>サービスごとの項目の内訳</strong>（アザス13項目・するーぷ8項目）まで示しています。<strong>2日間でこの粒度に到達している</strong>のは速いほうです。</p>
+<p><strong>一方、算出できないものもあります。</strong></p>
+<ul>
+<li><strong>滞留（侵入から検知まで）</strong>——侵入の時期が公表されていません</li>
+<li><strong>本人通知の所要</strong>——「メールで個別に連絡」とあるが開始日も完了時期も無い</li>
+<li><strong>当局報告</strong>——個人情報保護委員会への報告について、公表文に記載がありません</li>
+</ul>
+<p>また、<strong>何を「異常」として検知したかが公表されていません。</strong>読み出しの量だったのか、通信だったのか、ツールの挙動だったのか、外部からの指摘だったのかが分からないため、<strong>検知の設計の良否を一次資料から評価することはできません。</strong></p>
+<p>ただし、<strong>検知当日に経路を遮断できたこと自体に意味があります</strong>（本記録の評価）。サービスの停止・業務の停止は公表されていません。分析ツールが業務の処理に直結していれば、同日の遮断は業務の停止を伴ったはずです。つまり<strong>分析の基盤が業務の処理経路から切り離されていた</strong>ことの裏返しでもあります。</p></section>
+<section id="s8"><h2>「パスワードは管理していないため漏えいなし」——事前の設計が影響を1段狭めた<span class="b slot">被害規模・影響範囲</span></h2><p>一次公表には、報道に含まれていない記述が2つあります。<strong>どちらも影響の見積もりを変える要素です。</strong></p>
+<p><strong>1つめ。パスワードについて。</strong></p>
+<blockquote>
+<p>パスワードは管理していないため漏えいなし（公表文の記載。要旨）</p>
+</blockquote>
+<p>約6万件のアカウント情報が取得されたにもかかわらず、<strong>認証情報そのものは含まれていません。</strong>結果として、利用者にパスワードの再設定を強いる必要が生じていません。</p>
+<p><strong>これは侵害後の対応ではなく、事前の設計の効果です。</strong>「保持しなくてよいものを保持しない」という選択が、侵害の影響を1段狭めています。</p>
+<p><strong>2つめ。件数と人数の関係について。</strong></p>
+<blockquote>
+<p>複数アカウントを保有している利用者がいるため、実人数は（件数より）少ない見込み（要旨）</p>
+</blockquote>
+<p>つまり<strong>「約6万件」は「約6万人」ではありません。</strong>本記録が単位を「アカウント」としているのはこのためです。2つのサービスを両方使っている利用者がいれば、合計の件数は実人数を上回ります。</p>
+<p><strong>逆に、公表されていない項目もあります。</strong>クレジットカード情報・決済に関する情報については、<strong>肯定も否定もされていません。</strong>両サービスの性質上そもそも扱っていない可能性はありますが、公表文は触れていません（本記録は推測しません）。</p></section>
+<section id="s9"><h2>アザスの1行から、誰がどの企業の下でどの工事に従事し体温がどうだったかが読める<span class="b slot">評価・解釈</span></h2><p><strong>これは本記録の評価です。</strong></p>
+<p>項目の一覧は、数を数えるのではなく<strong>「1人について何が読み取れるか」</strong>で読むべきものです。アザスの13項目を並べ替えると、構造が見えます。</p>
+<table>
+<thead>
+<tr>
+<th>性質</th>
+<th>項目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本人の識別</td>
+<td>氏名・生年月日・性別・Eメールアドレス</td>
+</tr>
+<tr>
+<td><strong>健康</strong></td>
+<td><strong>体温情報</strong></td>
+</tr>
+<tr>
+<td>現場での立場</td>
+<td>勤務年数・言語・役割・称賛回数</td>
+</tr>
+<tr>
+<td><strong>所属と案件</strong></td>
+<td>所属・<strong>元請または一次請企業</strong>・<strong>プロジェクト名</strong>・<strong>プロジェクト期間</strong></td>
+</tr>
+</tbody>
+</table>
+<p>つまり1行から、<strong>誰が・どの企業の下で・どの工事に・いつ従事し・その間の体温がどうだったか</strong>が読み取れます。</p>
+<p>ここには2つの論点があります。</p>
+<p><strong>1つめは、健康に関する情報が業務系に残っていたことです。</strong>建設現場での検温は、感染症対策として広く行われてきた運用です。ただし<strong>取得の目的が終わったあとに消す運用になっていたか</strong>は、公表文からは分かりません。本件では体温情報が漏えいの対象に入っています。</p>
+<p><strong>2つめは、これが企業の情報でもあることです。</strong>「元請または一次請企業」「プロジェクト名」「プロジェクト期間」が同じ行に並んでいるということは、<strong>どの企業がどの工事をいつ行っていたかの対応関係</strong>が出たことになります。</p>
+<p><strong>一次公表は、この点を個人情報の項目としてのみ記載しています。</strong>元請・一次請企業の社名・社数は示されておらず、<strong>企業側への通知や影響についても何も述べていません。</strong>本記録はこれを unknowns に残しました。</p>
+<p>一方、「するーぷ」側は別の性質を持ちます。<strong>氏名が項目一覧にありません</strong>——メールアドレスが実質の識別子です。そして<strong>年収（任意）・子供の有無・職業・郵便番号・生年月</strong>が含まれます。衣類回収サービスという業態に対して、<strong>世帯の属性に踏み込んだ項目</strong>が集まっている構成です。</p></section>
+<section id="s10"><h2>脆弱性を直さずツールの利用をやめた——ただし移行先は示されていない<span class="b slot">再発防止</span></h2><p>再発防止策は2点です。</p>
+<ul>
+<li>より高いセキュリティ水準を備えたツール・環境を意識し、<strong>利用ポリシーを厳格化</strong>する</li>
+<li><strong>Metabase の利用を終了</strong>し、より安全な環境を活用する</li>
+</ul>
+<p>注目すべきは、<strong>修正版への更新ではないこと</strong>です。脆弱性を直して使い続けるのではなく、<strong>ツールそのものの利用をやめる</strong>と述べています。</p>
+<p>これは、<strong>原因を「個別の脆弱性」ではなく「分析ツールの運用」に置いた判断</strong>だと読めます（本記録の評価）。「利用ポリシーを厳格化」という言い方も、個別の脆弱性ではなくツールの使い方に向いています。</p>
+<p><strong>ツールを捨てる判断には、はっきりした利点があります。</strong>同じ脆弱性の再発を確実に防げます。一方、失われるのは分析の仕組みそのものです。</p>
+<p><strong>そして、ここが読者にとっての限界です。</strong></p>
+<ul>
+<li><strong>移行先の環境が示されていません</strong>（「より安全な環境」とだけ）</li>
+<li><strong>厳格化される利用ポリシーの中身も示されていません</strong></li>
+<li><strong>移行の期間・分析業務への影響も示されていません</strong></li>
+</ul>
+<p>そのため、<strong>同種の課題が移行先で解消されるかを外部から判断できません。</strong>分析ツールを事業横断で集約する構成そのものが変わるのか、ツールだけが別のものに置き換わるのかは、公表文からは分かりません。</p>
+<p>本記録は、これを「対策の評価」ではなく<strong>「評価できる材料が無い」</strong>として記録しています。</p></section>
+<section id="s11"><h2>公表は9月18日、報道は10月9日——約3週間、知られていなかった<span class="b slot">背景・過去事例</span></h2><p>時間の話をひとつ記録しておきます。</p>
+<ul>
+<li>同社の公表: <strong>2026年9月18日</strong></li>
+<li>ScanNetSecurity の報道: <strong>2026年10月9日</strong></li>
+</ul>
+<p><strong>約3週間の差があります。</strong>公表はされていましたが、広くは知られていませんでした。</p>
+<p>同じ日（9月18日）に公表された他の事案（大気社のマレーシアグループ会社、ランドハウジング）も<strong>同じ10月9日に報じられています。</strong>報道側の取り上げがまとまったものと読めます（本記録の評価）。</p>
+<p>これは読者（日本の CISO・技術者）にとって2つの意味を持ちます。</p>
+<ul>
+<li><strong>自社が公表する側のとき</strong>——公表しただけでは伝わりません。影響を受ける利用者・取引先への<strong>直接の通知を公表と同時に走らせる</strong>必要があります</li>
+<li><strong>自社が利用者・取引先の側のとき</strong>——報道を待つと<strong>数週間遅れます。</strong>取引先やサービス提供元の公表ページを定期的に確認する仕組みが要ります</li>
+</ul>
+<p>なお、本件と同じ時期に、<strong>別の企業でも Metabase の脆弱性の悪用が報じられています</strong>（ScanNetSecurity が2026年10月5日に報じた LEAN BODY の事案）。<strong>ただし本記録の作成者は、その企業の一次公表を取得しておらず、本件と同じ脆弱性かどうかも確認していません。</strong>詳細は discrepancies の該当項目に記しました。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>発覚の端緒</th><td>**BI ツール「Metabase」に存在していたセキュリティ上の脆弱性。** 一次公表はこの表現のみで、**脆弱性の識別子（CVE 番号）・影響するバージョン・ 修正版の提供状況・Metabase がインターネットに露出していたかはいずれも示されていない**<span class="b rsn">stated</span></td></tr><tr><th>ログの有無</th><td>**ログの保全状況・保存期間は公表されていない。** 同社は「第三者からの不正アクセスと**一部の顧客情報が取得されたことを確認**」と述べ、 **対象サービスと件数・項目を特定できている**ため、 取得された範囲を判定できる記録は残っていたと読める（本記録の評価）。 一方で**侵入の時期が示されていない**ことは、 いつから到達可能だったかを記録から確定できていない可能性を残す（同）</td></tr><tr><th>affected_data</th><td><ul class=cl><li>「アザス」氏名</li><li>同 生年月日</li><li>同 性別</li><li>同 Eメールアドレス</li><li>同 勤務年数</li><li>同 言語</li><li>同 役割</li><li>同 体温情報</li><li>同 所属</li><li>同 元請または一次請企業</li><li>同 プロジェクト名</li><li>同 プロジェクト期間</li><li>同 称賛回数</li><li>「するーぷ」メールアドレス</li><li>同 生年月</li><li>同 性別</li><li>同 郵便番号</li><li>同 子供の有無</li><li>同 職業</li><li>同 年収（任意）</li><li>同 興味ある事（任意）</li></ul><span class="b rsn">stated</span><div class=fn>**アザスは13項目、するーぷは8項目**（本記録が公表された一覧を数えたもの）。 注目すべきは3点である（いずれも本記録の評価）。 ①**体温情報**——健康に関する情報が建設現場向けサービスに蓄積されていた。 ②**元請または一次請企業・プロジェクト名・プロジェクト期間**—— 個人の情報であると同時に、**どの企業がどの工事をいつ行っていたかの対応関係**でもある。 ③**年収（任意）・子供の有無**——衣類回収サービスという業態に対して 世帯の属性に踏み込んだ項目が含まれる。</div></td></tr><tr><th>含まれていない情報</th><td><ul class=cl><li>パスワード（同社が管理していないため）</li></ul><span class="b rsn">stated</span><div class=fn>一次公表は**「パスワードは管理していないため漏えいなし」**と明記している。 **これは報道には含まれていない要素である。** 一方、クレジットカード情報・決済に関する情報については **肯定も否定もされていない**（両サービスの性質上そもそも扱っていない可能性があるが、 公表文は触れていない）。</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年9月18日　<b>根拠:</b> 同社の調査（9月16日の異常検知を端緒とするもの）　<b>公式声明:</b> 公表文は、第三者からの不正アクセスと一部の顧客情報が取得されたことを 確認したと述べるにとどまり、**取得された情報の二次的な悪用については 確認・否定のいずれも述べていない**（本記録による整理）　<b>補足:</b> **「悪用は確認されていない」と書かれているのではなく、 悪用について何も書かれていない**点に注意する。 本記録は、二次被害の有無を unknowns に残した</td></tr><tr><th>再発防止策</th><td><div class=sub><b>item:</b> より高いセキュリティ水準を備えたツール・環境を意識し、**利用ポリシーを厳格化**する　<b>source:</b> JGC Digital（公表文）　<b>補足:</b> **原因を個別の脆弱性ではなく「分析ツールの運用」に置いた対策**である （本記録の評価）。具体的なポリシーの内容は公表されていない</div><div class=sub><b>item:</b> **Metabase の利用を終了**し、より安全な環境を活用する　<b>source:</b> JGC Digital（公表文）　<b>補足:</b> **修正版への更新ではなく、ツールそのものの利用をやめる判断**である。 移行先の環境は公表されていない</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期は公表されていない</td><td class=nowrap><span class="b kind">発生</span></td><td>**Metabase に存在していたセキュリティ上の脆弱性を悪用した不正アクセスが発生した。** **侵入の時期は一次公表に示されていない。** 脆弱性の識別子・影響するバージョン・修正版の提供状況も示されていない</td></tr><tr><td class="sm nowrap tw">2026年9月16日</td><td class=nowrap><span class="b kind">検知</span></td><td>**同社システムで異常を検知し、調査を行った。** その結果、**第三者からの不正アクセスと、一部の顧客情報が取得されたこと**を確認した。 **何を異常として検知したか（警報の種類・検知の仕組み）は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年9月16日中</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**不正アクセス経路を遮断した（検知と同日）。** 一次公表は「9月16日中に、不正アクセス経路を遮断いたしました」と述べている</td></tr><tr><td class="sm nowrap tw">2026年9月18日</td><td class=nowrap><span class="b kind">公表</span></td><td>**同社が「不正アクセスによる個人情報流出に関するお知らせとお詫び」を公表した。** 対象サービスと件数（アザス約4万件・するーぷ約2万件・合計約6万件）、 各サービスの項目、**複数アカウント保有者がいるため実人数は件数より少ない見込み**、 **パスワードは同社が管理していないため漏えいしていない**こと、 対象の顧客へメールで個別に連絡すること、 再発防止策（利用ポリシーの厳格化・**Metabase の利用の終了**）を示した</td></tr><tr><td class="sm nowrap tw">2026年10月9日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>ScanNetSecurity が報じた（本記録の収集の端緒）。 **公表から約3週間後の報道である**</td></tr><tr><td class="sm nowrap tw">2026年10月9日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、同社の公表ページ （https://jgc-digital.com/topics/topics-3049/）を取得して裏を取った。** 報道にない要素として、①**複数アカウント保有者がいるため実人数は件数より少ない見込み**、 ②**パスワードは同社が管理していないため漏えいしていない**ことを確認した。 **CVE 番号・バージョンの記載が無いことも、一次公表で確認している。** 続報（脆弱性の特定・件数の確定・移行先の環境）は確認されていない</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>脆弱性の識別子とバージョンに一次公表が触れていない</span><div class=sm>一次公表は「Metabase に存在していたセキュリティ上の脆弱性を悪用した不正アクセス」 と述べるのみで、**CVE 番号・影響したバージョン・修正版の提供状況・ 当該環境の設置形態（インターネットへの露出、認証の有無）を いずれも示していない。** Metabase は広く使われている BI ツールであるため、 **同じツールを運用している他の組織は自分が該当するかを判断できない** （本記録の評価）。 本記録が原因を「脆弱性の悪用」どまりとし、**「脆弱性の放置」と書いていない**のも この空白が理由である——修正版の提供状況が分からない以上、 「放置」と判断する材料が無い</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>同時期に報じられた別企業の Metabase 事案との関係を本記録は確認していない</span><div class=sm>ScanNetSecurity は2026年10月5日に、別の企業（LEAN BODY）が利用していた 分析ツール「Metabase」の脆弱性を悪用した不正アクセスを報じている。 **本記録の作成者は、この記事の見出しと URL を検索結果で確認したのみで、 ①当該企業の一次公表を取得しておらず、 ②本件と同じ脆弱性かどうかも確認していない。** また、Metabase の特定の脆弱性が CISA の KEV に収載されているという情報も 検索結果に現れたが、**一次資料（CISA・Metabase の告知）で裏を取っていない。** そのため本記録は、**CVE 番号を一切記載せず、 「同じ脆弱性による連続した事案である」とも述べない。** この点は裏取りが済んでいない論点として残す</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の有無について公表文が何も述べていない</span><div class=sm>公表文は、第三者からの不正アクセスと一部の顧客情報が取得されたことを 確認したと述べるにとどまり、 **取得された情報の二次的な悪用について確認・否定のいずれも述べていない。** **「悪用は確認されていない」と書かれているのではなく、何も書かれていない。** あわせて、**メールアドレス約6万件が出ているにもかかわらず、 同社を騙るメールへの注意喚起が公表文に含まれていない**（本記録の評価）</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>当局への報告について記載が無い</span><div class=sm>約6万件の個人データが取得された事案でありながら、 **個人情報保護委員会への報告について公表文に記載が無い。** 報告したか・いつしたかのいずれも示されていないため、 本記録は response.metrics に regulatory_report を置かず、 unknowns に残した（本記録は推測しない）</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>報道と一次公表の差分</span><div class=sm>ScanNetSecurity の記事（10月9日付）は、サービス名・件数・項目・ 検知日・遮断日・再発防止策を一次公表と同じ内容で伝えている。 **一方、報道に含まれていない要素が一次公表にある**—— ①**複数アカウントを保有している利用者がいるため実人数は件数より少ない見込み**、 ②**パスワードは同社が管理していないため漏えいしていない**こと。 **食い違いではなく報道側の省略である**（本記録は一次公表を正とした）。 なお①②はいずれも**影響の見積もりを変える記述**であり、 省略されると被害が実際より大きく読まれうる（本記録の評価）</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>元請・一次請企業への影響が公表文で扱われていない</span><div class=sm>アザスの項目には**「元請または一次請企業」「プロジェクト名」 「プロジェクト期間」**が含まれる。 これは個人データの項目であると同時に、 **どの企業がどの工事をいつ行っていたかの対応関係**でもある（本記録の評価）。 **一次公表はこれを個人情報の項目としてのみ記載し、 社名・社数・企業側への通知・企業側への影響について何も述べていない**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>事業の違う2サービスが1つの BI ツールの下に集まり、1つの脆弱性で約6万件が出た</div><div class=svgwrap><svg viewBox="0 0 1202 276" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,138.0 C193.0,138.0 193.0,138.0 220,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,138.0 C397.0,138.0 397.0,94.0 424,94.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,138.0 C397.0,138.0 397.0,170.0 424,170.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,94.0 C601.0,94.0 601.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,170.0 C601.0,170.0 601.0,126.0 628,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,216.0 C499.0,216.0 499.0,138.0 220,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,48.0 C805.0,48.0 805.0,69.0 832,69.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,48.0 C805.0,48.0 805.0,200.0 832,200.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C805.0,126.0 805.0,131.0 832,131.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,55.0 C703.0,55.0 703.0,138.0 220,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,131.0 C1009.0,131.0 1009.0,69.0 832,69.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,131.0 C1009.0,131.0 1009.0,131.0 832,131.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,214.0 C703.0,214.0 703.0,138.0 220,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="113.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第三者（**帰属は非公表</text><text x="91.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**）</text><rect x="220" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BI ツール **Met</text><text x="295.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">abase**（脆弱性。</text><text x="295.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**CVE・版・設置形…</text><rect x="424" y="69.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「アザス」（建設現場向け</text><text x="499.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サービス）のデータ</text><rect x="424" y="133.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「するーぷ」（衣類回収サ</text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ービス）のデータ</text><text x="499.0" y="182.0" text-anchor="middle" fill="#64b5f6" font-size="10">アザスとは事業として無関</text><text x="499.0" y="194.0" text-anchor="middle" fill="#64b5f6" font-size="10">係</text><rect x="628" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**約4万アカウント・1</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3項目**（氏名・生年月</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">日・**体温情報**・…</text><rect x="628" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**約2万アカウント・8</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">項目**（メール・生年月</text><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・郵便番号・**子供の…</text><rect x="628" y="172.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**パスワードは同社が管</text><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理していない＝漏えいなし</text><text x="703.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**</text><text x="703.0" y="235.0" text-anchor="middle" fill="#ffcc80" font-size="10">事前の設計が影響を1段狭</text><text x="703.0" y="247.0" text-anchor="middle" fill="#ffcc80" font-size="10">めた（本記録の評価）</text><rect x="832" y="44.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アザスの利用者（建設現場</text><text x="907.0" y="80.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の作業者等）</text><rect x="832" y="108.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">するーぷの利用者</text><rect x="832" y="168.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">元請・一次請企業（**社</text><text x="907.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">名・社数・企業側への影響</text><text x="907.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">すべて非公表**）</text><rect x="1036" y="30.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**9/16 中に経路を</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遮断**（検知と同日）</text><rect x="1036" y="94.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9/18 公表＋対象顧客</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">へメールで個別連絡</text><text x="1111.0" y="143.0" text-anchor="middle" fill="#f48fb1" font-size="10">**騙りのメールへの注意</text><text x="1111.0" y="155.0" text-anchor="middle" fill="#f48fb1" font-size="10">喚起は公表文に無い**</text><rect x="1036" y="182.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">**Metabase の</text><text x="1111.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用を終了**＋利用ポリ</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シーの厳格化（**移行…</text></svg></div><div class=fn>layer 0 は攻撃者——**帰属は公表されていない。** layer 1 は侵入口で、**BI ツール「Metabase」の脆弱性** （**CVE 番号・バージョン・設置形態はいずれも非公表**）。 layer 2 がこの事案の構造の核心——Metabase は **事業として無関係な2つのサービスのデータに同時につながっていた。** layer 3 は出たデータ。**アザス側は約4万アカウント・13項目**で、 **体温情報**と**元請・一次請企業／プロジェクト名／期間**を含む。 **するーぷ側は約2万アカウント・8項目**で、 **年収（任意）・子供の有無**を含み**氏名は無い**。 **合計約6万件だが、複数アカウント保有者がいるため実人数は少ない見込み。** **パスワードは同社が管理していないため出ていない**（点線で示す除外）。 layer 4 は影響の先——アザスの利用者、するーぷの利用者、 そして**項目として記録されていた元請・一次請企業**（**企業側への影響は非公表**）。 layer 5 は対応——**検知と同日（9/16）に経路を遮断**、 9/18 に公表、メールで個別に連絡、 そして**Metabase の利用自体を終了**し利用ポリシーを厳格化する （**移行先とポリシーの中身は非公表**）。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵入の段階で検知の機会があったかは公表されていない。** 同社が検知したのは9月16日の「異常」であり、 それが初期侵入の検知だったのか既に進行していた活動の検知だったのかは 区別できない（本記録の評価）。 **侵入時期が公表されていないため、滞留の長さも算出できない**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　**本記録の判断。** 分析ツールは業務部門が導入しやすく、 「ツール」として軽く扱われがちだが、 **本件では顧客データ約6万件に到達する経路だった。** 一次公表はバージョンも露出の有無も示していないため、 本件の具体的な原因に対応づけたものではない</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　**本記録の判断。** 本件で Metabase が露出していたかは公表されていない。 ただし「脆弱性を悪用した不正アクセス」という記述は、 外部から当該ツールに到達できたことを前提とする（同）</span></div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">検知した</span><div class=sm>**9月16日に同社システムで異常を検知し、調査によって取得の事実を確認している。** **何を異常として検知したかは公表されていない**ため、 検知の設計の良否は一次資料から評価できない（本記録の注記）。 取得された範囲を件数と項目の単位で示せていることは、 判定に足る記録が残っていたことを示す（同）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　**本記録の判断。** 本件で建設現場向けサービスと衣類回収サービスは 事業として無関係だが、**1つの Metabase の脆弱性で両方が対象になった。** 分析の便宜のための集約が、侵害時の範囲をそのまま決めている</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　**本記録の判断。** 本件で取得されたのは **氏名・生年月日・体温情報・年収といった行単位の項目**であり、 集計のための分析に行単位の個人データが要ったのかは公表文からは分からない</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**本記録の判断。** 本件では「異常を検知」したとあるが、 それが読み出しの異常だったのかは公表されていない</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>検知の当日に経路の遮断まで到達している。 **検知から封じ込めまでが同日という点は、本件で最も明確に評価できる要素である** （本記録の評価）</div></td><td><div class=ctl><span class="b eff">復旧を早められた</span><span class=sm>　**本記録の判断。** 本件では経路の遮断が検知当日に完了し、 サービスの停止は公表されていない。 分析ツールが業務の処理に直結していれば同日の遮断は難しくなる</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**パスワードの再設定は求められていない。** 同社は**「パスワードは管理していないため漏えいしていない」**と明記している</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価である。** 「パスワードを持たない」という設計上の選択が、 侵害の影響を1段狭めている。 **これは侵害後の対応ではなく事前の設計の効果**であり、 同種のサービスが参照できる点である。 ただし公表文は、認証をどう実装しているか（外部の認証基盤か等）には触れていない</td></tr><tr><td>**Metabase の利用自体を終了する。** 修正版への更新ではなく、「より安全な環境の活用」へ移行する判断である。 あわせて「より高いセキュリティ水準を備えたツール・環境を意識し、 利用ポリシーを厳格化」するとした</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価である。** 注目すべきは、 **原因を「個別の脆弱性」ではなく「分析ツールの運用」に置いた**点である。 脆弱性を直して使い続けるのではなく、 ツールと利用ポリシーの両方を変えると述べている。 一方、**移行先が何かが示されていない**ため、 「より安全な環境」が同種の課題を持たないかは外部から判断できない</td></tr><tr><td>**対象となる顧客にメールで個別に連絡する。** あわせて自社サイトで公表した</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>**本記録の評価である。** 通知の開始日・完了時期が公表されていないため、 所要を評価できない。 **公表文には、騙りのメールへの注意喚起が含まれていない**—— メールアドレス約6万件が出ている事案としては、 この注意喚起があってよかった点である（同）</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**BI・分析ツールは「本番の顧客データに接続された基盤」である。 事業をまたいで集約すると、1つの脆弱性が事業をまたいで効く**</div><div class=lw>本件で対象になったのは、**建設現場向けサービス「アザス」約4万件**と **衣類回収サービス「するーぷ」約2万件**です。 この2つは事業として無関係ですが、 **同じ BI ツール「Metabase」の下にデータが集まっていました。** 結果として、1つの分析ツールの脆弱性で**合計約6万件**が同時に対象になっています。 分析の便宜のための集約が、**侵害時の範囲をそのまま決めた**ことになります</div><div class=la><b>取るべき行動</b> **自社の分析ツールについて「何と何が同じツールの下にあるか」を書き出す。** ①接続先のデータベースを事業・サービス単位で列挙する、 ②**事業をまたぐ集約の業務上の必要性を確認し、 必要ならツール内の権限を事業単位に分ける**、 ③分析ツールを**資産の一覧とバージョンの管理の対象**に入れる （業務部門が導入したものを含める）</div></li><li><div class=lp>**「パスワードを持たない」という事前の設計が、侵害の影響を1段狭めた**</div><div class=lw>同社は一次公表で**「パスワードは管理していないため漏えいしていない」**と 明記しています。約6万件のアカウント情報が取得されたにもかかわらず、 **認証情報そのものは含まれません。** 結果として、利用者にパスワードの再設定を強いる必要が生じていません。 **これは侵害後の対応ではなく、事前の設計の効果です**</div><div class=la><b>取るべき行動</b> **自社が保持しなくてよい情報を、保持しない設計に寄せる。** ①認証情報を自社で持つ必要があるかを見直す （外部の認証基盤に委ねられないか）、 ②**分析用の環境に本番の個人データをそのまま置かない** （必要な項目に限る・仮名化する・集計済みの値だけを渡す）、 ③**公表文に「含まれていなかった項目とその理由」を書く欄**を用意する—— 本件の「パスワードは管理していないため」は、 読者が影響を正しく見積もるのに役立つ記述である</div></li><li><div class=lp>**脆弱性を直すのではなく「ツールの利用をやめる」判断もある。 ただし移行先が示されないと、読者は同じ課題が残るかを判断できない**</div><div class=lw>同社の再発防止策は、**Metabase の利用の終了**と **利用ポリシーの厳格化**の2点です。 修正版へ更新して使い続けるのではなく、 **原因を「個別の脆弱性」ではなく「分析ツールの運用」に置いた**ことになります （本記録の評価）。 一方、**移行先の環境も、厳格化されるポリシーの中身も公表されていません**</div><div class=la><b>取るべき行動</b> **自社の是正の意思決定を「個別の脆弱性」と「ツールの選定・運用」の 2層で記録する。** ①この脆弱性を直すか、②このツールを使い続けるか、 ③このツールを使う前提の運用ポリシーを変えるか——を分けて判断し、 **公表する際は移行先と新しいポリシーの要点を示す** （示さないと、外部は再発の可能性を評価できない）</div></li><li><div class=lp>**メールアドレスが出た事案で、通知の経路と漏えいした経路が同じになる。 注意喚起を公表文に入れる必要がある**</div><div class=lw>漏えいした項目には**両サービスともメールアドレス**が含まれます。 同社は「対象となる顧客にメールで個別に連絡」するとしていますが、 **公表文には、同社を騙るメールへの注意喚起が含まれていません。** とくに「するーぷ」側は**項目一覧に氏名が無く**、 メールアドレスが実質の識別子です—— つまりメール以外の通知経路を持ちにくい構造でもあります</div><div class=la><b>取るべき行動</b> **連絡先が漏えいした場合の公表様式を用意する。** ①公表と同時に**騙りのメールへの注意喚起を出す**、 ②**正規の通知であることを利用者が確かめられる経路** （窓口・サイト上の掲示）を公表文に書く、 ③通知のメールには URL や添付を含めない原則を決める</div></li><li><div class=lp>**公表から報道までに約3週間あった。自社の公表が外部に伝わる速さは 自社では制御できない**</div><div class=lw>同社の公表は**2026年9月18日**ですが、 ScanNetSecurity が報じたのは**2026年10月9日**です。 **約3週間、公表はされていたが広くは知られていなかった**ことになります。 同じ日（9月18日）に公表された他の事案も同日に報じられており、 報道側の取り上げがまとまったものと読めます（本記録の評価）</div><div class=la><b>取るべき行動</b> **自社の公表が読まれる前提を置かない。** ①影響を受ける利用者・取引先への**直接の通知を公表と同時に走らせる**、 ②公表ページを**一覧から辿れる位置に残す** （本件の公表は同社サイトの「お知らせ」から辿れる）、 ③自社が利用者側であれば、**取引先・サービス提供元の公表ページを 定期的に確認する仕組み**を持つ（報道を待つと数週間遅れる）</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**分析ツールは「読むだけ」なので軽く見られるが、 読める範囲がそのまま漏えいの範囲になる**</div><div class=lw>本件で取得されたのは、アザス13項目・するーぷ8項目の **行単位の個人データ**です。 氏名・生年月日・**体温情報**・**年収（任意）**・**子供の有無**まで含まれます。 集計・分析のためのツールであれば、 **集計済みの値や仮名化された行で足りる場面も多い**はずですが、 公表文からは行単位の個人データが要ったのかは分かりません</div><div class=la><b>取るべき行動</b> ①分析ツールの接続先について、**参照できる列を業務上必要なものに絞る** （ビューを介させる・列単位の権限を設定する）、 ②**氏名・生年月日・健康・収入に相当する列を分析用の経路から外せないか**を検討する、 ③外せない場合は**仮名化**し、必要時のみ再識別できる経路を分ける。 **「読むだけのツール」は「全部読めるツール」である**</div></li><li><div class=lp>**検知の当日に経路を遮断できている——これは分析ツールが 業務の処理経路から切り離されていたことの裏返しでもある**</div><div class=lw>同社は**9月16日に異常を検知し、同日中に不正アクセス経路を遮断**しています。 サービスの停止・業務の停止は公表されていません。 分析ツールが業務の処理に直結していれば、 同日の遮断は業務の停止を伴ったはずです（本記録の評価）</div><div class=la><b>取るべき行動</b> ①**分析の基盤を業務の処理経路から切り離す** （止めても業務が止まらない位置に置く）、 ②分析ツールごとに**「止める手順」を事前に書いておく** （誰が、何を、どの順で止めるか）、 ③止めた場合に影響する業務を列挙しておく。 **即座に止められる構成は、それ自体が封じ込めの速さになる**</div></li><li><div class=lp>**公表文に CVE 番号とバージョンが無いと、同じツールを使う組織は 自分が該当するかを判断できない**</div><div class=lw>一次公表は「Metabase に存在していたセキュリティ上の脆弱性」としか述べません。 **CVE 番号・影響したバージョン・修正版が提供されていたかは いずれも示されていません。** Metabase は広く使われている BI ツールであるため、 **同じツールを運用している他の組織にとって最も必要な情報が欠けています** （本記録の評価）</div><div class=la><b>取るべき行動</b> ①**自社が使う OSS・SaaS の脆弱性の告知を購読し、 稼働しているバージョンと突き合わせる担当を決める** （導入時の1回で終わらせない）、 ②自社が公表する側になったときは、 **特定できている範囲で製品名・バージョン・識別子を書く** （書けない理由があるなら、その旨を書く）、 ③**分析ツールのバージョンを資産の一覧に載せる**</div></li><li><div class=lp>**項目の一覧は「1人について何が読み取れるか」で読む。 アザスは現場の立場・健康・所属企業・従事した工事が一度に並んでいた**</div><div class=lw>アザスの13項目には、**体温情報**（健康に関する情報）と **元請または一次請企業・プロジェクト名・プロジェクト期間**が含まれます。 つまり1行から、**誰が・どの企業の下で・どの工事に・いつ従事し・ その間の体温がどうだったか**が読み取れる構成です。 これは個人の情報であると同時に、 **企業と工事の対応関係**でもあります（本記録の評価）</div><div class=la><b>取るべき行動</b> ①個人データの一覧を**項目単位ではなく「1行から何が分かるか」で評価する**、 ②**健康に関する項目（体温・検温の記録等）が業務系に残り続けていないか**を確認する （取得の目的が終わったら消す運用になっているか）、 ③**取引先の企業名・工事名が個人データの行に同居していないか**を確認し、 同居しているなら企業側への通知の手順も決めておく</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> BI・分析ツール（Metabase・Redash・Superset 等）が複数の事業・サービスのデータベースに同時に接続している</td><td class=sm>**本件の範囲はここで決まった。** 事業として無関係な建設現場向けサービスと衣類回収サービスが、 1つの Metabase の脆弱性で同時に対象になった（合計約6万件）</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 分析ツールが資産の一覧・バージョン管理の対象に入っていない（業務部門が導入したものを含む）</td><td class=sm>本件の侵入口は「データの集計・分析を目的として利用していた BI ツール」である。 **一次公表はバージョンも脆弱性の識別子も示していない**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 分析用の経路から本番の個人データを行単位で参照できる（氏名・生年月日・健康・収入に相当する列を含む）</td><td class=sm>取得されたのはアザス13項目・するーぷ8項目の行単位のデータで、 **体温情報・年収（任意）・子供の有無**まで含まれていた</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 分析ツールの管理画面がインターネットから直接到達できる位置にある</td><td class=sm>「脆弱性を悪用した不正アクセス」は外部から当該ツールに到達できたことを前提とする （本記録の評価）。**本件の設置形態は公表されていない**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 個人データの行に、取引先の企業名・案件名・従事期間が同居している</td><td class=sm>アザスの項目には**元請または一次請企業・プロジェクト名・プロジェクト期間**が含まれ、 **企業と工事の対応関係**でもあった。企業側への影響は公表されていない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 利用者への通知経路がメールアドレスしかない（氏名等の代替の識別子を持たない）</td><td class=sm>「するーぷ」側は項目一覧に氏名が無く、メールアドレスが実質の識別子である。 **漏えいした経路と通知の経路が同じになる**</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月18日 JGC Digital 株式会社</span> <a href="https://jgc-digital.com/topics/topics-3049/" target="_blank" rel="noreferrer noopener nofollow">不正アクセスによる個人情報流出に関するお知らせとお詫び</a> <span class="b kind">ニュースリリース</span><span class=sm>（**本記録が一次資料として扱う公表。** Metabase の脆弱性の悪用、検知（9月16日）、同日中の経路の遮断、 アザス約4万件・するーぷ約2万件・合計約6万件、 両サービスの項目の内訳、 **複数アカウント保有者がいるため実人数は件数より少ない見込み**、 **パスワードは同社が管理していないため漏えいしていない**こと、 対象の顧客へのメールでの個別連絡、 再発防止策（利用ポリシーの厳格化・Metabase の利用の終了）は すべてこの公表による。 **CVE 番号・バージョン・侵入時期・当局報告の記載は無い**（取得して確認した））</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[3]</span> <span class=sm>取得時点 JGC Digital 株式会社</span> <a href="https://www.jgc-digital.com/" target="_blank" rel="noreferrer noopener nofollow">JGC Digital 株式会社（コーポレートサイト）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（同社が**日揮ホールディングスの子会社**であること、 IT サービスの企画・開発・運用と衣類回収事業を手がけること、 公表が「お知らせ」の一覧から辿れることを本記録の作成者が確認した）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月9日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/10/09/56422.html" target="_blank" rel="noreferrer noopener nofollow">JGC Digital が利用する BI ツール「Metabase」に不正アクセス、約 6 万件の情報が取得されたことを確認</a> <span class="b kind">記事</span><span class=sm>（本記録の収集の端緒。**同社の公表（9月18日）から約3週間後の報道である。** サービス名・件数・項目・検知日・遮断日・再発防止策は一次公表と一致する。 **実人数が件数より少ない見込みであること、 パスワードを管理していないため漏えいしていないことには触れていない**）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月5日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/10/05/56382.html" target="_blank" rel="noreferrer noopener nofollow">LEAN BODY が利用する分析ツール「Metabase」の脆弱性を悪用した不正アクセス</a> <span class="b kind">記事</span><span class=sm>（**同じ分析ツールを対象とする別企業の事案として参照のために置く。** **本記録の作成者は、この記事の見出しと URL を検索結果で確認したのみで、 記事本文・当該企業の一次公表のいずれも取得していない。** 本件と同じ脆弱性かどうかも確認していない （discrepancies の self_unverified を参照））</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月9日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月9日の収集記事（ScanNetSecurity）を起点に、 **JGC Digital の公表ページを取得して裏取りした。** サービス名・件数・項目・検知日・遮断日・再発防止策はすべて一次公表で確認している。 報道に無く一次公表にあった2点 （**複数アカウント保有者がいるため実人数は件数より少ない見込み**／ **パスワードは同社が管理していないため漏えいしていない**）を取り込んだ—— **いずれも影響の見積もりを変える記述である。** そのため figures の単位は「件」ではなく**「アカウント」**とし、 「約6万人」と読み替えられないよう note に明記した。 **本記録が最も重要だと見たのは構成の点である**—— 建設現場向けサービスと衣類回収サービスという**事業として無関係な2つ**が 同じ Metabase の下にあり、1つの脆弱性で合計約6万件が同時に対象になった。 また、アザスの13項目には**体温情報**と **元請・一次請企業／プロジェクト名／期間**が含まれ、 **1行から企業と工事の対応関係まで読める**構造であることを分析に記した （企業側への影響は公表されていないため unknowns に残した）。 **CVE 番号は一切記載していない**——一次公表に無く、 検索結果に現れた識別子と KEV 収載の情報は裏を取っていないため、 discrepancies の self_unverified に明記した。 root_causes は vulnerability-exploit のみとし、 **patch-management（放置）は付けていない** （修正版の提供状況が公表されていないため判断材料が無い）。 response.metrics は、**侵入時期が非公表のため dwell を置かず**、 containment（同日・0日）と disclosure（2日）の2つに限った。 続報（脆弱性の特定・件数の確定・移行先の環境）が出ていないため status は new とする</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-09 14:17 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
