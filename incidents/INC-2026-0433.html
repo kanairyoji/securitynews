@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>電力のopenPDCに認証不要RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0433</span>電力のopenPDCに認証不要RCE</h1>
+<header class="site-header">
+  <p class="subtitle">CISA は2026年10月8日、電力系統の同期位相計測（PMU）データを集約する オープンソース製品 Grid Protection Alliance openPDC と、 時系列データ保管の openHistorian について、6件の脆弱性を扱う ICS 勧告 ICSA-26-281-02 を公表した。サービスコンソールの デシリアライズ（CVE-2026-100730・CVSSv3.1 9.8）は、Windows 認証を 使っていない構成では認証なしの遠隔攻撃者がサービスアカウント権限で コードを実行できる。公開 Docker イメージには変更を強制されない 固定の管理者資格情報があり（CVE-2026-105278・同 9.8）、 修正の予定は無いとされた。データ公開インタフェースの 既定値の修正は新規導入にのみ適用され、更新した既存環境には 引き継がれない。悪用は確認されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">設定不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月8日（CISA の ICS 勧告 ICSA-26-281-02 の公表）</span>
+  <span>最終更新: 2026年10月9日</span>
+</div>
+
+<div class="lead"><p><strong>本件で最も重いのは CVSS 9.8 の2件ではなく、 「直らないもの」と「直ったことにならないもの」が 同じ勧告に並んでいることである</strong>（本記録の評価）。 <strong>直らないもの</strong> —— <strong>公開 Docker イメージに含まれる固定の管理者資格情報 （CVE-2026-105278・CVSSv3.1 9.8）について、勧告は 「修正の予定は無い（No fix planned）」とし、 開発元は「公開している Docker イメージの本番利用は いかなる場合も推奨しない」としている</strong>（出典1。原文英語。本記録が訳した）。 <strong>直ったことにならないもの</strong> —— <strong>認証なしで接続を受け付けていた データ公開インタフェース2件（CVE-2026-105281・CVE-2026-85479）の修正は 「既定値をローカルループバックのみに束ねる」変更で、 これは新規導入にのみ適用され、以前の版から更新した環境は 従来の設定を保持して自動では新しい既定値を受け取らない</strong>（出典1）—— <strong>勧告は運用者に対し、設定を明示的に確認し、 全インタフェースで接続を受け付ける設定のままなら 変更するよう求めている。</strong> <strong>つまり「最新版に上げた」ことが、この2件については対策の完了を意味しない。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（3件）">公表・報道からわかったこと（3件）</a></li><li><a href="#s8" title="事案の詳細">事案の詳細</a></li><li><a href="#s9" title="経過">経過</a></li><li><a href="#s10" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s11" title="波及の構造">波及の構造</a></li><li><a href="#s12" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s13" title="対応の評価">対応の評価</a></li><li><a href="#s14" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s15" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s16" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s17" title="出典">出典</a></li><li><a href="#s18" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s19" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>開発元自身の公表文（リリースノート・セキュリティ勧告）</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は、Grid Protection Alliance 自身による本件の公表文を 確認できなかった**（2026年10月9日時点。本記録の明示）—— **CISA の勧告ページには開発元の配布ページ・リポジトリへの リンクが無く、外部リンクは CSAF 形式の同一勧告と CVE／CWE／CVSS 計算機のみである**（出典1。本記録が確認）。 **GitHub の openPDC のリリース一覧（1ページ目）には 2.9.477／2.9.482 の記載が見当たらなかった**（齟齬2を参照）。 **本記録の整理** —— **勧告に記載された開発元の対応 （シリアライズ処理への検証の追加、既定値の変更、 Docker イメージの非推奨）は、CISA が開発元から得た内容を 勧告の中に載せたものと読める**（本記録の読み）—— **したがって開発元の意思は勧告から確認できる。** **確認できないのは、修正版の配布場所と入手手段である。** **実務上の意味** —— **更新を実施する担当者は、 どこから 2.9.482／2.8.585 を入手するかを 自分で探す必要がある。**</div></li><li><span class=ui>報告から公表までの経過（報告日・開発元への連絡日・調整の期間）</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は「Causal Security の Shubham Raj（Cipher）が これらの脆弱性を CISA に報告した」と記すのみで、 報告日・開発元への連絡日・公表までの期間を示していない** （出典1。本記録が確認）。 **本記録の整理** —— **これは ICS 勧告では一般的な書き方であり、 隠されているというより記載の慣行である**（本記録の読み）。 **ただし「修正の予定は無い」とされた CVE-2026-105278 について、 その判断に至る経過（開発元が修正を断ったのか、 Docker イメージを配布物として位置づけ直したのか）は 分からない。**</div></li><li><span class=ui>日本国内での openPDC／openHistorian の導入状況</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は、日本国内でこの2製品を運用している組織・台数の 公表値を確認できなかった**（本記録の明示）。 **勧告は配備地域を「世界規模」とするのみである**（出典1）。 **本記録の整理** —— **openPDC は同期位相計測装置の データ集約という特定用途の製品であり、 国内の広域監視の実装がこれを使っているかは 本記録の範囲では分からない。** **一方 openHistorian は時系列データの保管基盤として より一般的な用途を持ち得る**（本記録の読み）—— **該当の確認は業種ではなくソフトウェアの有無で行うべきである。**</div></li><li><span class=ui>公表後の悪用状況・CISA KEV への収載・日本語での注意喚起</span><span class="b rsn">公表されていない</span><div class=sm>**CISA は勧告公表時点で悪用の報告を受けていないとしている** （出典1）が、**その後の状況について本記録は確認していない** （本記録の明示）—— **PoC の公開、CISA Known Exploited Vulnerabilities カタログへの 収載、JPCERT/CC 等による日本語の注意喚起の有無は いずれも未確認である。** **本記録の評価** —— **本件のうち固定資格情報 （CVE-2026-105278）は、悪用に技術的な解析を要しない類型である** —— **資格情報が公開のイメージから読み取れる形であれば、 PoC の公開という段階を経ずに使われ得る。** **「悪用未確認」を猶予と読まないこと。**</div></li><li><span class=ui>Docker イメージの固定資格情報の値、および影響するイメージのタグ</span><span class="b rsn">意図的に非開示</span><div class=sm>**勧告は固定の管理者資格情報の存在を述べるが、 その値も、影響するイメージのタグ・ダイジェストも示していない** （出典1。本記録が確認）。 **本記録の判断** —— **値を示さないのは適切であり、 本記録も探索しない。** **実務上必要なのは値ではなく「公開イメージを本番で使っているか」の 判定であり、それは自組織で確認できる。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Grid Protection Alliance（GPA・米国）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Cybersecurity and Infrastructure Security Agency（CISA・米国）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Causal Security（報告者 Shubham Raj〈Cipher〉）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>勧告が扱う脆弱性の件数（CVE ベース）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>6<span class=fu>件</span></div><div class=fn>**勧告に個別の項目として記載された CVE を本記録が数えた値** （出典1）—— **CVE-2026-100730・CVE-2026-105281・CVE-2026-85479・ CVE-2026-101022・CVE-2026-105278・CVE-2026-104629。** **読み間違えやすい点** —— **勧告の要約欄は 「5 Vulnerabilities」と表示し、弱点の種類を5つ列挙している** （デシリアライズ／重要機能の認証の欠落／SSRF／ ハードコードされた資格情報／安全でないリフレクション）—— **これは CVE の件数ではなく弱点の分類の数である。** **CVE-2026-105281 と CVE-2026-85479 がどちらも CWE-306（重要機能の認証の欠落）であるため、 6件の CVE が5種の分類に収まる**（本記録の照合）。 **「5件」と数えると、Docker イメージ限定の CVE-2026-105278 を落とす可能性がある。**</div></div><div class=fig><div class=fh><span class=fl>CVSSv3.1 で「クリティカル」とされた件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>**勧告の各 CVE の CVSSv3.1 の値を本記録が数えた値**（出典1）—— **CVE-2026-100730（9.8・デシリアライズ）と CVE-2026-105278（9.8・公開 Docker イメージの固定資格情報）。** **残りは——高（High）2件（CVE-2026-104629 が 8.8、 CVE-2026-105281 が 7.5）、中（Medium）2件 （CVE-2026-85479 が 5.3、CVE-2026-101022 が 4.3）。** **合計 2＋2＋2＝6**（本記録の照合）。 **本記録の注記** —— **CVSSv4.0 では順位が入れ替わる** —— **CVE-2026-105281 は v3.1 で 7.5 だが v4.0 では 8.7、 CVE-2026-104629 は v3.1 で 8.8 だが v4.0 では 7.7 となる（出典1）。** **版の違いで優先順位が動くため、どの版で語っているかを 社内で揃える必要がある。**</div></div><div class=fig><div class=fh><span class=fl>開発元が修正を予定していないとされた件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1<span class=fu>件</span></div><div class=fn>**CVE-2026-105278（公開 openPDC Docker イメージの 固定の管理者資格情報・CVSSv3.1 9.8）について、 勧告は対処を「修正の予定は無い（No fix planned）」とし、 「開発元は公開している Docker イメージの本番利用を いかなる場合も推奨しない」「この脆弱性の修正は Docker イメージへ公開されていない」としている** （出典1。原文英語。本記録が訳した）。 **本記録の整理** —— **これは「対応不要」ではなく 「製品としてのこの配布物は使うな」という意思表示である。** **同じ Docker イメージは他の5件についても 「修正は公開されていない」と記載されている**（出典1。本記録が確認）—— **つまり Docker イメージで動かしている環境は、 更新による解決の経路を持たない。**</div></div><div class=fig><div class=fh><span class=fl>修正版として示された版の数（製品あたり2段）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>2<span class=fu>段</span></div><div class=fn>**勧告の影響バージョンの記載が「2.9.477 未満、2.9.482 未満」 という2段になっていることを、本記録が整理した値**（出典1）。 **内訳** —— **CVE-2026-104629（安全でないリフレクション）だけが openPDC 2.9.477 以降・openHistorian 2.8.580 以降で修正され、 他の修正提供分（CVE-2026-100730）は openPDC 2.9.482 以降・openHistorian 2.8.585 以降である**（出典1）。 **実務上の意味** —— **2.9.477 へ上げた環境は CVE-2026-104629 だけが直った状態であり、 デシリアライズによる認証不要の遠隔コード実行 （CVE-2026-100730・CVSSv3.1 9.8）は残る。** **目標の版は 2.9.482／2.8.585 である。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件は実際の被害事例ではなく、当局が公表した脆弱性の記録である** （本記録の位置づけ）。 **CISA は「本勧告に記載された脆弱性を具体的に標的とした 公開された悪用は、現時点で CISA に報告されていない」としている** （出典1）。 **以下の chain は、勧告が各 CVE について示した成立条件と影響から 本記録が段階を立てたものである**（出典1）—— **実際に観測された攻撃の記録ではない。** **本記録が注目したのは、6件が「認証の要否」で3層に分かれることである** （本記録の整理）—— **①認証不要（CVE-2026-100730〈Windows 認証を使っていない場合〉・ CVE-2026-105281・CVE-2026-85479・CVE-2026-105278〈Docker イメージ〉）、 ②認証済みの利用者が必要（CVE-2026-101022）、 ③認証済みかつホスト上にファイルを置ける必要がある（CVE-2026-104629）。** **①の4件が、到達できる位置にいる攻撃者にとっての入口になる。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class=srcs></span></div><div>**攻撃者は、到達可能な openPDC／openHistorian の サービスコンソールおよびデータ公開インタフェースを探す** （出典1の成立条件から本記録が構成した段階）。 **勧告の記述から分かる成立条件は2つある**（出典1）—— **①該当バージョンであること、 ②Windows 認証を使っていないこと（CVE-2026-100730 の場合） または既定の構成のまま運用していること （CVE-2026-105281・CVE-2026-85479 の場合）。** **本記録の整理** —— **後者が重要である。** **既定値の修正は新規導入にのみ適用され、 以前の版から更新した環境は従来の設定を保持する**（出典1）—— **つまり「更新済みだが既定値は古いまま」という状態が 正常に起こり得る。**</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class=srcs></span></div><div>**認証を必要としない経路で入る**（出典1）—— **①CVE-2026-100730：openPDC／openHistorian の サービスコンソールインタフェースが、クライアントから 与えられたデータ構造をデシリアライズする。 「Windows 認証を使用しているシステムでは、攻撃者はこの機能に 到達するために既に認証されている必要があるが、 Windows 認証を使用していないシステムでは、 認証されていないネットワーク上の攻撃者から到達可能である」 （原文英語。本記録が訳した）。 任意のオブジェクトグラフのデシリアライズを引き起こし、 影響するサービスアカウントの権限で遠隔コード実行に至り得る。** **②CVE-2026-105278（公開 Docker イメージのみ）： 変更を強制されない固定の管理者資格情報が含まれており、 管理インタフェースにネットワーク到達できる者に 完全な管理権限を与える。**</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class=srcs></span></div><div>**認証なしで系の構成を読み出す**（出典1）—— **CVE-2026-105281：openPDC の内部データ公開インタフェースが 既定の構成で認証なしの接続を受け付ける。 「認証されていないネットワーク上の攻撃者がこのインタフェースへ 接続し、システムの装置および計測の完全なトポロジを 取得できる」（原文英語。本記録が訳した）。** **CVE-2026-85479：STTP ベースのデータ公開インタフェースも 既定の構成で認証なしの接続を受け付け、データの交換ができる。** **本記録の評価** —— **「装置および計測の完全なトポロジ」は、 どの計測点がどこに存在し何を測っているかの一覧である。** **これは侵入の前段ではなく、それ自体が価値のある情報にあたる** —— **系統の広域監視の構成が外部から読める状態は、 以後の標的選定の土台になる。**</div></li><li><div class=stg><span class="b stage">4. 実行</span><span class=srcs></span></div><div>**認証済みの利用者がホスト上でコードを動かす**（出典1）—— **CVE-2026-104629：コンポーネントのローダが、 指定された任意の型を構築する。 「ホスト上にファイルを配置できる認証済みの利用者は、 影響するサービスアカウントの権限で任意のコンストラクタの コードを実行できる」（原文英語。本記録が訳した）。** **開発元は openPDC 2.9.477 以降・openHistorian 2.8.580 以降で、 アダプタの検証と整合性の確認を追加して修正した**（出典1）。</div></li><li><div class=stg><span class="b stage">5. 横展開</span><span class=srcs></span></div><div>**内部ネットワークを外側から走査させる**（出典1）—— **CVE-2026-101022：Modbus 接続機能が任意の宛先アドレスと ポートを受け付ける。 「認証済みの利用者が内部のホストを探索でき、 内部ネットワークの地図を作れる可能性がある」 （原文英語の要旨。本記録が訳した）。** **本記録の整理** —— **これはサーバサイドリクエスト フォージェリ（CWE-918）であり、openPDC 自身が 攻撃者の代わりに内部へ接続を試みる形になる。** **制御系では、この「内部からの接続」が ファイアウォールの許可側に当たることがある**（本記録の評価）。</div></li><li><div class=stg><span class="b stage">6. 影響（暗号化・破壊・改ざん）</span><span class=srcs></span></div><div>**本段階は勧告に記載が無く、openPDC の役割から 本記録が構成したものである**（本記録の明示）。 **勧告が示す影響は、CVE ごとの技術的な帰結 （サービスアカウント権限でのコード実行、トポロジの取得、 データの交換、完全な管理権限）までである**（出典1）。 **本記録の評価** —— **openPDC は同期位相計測装置から送られる データを集約し、系統の広域監視に渡す位置にある。** **ここを握られたときに起こり得ることは2通りある。** **①計測データの改変** —— **保護リレーのような安全系とは別の経路であり、 遮断器を直接動かすものではない。** **影響が出るのは「運用者が見ている景色」のほうである。** **②保管された時系列データの改変・消去** —— **openHistorian 側では、事後の分析（事故解析・需給の検証）の 土台が失われる。** **本記録はこの2つを可能性として書いており、 公表資料に記載のある被害ではない。**</div></li></ol></div>
+<section id="s5"><h2>直らないものと、直ったことにならないものが同じ勧告に並んでいる<span class="b slot">原因・手口</span></h2><p><strong>本件の6件は、CVSS の値で並べると判断を誤る</strong>（本記録の整理）—— <strong>「対処の性質」で分けたほうが実務に合う。</strong></p>
+<table>
+<thead>
+<tr>
+<th>CVE</th>
+<th>認証</th>
+<th>開発元の対応</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE-2026-100730（デシリアライズ・9.8）</td>
+<td>Windows 認証なしなら<strong>不要</strong></td>
+<td>修正あり（2.9.482／2.8.585）</td>
+</tr>
+<tr>
+<td>CVE-2026-105278（Docker の固定資格情報・9.8）</td>
+<td><strong>不要</strong>（値を知っていれば）</td>
+<td><strong>修正の予定なし</strong></td>
+</tr>
+<tr>
+<td>CVE-2026-105281（トポロジの読み出し・7.5）</td>
+<td><strong>不要</strong>（既定の構成）</td>
+<td><strong>既定値の変更</strong>（新規導入のみ）</td>
+</tr>
+<tr>
+<td>CVE-2026-85479（データ交換・5.3）</td>
+<td><strong>不要</strong>（既定の構成）</td>
+<td><strong>既定値の変更</strong>（新規導入のみ）</td>
+</tr>
+<tr>
+<td>CVE-2026-104629（安全でないリフレクション・8.8）</td>
+<td>認証済み＋ファイル配置</td>
+<td>修正あり（2.9.477／2.8.580）</td>
+</tr>
+<tr>
+<td>CVE-2026-101022（Modbus の SSRF・4.3）</td>
+<td>認証済み</td>
+<td><strong>ベンダー修正の記載なし</strong>（構成で制限）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>「修正版へ上げる」で片付くのは6件のうち2件だけである</strong>（出典1）。</p>
+<p><strong>①直らないもの——CVE-2026-105278。</strong> <strong>公開されている openPDC の Docker イメージに、変更を強制されない固定の管理者資格情報がある。</strong> <strong>勧告の対処欄は「修正の予定は無い」で、開発元は「公開している Docker イメージの本番利用はいかなる場合も推奨しない」としている</strong>（原文英語。本記録が訳した）。<strong>さらに他の5件についても、Docker イメージには修正が公開されていないと記載されている。</strong> <strong>つまり Docker イメージで動かしている環境は、更新による解決の経路を持たない。</strong></p>
+<p><strong>②直ったことにならないもの——CVE-2026-105281・CVE-2026-85479。</strong> <strong>認証なしで接続を受け付けていたデータ公開インタフェースの修正は、「既定値をローカルループバックのみに束ねる」という変更である。</strong> <strong>勧告は続けてこう書いている</strong>（原文英語。本記録が訳した）—— <strong>「この変更は新規のインストールに適用される。以前の版から更新した既存のインストールは従来の構成を保持し、新しい既定値を自動では受け取らない。運用者は自環境の構成を明示的に確認し、全インタフェースで接続を受け付ける設定のままであればインタフェースの束ね先を変更すべきである。」</strong></p>
+<p><strong>本記録の評価</strong> —— <strong>②は、脆弱性対応の記録の付け方に直接ひびく。</strong> <strong>「2.9.482 へ更新済み」という記録は、この2件については対策の完了を意味しない。</strong> <strong>完了の証拠になるのは版番号ではなく、待ち受けアドレスの実測値である。</strong></p>
+<p><strong>③修正版が2段ある。</strong> <strong>CVE-2026-104629 だけが 2.9.477／2.8.580 で修正され、他は 2.9.482／2.8.585 である</strong>（出典1）—— <strong>2.9.477 で止めると、認証不要の遠隔コード実行（CVE-2026-100730）が残る。</strong></p></section>
+<section id="s6"><h2>計測の集約点を握られると、壊れるのは系統ではなく「見えている景色」か<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価であり、公表資料に記載のある内容ではない</strong>（本記録の明示）。<strong>勧告が示す影響は、CVE ごとの技術的な帰結までである</strong>（出典1）。</p>
+<p><strong>openPDC は Phasor Data Concentrator——系統各所の同期位相計測装置（PMU）から秒間数十回の頻度で送られてくる計測値を集約し、広域監視へ渡す位置にある。</strong> <strong>openHistorian はその時系列データを保管する。</strong></p>
+<p><strong>この位置にある装置は、保護リレーのような安全系とは別の経路にある</strong>（本記録の整理）—— <strong>openPDC を握っても、遮断器が直接動くわけではない。</strong> <strong>だから「制御を奪われる」類の事案と同じ枠で語ると、危険度を取り違える。</strong></p>
+<p><strong>実際に効くのは別の方向である。</strong></p>
+<p><strong>①運用者が見ている景色が汚れる。</strong> <strong>広域監視は、系統の揺れ・位相差・周波数の偏差を人と自動の判断に渡すための仕組みである。</strong> <strong>入力が改変されれば、判断の前提が変わる。</strong> <strong>しかもこの改変は、データの持ち出しを伴わない</strong> —— <strong>漏えいを前提とした検知の網には、原理的にかからない。</strong></p>
+<p><strong>②事後の分析の土台が消える。</strong> <strong>保管された時系列データは、事故の原因解析・需給の検証・制度上の報告の根拠になる。</strong> <strong>サービスアカウントの権限でコードが動く状態（CVE-2026-100730・CVE-2026-104629）では、保管済みのデータも操作の対象になり得る。</strong></p>
+<p><strong>③構成そのものが読み出せる。</strong> <strong>CVE-2026-105281 は「装置および計測の完全なトポロジ」を認証なしで取得できるとされている</strong>（出典1）—— <strong>これは侵入の前段ではなく、それ自体が情報である。</strong> <strong>どこに何の計測点があるかの一覧は、以後の標的選定の土台になる。</strong></p>
+<p><strong>本記録が実務の結論として置くのは2点である。</strong></p>
+<p><strong>第一に、計測データの保管基盤の記録を、別の基盤へ書き換え不可の形で複製しておく。</strong> <strong>同じ系の中だけを見ていると、改変は検出できない。</strong></p>
+<p><strong>第二に、この種の装置の露出の判定を「制御系かどうか」で分けない。</strong> <strong>openPDC は制御をしないが、制御の判断の入口にある。</strong> <strong>分類の都合で監視の網から外れやすい位置である。</strong></p></section>
+<section id="s7"><h2>修正版の入手先が勧告から辿れないという、運用側の実務の穴<span class="b slot">未確定事項</span></h2><p><strong>本件には、読者が更新に着手する段で詰まる点がある</strong>（本記録の明示）。</p>
+<p><strong>CISA の勧告（出典1）には、開発元の配布ページ・リポジトリへのリンクが無い。</strong> <strong>ページ上の外部リンクは、CSAF 形式の同一勧告、各 CVE の CVE.org の記録、CWE の定義、CVSS 計算機だけである</strong>（本記録が確認）。</p>
+<p><strong>本記録は開発元自身の公表文（リリースノート・セキュリティ勧告）を確認できなかった</strong>（未確定事項を参照）。<strong>GitHub 上の openPDC のリリース一覧（1ページ目）にも、2.9.477／2.9.482 の記載を見つけられなかった</strong>（齟齬2）。</p>
+<p><strong>本記録の立場は明確である</strong> —— <strong>これを「修正版が存在しない」証拠として扱わない。</strong> <strong>①確認したのは一覧の1ページ目だけであり、②開発元がインストーラを自社サイトで配布している可能性があり、③勧告は当局が開発元から得た情報として修正の提供を明記している。</strong></p>
+<p><strong>ただし実務上の結論は変わらない</strong> —— <strong>更新を担当する者は、修正版の入手先を自分で特定する必要がある。</strong> <strong>そして、入手先が1つに定まらない製品は、緊急の更新に時間がかかる。</strong></p>
+<p><strong>本記録が勧めるのは、脆弱性が出てからではなく平時に確認しておくことである</strong> —— <strong>自組織で動かしているオープンソース製品について、「誰が・どこから・どうやって更新を取ってくるか」を製品ごとに書いておく。</strong> <strong>これが無い製品は、公表の当日に探索から始めることになる。</strong></p></section>
+<div class="blk " id="s8"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>発覚の端緒</th><td>**①openPDC／openHistorian のサービスコンソールインタフェース （CVE-2026-100730）、②openPDC の内部データ公開インタフェース （CVE-2026-105281）、③openPDC の STTP ベースのデータ公開 インタフェース（CVE-2026-85479）、④公開 Docker イメージの 管理インタフェース（CVE-2026-105278）**（出典1）。 **①は Windows 認証を使っていない構成では認証不要、 ②③は既定の構成で認証不要、④は固定資格情報を知っていれば到達可能。** **⑤CVE-2026-101022（Modbus 接続機能）と ⑥CVE-2026-104629（コンポーネントのローダ）は認証済みの利用者を前提とする。**<span class="b rsn">stated</span></td></tr><tr><th>affected_products</th><td><div class=sub><b>名称:</b> Grid Protection Alliance openPDC　<b>condition:</b> バージョン 2.9.477 未満（CVE-2026-104629）／2.9.482 未満（他）　<b>CVE番号:</b> CVE-2026-100730　<b>vulnerability_type:</b> サービスコンソールにおける信頼できないデータのデシリアライズ（CWE-502）。CVSSv3.1 9.8／v4.0 9.3　<b>補足:</b> **Windows 認証を使っていない構成では、認証されていない ネットワーク上の攻撃者から到達可能**（出典1）—— **サービスアカウントの権限で遠隔コード実行に至り得る。** **修正は openPDC 2.9.482 以降・openHistorian 2.8.585 以降 （シリアライズ処理への検証の追加）。**</div><div class=sub><b>名称:</b> Grid Protection Alliance openPDC　<b>condition:</b> バージョン 2.9.482 未満（既定の構成の場合）　<b>CVE番号:</b> CVE-2026-105281　<b>vulnerability_type:</b> 内部データ公開インタフェースの認証の欠落（CWE-306）。CVSSv3.1 7.5／v4.0 8.7　<b>補足:</b> **既定の構成で認証なしの接続を受け付け、 装置および計測の完全なトポロジを取得できる**（出典1）。 **修正は「既定値をローカルループバックのみに束ねる」変更で、 新規導入にのみ適用される** —— **以前の版から更新した環境は従来の設定を保持する**（出典1）。</div><div class=sub><b>名称:</b> Grid Protection Alliance openPDC　<b>condition:</b> バージョン 2.9.482 未満（既定の構成の場合）　<b>CVE番号:</b> CVE-2026-85479　<b>vulnerability_type:</b> STTP ベースのデータ公開インタフェースの認証の欠落（CWE-306）。CVSSv3.1 5.3／v4.0 6.9　<b>補足:</b> **既定の構成で認証なしの接続を受け付け、 データの交換ができる**（出典1）。 **修正の性質は CVE-2026-105281 と同じ （既定値の変更・新規導入のみ適用）。**</div><div class=sub><b>名称:</b> Grid Protection Alliance openPDC　<b>condition:</b> バージョン 2.9.482 未満（認証済みの利用者が必要）　<b>CVE番号:</b> CVE-2026-101022　<b>vulnerability_type:</b> Modbus 接続機能のサーバサイドリクエストフォージェリ（CWE-918）。CVSSv3.1 4.3／v4.0 5.3　<b>補足:</b> **任意の宛先アドレスとポートを受け付け、 認証済みの利用者が内部のホストを探索できる**（出典1）。 **勧告にベンダー修正の記載は無く、 ファイアウォールによる制限が示されている。**</div><div class=sub><b>名称:</b> Grid Protection Alliance openPDC（公開 Docker イメージ）　<b>condition:</b> バージョン 2.9.477 未満・2.9.482 未満（イメージ限定）　<b>CVE番号:</b> CVE-2026-105278　<b>vulnerability_type:</b> ハードコードされた資格情報の使用（CWE-798）。CVSSv3.1 9.8／v4.0 9.3　<b>補足:</b> **公開されている openPDC の Docker イメージに、 変更を強制されない固定の管理者資格情報が含まれる**（出典1）—— **管理インタフェースにネットワーク到達できる者に 完全な管理権限を与える。** **対処は「修正の予定は無い」。** **開発元は公開 Docker イメージの本番利用を推奨していない。** **本記録の整理** —— **この CVE は Docker イメージのみに 付与されており、通常のインストールには該当しない**（出典1）。</div><div class=sub><b>名称:</b> Grid Protection Alliance openHistorian　<b>condition:</b> バージョン 2.8.580 未満（CVE-2026-104629）／2.8.585 未満（他）　<b>CVE番号:</b> CVE-2026-104629　<b>vulnerability_type:</b> 安全でないリフレクション（CWE-470）。CVSSv3.1 8.8／v4.0 7.7　<b>補足:</b> **コンポーネントのローダが指定された任意の型を構築する**（出典1）—— **ホスト上にファイルを配置できる認証済みの利用者が、 サービスアカウントの権限で任意のコンストラクタのコードを 実行できる。** **修正は openPDC 2.9.477 以降・openHistorian 2.8.580 以降 （アダプタの検証と整合性の確認の追加）。** **この CVE は openPDC・openHistorian の双方に該当する。**</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> openPDC は 2.9.482 以降、openHistorian は 2.8.585 以降へ更新する　<b>副作用:</b> **本記録の評価** —— **openPDC は計測データを連続して集約する 位置にあり、更新中はデータの欠落が生じる。** **広域監視の表示と、保管される時系列データの双方に 空白の区間が残るため、更新の時刻を記録しておかないと 後の分析で「異常」と誤読される。** **また 2.9.477 までしか上げないと、 デシリアライズによる認証不要の遠隔コード実行 （CVE-2026-100730）が残る**（出典1）。　<b>補足:</b> **修正版が2段ある点に注意する**（出典1）—— **CVE-2026-104629 のみ 2.9.477／2.8.580 で修正され、 CVE-2026-100730 は 2.9.482／2.8.585 で修正される。**</div><div class=sub><b>数え方:</b> データ公開インタフェースの待ち受けアドレスを確認し、 ループバックのみに束ねる（更新しても自動では変わらない）　<b>副作用:</b> **本記録の評価** —— **同一ホスト以外からデータを購読している 下流の処理（可視化・解析・別の保管基盤・他拠点の集約）が あれば、その経路が切れる。** **変更の前に購読側の一覧を作る必要がある。** **一覧が無い環境では、束ねた直後に下流が静かに止まる （エラーではなくデータが来ないだけの形になり得る）。**　<b>補足:</b> **勧告が運用者に明示的に求めている確認**（出典1）—— **既定値の変更は新規導入にのみ適用され、 更新した既存環境は従来の設定を保持する。**</div><div class=sub><b>数え方:</b> 公開 Docker イメージを本番で使わない（開発元の方針）　<b>副作用:</b> **本記録の評価** —— **コンテナで運用している環境は、 自前でイメージを構築するか、運用形態を変える必要がある。** **どちらも作業量が大きく、検証環境・試験導入として イメージを使っていた場合は、その環境の扱いも決める必要がある （試験環境が本番ネットワークに接続していることは珍しくない）。**　<b>補足:</b> **CVE-2026-105278 は「修正の予定は無い」とされ、 他の5件についても Docker イメージへは修正が公開されていない** （出典1）—— **更新による解決の経路が無い。**</div><div class=sub><b>数え方:</b> Modbus へのアクセスをファイアウォールで制限し、 明示的に必要でない限りループバックおよび RFC 1918 の私的アドレス範囲への接続を遮断する　<b>副作用:</b> **本記録の評価** —— **正当な Modbus の接続先が 私的アドレス範囲にある構成（多くの制御系がそうである）では、 必要な宛先を個別に許可する運用が要る。** **許可一覧の維持を怠ると、装置の増設時に 「つながらない」原因として現れる。**　<b>補足:</b> **CVE-2026-101022 に対して勧告が示した唯一の対処**（出典1）。</div><div class=sub><b>数え方:</b> Windows 認証を有効にする（CVE-2026-100730 の到達条件を上げる）　<b>副作用:</b> **本記録の評価** —— **認証の導入は、運用の自動化 （スクリプトからの操作・監視からの参照）に 資格情報の管理を持ち込む。** **資格情報を設定ファイルに平文で置く形に逃げると、 別の露出を作ることになる。**　<b>補足:</b> **勧告は「Windows 認証を使用しているシステムは 追加的に保護されている」としている**（出典1）—— **脆弱性が消えるのではなく、到達に認証が要るようになる。**</div></td></tr><tr><th>exploitation_status</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月8日（勧告公表時点）　<b>補足:</b> **「本勧告に記載された脆弱性を具体的に標的とした 公開された悪用は、現時点で CISA に報告されていない」** （出典1。原文英語の要旨。本記録が訳した）。 **本記録の注記** —— **公表後の状況（PoC の公開、 CISA KEV への収載、実際の悪用の観測）は確認していない** （未確定事項を参照）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s9"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA が ICS 勧告 ICSA-26-281-02 「Grid Protection Alliance openPDC and openHistorian」を公表した** （出典1。本記録が直接取得）—— **6件の CVE を扱い、影響製品は openPDC（2.9.477 未満・2.9.482 未満）、 openPDC の公開 Docker イメージ（同・CVE-2026-105278 が追加）、 openHistorian（2.8.580 未満・2.8.585 未満）。** **重要インフラ部門はエネルギー、配備地域は世界規模、 開発元の本社所在地は米国。** **悪用の報告は無いとしている。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が現況を確認した。** **確認できたこと** —— **①CISA の勧告ページは現在も参照でき、 6件の CVE ごとに CVSSv3.1／v4.0 の値、弱点の分類、 開発元の対応（修正あり／既定値変更／修正予定なし）が 記載されている、②勧告には開発元の配布ページ・ リポジトリへのリンクが無く、外部リンクは CSAF 形式の 同一勧告と CVE／CWE／CVSS 計算機のみである。** **確認できなかったこと** —— **①開発元自身の公表文 （リリースノート・セキュリティ勧告）、 ②GitHub の openPDC のリリース一覧（1ページ目）に 2.9.477／2.9.482 の記載が見当たらないこと（齟齬2を参照）、 ③CISA KEV への収載状況、④日本語での注意喚起の有無。**</td></tr></tbody></table></div></div>
+<div id="s10"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>勧告の要約欄の「5 Vulnerabilities」は CVE の件数ではない</span><div class=sm>**勧告の要約欄は「5 Vulnerabilities」と表示し、 弱点の種類を5つ列挙している**（出典1。本記録が確認）—— **デシリアライズ／重要機能の認証の欠落／SSRF／ ハードコードされた資格情報／安全でないリフレクション。** **一方、個別に記載された CVE は6件ある** —— **CVE-2026-100730・CVE-2026-105281・CVE-2026-85479・ CVE-2026-101022・CVE-2026-105278・CVE-2026-104629。** **本記録の整理** —— **食い違いではなく、数えている対象が違う** （本記録の読み）—— **CVE-2026-105281 と CVE-2026-85479 がどちらも CWE-306 であるため、 6件の CVE が5種の分類に収まる。** **実務上の注意** —— **「5件」と数えると、 Docker イメージ限定の CVE-2026-105278 を落とす可能性がある。** **台帳には CVE 番号で6件登録すること。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>修正版 2.9.477／2.9.482 を、本記録は配布元で確認できていない</span><div class=sm>**本記録は、GitHub 上の openPDC のリリース一覧を確認したが、 1ページ目に 2.9.477 および 2.9.482 の記載を見つけられなかった** （2026年10月9日時点。本記録の明示）—— **一覧の先頭付近にあったのは v2.9.318（事前公開）と v2.9.148（「最新」の印つき）であった。** **本記録の立場** —— **これを「修正版が存在しない」証拠として 扱わない。** **理由は3つある** —— **①確認したのは一覧の1ページ目だけで、2ページ目以降を見ていない、 ②開発元が配布に使う場所が GitHub のリリース機能でない可能性がある （インストーラを自社サイトで配布する作りはよくある）、 ③勧告（出典1）は開発元が修正を提供したと明記しており、 これは当局が開発元から得た情報である。** **実務上の意味** —— **更新を担当する者は、 修正版の入手先を自分で特定する必要がある。** **「GitHub のリリース一覧に無い」ことを理由に 更新を保留しないこと。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CVSSv3.1 と v4.0 で深刻度の順位が入れ替わる</span><div class=sm>**勧告は各 CVE に CVSSv3.1 と v4.0 の両方を併記している**（出典1）。 **順位が入れ替わる例が2つある**（本記録が照合）—— **①CVE-2026-105281（内部データ公開インタフェースの認証欠落）は v3.1 で 7.5（高）だが v4.0 では 8.7（高）、 ②CVE-2026-104629（安全でないリフレクション）は v3.1 で 8.8（高）だが v4.0 では 7.7（高）。** **v3.1 では ②＞① だが、v4.0 では ①＞② になる。** **本記録の整理** —— **CVSSv4.0 は後続システムへの影響 （SC／SI／SA）を評価軸に持つため、 認証なしで情報が読み出せる類型の値が上がりやすい**（本記録の読み）。 **実務上の注意** —— **どちらの版で優先度を語っているかを 社内で揃えておかないと、同じ勧告を読んだ2人が 別の順番で作業することになる。** **本記録は、順位ではなく「認証が要るか」で並べることを勧める （本文の第1節を参照）。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s11"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証の要否で3層に分かれる6件の脆弱性と、計測の集約点に至る経路</div><div class=svgwrap><svg viewBox="0 0 1202 500" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,250.0 C193.0,250.0 193.0,97.0 220,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,250.0 C193.0,250.0 193.0,199.0 220,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,250.0 C193.0,250.0 193.0,301.0 220,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,250.0 C193.0,250.0 193.0,403.0 220,403.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,97.0 C499.0,97.0 499.0,125.0 628,125.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,199.0 C499.0,199.0 499.0,213.0 628,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,301.0 C499.0,301.0 499.0,301.0 628,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,403.0 C499.0,403.0 499.0,301.0 628,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,213.0 C601.0,213.0 601.0,199.0 424,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,213.0 C601.0,213.0 601.0,301.0 424,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,199.0 C601.0,199.0 601.0,125.0 628,125.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,301.0 C601.0,301.0 601.0,382.0 628,382.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,125.0 C805.0,125.0 805.0,206.0 832,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,125.0 C805.0,125.0 805.0,294.0 832,294.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C703.0,60.0 703.0,97.0 220,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C805.0,60.0 805.0,199.0 424,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C703.0,162.0 703.0,301.0 220,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C703.0,162.0 703.0,403.0 220,403.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,257.0 C703.0,257.0 703.0,199.0 220,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,352.0 C805.0,352.0 805.0,301.0 424,301.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,447.0 C1009.0,447.0 1009.0,294.0 832,294.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="213.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インタフェースに到達でき</text><text x="91.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">るホスト</text><text x="91.0" y="262.0" text-anchor="middle" fill="#f48fb1" font-size="10">6件のうち4件は認証を必</text><text x="91.0" y="274.0" text-anchor="middle" fill="#f48fb1" font-size="10">要としない（出典1）</text><rect x="220" y="53.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サービスコンソールのデシ</text><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リアライズ（CVE-20</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26-100730・9…</text><text x="295.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">Windows 認証を使</text><text x="295.0" y="128.0" text-anchor="middle" fill="#f48fb1" font-size="10">っていない構成では認証不</text><rect x="220" y="155.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開 Docker イメ</text><text x="295.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ージの固定管理者資格情報</text><text x="295.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（CVE-2026-1…</text><text x="295.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正の予定なし。開発元は</text><text x="295.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10">本番利用を推奨しない（出</text><rect x="220" y="257.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部データ公開インタフェ</text><text x="295.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ースの認証欠落（CVE-</text><text x="295.0" y="307.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026-105281…</text><text x="295.0" y="320.0" text-anchor="middle" fill="#f48fb1" font-size="10">既定の構成。修正は既定値</text><text x="295.0" y="332.0" text-anchor="middle" fill="#f48fb1" font-size="10">の変更で、更新環境には引</text><rect x="220" y="359.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="381.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">STTP データ公開イン</text><text x="295.0" y="395.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タフェースの認証欠落（C</text><text x="295.0" y="409.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VE-2026-854…</text><text x="295.0" y="422.0" text-anchor="middle" fill="#f48fb1" font-size="10">既定の構成。修正の性質は</text><text x="295.0" y="434.0" text-anchor="middle" fill="#f48fb1" font-size="10">上と同じ（出典1）</text><rect x="424" y="155.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">安全でないリフレクション</text><text x="499.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（CVE-2026-10</text><text x="499.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4629・8.8）</text><text x="499.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証済みかつホスト上にフ</text><text x="499.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10">ァイルを置けることが条件</text><rect x="424" y="257.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Modbus 接続機能の</text><text x="499.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> SSRF（CVE-20</text><text x="499.0" y="307.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26-101022・4…</text><text x="499.0" y="320.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証済みの利用者。ベンダ</text><text x="499.0" y="332.0" text-anchor="middle" fill="#f48fb1" font-size="10">ー修正の記載なし（出典1</text><rect x="628" y="88.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サービスアカウント権限で</text><text x="703.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のコード実行</text><text x="703.0" y="137.0" text-anchor="middle" fill="#64b5f6" font-size="10">デシリアライズとリフレク</text><text x="703.0" y="149.0" text-anchor="middle" fill="#64b5f6" font-size="10">ションの到達点（出典1）</text><rect x="628" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">完全な管理権限（Dock</text><text x="703.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">er イメージ経路）</text><text x="703.0" y="225.0" text-anchor="middle" fill="#64b5f6" font-size="10">管理インタフェースに到達</text><text x="703.0" y="237.0" text-anchor="middle" fill="#64b5f6" font-size="10">できる者に与えられる（出</text><rect x="628" y="264.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">装置および計測の完全なト</text><text x="703.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ポロジ</text><text x="703.0" y="313.0" text-anchor="middle" fill="#ffcc80" font-size="10">認証なしで取得できる。そ</text><text x="703.0" y="325.0" text-anchor="middle" fill="#ffcc80" font-size="10">れ自体が情報である（出典</text><rect x="628" y="352.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="374.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部ネットワークの地図</text><text x="703.0" y="387.0" text-anchor="middle" fill="#ffcc80" font-size="10">openPDC 自身に内</text><text x="703.0" y="399.0" text-anchor="middle" fill="#ffcc80" font-size="10">部へ接続させて作る（出典</text><rect x="832" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">広域監視が運用者に見せて</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いる景色</text><text x="907.0" y="218.0" text-anchor="middle" fill="#ffcc80" font-size="10">公表資料に記載なし。改変</text><text x="907.0" y="230.0" text-anchor="middle" fill="#ffcc80" font-size="10">は持ち出しを伴わないため</text><rect x="832" y="257.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">保管された時系列データ（</text><text x="907.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">事後分析の土台）</text><text x="907.0" y="306.0" text-anchor="middle" fill="#ffcc80" font-size="10">公表資料に記載なし（本記</text><text x="907.0" y="318.0" text-anchor="middle" fill="#ffcc80" font-size="10">録の評価）</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2.9.482／2.8.</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">585 へ更新（2.9.</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">477 では足りない）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">CVE-2026-100</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">730・104629 に</text><rect x="1036" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">データ公開インタフェース</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">をループバックに束ねる（</text><text x="1111.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実測で確認）</text><text x="1111.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">更新では自動で変わらない</text><text x="1111.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">。運用者が明示的に確認す</text><rect x="1036" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開 Docker イメ</text><text x="1111.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ージを本番で使わない</text><text x="1111.0" y="269.0" text-anchor="middle" fill="#64b5f6" font-size="10">開発元の方針。更新による</text><text x="1111.0" y="281.0" text-anchor="middle" fill="#64b5f6" font-size="10">解決の経路が無いため（出</text><rect x="1036" y="308.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Modbus の宛先制限</text><text x="1111.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（ループバック・RFC </text><text x="1111.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1918 を遮断）</text><text x="1111.0" y="371.0" text-anchor="middle" fill="#64b5f6" font-size="10">CVE-2026-101</text><text x="1111.0" y="383.0" text-anchor="middle" fill="#64b5f6" font-size="10">022 に対して勧告が示</text><rect x="1036" y="410.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="432.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">時系列データの書き換え不</text><text x="1111.0" y="446.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">可な複製</text><text x="1111.0" y="459.0" text-anchor="middle" fill="#64b5f6" font-size="10">公表資料に記載なし。改変</text><text x="1111.0" y="471.0" text-anchor="middle" fill="#64b5f6" font-size="10">の有無を突き合わせる手（</text></svg></div><div class=fn>layer 0 は起点——openPDC／openHistorian のインタフェースに 到達できる位置。layer 1 は認証を必要としない4つの入口。 layer 2 は認証済みの利用者を前提とする2つの経路。 layer 3 は到達する権限と情報。layer 4 は本記録が評価した帰結 （公表資料に記載なし）。layer 5 は防御の手。 **実線は攻撃の経路、防御側のノードへ向かう線は適用できる手を示す。** **本図は勧告が示した成立条件と影響から本記録が構成したもので、 実際に観測された攻撃の記録ではない。**</div></div></div>
+<div class="blk " id="s12"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**勧告は検知について述べていない**（本記録が確認）。 **本記録の評価** —— **この段階は、防御側が自組織の側から 確実に確認できる。** **データ公開インタフェースの待ち受けアドレスが ループバックに束ねられているか、 全インタフェースで受け付けているかを見れば、 攻撃を待たずに露出の有無が確定する。** **勧告自身が運用者に求めているのもこの確認である**（出典1）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>openPDC／openHistorian のデータ公開インタフェースの 待ち受けアドレスを確認し、ループバックのみに束ねる<span class=sm>　**勧告が運用者に明示的に求めている確認**（出典1）—— **「運用者は自環境の設定を明示的に確認し、 全インタフェースで接続を受け付ける設定のままであれば インタフェースの束ね先を変更すべきである」 （原文英語。本記録が訳した）。** **副作用** —— **同一ホスト以外からデータを購読している 下流の処理（可視化・解析・別の保管基盤）があると、 その経路が切れる**（本記録の評価）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>制御系ネットワークをファイアウォールの背後に置き、 業務ネットワークから分離する<span class=sm>　**CISA が一般的な緩和として挙げているもの**（出典1）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**勧告は検知について述べていない**（本記録が確認）。 **本記録の評価** —— **②の固定資格情報による接続は、 正当なログインと区別がつかない。** **残るのは「どこから接続したか」だけであり、 管理インタフェースへの到達元を限定していない環境では 検知の手がかりが無い。** **①のデシリアライズについては、サービスの異常終了・ 再起動が痕跡として残り得るが、 勧告はこれに言及していない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>openPDC は 2.9.482 以降、openHistorian は 2.8.585 以降へ更新する<span class=sm>　**CVE-2026-100730 に対する開発元の修正**（出典1）—— **「シリアライズの処理に追加の検証を入れた」。** **2.9.477／2.8.580 では足りない**（それで直るのは CVE-2026-104629 のみ。出典1）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>Windows 認証を有効にする<span class=sm>　**勧告は「Windows 認証を使用しているシステムは 追加的に保護されている。攻撃者がこの機能に到達するには 既に認証されている必要があるため」としている** （出典1。原文英語。本記録が訳した）。 **本記録の評価** —— **これは脆弱性を消す手ではなく、 攻撃者に認証の壁を1つ課す手である。** **認証済みの内部利用者・資格情報を奪われた場合は効かない。**</span></div><div class=ctl><span class="b eff">侵入を防げた</span>公開 Docker イメージを本番で使わない<span class=sm>　**開発元自身の方針**（出典1）—— **「開発元は公開している Docker イメージの本番利用を いかなる場合も推奨しない」。** **副作用** —— **コンテナで運用している環境は、 配布物の作り直し（自前のイメージ構築）または 運用形態の変更が必要になる**（本記録の評価）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**本記録の評価** —— **認証の無いインタフェースへの接続は、 認証ログに残らない。** **検知は接続の記録（接続元アドレスと時刻）に依存するが、 勧告はこの機能がどこまで記録を残すかに言及していない** （本記録が確認）。 **現実的な手は、検知ではなく到達性の遮断である。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>データ公開インタフェースの待ち受けをループバックに束ね、 更新後も既定値が引き継がれていないことを実測で確認する<span class=sm>　**既定値の変更は新規導入にのみ適用される**（出典1）—— **更新した環境では利用者側で変更しないと残る。** **副作用** —— **下流で購読している処理の経路が切れる （上記と同じ）。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**本記録の評価** —— **この経路は「ファイルを置ける」ことが 条件であり、ファイルシステムの変更監視が検知の手になり得る。** **勧告は検知に言及していない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>アダプタ・コンポーネントの配置先ディレクトリへの 書き込み権限を限定し、変更を監視する</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版（openPDC 2.9.477 以降／openHistorian 2.8.580 以降）へ更新する</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">公表されていない</span><div class=sm>**本記録の評価** —— **openPDC から出ていく接続の宛先を 記録していれば、通常と異なる宛先・ポートへの試行として 現れる。** **勧告は記録の有無に言及していない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>Modbus へのアクセスをファイアウォールで制限し、 明示的に必要でない限りループバックおよび RFC 1918 の 私的アドレス範囲への接続を遮断する<span class=sm>　**勧告が示した対処**（出典1）—— **この CVE にはベンダー修正の記載が無く、 示されているのはこの構成上の制限だけである。** **副作用** —— **正当な Modbus 接続先が私的アドレス範囲に ある場合、例外として個別に許可する運用が必要になる** （本記録の評価）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span></td><td><div class=ctl><span class="b eff">影響を限定できた</span>計測データの保管基盤の記録を、別の基盤へ 書き換え不可の形で複製する<span class=sm>　**本記録の評価** —— **計測の改変は、同じ系の中だけを 見ていると検出できない。** **独立した複製があれば、改変の有無を突き合わせられる。**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s14"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>脆弱性対応の完了判定を「版番号」から「設定の実測値」へ 広げる規則を置く</div><div class=lw>**本件の2件（CVE-2026-105281・CVE-2026-85479）の修正は 「既定値をローカルループバックのみに束ねる」変更であり、 新規導入にしか適用されない**（出典1）—— **以前の版から更新した環境は従来の設定を保持し、 新しい既定値を自動では受け取らない。** **勧告は運用者に対し、設定を明示的に確認するよう求めている。** **本記録の評価** —— **「最新版へ更新済み」という台帳の記録が、 この2件については対策の完了を意味しない。** **既定値の変更で直す形の修正は珍しくなく、 版番号だけを見る運用はこの類型を取りこぼす。**</div><div class=la><b>取るべき行動</b> **①脆弱性対応の完了条件に「設定の実測値」の欄を追加する。** 版番号だけで閉じられない案件を識別できるようにする。 **②勧告・公報を読む担当者に、 「修正の性質（コードの修正か／既定値の変更か／ 構成上の回避か）」を記録させる。** **③本件については、更新の有無に関わらず データ公開インタフェースの待ち受けアドレスを 実測して報告させる。**</div></li><li><div class=lp>「修正が出ない」と宣言された配布物を、資産台帳で 別扱いにする</div><div class=lw>**CVE-2026-105278（公開 Docker イメージの固定管理者資格情報・ CVSSv3.1 9.8）について、勧告は「修正の予定は無い」とし、 開発元は公開 Docker イメージの本番利用を推奨していない** （出典1）—— **他の5件についても、Docker イメージへは修正が公開されていない。** **本記録の評価** —— **これは「対応を待つ」案件ではなく 「配布物の選択を変える」案件である。** **通常の脆弱性管理の流れ（検出→更新→完了）に乗せると、 いつまでも未完了のまま残り、 やがて例外として黙認されるようになる。**</div><div class=la><b>取るべき行動</b> **①資産台帳に「開発元が修正を提供しない配布物」の区分を設け、 通常の更新待ちと分ける。** **②この区分に入ったものは、 「代替の配布物へ移す」「運用形態を変える」「使用をやめる」の いずれかを期限付きで決める案件として扱う。** **③本件については、公開 Docker イメージで openPDC を 動かしている環境（本番・検証を問わず）の有無を確認させる。** 検証環境が本番ネットワークに接続していることは珍しくない。</div></li><li><div class=lp>オープンソース製品ごとに「誰が・どこから・どうやって 更新を取るか」を平時に書いておく</div><div class=lw>**CISA の勧告には、開発元の配布ページ・リポジトリへの リンクが無い**（出典1。本記録が確認）。 **本記録は開発元自身の公表文を確認できず、 GitHub のリリース一覧（1ページ目）にも 修正版の記載を見つけられなかった**（齟齬2・未確定事項）。 **本記録の評価** —— **修正版が存在しないという結論ではない。** **しかし「入手先が勧告から辿れない」ことは事実であり、 公表当日に探索から始める運用では、 更新の着手が半日から数日遅れる。** **商用製品では保守窓口が入手先を兼ねるが、 オープンソース製品にはその経路が無いことがある。**</div><div class=la><b>取るべき行動</b> **①自組織で動かしているオープンソース製品の一覧を作り、 製品ごとに「更新の責任者」「配布元の URL」 「入手と検証の手順」を書いておく。** **②書けない製品（配布元が特定できない・責任者がいない）を 洗い出し、それ自体をリスクとして扱う。** **③本件については、修正版 2.9.482／2.8.585 の入手先の 特定を担当者に割り当て、所要時間を記録させる。** 次回の指標になる。</div></li><li><div class=lp>計測・監視の基盤を「制御系かどうか」で分類せず、 監視対象に入れる</div><div class=lw>**以下は本記録の評価であり、公表資料に記載のある内容ではない。** **openPDC は制御をしない** —— **遮断器を動かすのは保護リレーであり、別の経路にある。** **しかし openPDC は、系統の広域監視へ渡す計測データの 集約点にある。** **握られたときに起こるのは「制御の奪取」ではなく 「運用者が見ている景色の汚染」であり、 データの持ち出しを伴わないため 漏えいを前提とした検知の網にかからない。** **分類上「制御系ではない」ために監視の網から外れやすい位置である。**</div><div class=la><b>取るべき行動</b> **①資産の分類に「判断の入力になる系」という観点を加え、 計測・監視・ログ集約の基盤をここに入れる。** **②この区分には、制御系と同じ水準の到達性制限と 記録の外部保全を求める。** **③計測データの保管基盤について、 別の基盤への書き換え不可な複製があるかを確認させる。** 無ければ、改変の有無を後から検証する手段が無い。</div></li></ul></div></div>
+<div id="s15"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>更新の前後で、データ公開インタフェースの待ち受けアドレスを 実測する</div><div class=lw>**CVE-2026-105281 と CVE-2026-85479 の修正は 「既定値をローカルループバックのみに束ねる」変更で、 新規導入にのみ適用される**（出典1）—— **更新した環境は従来の設定を保持する。** **勧告は「運用者は自環境の構成を明示的に確認し、 全インタフェースで接続を受け付ける設定のままであれば インタフェースの束ね先を変更すべきである」としている** （原文英語。本記録が訳した）。 **本記録の評価** —— **設定ファイルの記述を読むだけでは足りない。** **実際に待ち受けているアドレスを、 稼働中のプロセスの状態として見る必要がある （設定と実際の挙動がずれることがある）。**</div><div class=la><b>取るべき行動</b> **①稼働中の openPDC／openHistorian で、 データ公開インタフェースが待ち受けているアドレスを プロセスの状態から取得する。** **②ループバック以外で待ち受けている場合、 別ホストから当該ポートへの到達試験を行って露出を確認する。** **③ループバックに束ねる前に、 同一ホスト以外からデータを購読している下流の処理を 一覧にする。** 束ねた後にデータが来なくなる形 （エラーにならない）で下流が止まることがある。</div></li><li><div class=lp>目標の版を 2.9.482／2.8.585 に固定する（2.9.477 で止めない）</div><div class=lw>**勧告の影響バージョンの記載は「2.9.477 未満、2.9.482 未満」 という2段になっている**（出典1）—— **CVE-2026-104629（安全でないリフレクション）だけが openPDC 2.9.477 以降・openHistorian 2.8.580 以降で修正され、 CVE-2026-100730（デシリアライズ・CVSSv3.1 9.8）は openPDC 2.9.482 以降・openHistorian 2.8.585 以降で修正される。** **本記録の評価** —— **2.9.477 へ上げた環境は、 認証不要の遠隔コード実行が残った状態で 「更新済み」と記録される危険がある。**</div><div class=la><b>取るべき行動</b> **①更新計画の目標版を openPDC 2.9.482 以降・ openHistorian 2.8.585 以降と明記する。** **②中間の版（2.9.477／2.8.580）で止まった場合は 「部分対応」として記録し、未対応の CVE 番号を残す。** **③更新の作業記録に、適用後の版番号を実測値で残す。**</div></li><li><div class=lp>Windows 認証の有無を、脆弱性の成立条件として確認する</div><div class=lw>**CVE-2026-100730 の記述は条件分岐している**（出典1。 原文英語。本記録が訳した）—— **「Windows 認証を使用しているシステムでは、 攻撃者はこの機能に到達するために既に認証されている 必要があるが、Windows 認証を使用していないシステムでは、 認証されていないネットワーク上の攻撃者から到達可能である。」** **本記録の評価** —— **同じ CVE が、構成によって 「認証不要の遠隔コード実行」と 「認証済み利用者による遠隔コード実行」に分かれる。** **緊急度が大きく違うため、自環境がどちらかを 先に確定させるべきである。**</div><div class=la><b>取るべき行動</b> **①openPDC／openHistorian の各ノードで Windows 認証の構成を確認する。** **②使っていないノードを「認証不要で成立する」側として 優先度を上げ、更新までの間は サービスコンソールへの到達元を限定する。** **③Windows 認証を導入する場合、 自動化（スクリプト・監視からの参照）で使う資格情報を 設定ファイルに平文で置かない設計にする。** 別の露出を作ることになる。</div></li><li><div class=lp>公開 Docker イメージで動かしている環境を、本番・検証を問わず洗い出す</div><div class=lw>**CVE-2026-105278 は公開 Docker イメージにのみ付与されており、 変更を強制されない固定の管理者資格情報が含まれる**（出典1）—— **管理インタフェースにネットワーク到達できる者に 完全な管理権限を与え、修正の予定は無い。** **他の5件についても、イメージへは修正が公開されていない。** **本記録の評価** —— **この経路は、悪用に技術的な解析を要しない。** **資格情報が公開のイメージから読み取れる形であれば、 PoC の公開という段階を経ずに使われ得る。** **「悪用未確認」を猶予と読まないこと。**</div><div class=la><b>取るべき行動</b> **①コンテナ基盤のイメージ一覧から openPDC のイメージを検索し、 稼働中のコンテナ（本番・検証・一時的な動作確認を含む）を特定する。** **②該当があれば、管理インタフェースへの到達元を 即時に限定する（固定資格情報は変更を強制されないため、 到達性を削ることが唯一の手になる）。** **③恒久対応として、自前イメージの構築か 通常インストールへの移行を計画する。**</div></li><li><div class=lp>openPDC から出ていく接続の宛先を記録し、 Modbus の宛先制限を入れる</div><div class=lw>**CVE-2026-101022 は、Modbus 接続機能が任意の宛先アドレスと ポートを受け付けるサーバサイドリクエストフォージェリである** （出典1）—— **認証済みの利用者が内部のホストを探索でき、 内部ネットワークの地図を作れる可能性がある。** **勧告にベンダー修正の記載は無く、示されているのは 「Modbus へのアクセスをファイアウォールで制限し、 明示的に必要でない限りループバックおよび RFC 1918 の 私的アドレス範囲への接続を遮断する」という構成上の制限だけである。** **本記録の評価** —— **制御系では、openPDC から出ていく接続は ファイアウォールの許可側に当たることが多く、 この経路は既存の許可を流用する形になる。**</div><div class=la><b>取るべき行動</b> **①openPDC が発信する接続の宛先を記録する設定にする （記録が無いと、探索の試行が痕跡を残さない）。** **②正当な Modbus の接続先を一覧にし、 それ以外の私的アドレス範囲・ループバックへの接続を遮断する。** **③装置の増設時に許可一覧を更新する手順を 運用手順書に入れる。** 更新を怠ると 「つながらない」原因として現れる。</div></li></ul></div></div>
+<div class="blk " id="s16"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Grid Protection Alliance openPDC を 2.9.482 未満、 または openHistorian を 2.8.585 未満で運用している</td><td class=sm>**勧告が挙げた影響バージョンにそのまま該当する**（出典1。 本記録が直接確認）。 **本記録の整理** —— **影響バージョンの記載は2段 （2.9.477 未満・2.9.482 未満）になっており、 CVE ごとに修正版が違う**（出典1）—— **2.9.477 へ上げただけでは、認証不要の遠隔コード実行 （CVE-2026-100730・CVSSv3.1 9.8）が残る。** 該当する場合は、目標版を 2.9.482／2.8.585 に固定し、 中間の版で止まった場合は未対応の CVE を記録に残す立場にある。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> openPDC／openHistorian を Windows 認証を使わない構成で 運用している</td><td class=sm>**CVE-2026-100730 の成立条件がここで分かれる**（出典1）—— **「Windows 認証を使用していないシステムでは、 認証されていないネットワーク上の攻撃者から到達可能である」 （原文英語。本記録が訳した）。** **本記録の評価** —— **同じ CVE が、構成によって 「認証不要の遠隔コード実行」と「認証済み利用者による 遠隔コード実行」に分かれる。** 該当する場合は優先度を上げ、更新までの間は サービスコンソールへの到達元を限定する判断対象になる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> openPDC／openHistorian を以前の版から更新した環境がある （新規導入ではない）</td><td class=sm>**データ公開インタフェースの既定値の修正は 新規導入にのみ適用され、更新した環境は従来の設定を保持する** （出典1）。 **本記録の評価** —— **「更新済み」という記録が、 CVE-2026-105281・CVE-2026-85479 については 対策の完了を意味しない。** 該当する場合は、版番号ではなく待ち受けアドレスの実測値で 完了を判定する必要がある。 **設定ファイルの記述ではなく、稼働中のプロセスの状態で見ること。**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> openPDC を公開されている Docker イメージで動かしている （本番・検証・一時的な動作確認を含む）</td><td class=sm>**CVE-2026-105278（固定の管理者資格情報・CVSSv3.1 9.8）は このイメージにのみ該当し、対処は「修正の予定は無い」である** （出典1）—— **他の5件についても、イメージへは修正が公開されていない。** **開発元は公開 Docker イメージの本番利用を いかなる場合も推奨していない。** **本記録の評価** —— **該当する場合、更新による解決の経路が無い。** 管理インタフェースへの到達元の限定が当面の唯一の手になり、 恒久的には配布物の選択を変える案件として扱う立場にある。 **検証環境が本番ネットワークに接続している構成では、 検証環境も対象に含める必要がある。**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> openPDC の Modbus 接続機能を使っており、 同ホストから私的アドレス範囲へ接続できる</td><td class=sm>**CVE-2026-101022（SSRF）にベンダー修正の記載は無く、 勧告が示すのは「ファイアウォールで Modbus へのアクセスを制限し、 明示的に必要でない限りループバックおよび RFC 1918 の 私的アドレス範囲への接続を遮断する」という構成上の制限だけである** （出典1）。 **本記録の評価** —— **制御系では openPDC からの発信が ファイアウォールの許可側に当たることが多く、 この経路は既存の許可を流用する形になる。** 該当する場合は、正当な接続先の一覧を作り、 それ以外を遮断する構成変更の対象になる。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 計測の時系列データを openHistorian にのみ保持しており、 別の基盤への書き換え不可な複製を持っていない</td><td class=sm>**以下は本記録の評価であり、公表資料に記載のある内容ではない。** **サービスアカウントの権限でコードが動く状態 （CVE-2026-100730・CVE-2026-104629）では、 保管済みのデータも操作の対象になり得る。** **計測データの改変は、持ち出しを伴わないため 漏えいを前提とした検知にかからず、 同じ系の中だけを見ていると検出できない。** 該当する場合は、事後の分析（事故解析・需給の検証・ 制度上の報告）の土台を保全する手段を持たない状態にある。</td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>出典</h3><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月8日 Cybersecurity and Infrastructure Security Agency（CISA・米国）</span> <a href="https://www.cisa.gov/news-events/ics-advisories/icsa-26-281-02" target="_blank" rel="noreferrer noopener nofollow">ICS Advisory ICSA-26-281-02 - Grid Protection Alliance openPDC and openHistorian</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**本記録が直接取得して裏を取った、本件の一次資料。** **確認したのは——①勧告ID（ICSA-26-281-02）と公表日 （2026年10月8日）、②影響製品とバージョン （openPDC 2.9.477 未満・2.9.482 未満／同 Docker イメージ／ openHistorian 2.8.580 未満・2.8.585 未満）、 ③6件の CVE ごとの説明・CVSSv3.1 と v4.0 の値・弱点の分類 （CVE-2026-100730 CWE-502 9.8／9.3、 CVE-2026-105281 CWE-306 7.5／8.7、 CVE-2026-85479 CWE-306 5.3／6.9、 CVE-2026-101022 CWE-918 4.3／5.3、 CVE-2026-105278 CWE-798 9.8／9.3、 CVE-2026-104629 CWE-470 8.8／7.7）、 ④開発元の対応（修正の提供／既定値の変更が新規導入のみ適用される こと／Docker イメージは修正予定なし・本番利用を推奨しない）、 ⑤Modbus の SSRF に対するファイアウォールでの制限の勧め、 ⑥報告者（Causal Security の Shubham Raj〈Cipher〉が CISA に報告）、 ⑦重要インフラ部門（エネルギー）・配備地域（世界規模）・ 開発元の本社所在地（米国）、 ⑧悪用の報告が無いこと、 ⑨CISA の一般的な緩和（露出の最小化・制御系の分離・VPN の更新）。** **確認できなかったのは——開発元の配布ページ・リポジトリへの リンク（勧告ページ上に無い）、報告日・調整の期間、 Docker イメージの影響するタグ。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s18"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月9日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月8日に収集した CISA の ICS 勧告 ICSA-26-281-02 を起点に、**勧告ページを直接取得して裏を取った** （出典1）。 **出典1から取ったもの** —— 勧告IDと公表日、影響製品と 2段のバージョン閾値、6件の CVE ごとの説明・CVSSv3.1 と v4.0 の値・ 弱点の分類、開発元の対応の3分類（修正提供／既定値変更が新規導入のみ／ 修正予定なし）、Modbus の SSRF への構成上の制限、報告者、 重要インフラ部門と配備地域、悪用の報告が無いこと、 CISA の一般的な緩和。 **本記録が併せて確認したこと** —— 勧告ページに開発元の配布ページへの リンクが無いこと、GitHub の openPDC のリリース一覧（1ページ目）に 2.9.477／2.9.482 の記載が見当たらないこと（齟齬2）。 **これを「修正版が存在しない」証拠としては扱っていない。** **本記録の判断として書いたもの** —— 対処の性質（直らない／ 直ったことにならない）で6件を分ける整理、 attack.chain（勧告の成立条件と影響から構成。impact 段階は openPDC の役割から本記録が構成）、 計測の集約点を握られたときに失われるのは「見えている景色」と 「事後分析の土台」であるという評価、lessons、applicability、diagrams。 **確認していないもの** —— 開発元自身の公表文、修正版の配布場所、 報告から公表までの経過、日本国内での導入状況、 公表後の悪用状況・KEV 収載・日本語での注意喚起、 Docker イメージの影響するタグ（未確定事項）。</li></ul></div></div>
+<div class="blk " id="s19"><h3>タグ</h3><span class="b tag">脆弱性</span><span class="b tag">OT/ICS</span><span class="b tag">電力</span><span class="b tag">CISA</span><span class="b tag">ICS勧告</span><span class="b tag">openPDC</span><span class="b tag">openHistorian</span><span class="b tag">Grid Protection Alliance</span><span class="b tag">同期位相計測</span><span class="b tag">デシリアライズ</span><span class="b tag">認証の欠落</span><span class="b tag">ハードコード資格情報</span><span class="b tag">SSRF</span><span class="b tag">安全でないリフレクション</span><span class="b tag">Dockerイメージ</span><span class="b tag">既定値</span><span class="b tag">修正予定なし</span><span class="b tag">悪用未確認</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-09 09:57 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
