@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>冷食通販アクティブにSQLi、最大5.5万件 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0445</span>冷食通販アクティブにSQLi、最大5.5万件</h1>
+<header class="site-header">
+  <p class="subtitle">業務用冷凍食品メーカーのアクティブ（香川県高松市）の通販サイトが、特定のWebページへの SQLインジェクション攻撃を受け、不正に作成された管理者アカウント経由で顧客データ・受注データが 出力された形跡が見つかった——漏えいの可能性は最大54,916件で、 攻撃の翌日の定期チェックとログ解析で痕跡を確認している</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月6日</span>
+  <span>最終更新: 2026年10月9日</span>
+</div>
+
+<div class="lead"><p><strong>SQL インジェクションで終わらず、管理者アカウントを1つ増やされている。そこが本件の要点である。</strong></p>
+<p>業務用冷凍食品の製造・販売を手掛ける<strong>株式会社アクティブ</strong>（香川県高松市）は2026年10月6日、同社が運営する通販サイトが第三者による不正アクセスを受け、顧客情報や受注情報が外部に漏えいした可能性があると公表した。</p>
+<p>経緯は短い。<strong>2026年10月2日</strong>、通販サイトの特定のWebページに対して<strong>SQLインジェクション攻撃</strong>があった。<strong>翌10月3日</strong>、システムの定期チェックとログ解析を実施した際に不正アクセスの痕跡を確認した。その後の詳細な調査で、<strong>不正に作成された管理者アカウントを経由して顧客データや受注データが出力された形跡</strong>が見つかった。</p>
+<p>漏えいの可能性があるのは通販サイトに登録されている顧客情報<strong>最大54,916件</strong>。<strong>店名・屋号</strong>、住所、電話番号、メールアドレスのほか、注文金額・注文商品コード・届け先住所などの受注情報が含まれる。<strong>クレジットカード情報と銀行口座情報は通販サイトで保持しておらず対象外</strong>で、ログインパスワードも漏えい対象には含まれていないとしている。影響は通販サイトの Web システムに限定され、受注・配送業務や受託業務を担う<strong>基幹システム・社内ネットワークへの影響は無い</strong>とされる。</p>
+<p>対応は速い。攻撃対象となった Web ページの脆弱性を修正し、<strong>管理画面からのデータ出力機能を停止</strong>、<strong>不正に作成された管理者アカウントを削除</strong>、システム全体の権限とアクセス状況の社内緊急点検を完了した。個人情報保護委員会には速報を提出し、外部のセキュリティ専門機関によるフォレンジック調査の手配も進めている。</p>
+<p><strong>本記録がこの事案を取り上げる理由は2つある</strong>（本記録の判断）。①<strong>「検知の仕組みが実際に機能した」事案である</strong>——攻撃の翌日、定期チェックとログ解析で痕跡を見つけている。日本の中堅企業の公表でここまで短い例は多くない。②<strong>漏えいの主体が「店名・屋号」である</strong>——業務用食材の通販であり、<strong>顧客は個人ではなく飲食店・事業者</strong>である。流出した店名と住所と注文商品コードの組み合わせは、<strong>その店が何をいくら仕入れているかという取引の情報</strong>であり、競合や詐欺に使える形になっている。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>「最大54,916件」の最大の意味</span><span class="b rsn">公表されていない</span></li><li><span class=ui>攻撃を受けた「特定のWebページ」と、使用していた製品・フレームワーク</span><span class="b rsn">公表されていない</span></li><li><span class=ui>SQLインジェクションから管理者アカウントの作成に至った具体的な手順</span><span class="b rsn">公表されていない</span></li><li><span class=ui>ログを遡れた範囲と、10月2日より前に同種の攻撃が無かったか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>顧客への個別通知の方針と時期</span><span class="b rsn">公表されていない</span></li><li><span class=ui>ログインパスワードの保存形式と、利用者への変更の呼びかけ</span><span class="b rsn">公表されていない</span></li><li><span class=ui>外部のセキュリティ専門機関の名称・着手時期・調査結果の公表予定</span><span class="b rsn">公表されていない</span></li><li><span class=ui>WAF が本件の時点で稼働していたか</span><span class="b rsn">公表されていない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社アクティブ（香川県高松市）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>個人情報保護委員会</span><span class="b role">監督官庁</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（外部のセキュリティ専門機関。名称は公表されていない）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>漏えいの可能性がある顧客情報の件数</span><span class="b conf">最大</span><span class="b org">公表値</span></div><div class=fv>54,916<span class=fu>件</span></div><div class=fn>一次公表（アクティブ・2026年10月6日）の値（「最大54,916件」）。 **「最大」の意味は一次公表が説明していない**—— 通販サイトに登録されている顧客情報の全件なのか、 出力の形跡から見積もった上限なのかは判別できない（本記録の指摘）。 **単位は「件」であり、人数でも事業者数でもない**—— 1つの店が複数の登録を持つ場合の扱いは公表されていない。 **業務用食材の通販で流出項目の先頭が「店名・屋号」であることから、 多くは事業者の登録とみられる**（本記録の読み）。 **また「漏えいした可能性がある」であり、流出が確認された件数ではない**—— 一次公表は「顧客データや受注データが出力された形跡が見つかった」としている。 時点は2026年10月6日の公表時</div></div><div class=fig><div class=fh><span class=fl>攻撃から痕跡の確認までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>日</span></div><div class=fn>2026年10月2日の攻撃から10月3日の痕跡確認まで（本記録の算出）。 **ただし「10月2日が最初の攻撃だった」とは公表されていない**—— ログを遡れた範囲が示されていないため、 **それ以前に同じ攻撃が無かったかは分からない**（本記録の留保）</div></div><div class=fig><div class=fh><span class=fl>痕跡の確認から公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年10月3日の痕跡確認から10月6日の公表まで（本記録の算出）。 **この間に件数の確定・脆弱性の修正・管理者アカウントの削除・ データ出力機能の停止・権限の緊急点検・個人情報保護委員会への速報提出が行われている。** **中堅企業の公表としては速い**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>公表された再発防止策の項目数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>項目</span></div><div class=fn>一次公表が挙げた4項目 （外部専門機関による Web サイト全体の脆弱性診断／ アクセスログの日次モニタリング体制の整備・強化／ WAF の運用・監視体制の強化／ システム開発・保守ルールの厳格化とセキュリティ教育の徹底）を数えた。 **いずれも今後の外部調査の結果も踏まえて進める方針とされている**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**2026年10月2日**、通販サイトの特定の Web ページに対する **SQL インジェクション攻撃**が行われた。 攻撃者は**不正に管理者アカウントを作成**し、 そのアカウントで管理画面にアクセスして **顧客データ・受注データを出力した形跡**を残した。 **翌10月3日**、アクティブがシステムの定期チェックとログ解析を実施した際に 不正アクセスの痕跡を確認し、詳細な調査で出力の形跡を特定した。 影響は通販サイトの Web システムに限定され、 基幹システム・社内ネットワークへの影響は確認されていない。 **侵害の期間は実質1〜2日であり、攻撃者が長く居座った事案ではない**（本記録の評価）</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>**2026年10月2日、通販サイトの特定の Web ページに対して SQL インジェクション攻撃が行われた。** 一次公表はこの手口を名指ししている。 **該当ページ・パラメータ・攻撃の送信元・試行の回数はいずれも公表されていない。** アクティブは発覚後に「攻撃対象となったWebページの脆弱性を修正した」としており、 **脆弱性が自社の実装側にあったことを認めている**（本記録の読み）</div><div class=fn>根拠: 一次公表（2026年10月6日）の 「2026年10月2日、通販サイトの特定のWebページに対してSQLインジェクション攻撃があった」 および「攻撃対象となったWebページの脆弱性を修正し」という記述</div></li><li><div class=stg><span class="b stage">2. 権限昇格</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>**攻撃者は不正に管理者アカウントを作成した。** 一次公表は「不正に作成された管理者アカウントを経由して、 顧客データや受注データが出力された形跡が見つかった」としている。 **SQL インジェクションからアカウントの作成に至った具体的な手順 （データベースへの直接の行の挿入か、管理機能の悪用か）は公表されていない。** **本件で被害が「閲覧」ではなく「一括の出力」になったのはこの段階が成立したためである** （本記録の評価）</div><div class=fn>根拠: 一次公表の「その後の詳細な調査で、不正に作成された管理者アカウントを経由して、 顧客データや受注データが出力された形跡が見つかった」 および「不正に作成された管理者アカウントも削除した」という記述</div></li><li><div class=stg><span class="b stage">3. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>**管理画面のデータ出力機能で、顧客データと受注データが出力された形跡が残っていた。** 漏えいの可能性があるのは**最大54,916件**で、 店名・屋号、住所、電話番号、メールアドレス、 注文金額・注文商品コード・届け先住所などの受注情報が含まれる。 **実際に外部へ送信されたことが確認されたという記述は無く、 一次公表は「漏えいした可能性がある」としている**（本記録の確認）。 アクティブは発覚後に**管理画面からのデータ出力機能を停止**した</div><div class=fn>根拠: 一次公表の「顧客データや受注データが出力された形跡が見つかった」 「漏えいした可能性があるのは……最大5万4916件」 「管理画面からのデータ出力機能を停止した」という記述</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>攻撃から痕跡の確認まで</div><div class=mv>**1日。** 2026年10月2日に SQL インジェクション攻撃があり、 翌10月3日のシステムの定期チェックとログ解析で不正アクセスの痕跡を確認した。 **ただし「10月2日が最初の攻撃だった」ことが確認されたとは公表されていない** （本記録の留保。ログを遡れた範囲が示されていない）</div></div><div class=met><div class=ml>痕跡の確認から公表まで</div><div class=mv>**3日**（2026年10月3日の痕跡確認 → 10月6日の公表）。 この間に、不正に作成された管理者アカウントの特定と削除、 出力の形跡の調査、対象件数（最大54,916件）と項目の確定、 脆弱性の修正、データ出力機能の停止、 権限とアクセス状況の社内緊急点検、 個人情報保護委員会への速報提出が行われている。 **中堅企業の公表としてこの速さは評価に値する**（本記録の評価）</div></div><div class=met><div class=ml>痕跡の確認から封じ込めまで</div><div class=mv>**日数は公表されていないが、公表時点（10月6日）で完了している。** 一次公表は、攻撃対象となった Web ページの脆弱性の修正、 管理画面からのデータ出力機能の停止、 不正に作成された管理者アカウントの削除、 システム全体の権限とアクセス状況の社内緊急点検の**完了**を記している</div></div><div class=met><div class=ml>痕跡の確認から当局への報告まで</div><div class=mv>**公表時点（2026年10月6日）までに個人情報保護委員会へ速報を提出済み。** **提出日は公表されていない。** 個人情報保護法では、漏えい等の事態を知った時から 速報は概ね3〜5日以内とされており、**その枠内に収まっているとみられる** （本記録の読み。提出日が示されていないため断定はできない）</div></div><div class=met><div class=ml>本人への通知</div><div class=mv>**一次公表には、顧客への個別通知の方針・時期の記載が無い**（本記録の確認）。 公表そのものと、不審な連絡への注意喚起が行われている</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**管理画面からのデータ出力機能を停止した**（通販サイト全体の停止ではない）。 あわせて攻撃対象の Web ページの脆弱性を修正し、 不正な管理者アカウントを削除した。 基幹業務は通常どおり運用していると明示している</div><div class=fn><b>トレードオフ:</b> **出力機能を止めると、自社の受注・分析の業務が止まる**（本記録の読み）—— 業務用食材の通販では、受注リストの出力は日々の配送に使われている可能性が高い。 **それでも機能を止めたのは、攻撃者が同じ経路を再び使えないようにする判断である。** 一方、**サイト全体を停止しなかったため、顧客の発注は続けられている**</div></li><li><div class=ui>**外部のセキュリティ専門機関によるフォレンジック調査を手配する** （公表時点では「手配を進めている」段階）</div><div class=fn><b>トレードオフ:</b> **公表を調査の完了まで待たず、社内調査の段階で出している**（本記録の読み）—— 速さを取った代わりに、件数は「最大」、原因の詳細は未確定のままである</div></li><li><div class=ui>**手口（SQL インジェクション）、侵害の日付、管理者アカウントの不正作成、 件数（最大54,916件）、項目、対象外の情報、基幹システムへの不影響、 実施済みの対応、再発防止策4項目を公表した**</div><div class=fn><b>トレードオフ:</b> **手口を明示すると同種のサイトが狙われる材料になるが、 伏せると同業が自社の点検対象を決められない**（本記録の読み）</div></li></ul></div>
+<section id="s6"><h2>SQLインジェクションの先で管理者アカウントを1つ作られ、正規の出力機能で最大54,916件が出た<span class="b slot">概観</span></h2><p><strong>公表された事実</strong>（アクティブの一次公表・2026年10月6日）</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>当事者</td>
+<td><strong>株式会社アクティブ</strong>（香川県高松市・業務用冷凍食品の製造販売）</td>
+</tr>
+<tr>
+<td>侵害されたもの</td>
+<td>同社が運営する<strong>通販サイトの Web システム</strong></td>
+</tr>
+<tr>
+<td>攻撃</td>
+<td><strong>2026年10月2日</strong> 通販サイトの<strong>特定のWebページ</strong>に対する<strong>SQLインジェクション攻撃</strong></td>
+</tr>
+<tr>
+<td>検知</td>
+<td><strong>2026年10月3日</strong> システムの定期チェックとログ解析で不正アクセスの痕跡を確認</td>
+</tr>
+<tr>
+<td>判明した経路</td>
+<td><strong>不正に作成された管理者アカウント</strong>を経由して顧客データ・受注データが<strong>出力された形跡</strong></td>
+</tr>
+<tr>
+<td>件数</td>
+<td><strong>最大54,916件</strong>（漏えいの可能性）</td>
+</tr>
+<tr>
+<td>項目</td>
+<td><strong>店名・屋号</strong>／住所／電話番号／メールアドレス／注文金額／注文商品コード／届け先住所</td>
+</tr>
+<tr>
+<td>対象外</td>
+<td><strong>クレジットカード情報・銀行口座情報</strong>（通販サイトで保持していない）／<strong>ログインパスワード</strong></td>
+</tr>
+<tr>
+<td>及んでいない範囲</td>
+<td><strong>基幹システム・社内ネットワーク</strong>（影響・データ漏えいなし。基幹業務は通常運用）</td>
+</tr>
+<tr>
+<td>実施済みの対応</td>
+<td>脆弱性の修正／<strong>管理画面からのデータ出力機能の停止</strong>／<strong>不正な管理者アカウントの削除</strong>／権限とアクセス状況の社内緊急点検の完了</td>
+</tr>
+<tr>
+<td>当局</td>
+<td><strong>個人情報保護委員会へ速報を提出</strong></td>
+</tr>
+<tr>
+<td>調査</td>
+<td>外部のセキュリティ専門機関による<strong>フォレンジック調査を手配中</strong></td>
+</tr>
+<tr>
+<td>公表</td>
+<td><strong>2026年10月6日</strong>（痕跡の確認から<strong>3日</strong>・攻撃から<strong>4日</strong>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは、侵入口と被害の間にある「もう一段」である。</strong></p>
+<p>SQL インジェクションが通った、だから情報が出た——ではない。一次公表は、<strong>不正に作成された管理者アカウントを経由して</strong>顧客データや受注データが出力されたと書いている。</p>
+<p>つまり被害の出口は<strong>正規の機能（管理画面のデータ出力）</strong>である。<strong>攻撃者は最後は管理者としてログインし、通常の操作で一括出力した</strong>（本記録の読み）。だからこそ封じ込めは「機能の停止」という形になった。</p>
+<p><strong>ここが本件の実務的な価値である</strong>（本記録の評価）。入口の欠陥は1つでも、<strong>そこから管理者が1人増えると被害の桁が変わる。</strong></p></section>
+<section id="s7"><h2>攻撃の翌日に気づいている——日次のログ確認が機能した事案である<span class="b slot">発覚の端緒</span></h2><p><strong>公表された事実</strong></p>
+<p><strong>2026年10月3日</strong>、アクティブは<strong>システムの定期チェックとログ解析</strong>を実施した際に、不正アクセスの痕跡を確認した。攻撃があったのは<strong>前日の10月2日</strong>である。その後の詳細な調査で、<strong>不正に作成された管理者アカウントを経由して顧客データや受注データが出力された形跡</strong>が見つかった。</p>
+<p><strong>本記録の評価</strong> — この速さは、同規模の事業者の公表のなかで目を引く。</p>
+<p><strong>攻撃から検知まで1日。検知から公表まで3日。</strong></p>
+<p>本記録が扱ってきた事案では、侵入から発覚までが数か月、発覚から公表までが数週間という例が珍しくない。本件は<strong>日次のログ確認が実際に動いていた</strong>（本記録の評価）。</p>
+<p>さらに言えば、<strong>出力の形跡まで追えている。</strong>「最大54,916件」という上限を示せたのは、<strong>管理画面の操作の記録が残っていたから</strong>である（本記録の読み）。ログがなければ「漏えいした可能性は否定できない」で終わり、範囲は登録全件としか言えない。</p>
+<p><strong>留保も書く。</strong></p>
+<ul>
+<li><strong>攻撃の当日には検知できていない。</strong> SQL インジェクションの試行は通常、成功する前にエラー応答として記録に現れる。</li>
+<li><strong>ログを遡れた範囲が公表されていない。</strong>「10月2日に攻撃があった」ことは分かるが、<strong>それが最初の攻撃だったとは書かれていない。</strong></li>
+<li><strong>再発防止策の2つ目が「アクセスログの日次モニタリング体制の整備・強化」</strong>である。<strong>すでに動いていた仕組みを厚くする向きであり、投資の向きとしては正しい</strong>（本記録の評価）。</li>
+</ul></section>
+<section id="s8"><h2>止める範囲を「使われた機能」に絞り、事業は止めなかった<span class="b slot">組織の対応</span></h2><p><strong>公表された事実</strong>（一次公表による実施済みの対応）</p>
+<ul>
+<li>攻撃対象となった<strong>Webページの脆弱性を修正</strong>した</li>
+<li><strong>管理画面からのデータ出力機能を停止</strong>した</li>
+<li><strong>不正に作成された管理者アカウントを削除</strong>した</li>
+<li><strong>システム全体の権限とアクセス状況について社内で緊急点検を完了</strong>した</li>
+<li><strong>個人情報保護委員会に速報を提出</strong>した</li>
+<li>外部のセキュリティ専門機関による<strong>フォレンジック調査の手配を進めている</strong></li>
+<li>不正アクセスの影響は通販サイトの Web システムに限定され、<strong>基幹システム・社内ネットワークへの影響やデータ漏えいはない。基幹業務は通常運用</strong></li>
+</ul>
+<p><strong>本記録の評価</strong> — 封じ込めの設計が整理されている。</p>
+<p>止めたのは<strong>通販サイト全体ではなく、攻撃に使われた機能</strong>である。</p>
+<table>
+<thead>
+<tr>
+<th>対象</th>
+<th>判断</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>攻撃を受けた Web ページ</td>
+<td>脆弱性を修正（残した）</td>
+</tr>
+<tr>
+<td>管理画面のデータ出力機能</td>
+<td><strong>停止</strong></td>
+</tr>
+<tr>
+<td>不正な管理者アカウント</td>
+<td>削除</td>
+</tr>
+<tr>
+<td>通販サイト（顧客の発注）</td>
+<td><strong>止めていない</strong></td>
+</tr>
+<tr>
+<td>基幹システム・受注配送業務</td>
+<td>影響なしを確認し通常運用</td>
+</tr>
+</tbody>
+</table>
+<p><strong>業務用食材の通販では、受注リストの出力は日々の配送に使われている可能性が高い</strong>（本記録の推定）。それでも出力機能を止めたのは、<strong>攻撃者が同じ経路を再び使えないようにする判断</strong>である。</p>
+<p><strong>留保が2つある</strong>（本記録の指摘）。</p>
+<ol>
+<li><strong>恒久の形が示されていない。</strong> 出力機能を永久に止めるのか、条件（件数の上限・承認・通知）を付けて戻すのかは公表されていない。<strong>止めたままでは業務が回らず、黙って戻されるのが最も危ない。</strong></li>
+<li><strong>外部調査は「手配中」である。</strong> 公表時点で着手していない。速さを取った判断として自然だが、<strong>読者が本当に知りたい「どのページのどんな実装が破られたか」は後になる。</strong></li>
+</ol></section>
+<section id="s9"><h2>再発防止策4項目は入口と監視に寄っており、「管理者を作られた」ことへの答えが無い<span class="b slot">再発防止</span></h2><p><strong>公表された事実</strong>（一次公表の再発防止策。今後の外部調査の結果も踏まえて進める方針）</p>
+<ol>
+<li>外部専門機関による<strong>Webサイト全体の脆弱性診断</strong></li>
+<li><strong>アクセスログの日次モニタリング</strong>体制の整備・強化</li>
+<li><strong>WAF</strong>（Web アプリケーションファイアウォール）の運用・監視体制の強化</li>
+<li><strong>システム開発・保守ルールの厳格化</strong>とセキュリティ教育の徹底</li>
+</ol>
+<p><strong>本記録の評価</strong> — 並びは妥当だが、本件の2つ目の原因に正面から答えていない。</p>
+<p>4項目はいずれも<strong>入口（SQL インジェクション）と監視</strong>に向いている。しかし本件の被害の桁を決めたのは<strong>管理者アカウントを勝手に作られたこと</strong>である。</p>
+<table>
+<thead>
+<tr>
+<th>本件で起きたこと</th>
+<th>4項目のどれが答えているか</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>特定ページへの SQL インジェクション</td>
+<td>①脆弱性診断・③WAF・④開発ルール</td>
+</tr>
+<tr>
+<td><strong>管理者アカウントの不正作成</strong></td>
+<td><strong>該当なし</strong>（本記録の指摘）</td>
+</tr>
+<tr>
+<td>管理画面のデータ出力機能で一括出力</td>
+<td><strong>該当なし</strong>（事後に機能を停止したのみ）</td>
+</tr>
+<tr>
+<td>翌日の検知</td>
+<td>②ログの日次モニタリング（既に機能していたものの強化）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が足すべきと考える対策</strong>（ここからは本記録の判断である）。</p>
+<ul>
+<li><strong>管理者権限のアカウントの作成・権限の昇格を即時に通知</strong>し、申請記録と突き合わせる</li>
+<li><strong>管理画面を外部から直接到達できない経路に置く</strong>（IP 制限・VPN）か、管理者の認証に<strong>多要素を必須化</strong>する</li>
+<li>データの一括出力に<strong>件数の上限・承認・通知</strong>を付ける（「停止」ではなく「条件つきで戻す」）</li>
+<li>アカウント一覧の<strong>定期的な棚卸しを自動化</strong>する</li>
+</ul>
+<p>なお<strong>③の「強化」という語</strong>から、WAF は本件の時点で何らかの形で既にあった可能性が高い（本記録の推定）。<strong>あったとしたら、なぜ SQL インジェクションが通ったのかが本件の最大の教訓になるが、説明は無い。</strong></p></section>
+<section id="s10"><h2>流出項目の先頭が「店名・屋号」である——これは取引の情報の漏えいである<span class="b slot">被害規模・影響範囲</span></h2><p><strong>公表された事実</strong>（漏えいの可能性がある情報）</p>
+<table>
+<thead>
+<tr>
+<th>区分</th>
+<th>項目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>顧客情報</td>
+<td><strong>店名・屋号</strong>／住所／電話番号／メールアドレス</td>
+</tr>
+<tr>
+<td>受注情報</td>
+<td>注文金額／注文商品コード／届け先住所</td>
+</tr>
+<tr>
+<td><strong>含まれない</strong></td>
+<td>クレジットカード情報・銀行口座情報（<strong>通販サイトで保持していない</strong>）／ログインパスワード</td>
+</tr>
+</tbody>
+</table>
+<p>対象は<strong>最大54,916件</strong>。影響は通販サイトの Web システムに限定され、受注・配送業務や受託業務を担う基幹システム・社内ネットワークには及んでいない。</p>
+<p><strong>本記録の読み</strong> — 項目の並びが、この事案の性格を決めている。</p>
+<p><strong>先頭が「氏名」ではなく「店名・屋号」である。</strong></p>
+<p>アクティブは<strong>業務用</strong>冷凍食品の製造販売であり、約900品のカタログ通販を運営している。<strong>つまり顧客は個人ではなく、飲食店・事業者である</strong>（本記録の読み。一次公表は顧客の属性を明示していないが、項目から読める）。</p>
+<p>ここで漏れたものを組み合わせると、こうなる。</p>
+<blockquote>
+<p><strong>どの店が、どこにあって、何（注文商品コード）を、いくら（注文金額）仕入れているか</strong></p>
+</blockquote>
+<p><strong>個人情報としての機微性は低いが、取引の情報としての価値は高い</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>競合にとっては営業のリストである</strong>——どの店がどの価格帯で仕入れているかが分かる</li>
+<li><strong>詐欺の材料になる</strong>——アクティブの担当者を装って「発注の確認」を装う電話やメールが成立する</li>
+</ul>
+<p>実際、アクティブは<strong>「アクティブを装ったメールやSMS、電話にも警戒」</strong>するよう名指しで呼びかけている。<strong>流出項目に店名・電話番号・メールアドレスが揃っており、装う材料がそろっているという認識である</strong>（本記録の読み）。</p>
+<p><strong>日本の CISO への含意</strong>（本記録の判断）。自社が法人顧客を持つなら、<strong>個人情報の台帳とは別に「取引の情報」の棚卸しが要る。</strong>判定の基準は「個人情報保護法の対象か」ではなく、<strong>「これが競合に渡ったら顧客が困るか」</strong>である。</p></section>
+<section id="s11"><h2>この事案から自社の点検に落とすなら、管理者の増え方とログ確認の実在性の2点である<span class="b slot">評価・解釈</span></h2><p><strong>本記録の評価</strong>（ここから先は公表資料ではなく本記録の判断である）</p>
+<p>本件は件数（最大54,916件）で見ると中規模の事案だが、<strong>構造が素直で、点検項目に落としやすい。</strong></p>
+<p><strong>点検1: 管理者は、どう増えるか。</strong></p>
+<p>本件の被害の桁を決めたのは<strong>管理者アカウントが1つ増えたこと</strong>である。自社の公開システムについて、次を確かめる。</p>
+<ul>
+<li>管理者権限のアカウントが<strong>作成された</strong>ことは、誰にいつ届くか</li>
+<li>権限が<strong>昇格した</strong>ことは、誰にいつ届くか</li>
+<li>管理者アカウントの一覧は、<strong>いつ・誰が・何と突き合わせているか</strong></li>
+<li>管理画面は、<strong>インターネットのどこからでも到達できるか</strong></li>
+</ul>
+<p><strong>管理者の追加は、正規の運用でも稀な出来事である。</strong>だから通知を入れても誤報が少なく、費用対効果が高い（本記録の評価）。</p>
+<p><strong>点検2: 「ログを見ている」は本当か。</strong></p>
+<p>アクティブは攻撃の翌日に気づいた。<strong>これは日次のログ確認が実在していたということである。</strong></p>
+<p>自社の「定期確認」が実在するかは、次で判定できる。</p>
+<ul>
+<li><strong>確認した記録が残っているか</strong>（誰が・いつ・何件の異常を上げたか）</li>
+<li><strong>何を見るかが文書になっているか</strong></li>
+<li><strong>何を見つけたら誰に上げるかが決まっているか</strong></li>
+</ul>
+<p>記録が残っていなければ、実施されていない可能性が高い（本記録の判断）。見るものは3つに絞ってよい—— <strong>①管理者権限の操作、②通常業務の範囲を超えるデータ出力、③エラー応答の急増。</strong></p>
+<p><strong>最後に、公表の作りについて1つ</strong>（本記録の評価）。</p>
+<p>アクティブの公表は、同規模の事業者のそれとしては情報量が多い。<strong>手口を「SQLインジェクション」と名指しし、「不正に作成された管理者アカウント経由」という中間の段まで書いている。</strong>これがあるから、読者は自社の点検項目を決められる。</p>
+<p><strong>足りないのは「最大54,916件」の最大の意味と、破られたページの作り（製品・フレームワーク）である。</strong>前者は読者が被害の規模を見積もれず、後者は<strong>同じ製品を使う事業者が自社の該当を判定できない</strong>。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_asset</th><td>**アクティブが運営する通販サイトの Web システム。** 侵害の起点は「通販サイトの**特定のWebページ**」であり、 攻撃者はそこへの SQL インジェクションから **管理画面に不正な管理者アカウントを作成**し、 管理画面の**データ出力機能**で顧客データ・受注データを出力した形跡が残っていた。 一次公表は「不正アクセスの影響は通販サイトのWebシステムに限定されており、 受注・配送業務や受託業務などを担う基幹システム、社内ネットワークへの 影響やデータ漏えいはない」と明示している</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>店名・屋号</li><li>住所</li><li>電話番号</li><li>メールアドレス</li><li>注文金額（受注情報）</li><li>注文商品コード（受注情報）</li><li>届け先住所（受注情報）</li></ul><span class="b rsn">stated</span><div class=fn>一次公表の記載。 **項目の先頭が「店名・屋号」であることが本件の性格を決めている**（本記録の指摘）—— 業務用食材の通販であり、**顧客は事業者である。** **「店名＋住所＋注文商品コード＋注文金額」が揃うと、 その店が何をいくら仕入れているかが読める**—— 個人情報としての機微性は低いが、**取引の情報としての価値は高い**（本記録の評価）。 なお**氏名（担当者名）が項目に挙がっていない**点は一次公表から読み取れるとおりであり、 登録が屋号単位だったことを示唆する（本記録の読み。明記は無い）</div></td></tr><tr><th>含まれていない情報</th><td><ul class=cl><li>クレジットカード情報</li><li>銀行口座情報</li><li>ログインパスワード</li></ul><span class="b rsn">stated</span><div class=fn>一次公表は、クレジットカード情報と銀行口座情報を **「通販サイトでは保持しておらず」**対象に含まれないとし、 ログインパスワードについても今回の漏えい対象には含まれていないとしている。 **カード・口座は「保持していない」、パスワードは「含まれていない」と 書き分けられている**（本記録の確認）—— 前者は設計上そこに無い、後者は**あるが出ていない**という意味に読める。 **パスワードの保存形式（ハッシュか）や、利用者への変更の呼びかけの有無は公表されていない** （本記録の指摘。管理者アカウントを作れた攻撃者が 利用者の認証情報の格納先に到達できたかは示されていない）</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月6日（公表時点）　<b>詳細:</b> 一次公表は、漏えいした可能性のあるメールアドレスや電話番号宛てに **不審な連絡が届く可能性がある**として注意を呼びかけている。 「アクティブを装ったメールやSMS、電話」にも警戒し、 不審なメッセージに記載された URL へのアクセスや 添付ファイルの開封を避けるよう求めている。 **二次被害の発生が確認されたという記述は無い**（本記録の確認）。 **自社を装った連絡への警戒を名指しで促した点は評価できる**（本記録の評価）—— 流出項目に店名・電話番号・メールアドレスが揃っており、 **「アクティブの担当者」を装う材料がそろっている**</td></tr><tr><th>ログの有無</th><td>**ログは残っており、実際に解析に使われている**（本記録の評価。本件の特徴である）。 一次公表は「10月3日、システムの定期チェックとログ解析を実施した際に、 不正アクセスの痕跡を確認した」とし、 その後の詳細な調査で**「不正に作成された管理者アカウントを経由して、 顧客データや受注データが出力された形跡」**を特定している。 **出力の形跡まで追えているのだから、管理画面の操作の記録が残っていたことになる。** **ただしログの種類・保存期間・遡れた範囲は公表されていない**—— したがって「10月2日より前に同じ攻撃が無かったか」は分からない（unknowns に残した）</td></tr><tr><th>再発防止策</th><td><div class=sub><b>item:</b> 外部専門機関による Web サイト全体の脆弱性診断　<b>source:</b> アクティブ（一次公表）</div><div class=sub><b>item:</b> アクセスログの日次モニタリング体制の整備・強化　<b>source:</b> アクティブ（一次公表）</div><div class=sub><b>item:</b> WAF（Web アプリケーションファイアウォール）の運用・監視体制の強化　<b>source:</b> アクティブ（一次公表）</div><div class=sub><b>item:</b> システム開発・保守ルールの厳格化とセキュリティ教育の徹底　<b>source:</b> アクティブ（一次公表）</div><span class="b rsn">stated</span><div class=fn>4項目はいずれも**今後の外部専門機関による調査結果も踏まえて進める**方針とされている。 **本記録の評価** — 並びは妥当だが、**本件の2つ目の原因に正面から答えていない**。 4項目は入口（SQL インジェクション）と監視に寄っており、 **「管理者アカウントを勝手に作られた」ことへの対策**—— 管理者の追加に承認・通知・多要素認証を要求する、 管理画面を外部から到達できない経路に置く、 データの一括出力に別の承認を挟む——が挙がっていない。 なお**「アクセスログの日次モニタリング」は、本件で既に機能している仕組みの強化である** （攻撃の翌日に定期チェックで気づいた）。 **動いていたものを厚くするのは正しい投資の向きである**（本記録の評価）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月2日</td><td class=nowrap><span class="b kind">発生</span></td><td>**通販サイトの特定の Web ページに対して SQL インジェクション攻撃があった。** 攻撃者は**不正に管理者アカウントを作成**し、 顧客データ・受注データを出力した形跡を残した。 **攻撃の時刻・送信元・該当ページはいずれも公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月3日</td><td class=nowrap><span class="b kind">検知</span></td><td>**システムの定期チェックとログ解析を実施した際に、不正アクセスの痕跡を確認した** （攻撃の翌日）。 その後の詳細な調査で、不正に作成された管理者アカウントを経由して 顧客データ・受注データが出力された形跡が見つかった</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（公表時点で完了）</td><td class=nowrap><span class="b kind">判明</span></td><td>詳細な調査により、**漏えいの可能性がある件数（最大54,916件）と項目**を確定。 クレジットカード情報・銀行口座情報を保持していないこと、 ログインパスワードが対象外であること、 影響が通販サイトの Web システムに限定され基幹システム・社内ネットワークに 及んでいないことを確認した</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（公表時点で完了）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**封じ込めと是正**——攻撃対象となった Web ページの脆弱性の修正、 **管理画面からのデータ出力機能の停止**、 **不正に作成された管理者アカウントの削除**、 システム全体の権限とアクセス状況の社内緊急点検の完了</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">公表</span></td><td>**アクティブが一次公表**（痕跡の確認から3日・攻撃から4日）。 手口（SQL インジェクション）、経緯、件数（最大54,916件）、項目、 対象外の情報、基幹システムへの不影響、実施済みの対応、 再発防止策4項目、不審な連絡への注意喚起を示した。 **個人情報保護委員会への速報の提出もこの時点までに行われている** （提出日は公表されていない）</td></tr><tr><td class="sm nowrap tw">2026年10月6日時点で手配中</td><td class=nowrap><span class="b kind">調査主体の起用</span></td><td>**外部のセキュリティ専門機関によるフォレンジック調査の手配**を進めていると公表。 **着手時期・調査主体・結果の公表予定はいずれも示されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月9日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>@IT Security &amp; Trust が報道（本記録の起点）</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「最大54,916件」の母数</span><div class=sm>**一次公表は「漏えいした可能性があるのは、通販サイトに登録されている顧客情報、 最大5万4916件」と記している。** **「件」であり、人数でも事業者数でもない。** 業務用食材の通販で、流出項目の先頭が「店名・屋号」であることから **多くは事業者の登録とみられるが、一次公表はそう書いていない**（本記録の読み）。 1つの店が複数の登録を持つ場合の扱い、 **「最大」が全件を指すのか出力の形跡から見積もった上限を指すのかも説明されていない。** 本記録は一次公表の表現に従い「最大54,916件」とし、 **人数に換算しない**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>漏えいの確認の度合い</span><div class=sm>**一次公表は「出力された形跡が見つかった」「漏えいした可能性がある」という表現を使い、 外部への送信が確認されたとは書いていない**（本記録の確認）。 一方、**報道の見出しは「顧客情報“5万5000件”漏えいの恐れ」としており、 本文も「漏えいした可能性」で揃っている**—— **この事案では一次公表と報道の表現にずれは無い**（本記録の評価。 見出しの件数が丸められている点のみ注意）</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>公表日の表記</span><div class=sm>**報道（@IT Security &amp; Trust・2026年10月9日）は 「アクティブは2026年10月6日……発表した」と記している。** **一次公表のページも2026年10月6日付である**（本記録が2026年10月9日に取得して確認）。 **両者は一致している。** なお報道の公開は公表から3日後であり、 **本記録は報道を起点に一次公表へ遡って裏を取った**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は攻撃の送信元・攻撃者の帰属を確認できていない</span><div class=sm>**一次公表も報道も、攻撃の送信元・攻撃者の属性（犯罪者集団・自動化された走査）に 一切触れていない。** 本記録の作成者も裏を取れていない。 **SQL インジェクションの自動走査は常時行われており、 「狙われた」のか「見つけられた」のかは判別できない**（本記録の留保）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>特定ページへのSQLインジェクション → 管理者アカウントの不正作成 → 管理画面のデータ出力機能で最大54,916件</div><div class=svgwrap><svg viewBox="0 0 1202 440" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,220.0 C193.0,220.0 193.0,220.0 220,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C397.0,220.0 397.0,220.0 424,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,220.0 C601.0,220.0 601.0,220.0 628,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,220.0 C805.0,220.0 805.0,142.0 832,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,220.0 C805.0,220.0 805.0,220.0 832,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C601.0,220.0 601.0,298.0 832,298.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,220.0 C907.0,220.0 907.0,54.0 1036,54.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,54.0 C1111.0,54.0 1111.0,150.0 1036,150.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C703.0,150.0 703.0,220.0 220,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C805.0,150.0 805.0,220.0 424,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C907.0,150.0 907.0,220.0 628,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C1111.0,150.0 1111.0,233.0 1036,233.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C1111.0,150.0 1111.0,304.0 1036,304.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C1111.0,150.0 1111.0,387.0 1036,387.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="195.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="217.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第三者（帰属への言及は無</text><text x="91.0" y="231.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い）</text><rect x="220" y="176.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">通販サイトの特定のWeb</text><text x="295.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ページ（SQLインジェク</text><text x="295.0" y="226.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ション／2026-10…</text><text x="295.0" y="239.0" text-anchor="middle" fill="#f48fb1" font-size="10">該当ページ・パラメータ・</text><text x="295.0" y="251.0" text-anchor="middle" fill="#f48fb1" font-size="10">使用製品は未公表／事後に</text><rect x="424" y="183.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不正に作成された管理者ア</text><text x="499.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント</text><text x="499.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">本件の被害の桁を決めた段</text><text x="499.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">／事後に削除</text><rect x="628" y="196.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理画面のデータ出力機能</text><text x="703.0" y="231.0" text-anchor="middle" fill="#64b5f6" font-size="10">事後に機能を停止</text><rect x="832" y="110.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="132.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客データ・受注データ </text><text x="907.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">最大54,916件（店名</text><text x="907.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・屋号／住所／電話番号…</text><rect x="832" y="188.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="210.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クレジットカード情報・銀</text><text x="907.0" y="224.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">行口座情報（通販サイトで</text><text x="907.0" y="238.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">保持していない）／ログ…</text><rect x="832" y="266.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="288.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">基幹システム・社内ネット</text><text x="907.0" y="302.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ワーク（影響・データ漏え</text><text x="907.0" y="316.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いなし。基幹業務は通常…</text><rect x="1036" y="16.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">定期チェックとログ解析で</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">痕跡を確認（2026-1</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0-03・攻撃の翌日）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">本件で機能した唯一の検知</text><rect x="1036" y="106.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">株式会社アクティブ（公表</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の主体・2026-10-</text><text x="1111.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">06）</text><text x="1111.0" y="169.0" text-anchor="middle" fill="#80cbc4" font-size="10">お客様相談室 0120-</text><text x="1111.0" y="181.0" text-anchor="middle" fill="#80cbc4" font-size="10">30-6550</text><rect x="1036" y="208.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1111.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報保護委員会（速報</text><text x="1111.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を提出）</text><rect x="1036" y="272.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="294.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部のセキュリティ専門機</text><text x="1111.0" y="308.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">関（フォレンジック調査を</text><text x="1111.0" y="322.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">手配中・名称未公表）</text><rect x="1036" y="350.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1111.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">通販サイトの顧客（飲食店</text><text x="1111.0" y="386.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・事業者とみられる）</text><text x="1111.0" y="399.0" text-anchor="middle" fill="#8892b0" font-size="10">アクティブを装ったメール</text><text x="1111.0" y="411.0" text-anchor="middle" fill="#8892b0" font-size="10">・SMS・電話への警戒を</text></svg></div><div class=fn>layer 0 は第三者（帰属への言及は無い）。 layer 1 は侵入口——**通販サイトの特定の Web ページ**に対する SQL インジェクション（2026年10月2日。該当ページ・パラメータは公表されていない）。 layer 2 が**本件の構造上の中心**である—— 攻撃者は**不正に管理者アカウントを作成**した。 layer 3 はそのアカウントで使われた**管理画面のデータ出力機能**。 layer 4 が出たもの（顧客データ・受注データ、最大54,916件）と、 **通販サイトの Web システムに影響が閉じたこと**—— 基幹システム・社内ネットワークには及んでいないと確認されている。 layer 5 は検知と対応——**攻撃の翌日（10月3日）の定期チェックとログ解析で痕跡を確認**し、 脆弱性の修正・出力機能の停止・不正アカウントの削除・権限の緊急点検を完了、 10月6日に公表して個人情報保護委員会へ速報を提出した。 **図の要点は3つ。** ①**侵入口と被害の間に「管理者アカウントの作成」という段が入っている**—— ここが無ければ被害は閲覧の範囲にとどまった。 ②**被害の出口は正規の機能（データ出力）である**—— だから事後の封じ込めは「機能の停止」になった。 ③**止まるべきところで止まっている**—— 基幹システムと社内ネットワークへは及んでおらず、 カード情報・口座情報はそもそも通販サイトに置いていなかった。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**攻撃の当日には検知されていない**（翌日の定期チェックで痕跡を確認した）。 **WAF が稼働していたかは公表されていない**—— 再発防止策に「WAF の運用・監視体制の強化」が挙がっていることから、 **何らかの形で既にあった可能性が高い**（本記録の推定。「強化」という語から）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**SQL インジェクションは実装で防げる種類の欠陥である。** WAF は補助であり、根治はコード側にある</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**アクティブも再発防止策の1つ目に挙げている**—— ただし本件の前に実施していたかは公表されていない</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。**遮断していれば1日の侵害が成立しなかった可能性はあるが、 本件で WAF がどう設定されていたかは公表されていない**</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**管理者アカウントの作成は、それ自体が強い異常の信号である**（本記録の評価）—— 頻度が低く、正規の作成なら申請の記録が残る種類の操作である。 **本件では作成が成立し、出力まで進んでいる。** 検知されたのは翌日のログ解析であり、作成の時点では鳴っていない</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件で最も効いたはずの対策である。** 管理者の追加は正規の運用でも稀であり、誤報が少ない</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**アカウントを作れても管理画面に到達できなければ出力できない。** アクティブの再発防止策4項目にこの観点は挙がっていない（本記録の指摘）</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断</span></div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">検知した</span><div class=sm>**ここで気づいている。** 2026年10月3日のシステムの定期チェックとログ解析で不正アクセスの痕跡を確認し、 その後の詳細な調査で出力の形跡を特定した。 **攻撃の翌日である**（本記録の評価。中堅企業の公表でこの速さは多くない）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。**本件はこの機能で54,916件が出ている。** アクティブは事後に機能そのものを停止したが、 恒久の対策としては「止める」より「条件をつける」ほうが運用に残る</span></div><div class=ctl><span class="b eff">復旧を早められた</span><span class=sm>　本記録の判断。**本件は形跡が残っていたから範囲を確定できた**—— 「最大54,916件」と上限を示せたのはログがあったからである</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**管理画面からのデータ出力機能を停止した**（通販サイト全体の停止ではない）。 あわせて攻撃対象の Web ページの脆弱性を修正し、 不正な管理者アカウントを削除した。 基幹業務は通常どおり運用していると明示している</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価。止める範囲を「使われた機能」に絞った判断は妥当である。** 不正アクセスの影響が通販サイトの Web システムに限定され、 基幹システムに及んでいないことを確認したうえで、 **事業（受注・配送）を止めずに攻撃経路だけを閉じている。** **ただし恒久の形は示されていない**—— 出力機能を永久に止めるのか、条件をつけて戻すのかは公表されていない</td></tr><tr><td>**外部のセキュリティ専門機関によるフォレンジック調査を手配する** （公表時点では「手配を進めている」段階）</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価。外部調査を入れる判断自体は正しいが、公表時点で「手配中」である。** 攻撃から4日で公表しているため順序としては自然だが、 **読者（同業・同種のサイト運営者）が本当に知りたい 「どのページのどんな実装が破られたか」は外部調査の後になる。** **調査結果を公表する方針かどうかも示されていない**（本記録の指摘）</td></tr><tr><td>**手口（SQL インジェクション）、侵害の日付、管理者アカウントの不正作成、 件数（最大54,916件）、項目、対象外の情報、基幹システムへの不影響、 実施済みの対応、再発防止策4項目を公表した**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価。情報量は同規模の公表のなかで多い。** とくに**①手口を「SQLインジェクション」と名指しした点、 ②不正な管理者アカウントの作成という中間の段階まで書いた点**は、 読者が自社の点検項目を決められる水準にある。 **不足は2点**—— ①**該当ページ・使用していた製品（CMS・フレームワーク・受注システム）が不明**なため、 同じ製品を使う事業者が自社の該当を判定できない。 ②**「最大54,916件」の最大の意味**（登録件数の全件か、 出力の形跡から見積もった上限か）が説明されていない</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「侵入されたか」ではなく「管理者が勝手に増えていないか」を監視項目に持つ</div><div class=lw>本件の被害は SQL インジェクションそのものではなく、 **不正に作成された管理者アカウント**から生まれた。 そのアカウントで管理画面のデータ出力機能が使われ、**最大54,916件**が出ている。 **入口の欠陥は1つでも、そこから管理者が1人増えると被害の桁が変わる**（本記録の評価）</div><div class=la><b>取るべき行動</b> 公開システム（EC・会員サイト・業務システム）について、 **「管理者権限のアカウントが作成された」「権限が昇格した」を 即時に人へ通知する**仕組みを入れる。 通知先は情報システム部門だけでなく**経営側にも届く経路**にする （管理者の追加は本来、経営が把握してよい頻度の出来事である）。 あわせて**月次で管理者アカウントの一覧を出力し、申請記録と突き合わせる。** **「棚卸しの担当者」を決める**——自動化していない棚卸しは必ず止まる</div></li><li><div class=lp>日次のログ確認は「形だけ」になりやすいが、機能すれば1日で見つかる</div><div class=lw>本件は**攻撃の翌日（2026年10月3日）の定期チェックとログ解析で痕跡を確認**している。 中堅企業の公表で、攻撃から1日で気づいた例は多くない（本記録の評価）。 アクティブは再発防止策にも「アクセスログの日次モニタリング体制の整備・強化」を挙げており、 **既に動いていた仕組みを厚くする向き**になっている</div><div class=la><b>取るべき行動</b> 自社の「ログの定期確認」が**何を見て、何を見つけたら上げるのか**を文書で確かめる。 確認した記録（誰が・いつ・何件の異常を上げたか）が残っていなければ、 **それは実施されていない可能性が高い。** 見るものを3つに絞って決める—— ①管理者権限の操作、②通常業務の範囲を超えるデータ出力、 ③エラー応答の急増（SQL インジェクションの試行はまずエラーとして現れる）。 **「全部見る」は続かない**</div></li><li><div class=lp>法人顧客のデータは「個人情報ではない」で済ませられない——取引の情報として守る</div><div class=lw>本件の流出項目の先頭は**「店名・屋号」**である。 業務用冷凍食品の通販であり、**顧客は飲食店・事業者**とみられる。 **「店名＋住所＋注文商品コード＋注文金額」が揃うと、 その店が何をいくら仕入れているかが読める**（本記録の評価）。 個人情報としての機微性は低いが、**競合への営業や、 取引先を装った詐欺の材料としての価値は高い**</div><div class=la><b>取るべき行動</b> 自社が持つ**法人顧客のデータ**を、個人情報の台帳とは別に棚卸しする—— 取引条件、仕入れの内容、単価、発注の頻度、担当者の連絡先。 **「これが競合に渡ったら顧客が困るか」で機微性を判定する。** 漏えい時の通知の文面も、個人向けとは別に用意する （法人顧客は**自社の取引先からの問い合わせ**に答える立場になる）。 あわせて、**顧客が「自社を装った連絡」を見分ける手段**を平時から渡しておく</div></li><li><div class=lp>公表を外部調査の完了まで待たない選択には、件数の表現の設計が要る</div><div class=lw>アクティブは**攻撃から4日（痕跡の確認から3日）で公表**し、 外部のフォレンジック調査は「手配を進めている」段階だった。 その結果、件数は**「最大54,916件」**という形になっている。 **速さと確定度はここで交換されている**（本記録の評価）</div><div class=la><b>取るべき行動</b> インシデントの公表の手順に、**「確定前に出す場合の数値の書き方」**を決めておく—— ①上限値であることを明示する、②上限の意味（登録全件か、 ログから見積もった範囲か）を1行で説明する、 ③確報の時期を予告する。 **本件は①を満たしているが②が無い**（本記録の指摘）。 これが無いと、報道で「54,916件が流出」と断定形に変わる</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>SQL インジェクションは WAF で止める前提にせず、実装で消す</div><div class=lw>一次公表は手口を**SQL インジェクション**と名指しし、 アクティブは「攻撃対象となったWebページの脆弱性を修正した」としている。 **脆弱性は自社の実装側にあった**（本記録の読み）。 再発防止策には WAF の運用・監視体制の強化が挙がっているが、 **WAF は署名を回避されうる補助の層である**</div><div class=la><b>取るべき行動</b> 公開 Web アプリのコードで、**SQL を文字列連結で組み立てている箇所を機械的に洗い出す** （静的解析・grep でのクエリ構築パターンの検索）。 プレースホルダ（パラメータ化クエリ）に統一し、 **動的なテーブル名・カラム名が必要な箇所は許可リストで固定する。** 古い受注システム・独自の CMS・外部委託で作った画面が残っていないかを確かめる—— **本件の「特定のWebページ」のような1枚が残る**</div></li><li><div class=lp>管理画面を公開面と同じ到達性に置かない——到達できなければ作られたアカウントも使えない</div><div class=lw>攻撃者は**不正に管理者アカウントを作成**し、 **そのアカウントで管理画面のデータ出力機能を使っている。** **アカウントを作れても管理画面に到達できなければ、出力は成立しない**（本記録の評価）。 アクティブの再発防止策4項目に、この観点は挙がっていない</div><div class=la><b>取るべき行動</b> 管理画面の URL を公開面と分離し、**接続元の IP 制限・VPN・社内網のいずれかに閉じる。** 閉じられない場合は**管理者の認証に多要素を必須化**し、 セッションの有効期間を短くする。 あわせて**管理者アカウントの作成を管理画面の機能から外す** （台帳と別系統の手続きに移す）ことも検討する</div></li><li><div class=lp>データの一括出力に「件数の上限」と「通知」を付ける</div><div class=lw>本件では管理画面のデータ出力機能で**最大54,916件**が出た。 アクティブは事後に**機能そのものを停止**している。 **止めれば安全だが、業務が止まる**（本記録の読み。 受注リストの出力は日々の配送に使われている可能性が高い）</div><div class=la><b>取るべき行動</b> 一括出力の機能に**①1回あたりの件数の上限、②1日の累計の上限、 ③上限を超える出力の事前承認、④出力のたびの通知**を付ける。 通常業務での出力件数を実測して上限を決める （平常時の分布を取らずに上限を決めると業務が止まる）。 **出力の操作ログは、管理者本人が消せない場所に分離して保全する**—— 本件は形跡が残っていたから範囲を確定できた</div></li><li><div class=lp>攻撃の試行はまずエラー応答として現れる——4xx/5xx の急増を検知の入力にする</div><div class=lw>本件は**攻撃の翌日の定期チェックとログ解析**で痕跡を見つけている。 一方、**攻撃の当日には検知できていない**（本記録の評価）。 SQL インジェクションの試行は、成功する前に **構文エラー・異常な応答・普段来ないパラメータ**として記録に現れる</div><div class=la><b>取るべき行動</b> Web サーバ・アプリのログで、 **①同一の送信元からの 4xx/5xx の急増、 ②SQL の予約語を含むクエリ文字列、 ③データベースのエラーメッセージが応答に出た回数**を日次で集計し、 閾値を超えたら通知する。 **あわせてデータベースのエラー内容を画面に返さない** （エラーメッセージは攻撃者の手がかりになる）</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社で運営する EC・会員サイトの管理画面が、公開面と同じインターネット経路から 到達でき、IP 制限・VPN・多要素認証のいずれも無い</td><td class=sm>本件は**不正に作成された管理者アカウント**で管理画面のデータ出力機能が使われ、 最大54,916件が出ている。アカウントを作れても到達できなければ成立しない</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 管理者権限のアカウントの新規作成・権限の昇格が、通知も申請記録との突き合わせも 無しに完了する</td><td class=sm>本件の被害の桁を決めたのは、SQL インジェクションそのものではなく **管理者が1つ増えたこと**である</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 管理画面に顧客データ・受注データの一括出力の機能があり、 件数の上限・承認・通知のいずれも無い</td><td class=sm>本件は出力の形跡が残り、対象は**最大54,916件**。 アクティブは事後に出力機能そのものを停止した</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> アクセスログの定期確認を行っているが、「何を見るか」「何を見たら上げるか」が 文書になっておらず、確認した記録も残っていない</td><td class=sm>本件は**攻撃の翌日**の定期チェックとログ解析で痕跡を確認している。 **機能するログ確認は1日で見つける**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 顧客が法人・事業者であり、取引の情報（仕入れの内容・単価・発注の頻度）を 個人情報の台帳とは別に管理していない</td><td class=sm>本件の流出項目の先頭は**店名・屋号**で、注文金額・注文商品コード・届け先住所を伴う。 **個人情報としての機微性は低いが、取引の情報としての価値は高い**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> インシデントの公表の手順に、外部調査の完了前に出す場合の 「数値の書き方（上限値であることと上限の意味）」が定められていない</td><td class=sm>本件は攻撃から4日で公表し、件数を「最大54,916件」としたが、 **最大の意味は説明されていない**</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月6日 株式会社アクティブ</span> <a href="https://www.active-pro.jp/news/4303/" target="_blank" rel="noreferrer noopener nofollow">通販サイトへの不正アクセスによる顧客情報漏えいの可能性に関するお知らせ</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(本記録の作成者が2026年10月9日に取得した**一次公表**。 **経緯（2026年10月2日に通販サイトの特定のWebページへSQLインジェクション攻撃、 翌10月3日にシステムの定期チェックとログ解析で不正アクセスの痕跡を確認、 その後の詳細な調査で不正に作成された管理者アカウントを経由して 顧客データ・受注データが出力された形跡を発見）**、 **件数（最大54,916件）**、 **項目（店名・屋号／住所／電話番号／メールアドレス／注文金額／注文商品コード／届け先住所）**、 **クレジットカード情報・銀行口座情報を保持していないこと、 ログインパスワードが対象外であること**、 **基幹システム・社内ネットワークへの影響やデータ漏えいが無く基幹業務は通常運用であること**、 **実施済みの対応（攻撃対象ページの脆弱性の修正・管理画面からのデータ出力機能の停止・ 不正に作成された管理者アカウントの削除・システム全体の権限とアクセス状況の社内緊急点検の完了）**、 **個人情報保護委員会への速報の提出**、 **外部のセキュリティ専門機関によるフォレンジック調査の手配**、 **再発防止策4項目（Webサイト全体の脆弱性診断／アクセスログの日次モニタリングの整備・強化／ WAFの運用・監視体制の強化／システム開発・保守ルールの厳格化とセキュリティ教育）**、 **不審な連絡への注意喚起（アクティブを装ったメール・SMS・電話への警戒、 URL や添付ファイルを開かないこと）**、 問い合わせ先（お客様相談室 0120-30-6550・平日9:00〜17:30）の出典。 **該当ページ名・使用していた製品・攻撃の送信元・ 「最大」の意味・ログを遡れた範囲・顧客への個別通知の方針・ 外部調査の着手時期と結果の公表予定は記載されていない**。 **タイトルは本記録が内容から付した表記であり、原文の見出しと一字一句同じとは限らない**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月9日 @IT Security &amp; Trust</span> <a href="https://atmarkit.itmedia.co.jp/ait/articles/2610/09/news031.html" target="_blank" rel="noreferrer noopener nofollow">冷食通販サイトで顧客情報“5万5000件”漏えいの恐れ　“4つの再発防止策”へ</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点。保存分 output/articles/20261009/0191_it-security-trust_550004.md で読んだ。 一次公表の内容を正確に伝えており、**本記録が確認した範囲で食い違いは無い**。 **見出しで件数を「5万5000件」と丸めている**点のみ注意 （本文は「最大5万4916件」と正確に記している）。 アクティブが香川県高松市の業務用冷凍食品メーカーであることは 報道本文にはなく、本記録が別途確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月9日</span> <span class="b rev">新規作成</span> 2026年10月9日の @IT Security &amp; Trust の報道を起点に新規作成した （事案の公表は2026年10月6日で、報道が3日遅れている）。 **アクティブの一次公表（2026年10月6日）を取得して裏を取り、 経緯の日付・手口・不正に作成された管理者アカウント経由の出力の形跡・ 件数（最大54,916件）・項目・対象外の情報・基幹システムへの不影響・ 実施済みの対応・個人情報保護委員会への速報提出・ 外部フォレンジック調査の手配・再発防止策4項目・注意喚起を確認した。** **本記録は〈SQLインジェクションの先で管理者アカウントを作られ、 正規のデータ出力機能で一括出力された構造〉と 〈攻撃の翌日に日次のログ確認が機能したこと〉を中心として評価した。** あわせて、**流出項目の先頭が「店名・屋号」であり、 本件が個人情報ではなく取引の情報の漏えいである**ことを指摘した。 再発防止策4項目が入口と監視に寄り、 **管理者アカウントの不正作成とデータ一括出力に答えていない**ことも評価として記した。 「最大54,916件」の最大の意味、該当ページと使用製品、 ログを遡れた範囲、個別通知の方針は公表されていないため unknowns に残した</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">アクティブ</span><span class="b tag">SQLインジェクション</span><span class="b tag">管理者アカウントの不正作成</span><span class="b tag">管理画面</span><span class="b tag">データ一括出力</span><span class="b tag">通販サイト</span><span class="b tag">業務用冷凍食品</span><span class="b tag">店名・屋号</span><span class="b tag">法人顧客データ</span><span class="b tag">個人情報保護委員会への速報</span><span class="b tag">日次ログ監視</span><span class="b tag">WAF</span><span class="b tag">フォレンジック調査</span><span class="b tag">香川県</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-09 18:09 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

