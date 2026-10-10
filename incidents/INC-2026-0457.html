@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>AWS AgentCore 全エージェント掌握の連鎖 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0457</span>AWS AgentCore 全エージェント掌握の連鎖</h1>
+<header class="site-header">
+  <p class="subtitle">Zenity Labs が2026年10月8日に公表した「AgentCorruption」——Amazon Bedrock AgentCore の設計上の不備と過剰な既定権限が連鎖し、インターネットに公開された1体のエージェントへの単一のプロンプトから、同一 AWS アカウント・同一リージョン内の AgentCore エージェント全体を掌握できた。エージェントにインスタンスメタデータサービスを読ませて一時認証情報を奪い、既定の実行ロールの権限で他のエージェントの列挙・呼び出し・コンテナイメージの取得・他利用者の非公開会話の閲覧・Secrets Manager の認証情報の取得を行い、長期メモリを改変して将来の会話を攻撃者側へ転送させる永続化まで到達した。AWS は既定を変更して修正したが CVE は割り当てられず、AWS 自身は「想定され文書化された動作を脆弱性として誤って描いている」と反論している</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">意図せぬ露出（設定不備等で外部から到達可能だった）</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月8日</span>
+  <span>最終更新: 2026年10月9日</span>
+</div>
+
+<div class="lead"><p><strong>公開されたチャットボット1体に1つのプロンプトを送るだけで、同じ AWS アカウント・同じリージョンにいる AI エージェント全部を乗っ取れた—— Zenity Labs が2026年10月8日にそう公表しました。</strong></p>
+<p>研究者が名づけた名前は <strong>AgentCorruption</strong> です。対象は <strong>Amazon Bedrock AgentCore</strong>、AWS の AI エージェント実行基盤です。</p>
+<p>手順はこうです。まず<strong>外部へ要求を出せる道具を持った公開エージェント</strong>に、プロンプトで <strong><code>169.254.169.254</code>（インスタンスメタデータサービス）を読ませます。</strong>返ってくるのは、そのエージェントの実行環境に割り当てられた<strong>一時認証情報（アクセスキー・シークレットキー・セッショントークン）</strong>です。エージェントはそれを素直に攻撃者のサーバーへ送ります。</p>
+<p><strong>ここで止まらなかった理由が本件の核心です。</strong> AgentCore が既定で付ける実行ロールの権限が、<strong>そのエージェント自身に限定されておらず、同一アカウント・同一リージョンの AgentCore エージェント全体に及んでいました。</strong>研究者は盗んだ認証情報で、<strong>全エージェントの列挙、各エージェントの呼び出し、Amazon ECR からのコンテナイメージの取得（＝ソースコードの入手）、他の利用者の非公開会話と長期メモリの閲覧、AWS Secrets Manager に保管された認証情報（外部サービスの API キー・OAuth トークンを含む）の取得</strong>まで行えたとしています。公開されたカスタマーサポート用のエージェントから、<strong>内部の財務エージェントへ移れた</strong>とも説明されています。</p>
+<p><strong>さらに一度きりで終わりません。</strong> 長期メモリに悪意ある記憶を書き込み、<strong>以後の会話を攻撃者の管理する宛先へ転送させる</strong>ことができました。Zenity は「利用者は、信頼できる社内エージェントに見えるものと話し続けることになる」と述べています（原文英語）。</p>
+<p><strong>修正と、見解の相違も記録します。</strong> Zenity は <strong>2025年12月25日に AWS へ報告</strong>し、AWS は新規デプロイでの <strong>IMDSv2 の既定化</strong>と<strong>既定の実行ロールの権限の縮小</strong>（エージェント間の呼び出し・非公開会話の読み取り・Secrets Manager へのアクセスの削除）を行いました。Zenity は <strong>2026年9月29日</strong>にこれを確認しています。<strong>一方で CVE は割り当てられておらず、AWS のセキュリティ速報にも本件に対応する項目はありません</strong>（本記録の作成者が2026年10月10日に確認）。<strong>AWS は、この研究が「想定され文書化された動作」を脆弱性として誤って描いていると反論しています。</strong> <strong>実際に悪用された事例は報告されていません。</strong></p>
+<p>日本の読者にとっての論点は単純です。<strong>公開エージェントと内部エージェントを同じアカウント・同じリージョンに置いているなら、既定の実行ロールのままでは「1体の侵害」が「全体の侵害」になる構造を抱えている</strong>ことになります（本記録の評価）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>AWS 自身による本件についての公表文書</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の作成者は AWS のセキュリティ速報一覧を確認したが、 本件（AgentCorruption）に対応する項目を見つけられなかった。CVE も確認できなかった。** **AWS の立場として本記録が記載した内容（「想定され文書化された動作」であるという反論、 別アカウントのリソースへのアクセスは開発者の明示的な許可が必要であるという説明）は、 報道が伝えた同社の説明に依拠している。** **AWS が発表した一次文書は確認できていない**</div></li><li><span class=ui>影響を受けた組織・構成の数、および実際に悪用された事例</span><span class="b rsn">公表されていない</span><div class=sm>**影響を受けうる構成の組織数・実際に悪用された事例はいずれも報告されていない。** 本件は**研究者による実証（PoC）**に基づく報告である。 **AWS が影響範囲を調べたか、利用者へ個別に通知したかも公表されていない。** **悪用が無かったことの証明も示されていない**</div></li><li><span class=ui>既存の構成（すでにデプロイ済みのエージェント・利用者が作成した実行ロール）への修正の反映</span><span class="b rsn">公表されていない</span><div class=sm>**IMDSv2 の既定化は「新規にデプロイされるエージェント」に適用されたと報じられている。** **すでに動いているエージェントがどうなるのか、 利用者が自分で作成した過剰権限の実行ロールが自動で縮小されるのか （縮小されないのが通常である）は示されていない。** **既定の変更は、既定を使っていない利用者を救わない**（本記録の評価）</div></li><li><span class=ui>長期メモリに書き込まれた悪意ある記憶の検出・除去の方法</span><span class="b rsn">公表されていない</span><div class=sm>**永続化は「長期メモリの改変」によって成立したとされるが、 改変されたメモリを利用者が検出する方法・除去する手順・ 改変の有無を監査する仕組みの有無は公表されていない。** **仮に過去に悪用されていた場合、利用者が気づく手立てが示されていない**（本記録の評価）</div></li><li><span class=ui>具体的な API 名・操作の列挙、および侵害指標</span><span class="b rsn">公表されていない</span><div class=sm>**本記録の作成者は Zenity の技術的な詳細記事を取得できなかった** （推測した URL では 404 となった）。 **列挙・呼び出しに用いた具体的な API 名、必要だった IAM 操作の一覧、 メモリ改変の具体的なペイロードはいずれも本記録では確認できていない。** **侵害指標（攻撃者側サーバーのドメイン等）は研究であるため存在しない**</div></li><li><span class=ui>影響範囲がアカウント境界を越えたかどうか</span><span class="b rsn">見解が分かれる</span><div class=sm>**報道は「内部 S3 への事前署名 URL（他アカウントが所有するもの）を取得できた」と伝えている。** **一方で Zenity は更新後の声明で「アカウントの境界は越えていない」と強調しており、 AWS も「別アカウントのリソースへのアクセスは開発者が明示的に許可した場合のみ」と説明している。** **本記録はどちらが正しいかを判定できない。両方を併記する**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Amazon Web Services, Inc.</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Amazon Bedrock AgentCore の提供者。Zenity Labs から2025年12月25日に報告を受け、 既定の設定を変更した</p><p class=org-p><span class=org-l>影響</span>**新規デプロイのエージェントで IMDSv2 を既定とし、既定の実行ロールの権限を縮小した** （エージェント間の呼び出し・非公開会話の読み取り・Secrets Manager へのアクセスの削除）。 **一方で本件に CVE は割り当てられておらず、セキュリティ速報にも本件に対応する項目は無い。** **AWS は、この研究が「想定され文書化された動作」を脆弱性として誤って描いていると反論し、 エージェントが別アカウントのリソースへアクセスできるのは開発者が 実行ロールと対象リソースの両方で明示的に許可した場合のみであると説明している**（報道経由）</p></div></div><div class=org><div class=org-h><span class=org-n>Zenity Ltd.（Zenity Labs）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AI エージェントのセキュリティを扱うベンダー。研究部門 Zenity Labs が本件を発見し、 2025年12月25日に AWS へ報告、2026年10月8日に公表した</p><p class=org-p><span class=org-l>影響</span>**SecTor 2026（トロント）での発表に合わせて公表した。** 研究者として **Tamir Ishay Sharbat・Lana Salameh** の発言が引用され、 共同創業者兼 CTO の **Michael Bargury** が 「我々の研究は、それらを正しく設定することの難しさを示している」と述べている（原文英語）。 **2026年9月29日に AWS の修正を確認し、設定の不備と安全でない既定は 「完全に緩和された」と評価している**</p></div></div><div class=org><div class=org-h><span class=org-n>Amazon Bedrock AgentCore の利用組織（組織名非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AgentCore 上で AI エージェントを運用していた組織。 既定の実行ロールのまま、公開エージェントと内部エージェントを 同一アカウント・同一リージョンに同居させていた場合に影響を受けうる構成だった</p><p class=org-p><span class=org-l>影響</span>**影響を受けた組織名・組織数はいずれも公表されていない。 実際に悪用された事例も報告されていない。** **研究者による実証（PoC）に基づく報告である**</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>AWS への報告（2025年12月25日）から公表（2026年10月8日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>287<span class=fu>日</span></div><div class=fn>**本記録の作成者が算出した。** 責任ある開示から公表まで**約9か月半**である。 **この期間に AWS は既定を変更しており、公表時点では修正済みとされている。** エージェント基盤の権限設計の変更に要した時間の実例として記録する</div></div><div class=fig><div class=fh><span class=fl>Zenity による修正の確認（2026年9月29日）から公表（2026年10月8日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>9<span class=fu>日</span></div><div class=fn>**本記録の作成者が算出した。** **公表は修正の確認から9日後**であり、SecTor 2026 の発表日程に合わせたとされる。 **公表時点で既定の修正は適用済みだったが、 既存の構成（すでにデプロイ済みのエージェント・利用者が自分で作った実行ロール）に 自動で反映されるかは公表されていない**（本記録の評価）</div></div><div class=fig><div class=fh><span class=fl>AgentCorruption（本件）に割り当てられた CVE の数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>0<span class=fu>件</span></div><div class=fa>2026年10月10日 時点</div><div class=fn>**本記録の作成者が2026年10月10日に確認した値である。** **AWS のセキュリティ速報一覧に本件に対応する項目は見つからず、CVE も確認できなかった。** **AWS が本件を「想定され文書化された動作」と位置づけていることと整合する**（本記録の読み取り）。 **CVE が無いということは、脆弱性管理の仕組み （CVE の購読・スキャナ・SBOM の照合）に本件が載らないという意味になる**（本記録の評価）。 **「確認できなかった」であり「存在しない」ことの証明ではない**</div></div><div class=fig><div class=fh><span class=fl>【別件】bedrock-agentcore-starter-toolkit に割り当てられた CVE の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fa>2026年10月6日 時点</div><div class=fn>**本事案の数値ではない。** AWS のセキュリティ速報 **2026-127-AWS**（2026年10月6日）が **CVE-2026-105812**（任意コード実行）と **CVE-2026-106032**（SSRF）を示している。 対象は **bedrock-agentcore-starter-toolkit 0.1.4 以上 0.3.13 以下**、 対処は **0.3.14 へのアップグレード**。**謝辞は Koh Jun Sheng 氏。** **同じ製品名を含むため AgentCorruption と混同されやすいが、報告者も内容も異なる。** **AWS が AgentCore 周辺の脆弱性に速報と CVE を出す運用であること**を示す対照として記録する</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**研究者による実証（PoC）であり、実際の攻撃ではない。** 起点は**外部へ要求を出せる道具を持つ、インターネットに公開された1体のエージェント**への 単一のプロンプトである。 そこから**IMDS 経由の一時認証情報の窃取 → 既定の実行ロールの過剰権限を使った 全エージェントの列挙と呼び出し → コンテナイメージ・非公開会話・Secrets Manager の収集 → 長期メモリの改変による永続化**まで到達した。 **具体的な API 名・必要な IAM 操作の一覧・メモリ改変のペイロードは本記録では確認できていない** （Zenity の技術的な詳細記事を取得できなかった）。 以下は公表文と報道から確実に言えることだけを段階として置く。**推定で段階を埋めない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class=srcs>[1] [3]</span></div><div>**インターネットに公開されたエージェント（カスタマーサポート用のチャットなど）へ プロンプトを送り、プロンプトインジェクションで動作を操った。** 研究者は **AWS のオープンソースフレームワーク Strands の Web 用の道具**を備えた 検証用エージェントで実証し、コマンドライン経由でも実施したとされる。 **エージェントが外部へ要求を出せる道具を持っていることが前提である** ——これはエージェントの標準的な構成であり、例外的な設定ではない</div></li><li><div class=stg><span class="b stage">2. 認証情報アクセス</span><span class=srcs>[1] [3]</span></div><div>**エージェントに `169.254.169.254`（インスタンスメタデータサービス、IMDS）を照会させ、 実行環境に割り当てられた一時認証情報 （アクセスキー・シークレットキー・セッショントークン）を取得し、 外部のサーバーへ送信させた。** **内部 AWS サービス向けの証明書・鍵素材、 他アカウントが所有する内部 S3 への事前署名 URL も得られたと報じられている** （ただしアカウント境界を越えたかについては見解が分かれている）</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class=srcs>[1] [3]</span></div><div>**取得した認証情報で、同一アカウント・同一リージョン内の AgentCore エージェントを列挙した。** **列挙しやすさの弱点と内部 API の組み合わせにより、 他のエージェントを発見できた**とされる。 **既定の実行ロールの権限が、元のエージェントに限定されず アカウント・リージョン内の全エージェントに及んでいた**ことが前提である。 **具体的な API 名・必要だった IAM 操作の一覧は本記録では確認できていない**</div></li><li><div class=stg><span class="b stage">4. 横展開</span><span class=srcs>[1] [3]</span></div><div>**発見した各エージェントを呼び出し、動作させた。** **公開されたカスタマーサポート用のエージェントから、内部の財務エージェントへ移れた**とされる。 併せて **Amazon ECR からエージェントのコンテナイメージを取得し、 `/app` ディレクトリのソースコード、埋め込まれたパスワード・API キーを得た**とされる</div></li><li><div class=stg><span class="b stage">5. 収集</span><span class=srcs>[1] [3]</span></div><div>**他の利用者とエージェントの非公開の会話、および長期メモリを読み取った。** **AWS Secrets Manager に保管された認証情報 （AWS の外のサービス向けの API キー・OAuth トークン・接続情報を含む）を取得した。** **読み取られた会話の件数・対象の範囲は公表されていない**</div></li><li><div class=stg><span class="b stage">6. 永続化</span><span class=srcs>[1] [2] [3]</span></div><div>**長期メモリに悪意ある記憶を作成し、以後の会話を攻撃者の管理する宛先へ転送させた。** **これにより攻撃は一度きりでなく永続化した。** 研究者は**「利用者は、信頼できる社内エージェントに見えるものと話し続けることになる」**と 述べている（原文英語）。 **また盗んだ認証情報は研究者の端末でも使えたため、 以後はエージェントを経由し続ける必要がなくなった**とされる。 **改変されたメモリの検出・除去の方法は公表されていない**</div></li></ol></div>
+<section id="s5"><h2>公開エージェント1体への1プロンプトから、同一アカウント・同一リージョンのエージェント全体に到達できた<span class="b slot">概観</span><span class=srcs>出典 [1] [3] [5]</span></h2><p>公表されている内容を整理する。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>名称</td>
+<td><strong>AgentCorruption</strong>（Zenity Labs による命名）</td>
+</tr>
+<tr>
+<td>対象</td>
+<td><strong>Amazon Bedrock AgentCore</strong>（AWS の AI エージェント実行基盤）</td>
+</tr>
+<tr>
+<td>公表</td>
+<td><strong>2026年10月8日</strong>（SecTor 2026 の発表に合わせて）</td>
+</tr>
+<tr>
+<td>起点</td>
+<td><strong>外部へ要求を出せる道具を持つ、インターネットに公開された1体のエージェント</strong>への単一のプロンプト</td>
+</tr>
+<tr>
+<td>到達範囲</td>
+<td><strong>同一 AWS アカウント・同一リージョン内の AgentCore エージェント全体</strong></td>
+</tr>
+<tr>
+<td>得られたもの</td>
+<td>一時認証情報、全エージェントの列挙と呼び出し、<strong>コンテナイメージ（＝ソースコード）</strong>、<strong>他利用者の非公開会話と長期メモリ</strong>、<strong>Secrets Manager の認証情報</strong>（外部サービスの API キー・OAuth トークンを含む）</td>
+</tr>
+<tr>
+<td>永続化</td>
+<td><strong>長期メモリの改変</strong>により、以後の会話を攻撃者の管理する宛先へ転送</td>
+</tr>
+<tr>
+<td>報告</td>
+<td><strong>2025年12月25日</strong>に AWS へ</td>
+</tr>
+<tr>
+<td>修正</td>
+<td><strong>IMDSv2 の既定化</strong>（新規デプロイ分）、<strong>既定の実行ロールの権限縮小</strong>（2026年9月29日に Zenity が確認）</td>
+</tr>
+<tr>
+<td>CVE</td>
+<td><strong>本件には割り当てられていない</strong>（本記録の作成者が2026年10月10日に確認）</td>
+</tr>
+<tr>
+<td>悪用</td>
+<td><strong>実際に悪用された事例の報告は無い</strong>（研究者による実証）</td>
+</tr>
+</tbody>
+</table>
+<p>Dark Reading は見出しで<strong>「修正済みの Amazon Bedrock AgentCore の脆弱性により、攻撃者は1体の AI チャットボットを使って組織のエージェント群全体を掌握できた可能性があった」</strong>と伝えている（原文英語）。</p>
+<p>Zenity は<strong>影響が AgentCore に限らず、組み込みの道具を備えたエージェント全般に及ぶ</strong>としている。</p></section>
+<section id="s6"><h2>単一の欠陥ではなく、IMDS への到達・既定ロールの過剰権限・メモリの無検証という3点が連鎖した<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>連鎖の形を分解する（本記録の整理）。</p>
+<p><strong>① エージェントの実行環境から IMDS へ到達できた。</strong>エージェントは外部へ HTTP 要求を出せる道具を標準的に持つ。研究者は AWS のオープンソースフレームワーク <strong>Strands</strong> の Web 用の道具を備えた検証用エージェントで実証したとされる。プロンプトで <strong><code>169.254.169.254</code></strong> を読ませれば、<strong>実行環境に割り当てられた一時認証情報（アクセスキー・シークレットキー・セッショントークン）</strong>が返る。エージェントはそれを外部のサーバーへ送った。</p>
+<p><strong>② 既定の実行ロールの権限が、エージェント単体ではなくアカウント・リージョン全体に及んでいた。</strong>研究者の言葉はこうである—— <strong>「認証情報を得た次の問いは、それで何ができるかだ」「答えは、たくさんのことができる。なぜなら AgentCore のワークロードに既定で付くロールは過剰権限だからだ」</strong>（原文英語）。これにより次が可能だったとされる。</p>
+<ul>
+<li><strong>全エージェントの列挙</strong>（列挙しやすさの弱点と内部 API の組み合わせ）</li>
+<li><strong>各エージェントの呼び出し</strong>（公開エージェントから<strong>内部の財務エージェント</strong>へ移れた）</li>
+<li><strong>Amazon ECR からコンテナイメージの取得</strong>（<code>/app</code> ディレクトリ＝<strong>ソースコード</strong>、埋め込まれたパスワード・API キー）</li>
+<li><strong>他の利用者の非公開会話と長期メモリの閲覧</strong></li>
+<li><strong>AWS Secrets Manager の認証情報</strong>（<strong>AWS の外のサービス向けの鍵を含む</strong>）</li>
+<li><strong>内部 AWS サービス向けの証明書・鍵素材、内部 S3 への事前署名 URL</strong></li>
+</ul>
+<p><strong>③ 長期メモリに整合性の検証が無かった。</strong>攻撃者は<strong>悪意ある記憶を書き込み、以後の会話を攻撃者の管理する宛先へ転送させた。</strong>これにより攻撃は一度きりでなくなる。研究者は<strong>「利用者は、信頼できる社内エージェントに見えるものと話し続けることになる」</strong>と述べている（原文英語）。なお盗んだ認証情報は研究者の端末でも使えたため、<strong>以後はエージェントを経由し続ける必要すらなくなった</strong>とされる。</p>
+<p><strong>①だけでは認証情報が取れても使える範囲が狭く、②だけでは認証情報が手に入らない。</strong> <strong>被害の範囲を決めたのは②の権限設計である</strong>——プロンプトインジェクションは入力の手段にすぎない（本記録の評価）。</p></section>
+<section id="s7"><h2>AWS は既定を変えたが、CVE は無く、「脆弱性ではない」という立場を取っている<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [3] [4]</span></h2><p>対応と見解の相違を分けて書く。</p>
+<p><strong>AWS が行った変更</strong>（Zenity が2026年9月29日に確認したとされる内容）。</p>
+<table>
+<thead>
+<tr>
+<th>変更</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>IMDSv2 の既定化</td>
+<td><strong>新規にデプロイされるエージェント</strong>について IMDSv2 のみを有効に</td>
+</tr>
+<tr>
+<td>実行ロールの権限縮小</td>
+<td><strong>他のエージェントを呼び出す権限</strong>を削除</td>
+</tr>
+<tr>
+<td>同上</td>
+<td><strong>非公開の会話を読む権限</strong>を削除</td>
+</tr>
+<tr>
+<td>同上</td>
+<td><strong>Secrets Manager へアクセスする権限</strong>を削除</td>
+</tr>
+</tbody>
+</table>
+<p>Zenity はこれをもって、設定の不備と安全でない既定は<strong>「完全に緩和された」</strong>と評価している。</p>
+<p><strong>一方で、脆弱性としての扱いが一致していない。</strong></p>
+<ul>
+<li><strong>本件に CVE は割り当てられていない</strong>（本記録の作成者が2026年10月10日に確認）。<strong>AWS のセキュリティ速報一覧にも本件に対応する項目は無い。</strong></li>
+<li><strong>AWS は、この研究が「想定され文書化された動作」を脆弱性として誤って描いていると反論している</strong>（報道経由）。エージェントが<strong>別アカウント</strong>のリソースへアクセスできるのは、開発者が<strong>実行ロールと対象リソースの両方で明示的に許可した場合のみ</strong>だと説明している。</li>
+<li><strong>AWS は実行ロールへ必要最小限の権限だけを与えるよう推奨している。</strong></li>
+<li>Zenity 側も更新後の声明で<strong>アカウントの境界は越えていない</strong>と強調している。一方、報道は<strong>他アカウントが所有する内部 S3 への事前署名 URL</strong>を取得できたと伝えており、<strong>この点は食い違っている。本記録は判定できないため両方を併記する。</strong></li>
+</ul>
+<p><strong>混同に注意が要る事実が1つある。</strong> <strong>AWS は2026年10月6日にセキュリティ速報 2026-127-AWS を出しているが、これは別件である。</strong>対象は <strong>bedrock-agentcore-starter-toolkit 0.1.4 以上 0.3.13 以下</strong>で、<strong>CVE-2026-105812</strong>（細工されたエージェントのインポート後の実行・デプロイで任意コード実行）と<strong>CVE-2026-106032</strong>（インポート時の意図しないネットワーク要求・ローカルファイルへのアクセス）。対処は <strong>0.3.14 へのアップグレード</strong>と影響版でインポートしたエージェントの再インポートで、<strong>謝辞は Koh Jun Sheng 氏</strong>である。<strong>Zenity および AgentCorruption への言及は無い。</strong> <strong>同じ製品名を含むため混同されやすいが、報告者も内容も異なる。</strong></p>
+<p>なお、この速報の存在は<strong>AWS が AgentCore 周辺の脆弱性に速報と CVE を出す運用である</strong>ことを示す。<strong>同じ週に、一方には速報と CVE があり、他方には無い</strong>——この差は「何を脆弱性と呼ぶか」の線引きの違いである（本記録の読み取り）。</p></section>
+<section id="s8"><h2>AWS の一次文書・影響範囲・既存構成への反映・メモリ改変の検出手段はいずれも公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3] [4] [5]</span></h2><p>2026年10月10日時点で、次の点は公表されていない（または本記録の作成者が確認できていない）。</p>
+<ul>
+<li><strong>AWS 自身による本件についての公表文書</strong>（速報・ブログ・CVE のいずれも確認できず。AWS の立場は報道が伝えた説明に依拠している）</li>
+<li><strong>影響を受けうる構成の組織数、および実際に悪用された事例</strong>（研究者による実証に基づく報告であり、悪用の報告は無い。AWS が影響範囲を調べたか、利用者へ個別に通知したかも示されていない）</li>
+<li><strong>既存の構成への修正の反映</strong>——IMDSv2 の既定化は「新規にデプロイされるエージェント」とされており、<strong>すでに動いているエージェント、および利用者が自分で作った過剰権限の実行ロールの扱いは示されていない</strong></li>
+<li><strong>長期メモリに書き込まれた悪意ある記憶の検出・除去・監査の方法</strong></li>
+<li><strong>具体的な API 名・必要な IAM 操作の一覧・メモリ改変のペイロード</strong>（本記録の作成者は Zenity の技術的な詳細記事を取得できなかった）</li>
+<li><strong>影響範囲がアカウント境界を越えたかどうか</strong>（報道と Zenity・AWS の説明が食い違っている）</li>
+</ul>
+<p>本記録の裏取りの範囲も明示する。<strong>確認できたのは Zenity の公表文（press release）、AWS のセキュリティ速報一覧と 2026-127-AWS、および報道2件である。</strong> <strong>Zenity の技術的な詳細記事は推測した URL では取得できず、Dark Reading の記事本文は 403 で取得できなかった</strong>（保存分は RSS の要約のみ）。</p></section>
+<section id="s9"><h2>エージェント基盤では「既定の実行ロール」が爆発半径そのものである——プロンプトの検閲では範囲を縮められない（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p><strong>第一に、対策の重心をプロンプトの検閲から権限の設計へ移す必要がある。</strong>本件で入力の手段はプロンプトインジェクションだが、<strong>被害の範囲を決めたのは「既定の実行ロールがアカウント・リージョン全体に及んでいた」ことである。</strong>プロンプトの入口を厳しくしても、<strong>インジェクションの成功率はゼロにならない</strong>——エージェントは外部の文書・Web ページ・利用者の入力を読んで動くのが仕事である。したがって<strong>「1体が乗っ取られる」ことを前提に、乗っ取られた1体で何ができるかを縮める</strong>のが設計の筋である。<strong>これは Web アプリの SQL インジェクション対策において入力検証だけでなく DB ユーザーの権限を絞るのと同じ構図である。</strong></p>
+<p><strong>第二に、エージェントの実行環境からメタデータサービスへ到達できる構成は、エージェント特有の危険を帯びる。</strong>従来のサーバーでも SSRF による IMDS 到達は既知の問題だが、<strong>エージェントは「外部へ要求を出す」ことそのものが機能である。</strong>つまり<strong>SSRF の素材が標準装備されている。</strong> IMDSv2 はホップ制限とトークンで SSRF を難しくするが、<strong>エージェントの場合は「エージェント自身が能動的に要求を組み立てる」ため、トークンの取得手順まで指示できる余地が残る</strong>（本記録の評価）。<strong>メタデータへの経路を塞ぐ（到達不能にする）ことと、実行ロールの権限を縮めることの両方が要る。</strong></p>
+<p><strong>第三に、長期メモリの改変は「侵害の後に残るもの」として扱われていない。</strong>本件の永続化は、設定でもファイルでもなく<strong>エージェントの記憶</strong>に埋め込まれた。<strong>改変されたメモリの検出・除去・監査の方法は公表されていない。</strong>従来のインシデント対応は「どのホストが侵害されたか」「どの資格情報を失効させるか」を軸にするが、エージェント基盤では<strong>「どのメモリが汚染されたか」</strong>という軸が加わる。<strong>この軸に対応する道具と手順を、各組織が自前で用意する必要がある状態である</strong>（本記録の評価）。</p>
+<p><strong>第四に、CVE が無いことの実務上の影響は小さくない。</strong>本件には CVE が割り当てられておらず、AWS のセキュリティ速報にも項目が無い。<strong>CVE が無いということは、脆弱性管理の既存の仕組み——CVE の購読、スキャナの検出、SBOM との照合、パッチ適用の記録——に本件が一切載らないという意味である。</strong> <strong>責任共有モデルで「クラウド側が直した」ものは、利用者の脆弱性管理台帳に現れない。</strong>したがって<strong>「マネージドサービスの既定値の変更」を追跡する別の経路</strong>（サービスの更新履歴の購読、研究者・ベンダーの発表の定期確認）が要る。<strong>同じ週に AWS が別件には速報と CVE を出している</strong>という対照は、この線引きの難しさをそのまま示している。</p>
+<p><strong>第五に、公開エージェントと内部エージェントの同居が爆発半径を決めている。</strong>本件で起点になったのは<strong>インターネットに公開されたカスタマーサポート用のエージェント</strong>で、そこから<strong>内部の財務エージェント</strong>へ移れたとされる。<strong>アカウントとリージョンが同じであれば、既定のロールの下では両者は隣人である。</strong> <strong>公開エージェントを別アカウントに分離すること</strong>は、既定ロールの過剰権限が残っていても範囲を区切る手段になる（本記録の評価）。AWS 自身も「別アカウントのリソースへのアクセスは開発者の明示的な許可が必要」と説明しており、<strong>アカウント境界が実質的な壁として機能していることを示している。</strong></p>
+<p><strong>第六に、当事者と研究者で「脆弱性か否か」の見解が分かれている事案は、記録の仕方を変える必要がある。</strong> AWS は「想定され文書化された動作」とし、Zenity は「安全でない既定」とする。<strong>どちらの立場を取るかで、利用者がやるべきことは変わらない</strong>—— <strong>既定のまま使えば過剰権限であり、絞るのは利用者の仕事だという点は両者が一致している。</strong> <strong>本記録は、見解の相違を解消せずに併記し、利用者の行動に落ちる部分（既定を使うな・分離しろ・メタデータを塞げ）を学びとして取り出す。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>Amazon Bedrock AgentCore（AWS の AI エージェント実行基盤）</td></tr><tr><th>ベンダー</th><td>Amazon Web Services, Inc.</td></tr><tr><th>finding_name</th><td>AgentCorruption（Zenity Labs による命名）</td></tr><tr><th>affected_versions</th><td>**公表されていない。** マネージドサービスであり利用者側にバージョンの概念が無い。 **「修正前の既定の設定で動作していたエージェント」が対象**という形でしか特定できない。 **IMDSv2 の既定化は「新規にデプロイされるエージェント」に適用されたと報じられており、 既存のエージェントの扱いは示されていない**</td></tr><tr><th>exploit_status</th><td>**実際に悪用された事例は報告されていない。** 報告は**研究者による実証（PoC）**に基づく。 **公表時点で AWS の既定は修正済みとされている。** **AWS が影響範囲を調べたか、悪用の痕跡を確認したかは公表されていない**</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月10日</td></tr><tr><th>patch</th><td>**AWS が既定の設定を変更した**（利用者側の適用作業を要しない形）。 ①**新規にデプロイされるエージェントについて IMDSv2 のみを有効化**、 ②**既定の実行ロールから「他のエージェントを呼び出す権限」「非公開の会話を読む権限」 「Secrets Manager へアクセスする権限」を削除。** **Zenity が2026年9月29日に②を確認し、設定の不備と安全でない既定は「完全に緩和された」と評価している。** **既存のエージェント、および利用者が自分で作成した実行ロールへの反映は公表されていない** ——**既定の変更は、既定を使っていない利用者を救わない**（本記録の評価）</td></tr><tr><th>vendor_response</th><td>**AWS は、この研究が「想定され文書化された動作」を脆弱性として誤って描いていると反論している**（報道経由）。 **エージェントが別アカウントのリソースへアクセスできるのは、 開発者が実行ロールと対象リソースの両方で明示的に許可した場合のみ**だと説明し、 **実行ロールには必要最小限の権限だけを与えるよう推奨している。** **AWS 自身による本件についての公表文書は確認できていない。** **Zenity 側も更新後の声明で「アカウントの境界は越えていない」と強調している**</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **実行ロールを既定のまま使わず、エージェントごとに必要最小限の権限へ絞る** （AWS の推奨でもあり、Zenity も「企業は独自のより厳しいロールを手動で割り当てるべき」としている）　<b>状況:</b> 利用者側の作業（適用状況は不明）　<b>副作用:</b> **既定ロールを絞ると、エージェントの機能追加のたびに権限の追加が必要になり、 開発速度が落ちる。** 急ぐ現場では「とりあえず広く付ける」に戻りやすい（本記録の評価）。 **AWS 側の既定が修正された後も、利用者が自分で作った過剰権限のロールは自動では縮まらない**　<b>出典:</b> 1、3</div><div class=sub><b>数え方:</b> **インターネットに公開するエージェントを、内部向けエージェントとは別の AWS アカウントに置く**　<b>状況:</b> 本記録の評価（各社の推奨として示されたものではない）　<b>副作用:</b> **アカウントを分けると、共有したいメモリ・知識ベース・監視の集約が難しくなり、 運用コストが上がる。** 一方で**既定ロールの過剰権限が残っていても範囲を区切れる**—— AWS 自身が「別アカウントのリソースへのアクセスは開発者の明示的な許可が必要」と 説明している点が根拠になる（本記録の評価）　<b>出典:</b> 3</div><div class=sub><b>数え方:</b> **エージェントの実行環境からインスタンスメタデータサービスへの経路を塞ぐ** （IMDSv2 の強制に加え、到達そのものを不可にする）　<b>状況:</b> AWS 側で IMDSv2 を既定化（新規デプロイ分）　<b>副作用:</b> **IMDSv2 は SSRF を難しくするが、エージェントは自ら要求を組み立てられるため、 トークンの取得手順まで指示される余地が残る**（本記録の評価）。 また**メタデータを完全に塞ぐと、ロールによる認証情報の取得に依存した 既存のコードが動かなくなる**ことがある　<b>出典:</b> 1、3</div><div class=sub><b>数え方:</b> **長期メモリへの書き込みを制限し、改変の有無を監査できる形にする**　<b>状況:</b> 対応手段は公表されていない　<b>副作用:</b> **メモリはエージェントの有用性の源であり、書き込みを止めれば機能が落ちる。** **一方で現状、改変されたメモリの検出・除去・監査の方法が公表されていないため、 利用者は自前で仕組みを作る必要がある**（本記録の評価）　<b>出典:</b> 1、3</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年12月25日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**Zenity Labs が AWS へ本件を報告した（責任ある開示）。** **報告の宛先・報告時点で指摘した項目の一覧は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年2月14日（報道値・本記録は裏付けを得ていない）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**AWS が、新規にデプロイされるエージェントについて IMDSv2 のみを有効にしたとされる。** **この日付は二次的な記事が示したもので、本記録の作成者は AWS の公表や Zenity の記述による裏付けを得ていない。** Zenity の公表は「報告後に IMDSv2 を既定化した」と述べるにとどまり日付を示していない</td></tr><tr><td class="sm nowrap tw">2026年8月ごろ</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**AWS が既定の実行ロールの権限を縮小したとされる**（Zenity の更新情報として報じられた）。 **正確な日付・変更内容の一覧は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年9月29日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**Zenity が、AWS が既定の実行ロールから 「他のエージェントを呼び出す権限」「非公開の会話を読む権限」 「Secrets Manager へアクセスする権限」を削除していることを確認した。** Zenity はこれをもって設定の不備と安全でない既定が**「完全に緩和された」**と評価している</td></tr><tr><td class="sm nowrap tw">2026年10月6日 13:30 PDT</td><td class=nowrap><span class="b kind">公表</span></td><td>**【本件とは別件】AWS がセキュリティ速報 2026-127-AWS を公表した。** bedrock-agentcore-starter-toolkit の **0.1.4 以上 0.3.13 以下**に **CVE-2026-105812（細工されたエージェントのインポート後の実行・デプロイで任意コード実行）**と **CVE-2026-106032（インポート時の意図しないネットワーク要求・ローカルファイルへのアクセス＝SSRF）**。 対処は **0.3.14 へのアップグレード**と影響版でインポートしたエージェントの再インポート。 **謝辞は Koh Jun Sheng 氏で、Zenity および AgentCorruption への言及は無い。** **本記録はこれを、同じ製品についての別の研究・別の報告者として区別して記録する**</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Zenity Labs が「AgentCorruption」として本件を公表した**（SecTor 2026 の発表に合わせて）。 **単一のプロンプトで同一 AWS アカウント・同一リージョン内の AgentCore エージェント全体を掌握し、 内部エージェントへのアクセス・非公開の会話と長期メモリの閲覧・ クラウド認証情報の窃取・エージェント動作の永続的な改変が可能だったと説明した。** **影響は AgentCore に限らず、組み込みの道具を備えたエージェント全般に及ぶとした**</td></tr><tr><td class="sm nowrap tw">2026年10月8日 20:39 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Dark Reading が「&#x27;AgentCorruption&#x27; Puts AWS Environments at Risk With Single Prompt」を公開した。** **修正済みの Amazon Bedrock AgentCore の脆弱性により、攻撃者が1体の AI チャットボットを使って 組織のエージェント群全体を掌握できた可能性があると伝えた**（原文英語）。 本記録はこの記事を起点としている</td></tr><tr><td class="sm nowrap tw">2026年10月9日ごろ</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**AWS が、この研究は「想定され文書化された動作」を脆弱性として誤って描いていると反論した**（報道経由）。 **エージェントが別アカウントのリソースへアクセスできるのは、 開発者が実行ロールと対象リソースの両方で明示的に許可した場合のみ**であり、 実行ロールには必要最小限の権限だけを与えるよう推奨していると説明した。 **これに対し Zenity は、設定の不備と安全でない既定は修正済みで、 アカウントの境界は越えていないと強調している**</td></tr><tr><td class="sm nowrap tw">2026年10月10日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が確認を行った。** Zenity の公表（出典1）、AWS のセキュリティ速報一覧および 2026-127-AWS（出典4）、 報道（出典2・3）を取得した。 **本件に割り当てられた CVE は確認できず、AWS のセキュリティ速報にも 本件（AgentCorruption）に対応する項目は見つからなかった。** **Zenity の技術的な詳細記事（labs.zenity.io / zenity.io/blog 配下）は 推測した URL では取得できず、本記録は公表文（press release）と報道に依拠している。** **Dark Reading の記事本文は 403 で取得できず、保存分は RSS の要約のみである**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>8</span></div><ul><li><span class="b dk">当事者の公表なし</span><span class=ui>当事者（AWS）による本件の公表文書の不存在</span><div class=sm>**本記録の作成者は AWS のセキュリティ速報一覧を確認したが、 本件（AgentCorruption）に対応する項目を見つけられなかった。CVE も確認できなかった。** **AWS の立場として本記録が記載した内容（「想定され文書化された動作」であるという反論、 別アカウントのリソースへのアクセスは開発者の明示的な許可が必要であるという説明、 最小権限の推奨）は、すべて報道が伝えた同社の説明に依拠している。** **AWS が発表した一次文書は確認できていない。** なお AWS は2026年10月6日に**別件**（bedrock-agentcore-starter-toolkit・ CVE-2026-105812／CVE-2026-106032）の速報を出しており、 **AgentCore 周辺の脆弱性に速報と CVE を出す運用であること自体は確認できている**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響範囲がアカウント境界を越えたかどうか</span><div class=sm>**報道（出典3）は、取得できたものとして 「他アカウントが所有する内部 S3 への事前署名 URL」「内部 AWS サービス向けの証明書・鍵素材」を 挙げている。** **一方 Zenity は更新後の声明で「アカウントの境界は越えていない」と強調し、 AWS も「別アカウントのリソースへのアクセスは開発者が実行ロールと対象リソースの 両方で明示的に許可した場合のみ」と説明している。** **本記録はどちらが正しいかを判定できない。両方を併記する。** **この点は「アカウント分離が壁として機能するか」という設計判断に直結するため、 解消されていないことを明示する**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>修正の完全性についての評価</span><div class=sm>**Zenity は、設定の不備と安全でない既定は修正され「完全に緩和された」と評価している （2026年9月29日の確認に基づく）。** **一方、報道（出典3）は AWS の修正を「部分的」と要約し、 研究者も企業が独自のより厳しいロールを手動で割り当てるよう今も推奨していると伝えている。** **本記録はこの食い違いを、評価の対象が異なることに起因すると読む**—— **「AWS 側の既定」は修正され、「利用者が自分で作った設定」は修正されていない。** **ただしこの読みは本記録の整理であり、両者がそう説明しているわけではない**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>IMDSv2 の既定化の日付</span><div class=sm>**「2026年2月14日から、新規にデプロイされるエージェントで IMDSv2 のみを有効にした」という 日付は、本記録の作成者がウェブ検索で見た二次的な記事が示したものである。** **Zenity の公表文（出典1）は「報告後に IMDSv2 を既定化した」と述べるにとどまり日付を示していない。 AWS の公表による裏付けも得られていない。** **実行ロールの権限縮小の時期（2026年8月ごろ）も同様に報道値である。** **本記録はこれらを approx（概算）として扱い、確定値として扱わない**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>技術的な詳細記事を取得できていないこと</span><div class=sm>**本記録の作成者は Zenity の技術的な詳細記事を取得できなかった** （labs.zenity.io / zenity.io/blog 配下で推測した URL はいずれも 404 となった）。 **また Dark Reading の記事本文は 403 で取得できず、保存分は RSS の要約のみである。** **したがって本記録の技術の段階は、Zenity の公表文（出典1）と 2件の報道（出典2・3）から組み立てたものである。** **列挙・呼び出しに用いた具体的な API 名、必要だった IAM 操作の一覧、 メモリ改変の具体的なペイロードは確認できていない**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>AWS セキュリティ速報 2026-127-AWS と本件の関係</span><div class=sm>**AWS のセキュリティ速報 2026-127-AWS（2026年10月6日・ CVE-2026-105812／CVE-2026-106032・bedrock-agentcore-starter-toolkit 0.1.4〜0.3.13）は、 本記録の作成者が確認したところ Zenity および AgentCorruption に言及しておらず、 謝辞は Koh Jun Sheng 氏である。** **本記録はこれを別の研究・別の報告者による別件と判断し、 「AWS が AgentCore 周辺の脆弱性に速報と CVE を出す運用である」ことを示す対照として収めた。** **この判断は本記録の作成者によるものであり、 AWS も Zenity も両者の関係について説明していない。** **同じ製品名を含むため混同されやすい点に注意が要る**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>原因軸の立て方についての当事者との見解の相違</span><div class=sm>**本記録は原因軸として「設計・実装上の不備」と「権限管理の不備」を置いた。** **しかし AWS は本件を「想定され文書化された動作」と位置づけており、 設計上の不備であるという前提を共有していない。** **また本記録はプロンプトインジェクションを原因に数えていない**—— **それは入力の手段であり、被害の範囲を決めたのは既定の実行ロールの権限設計である**という 本記録の評価に基づく。 **この切り分けは本記録の整理であり、Zenity・AWS のいずれもこの形で説明していない**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の有無</span><div class=sm>**実際に悪用された事例は報告されていない。** ただし**「報告されていない」は「起きていない」ことの証明ではない。** **AWS が影響範囲を調べたか、悪用の痕跡を確認したか、 利用者へ個別に通知したかはいずれも公表されていない。** **とくに永続化が長期メモリの改変によって成立するため、 過去に悪用されていた場合に利用者が気づく手立てが示されていない**（本記録の評価）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>公開エージェント1体への単一プロンプトから、同一アカウント・同一リージョンのエージェント全体に到達した経路</div><div class=svgwrap><svg viewBox="0 0 794 636" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,274.0 C91.0,274.0 91.0,356.0 16,356.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,356.0 C193.0,356.0 193.0,216.0 220,216.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,216.0 C295.0,216.0 295.0,311.0 220,311.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,311.0 C295.0,311.0 295.0,413.0 220,413.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,413.0 C193.0,413.0 193.0,274.0 16,274.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,413.0 C397.0,413.0 397.0,53.0 424,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,141.0 424,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C499.0,141.0 499.0,222.0 424,222.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,303.0 424,303.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,385.0 424,385.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,474.0 424,474.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,576.0 424,576.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,274.0 C397.0,274.0 397.0,237.0 628,237.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,237.0 C601.0,237.0 601.0,385.0 424,385.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,400.0 C703.0,400.0 703.0,319.0 628,319.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,319.0 C601.0,319.0 601.0,53.0 424,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,319.0 C499.0,319.0 499.0,311.0 220,311.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,400.0 C397.0,400.0 397.0,274.0 16,274.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="243.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="265.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（研究者による実証</text><text x="91.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="91.0" y="292.0" text-anchor="middle" fill="#f48fb1" font-size="10">実際の悪用の報告は無い</text><rect x="16" y="319.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="341.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">単一のプロンプト（プロン</text><text x="91.0" y="355.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プトインジェクション）</text><text x="91.0" y="368.0" text-anchor="middle" fill="#f48fb1" font-size="10">入力の手段。範囲を決めた</text><text x="91.0" y="380.0" text-anchor="middle" fill="#f48fb1" font-size="10">のは権限設計</text><rect x="220" y="179.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="201.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開エージェント（サポー</text><text x="295.0" y="215.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト用チャット）</text><text x="295.0" y="228.0" text-anchor="middle" fill="#64b5f6" font-size="10">外部へ要求を出せる道具を</text><text x="295.0" y="240.0" text-anchor="middle" fill="#64b5f6" font-size="10">持つ</text><rect x="220" y="267.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="289.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インスタンスメタデータサ</text><text x="295.0" y="303.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ービス（169.254.</text><text x="295.0" y="317.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">169.254）</text><text x="295.0" y="330.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正後は IMDSv2 </text><text x="295.0" y="342.0" text-anchor="middle" fill="#f48fb1" font-size="10">を既定化（新規分）</text><rect x="220" y="369.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="391.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">一時認証情報（アクセスキ</text><text x="295.0" y="405.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ー・シークレット・セッシ</text><text x="295.0" y="419.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ョントークン）</text><text x="295.0" y="432.0" text-anchor="middle" fill="#ffcc80" font-size="10">研究者の端末でも使えたと</text><text x="295.0" y="444.0" text-anchor="middle" fill="#ffcc80" font-size="10">される</text><rect x="424" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">既定の実行ロール（過剰権</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">限）</text><text x="499.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">アカウント・リージョン全</text><text x="499.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">体に及んでいた</text><rect x="424" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同一アカウント・同一リー</text><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジョンの他のエージェント</text><text x="499.0" y="153.0" text-anchor="middle" fill="#64b5f6" font-size="10">列挙・呼び出しが可能だっ</text><text x="499.0" y="165.0" text-anchor="middle" fill="#64b5f6" font-size="10">た</text><rect x="424" y="192.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部の財務エージェント</text><text x="499.0" y="227.0" text-anchor="middle" fill="#64b5f6" font-size="10">公開エージェントから到達</text><text x="499.0" y="239.0" text-anchor="middle" fill="#64b5f6" font-size="10">できたとされる</text><rect x="424" y="266.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="288.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Amazon ECR の</text><text x="499.0" y="302.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コンテナイメージ</text><text x="499.0" y="315.0" text-anchor="middle" fill="#ffcc80" font-size="10">/app のソースコード</text><text x="499.0" y="327.0" text-anchor="middle" fill="#ffcc80" font-size="10">・埋め込みの鍵</text><rect x="424" y="354.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="376.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">他利用者の非公開会話・長</text><text x="499.0" y="390.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">期メモリ</text><text x="499.0" y="403.0" text-anchor="middle" fill="#ffcc80" font-size="10">件数・範囲は非公表</text><rect x="424" y="430.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="452.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AWS Secrets </text><text x="499.0" y="466.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Manager の認証情</text><text x="499.0" y="480.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">報</text><text x="499.0" y="493.0" text-anchor="middle" fill="#ffcc80" font-size="10">AWS 外のサービス向け</text><text x="499.0" y="505.0" text-anchor="middle" fill="#ffcc80" font-size="10">の鍵を含む</text><rect x="424" y="532.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="554.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部 S3 への事前署名</text><text x="499.0" y="568.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> URL（他アカウント所</text><text x="499.0" y="582.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">有）</text><text x="499.0" y="595.0" text-anchor="middle" fill="#ffcc80" font-size="10">アカウント境界の越境は見</text><text x="499.0" y="607.0" text-anchor="middle" fill="#ffcc80" font-size="10">解が分かれている</text><rect x="628" y="206.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">改変された長期メモリ（永</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">続化）</text><text x="703.0" y="255.0" text-anchor="middle" fill="#ffcc80" font-size="10">検出・除去の方法は非公表</text><rect x="628" y="282.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="304.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Amazon Web S</text><text x="703.0" y="318.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ervices</text><text x="703.0" y="331.0" text-anchor="middle" fill="#80cbc4" font-size="10">既定を変更／「文書化され</text><text x="703.0" y="343.0" text-anchor="middle" fill="#80cbc4" font-size="10">た動作」と反論</text><rect x="628" y="370.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="392.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Zenity Labs</text><text x="703.0" y="405.0" text-anchor="middle" fill="#80cbc4" font-size="10">2025/12/25 報</text><text x="703.0" y="417.0" text-anchor="middle" fill="#80cbc4" font-size="10">告・2026/10/8 </text></svg></div><div class=fn>layer 0 は攻撃者と単一のプロンプト。 layer 1 は起点となった公開エージェント（外部へ要求を出せる道具を持つ）と インスタンスメタデータサービス、そこから得られた一時認証情報。 layer 2 は既定の実行ロールの過剰権限によって到達できた範囲—— 同一アカウント・同一リージョンの他のエージェント（内部の財務エージェントを含む）、 Amazon ECR のコンテナイメージ、他利用者の非公開会話、長期メモリ、AWS Secrets Manager。 layer 3 は永続化（改変された長期メモリによる将来の会話の転送）と、 修正を行った AWS・報告した Zenity Labs。 **点線は公表されていない関係、見解が分かれている関係、または本記録の評価にとどまるものを表す。** **研究者による実証（PoC）であり、実際に悪用された事例は報告されていない。** **アカウント境界を越えたかどうかは報道と Zenity・AWS の説明が食い違っており、本記録は判定できない。**</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** 構造上の難しさとして、 **エージェントへの入力は正規の利用者の入力と同じ経路で届く。** **「外部の文書や利用者の入力を読んで動く」ことがエージェントの機能であるため、 入力の検閲だけでインジェクションを止めきることはできない**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>エージェントに与える道具を棚卸しし、**外部へ任意の要求を出せる道具 （汎用の HTTP 取得・Web 閲覧）を、本当に必要なエージェントだけに限定する**<span class=sm>　**本記録の評価による。** 本件の起点は 「外向きリクエストを行える一般的なツールを備えた公開エージェント」である。 **道具を外しても業務要件で必要な場合は多いため、 宛先の許可一覧（到達できるホストの限定）で代替する。** **プロンプトの検閲よりも、できることの範囲を縮めるほうが確実である**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>公開エージェントと内部向けエージェントを**別の AWS アカウントに分離する**<span class=sm>　**本記録の評価による。各社の推奨として示されたものではない。** 本件では**公開されたカスタマーサポート用エージェントから内部の財務エージェントへ 移れた**とされる。AWS 自身が **「別アカウントのリソースへのアクセスは開発者が明示的に許可した場合のみ」**と 説明しており、**アカウント境界が実質的な壁として機能している**</span></div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価による。研究環境での実証であり、実際の検知の有無は公表されていない。** **エージェントからメタデータサービスへの照会は、 本来の業務では起きない通信であり、検知の手がかりになりうる。** また**エージェントが出した外向きの要求の宛先を記録していれば、 認証情報が外部へ送られたことは痕跡として残る。** **これらのログを既定で取得・監視しているかは公表されていない**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>エージェントの実行環境から**メタデータサービスへの経路を到達不能にする** （IMDSv2 の強制に加え、ネットワークレベルで遮断する）<span class=sm>　**AWS は新規デプロイのエージェントについて IMDSv2 を既定化した。** ただし**エージェントは自ら要求を組み立てられるため、 トークンの取得手順まで指示される余地が残る**（本記録の評価）。 **到達そのものを塞ぐのが確実である。** メタデータに依存した既存のコードが動かなくなる副作用を併せて点検する</span></div><div class=ctl><span class="b eff">検知できた</span>エージェントの**外向き通信の宛先を許可一覧で限定し、記録する**<span class=sm>　**本記録の評価による。** 本件では盗んだ認証情報を **外部のサーバーへ送信**している。 **宛先を限定すれば持ち出しが成立せず、記録していれば事後に追える。** エージェントの出力先は人間の操作より予測しやすいため、許可一覧が機能しやすい</span></div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** ただし構造として、 **エージェントの実行ロールによる列挙操作は監査ログに残る種類の操作である。** **「あるエージェントの実行ロールが、他のエージェントを列挙した」という事象は 本来の業務では起きないため、検知規則として書ける**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>実行ロールを**エージェントごとに分け、対象リソースを自分自身に限定する** （ワイルドカードの資源指定を使わない）<span class=sm>　**AWS の推奨（必要最小限の権限）と一致する。** Zenity も**「企業は独自のより厳しいロールを手動で割り当てるべき」**としている。 **AWS 側の既定が修正された後も、利用者が自分で作った過剰権限のロールは 自動では縮まらない**点が実務上の要点である（本記録の評価）</span></div><div class=ctl><span class="b eff">検知できた</span>**実行ロールによる列挙・管理系 API の呼び出しを監査ログで監視する**<span class=sm>　**本記録の評価による。** エージェントの実行ロールが行う操作は 業務上の範囲が狭く定まるため、**範囲外の操作を検知規則にしやすい。** まず「このロールは平常時にどの API を呼ぶか」を棚卸しすることから始める</span></div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** **コンテナイメージの取得（ECR からの pull）は 監査ログに残る操作であり、「エージェントの実行ロールが 別のエージェントのイメージを引いた」は異常として検知できる**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>**コンテナイメージに認証情報を埋め込まない** （秘密情報は実行時に取得し、イメージには残さない）<span class=sm>　**本記録の評価による。** 本件ではイメージの `/app` から **パスワード・API キー**が得られたとされる。 **イメージはソースコードと同じ扱いで管理する**—— 取得されうる前提で、中身に秘密を置かない</span></div><div class=ctl><span class="b eff">侵入を防げた</span>エージェント間の呼び出しを**明示的に許可した組み合わせだけに限定する**<span class=sm>　**AWS は修正で既定の実行ロールから「他のエージェントを呼び出す権限」を削除した** （Zenity が2026年9月29日に確認）。 **利用者が自分で広い権限を付けている場合は、この修正の恩恵を受けない**（本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** **Secrets Manager からの秘密情報の取得は 監査ログに残る操作であり、「どのロールがどの秘密を取ったか」は追跡できる。** **会話・メモリの読み取りについては、監査の仕組みの有無が公表されていない**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**秘密情報を、それを使うエージェント以外から読めないよう資源ポリシーで区切る** （実行ロール側の許可だけに頼らない）<span class=sm>　**本記録の評価による。** AWS は修正で既定の実行ロールから **Secrets Manager へのアクセス権限を削除**したが、 **業務上必要なエージェントには付け直すことになる。** そのとき**秘密情報の側（資源ポリシー）でも読める主体を限定する**と、 ロールの設定を誤っても範囲が残らない</span></div><div class=ctl><span class="b eff">影響を限定できた</span>**外部サービス向けの鍵を短命にし、自動で更新する**<span class=sm>　**本記録の評価による。** 本件で得られたのは **AWS の外のサービス向けの鍵を含む**とされる。 **AWS の一時認証情報は期限があるが、外部サービスの API キーは長命なことが多い。** **窃取時の被害の長さは鍵の寿命で決まる**</span></div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。これは本記録が最も問題と見る点である。** **メモリの整合性を検証する仕組みが示されておらず、 仮に過去に改変されていた場合に利用者が気づく手立てが無い。** **従来のインシデント対応は「どのホストが侵害されたか」「どの資格情報を失効させるか」を 軸にするが、エージェント基盤では「どのメモリが汚染されたか」という軸が加わる**（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>**長期メモリへの書き込みを、出所が明示された内容だけに限定し、 書き込みの履歴を監査できる形で残す**<span class=sm>　**本記録の評価による。対応手段は公表されていない。** **メモリはエージェントの有用性の源であり、書き込みを止めれば機能が落ちる。** したがって**止めるのではなく、誰がいつ何を書いたかを追えるようにする**のが現実的である</span></div><div class=ctl><span class="b eff">復旧を早められた</span>**侵害が疑われたときに、長期メモリを既知の正常な状態へ戻す手順を事前に用意する**<span class=sm>　**本記録の評価による。** 設定やファイルと違い、 **メモリは「業務で蓄積した資産」でもあるため、単純に消せない。** **どこまで戻すか・何を残すかの判断基準を平時に決めておく必要がある**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>**窃取されうる認証情報を短命にし、侵害時に一括失効できるようにする**<span class=sm>　**本記録の評価による。** 本件では盗んだ一時認証情報が **研究者の端末でも使えた**とされる。 **失効の手順と所要時間を測っておく**ことが、 エージェント経由の侵害でも効く（本記録の評価）</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>AI エージェントのリスク評価を「プロンプトの検閲」から「実行ロールの範囲」へ組み替える</div><div class=lw>本件で入力の手段はプロンプトインジェクションだが、 **被害の範囲を決めたのは既定の実行ロールがアカウント・リージョン全体に及んでいたこと**である。 **エージェントは外部の文書・Web ページ・利用者の入力を読んで動くのが機能であり、 インジェクションの成功率はゼロにならない**（本記録の評価）</div><div class=la><b>取るべき行動</b> エージェント案件の審査項目に **「このエージェントが乗っ取られたとき、その認証情報で何ができるか」**を加え、 **答えを IAM の実際の権限で示させる。** 「プロンプトのガードレールを入れている」は答えとして受け付けない。 **既存のエージェントについても、実行ロールが既定のままかを棚卸しする**</div></li><li><div class=lp>マネージドサービスの既定値の変更を追跡する経路を、CVE とは別に持つ</div><div class=lw>**本件には CVE が割り当てられておらず、AWS のセキュリティ速報にも項目が無い** （本記録の作成者が2026年10月10日に確認）。 **CVE が無ければ、購読・スキャナ・SBOM の照合・パッチ適用の記録という 既存の脆弱性管理の仕組みに一切載らない。** 同じ週に AWS は**別件には速報と CVE を出している**（2026-127-AWS）</div><div class=la><b>取るべき行動</b> 脆弱性管理の手順に**「クラウドサービスの既定値・権限設計の変更」を追跡する項目**を足す—— 利用しているマネージドサービスの更新履歴の購読、 **研究者・セキュリティベンダーの発表の定期確認**、 四半期ごとの既定設定の再点検。 **「CVE が無いから対象外」という扱いにしないことを明文化する**</div></li><li><div class=lp>公開エージェントと内部エージェントの同居を、アカウント設計の問題として扱う</div><div class=lw>起点は**インターネットに公開されたカスタマーサポート用のエージェント**で、 そこから**内部の財務エージェント**へ移れたとされる。 **AWS 自身が「別アカウントのリソースへのアクセスは開発者が明示的に許可した場合のみ」と 説明しており、アカウント境界が実質的な壁として機能している**</div><div class=la><b>取るべき行動</b> **インターネットに公開するエージェントを、内部向けエージェントとは別の AWS アカウントへ分離する** 方針を決める。分離の運用コスト（メモリ・知識ベース・監視の分断）と、 **既定ロールの過剰権限が残っていても範囲を区切れる効果**を並べて判断する。 **既存の構成について「公開エージェントと内部エージェントが同居しているアカウント」を 一覧にすることから始める**</div></li><li><div class=lp>当事者と研究者で「脆弱性か否か」が割れている事案でも、利用者の行動は変わらないと整理する</div><div class=lw>**AWS は「想定され文書化された動作」とし、Zenity は「安全でない既定」とする。** **しかし「既定のまま使えば過剰権限であり、絞るのは利用者の仕事」という点は両者が一致している** （本記録の評価）</div><div class=la><b>取るべき行動</b> 見解が割れている報告を受けたときの判断手順を決める—— **①双方の主張を併記したまま、②「利用者側で設定を変える必要があるか」の1点に絞って判定し、 ③必要なら対応する。** **「ベンダーが脆弱性と認めていないから対応しない」という判断を禁じる。** **責任共有モデルでは、既定値の選択が利用者の責任範囲に落ちることがある**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>エージェントの実行ロールを、エージェントごとに分けて対象リソースを自分自身に限定する</div><div class=lw>**既定の実行ロールの権限が、元のエージェントではなく 同一アカウント・同一リージョンの AgentCore エージェント全体に及んでいた。** 研究者は「AgentCore のワークロードに既定で付くロールは過剰権限だ」と述べている（原文英語）</div><div class=la><b>取るべき行動</b> エージェントごとに実行ロールを作り、**資源指定にワイルドカードを使わず自分自身の ARN に限定する。** **AWS が既定ロールの権限を縮小した後も、 自分で作った広いロールは自動では縮まらない**ため、 **既存のロールの権限を列挙して棚卸しする。** 棚卸しは「平常時にこのロールがどの API を呼ぶか」の記録から始める</div></li><li><div class=lp>エージェントの実行環境からメタデータサービスへの到達を塞ぎ、外向き通信の宛先を限定する</div><div class=lw>**攻撃の起点は、エージェントに `169.254.169.254` を読ませて 一時認証情報を取得し外部へ送らせることだった。** **エージェントは外部へ要求を出すことそのものが機能であり、SSRF の素材を標準装備している** （本記録の評価）</div><div class=la><b>取るべき行動</b> **IMDSv2 の強制に加え、ネットワークレベルでメタデータへの到達を遮断する。** 併せて**エージェントの外向き通信を宛先の許可一覧で限定し、全件を記録する。** **「エージェントからメタデータサービスへの照会」と 「許可一覧外への送信」を検知規則にする**—— いずれも本来の業務では起きない通信である</div></li><li><div class=lp>コンテナイメージに秘密情報を埋め込まない</div><div class=lw>**Amazon ECR からエージェントのコンテナイメージが取得され、 `/app` ディレクトリのソースコードと、埋め込まれたパスワード・API キーが得られた**とされる</div><div class=la><b>取るべき行動</b> エージェントのイメージを走査し、**パスワード・API キー・接続文字列が 含まれていないかを確認する**（CI に走査を組み込む）。 秘密情報は**実行時に取得する形**に変え、**イメージはソースコードと同じ扱いで管理する**。 **イメージが取得されうる前提で設計する**</div></li><li><div class=lp>秘密情報は実行ロール側だけでなく資源側でも読める主体を限定する</div><div class=lw>**AWS Secrets Manager に保管された認証情報 （AWS の外のサービス向けの API キー・OAuth トークンを含む）が取得された。** AWS は修正で既定ロールから Secrets Manager へのアクセス権限を削除したが、 **業務上必要なエージェントには付け直すことになる**（本記録の評価）</div><div class=la><b>取るべき行動</b> 秘密情報ごとに**資源ポリシーで読める主体を限定する**（実行ロール側の許可だけに頼らない）。 **外部サービス向けの鍵は短命にし、自動更新を入れる**—— AWS の一時認証情報には期限があるが、外部サービスの API キーは長命なことが多く、 **窃取時の被害の長さは鍵の寿命で決まる**</div></li><li><div class=lp>長期メモリの汚染を、インシデント対応の対象として手順に入れる</div><div class=lw>**永続化は設定でもファイルでもなく、エージェントの長期メモリに埋め込まれた。** **改変されたメモリの検出・除去・監査の方法は公表されていない**（本記録が最も問題と見る点）</div><div class=la><b>取るべき行動</b> インシデント対応手順に**「どのメモリが汚染されたか」という軸を足す**—— ①メモリへの書き込みの履歴を残す、 ②**既知の正常な状態へ戻す手順と、どこまで戻すかの判断基準を平時に決める** （メモリは業務で蓄積した資産でもあるため単純に消せない）、 ③エージェントの応答に含まれる外部宛先への転送を検知する。 **ホストと資格情報だけを対象にした既存の手順では、この永続化を取り除けない**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Amazon Bedrock AgentCore（または同種のエージェント基盤）で、実行ロールを既定のまま使っている</td><td class=sm>**既定の実行ロールの権限が、同一アカウント・同一リージョンの エージェント全体に及んでいたことが被害範囲を決めた。** AWS 側の既定は修正されたが、**自分で作った広いロールは自動では縮まらない**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> インターネットに公開されたエージェントと、内部業務用のエージェントを同一 AWS アカウント・同一リージョンに置いている</td><td class=sm>本件では**公開されたカスタマーサポート用エージェントから内部の財務エージェントへ移れた**とされる。 **アカウント境界は AWS 自身が実質的な壁として説明している**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> エージェントに汎用の HTTP 取得・Web 閲覧の道具を与えており、外向き通信の宛先を限定していない</td><td class=sm>**攻撃の起点は「外向きリクエストを行える一般的なツールを備えた公開エージェント」である。** メタデータサービスの照会と認証情報の持ち出しの両方がこの道具で成立した</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> エージェントの実行ロールが呼ぶ API を棚卸ししておらず、範囲外の操作を検知する規則が無い</td><td class=sm>列挙・エージェント間呼び出し・コンテナイメージの取得・秘密情報の取得は **いずれも監査ログに残る種類の操作**であり、 **実行ロールの平常時の範囲が分かっていれば検知規則にできる**（本記録の評価）</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> エージェントの長期メモリ・会話履歴について、書き込みの履歴や改変の監査の仕組みを持っていない</td><td class=sm>**永続化は長期メモリの改変で成立し、その検出・除去・監査の方法は公表されていない。** ホストと資格情報だけを対象にした既存のインシデント対応手順では取り除けない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性管理の対象を CVE が発行されたものに限っており、マネージドサービスの既定値の変更を追跡していない</td><td class=sm>**本件には CVE が無く、AWS のセキュリティ速報にも項目が無い。** 一方で同じ週に AWS は**別件には速報と CVE を出している**—— **CVE の有無で対応を決める運用では本件が台帳に現れない**</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月6日 13:30 PDT Amazon Web Services, Inc.</span> <a href="https://aws.amazon.com/security/security-bulletins/2026-127-aws/" target="_blank" rel="noreferrer noopener nofollow">2026-127-AWS: CVE-2026-105812 and CVE-2026-106032 - Issue with Bedrock AgentCore Starter Toolkit - Import Agent Code Injection and SSRF</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(原文英語。**【本件とは別件の資料である】本記録の作成者が2026年10月10日に取得して確認した。** **対象は bedrock-agentcore-starter-toolkit 0.1.4 以上 0.3.13 以下。** **CVE-2026-105812**＝悪意を持って細工されたエージェントをインポートし その後実行またはデプロイすると任意のコードが実行される可能性、 **CVE-2026-106032**＝インポート時に意図しないネットワークリクエストが発生したり ローカルファイルにアクセスされたりする可能性（SSRF）。 **対処は 0.3.14 へのアップグレードと、影響版でインポートしたエージェントの再インポート。** **当該ツールキットは2026年3月27日に非推奨となり、移行先として AgentCore CLI （@aws/agentcore）が推奨されている。** **謝辞は Koh Jun Sheng 氏で、Zenity および AgentCorruption への言及は無い。** **CVSS スコアの記載は確認できなかった。** **本記録はこれを、同じ製品群についての別の研究・別の報告者による別件として収めた** ——**「AWS が AgentCore 周辺の脆弱性に速報と CVE を出す運用である」ことを示す対照であり、 本件（AgentCorruption）には速報も CVE も無いという事実と並べて読むためのものである。** **同じ製品名を含むため混同されやすい点に注意が要る**)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月8日 Zenity Ltd.（Zenity Labs）</span> <a href="https://zenity.io/press-release/zenity-labs-discloses-agentcorruption-a-chain-of-aws-agentcore-flaws" target="_blank" rel="noreferrer noopener nofollow">Zenity Labs Discloses AgentCorruption, a Chain of AWS AgentCore Flaws That Allowed One Prompt to Take Over All AgentCore Agents Within an AWS Account and Region</a> <span class="b kind">ニュースリリース</span><span class=sm>（(原文英語。**発見者による公表文。本記録が一次に近い資料として確認できた唯一のもの。 本記録の作成者が2026年10月10日に取得した。** **2026年10月8日に SecTor 2026（トロント）での発表に合わせて公表されたこと**、 **単一のプロンプトで同一 AWS アカウント・同一リージョン内の AgentCore エージェント全体を掌握したこと**（原文 &quot;took over all AgentCore agents within the same AWS account and region&quot;）、 **内部エージェントへのアクセス・非公開の会話と長期メモリの閲覧・ Secrets Manager の認証情報の窃取・エージェント動作の永続的な改変が可能だったこと**、 **攻撃の起点が外向きリクエストを行える一般的な道具を備えた公開エージェントであること**、 **IMDS を照会させて一時認証情報を取得したこと**、 **既定の実行ロールの権限が元のエージェントに限定されず アカウント・リージョン内の全エージェントに及んでいたこと**、 **エージェント間呼び出し・ECR のコンテナイメージの取得・ Secrets Manager と環境変数からの鍵の取得・メモリ改変による永続化**、 **影響が AgentCore に限らず組み込みの道具を備えたエージェント全般に及ぶとしていること**、 **2025年12月25日に AWS へ報告したこと**、 **AWS が IMDSv2 を既定化し既定の実行ロールの権限を縮小したこと**、 **2026年9月29日に Zenity がその修正を確認したこと**、 **共同創業者兼 CTO の Michael Bargury の発言 &quot;Our research shows the difficulties in getting those just right.&quot;** の出典。 **CVE 番号への言及は無い。具体的な推奨対策の記載も無い。 個々の研究者名も記載されていない**（出典2で確認した）。 **本記録の作成者は Zenity の技術的な詳細記事を取得できなかった** ——推測した URL（labs.zenity.io / zenity.io/blog 配下）はいずれも 404 となった)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月9日 Security Boulevard</span> <a href="https://securityboulevard.com/2026/10/a-single-prompt-could-lead-to-agentcorruption-zenity-says/" target="_blank" rel="noreferrer noopener nofollow">A Single Prompt Could Lead to &#x27;AgentCorruption,&#x27; Zenity Says</a> <span class="b kind">記事</span><span class=sm>（(原文英語。**研究者名と発言の出典。本記録の作成者が2026年10月10日に取得して確認した。** **研究者が Tamir Ishay Sharbat と Lana Salameh であること**、 両名の発言 **&quot;Now that we have the credentials the next question is what we can do with them,&quot;** **&quot;The answer is a lot. Because the Role that is attached to AgentCore workloads by default is overprivileged.&quot;** **&quot;Users could have continued talking to what appeared to be a trusted enterprise agent&quot;** （いずれも原文英語）、 **報告された脆弱性が AWS によって修正済み（&quot;have since been fixed by AWS&quot;）とされていること**の出典。 **CVE 番号への言及は無く、報告日・修正日などの時期の記載も無い。 利用者向けの明示的な推奨対策も記載されていない。 AWS の公式コメントは掲載されていない**)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月（公開日は本記録では特定していない） THE DECODER</span> <a href="https://the-decoder.com/a-single-prompt-was-enough-to-hijack-every-ai-agent-in-an-aws-account-zenity-researchers-found/" target="_blank" rel="noreferrer noopener nofollow">A single prompt was enough to hijack every AI agent in an AWS account, Zenity researchers found</a> <span class="b kind">記事</span><span class=sm>（(原文英語。**技術的な段階と AWS の反論の出典。本記録の作成者が2026年10月10日に取得して確認した。** **攻撃段階の詳細**——公開のカスタマーサポート用チャットからのプロンプトインジェクション、 **AWS のオープンソースフレームワーク Strands の Web 用の道具を備えた検証用エージェントでの実証**、 **IMDS（169.254.169.254）から一時認証情報を取得して外部サーバーへ送信**、 **既定権限による全エージェントの列挙・ECR のコンテナイメージ（/app のソースコード）の取得・ 各エージェントの呼び出し・公開エージェントから内部の財務エージェントへの移動**、 **他利用者の非公開会話の読み取りと Secrets Manager の認証情報へのアクセス**、 **内部 AWS サービス向けの証明書・鍵素材、他アカウントが所有する内部 S3 への事前署名 URL**、 **長期メモリの改変による永続化（以後の会話を外部へ転送）**、 **盗んだ認証情報が研究者の端末でも使えたこと**、 **2025年12月25日の AWS への報告**、 **実行ロールの変更が2026年8月ごろであること（Zenity の更新情報）**、 **AWS の反論——この研究は「想定され文書化された動作」を脆弱性として誤って描いている、 エージェントが別アカウントのリソースへアクセスできるのは 開発者が実行ロールと対象リソースの両方で明示的に許可した場合のみ、 実行ロールには必要最小限の権限だけを与えるよう推奨**、 **Zenity 側の「完全に緩和された」「アカウント境界は越えていない」という主張**、 **AWS の修正を「部分的」と要約していること**、 **実環境での悪用事例の記載が無いこと**の出典。 **CVE 番号への言及は無い。公開日はページから特定できなかったため概算として記録する**)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月8日 20:39 UTC Dark Reading</span> <a href="https://www.darkreading.com/cloud-security/agentcorruption-aws-environments-at-risk-single-prompt" target="_blank" rel="noreferrer noopener nofollow">&#x27;AgentCorruption&#x27; Puts AWS Environments at Risk With Single Prompt</a> <span class="b kind">記事</span><span class=sm>（(原文英語。**本記録の起点となった記事。** **修正済みの Amazon Bedrock AgentCore の脆弱性により、 攻撃者が1体の AI チャットボットを使って組織のエージェント群全体を掌握できた可能性があったこと**の出典。 **保存分は RSS からの要約のみ（content_source: rss_only）で全文を含まない。** **本記録の作成者が本文を取得しようとしたところ HTTP 403 で拒否されたため、 記事本文の内容は確認できていない。** 本文の見出しと要約は保存分 〈output/articles/20261009/0033_dark-reading_agentcorruption-puts-aws-environments-at-risk-with.md〉で確認した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月10日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月9日の日次ニュース（Dark Reading の記事）を起点に、 **発見者である Zenity Labs の公表文（2026年10月8日）を取得して裏を取った。** **起点記事は RSS の要約のみで全文を含まず、本文の取得は HTTP 403 で拒否されたため、 事実関係は Zenity の公表文と2件の報道（Security Boulevard・THE DECODER）から組み立てた。** **Zenity の技術的な詳細記事は推測した URL では取得できず（いずれも 404）、 具体的な API 名・必要な IAM 操作の一覧・メモリ改変のペイロードは確認できていない** ——「齟齬・記録上の注意」に、作成者が裏取りできていない点として記録した。 **当事者である AWS の公表文書は確認できなかった。** 本記録の作成者が AWS のセキュリティ速報一覧を確認したが **本件に対応する項目は無く、CVE も割り当てられていない。** **AWS の立場（「想定され文書化された動作」であるという反論）は報道が伝えた説明に依拠している** ため、detail.primary_source_disclosure を not_stated とし、 「齟齬・記録上の注意」に当事者の公表が存在しないこととして記録した。 **一方で AWS は2026年10月6日に同じ製品群の別件 （bedrock-agentcore-starter-toolkit・CVE-2026-105812／CVE-2026-106032・ 報告者 Koh Jun Sheng 氏）の速報を出していることを確認したため、 これを relevance: comparison の出典として収めた** ——**同じ週に、一方には速報と CVE があり、他方には無いという対照**を記録に残すためである。 **両者は報告者も内容も異なる別件であり、同じ製品名を含むため混同されやすい点を明示した。** **type は vulnerability とし、secondary_types に exposure を併記した。** **root_causes は design-flaw と privilege-management とした。** **プロンプトインジェクションを原因に数えていない**—— **それは入力の手段であり、被害の範囲を決めたのは既定の実行ロールの権限設計である** という評価に基づく（この切り分けは本記録の整理であり、 「齟齬・記録上の注意」に作成者の判断として記録した）。 本記録が中心と見たのは**連鎖の構造**である—— ①エージェントの実行環境から IMDS へ到達できた、 ②既定の実行ロールの権限がアカウント・リージョン全体に及んでいた、 ③長期メモリに整合性の検証が無かった。 **①だけでは使える範囲が狭く、②だけでは認証情報が手に入らない。** attack.chain は公表文と報道から確実に言えることだけを6段階（初期侵入・認証情報アクセス・ 内部探索・横展開・収集・永続化）で置き、各段階に detection_opportunity を付けた。 技術者向けの核に置いたのは**権限の範囲とメモリの汚染**である。 とくに**長期メモリの改変については検出・除去・監査の方法が公表されていない**点を 本記録が最も問題と見る点として明示し、 **「どのメモリが汚染されたか」という軸を既存のインシデント対応手順に足す**ことを lessons.engineer に置いた。 経営向けには**CVE が無いことの実務上の影響**を記録した—— **CVE が無ければ購読・スキャナ・SBOM の照合・パッチ適用の記録という 既存の脆弱性管理の仕組みに一切載らない。** あわせて**当事者と研究者で「脆弱性か否か」が割れている事案の扱い**を学びに置いた ——**どちらの立場でも「既定のまま使えば過剰権限であり、絞るのは利用者の仕事」という点は 両者が一致している。** **影響範囲がアカウント境界を越えたかどうかは、報道（他アカウント所有の内部 S3 への 事前署名 URL を取得できたとする）と Zenity・AWS の説明（境界は越えていない）が食い違っており、 本記録は判定できないため両方を併記した。** **修正の完全性についても、Zenity が「完全に緩和された」とし報道が「部分的」と要約する 食い違いを記録し、評価の対象が「AWS 側の既定」と「利用者が作った設定」で 異なることに起因すると読んだ**（この読みは本記録の整理である）。 **IMDSv2 の既定化の日付（2026年2月14日）と実行ロールの権限縮小の時期（2026年8月ごろ）は いずれも報道値で裏付けを得られていないため approx として扱った。** **影響を受けた組織数・実際に悪用された事例・既存の構成への修正の反映・ 汚染されたメモリの検出手段はいずれも公表されていない**ため unknowns に列挙した。 AWS の公表・CVE の割り当て・Zenity の技術記事の確認が今後ありうるため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">AIエージェント</span><span class="b tag">プロンプトインジェクション</span><span class="b tag">AWS</span><span class="b tag">権限設計</span><span class="b tag">Bedrock AgentCore</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-10 09:15 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
