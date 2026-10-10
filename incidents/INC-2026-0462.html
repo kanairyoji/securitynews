@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ChromiumのIDN表示検査を2文字で迂回 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0462</span>ChromiumのIDN表示検査を2文字で迂回</h1>
+<header class="site-header">
+  <p class="subtitle">2026年10月3日、タイポスクワット監視サービス Have I Been Squatted の Ian Muscat・Leanne Briffaが、 **キリル文字の ө（U+04E9）と Latin k with hook の ƙ の2文字で、 Chromium 系ブラウザの国際化ドメイン名（IDN）の表示検査を すべて通過できることを示した**。 Chromium は IDN をそのまま表示してよいかを `SafeToDisplayAsUnicode()` の 7段の検査で判定し、さらに `GetSimilarTopDomain()` で 約8,462件の著名ドメインとの類似を見るが、 **前者の「全字がキリル文字の偽装」の検査は ハードコードされた28文字の一覧に含まれる文字だけで構成されたときにしか発動せず、 一覧に無い ө が1字混じるだけで通過する**（研究者はこれを「breaker」と呼ぶ）。 **後者は符号から発音記号を落として比較するが、 ө のバーと ƙ のフックは結合記号として残るため、本物と一致しない。** 研究者は аррӏө.com（apple）・oƙta.com（okta）・niƙe.com（nike）を含む **20件のそっくりドメインを実際に登録し、 Chrome 154 で Unicode 表示のまま有効な証明書付きで表示されることを示した**。 **メールクライアントではさらに検査が緩く、 Gmail（ウェブ）は20件すべてを Unicode で表示し、 Outlook Web は正当な IDN まで Punycode で表示した。** .com のゾーンファイル（2026年10月）の全数調査では、 **733,509件の IDN のうち161,894組が ASCII のドメインと見かけ上一致する**。 **本記録の作成者は、Google への事前通知の有無・ベンダーの見解・ 実際の悪用の観測を、いずれも確認できなかった**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月3日（Have I Been Squatted の公表）</span>
+  <span>最終更新: 2026年10月10日</span>
+</div>
+
+<div class="lead"><p><strong>2文字で済みました。</strong></p>
+<p>キリル文字の <strong>ө</strong>（U+04E9。カザフ語・モンゴル語・タタール語で使う）と、ラテン文字の <strong>ƙ</strong>（k with hook。ハウサ語・カライカライ語で使う）。この2文字を混ぜると、<strong>Chromium 系ブラウザの偽装ドメインの検査をすべて通過できます</strong>（Have I Been Squatted。2026年10月3日公表）。</p>
+<p><strong>検査は3層あります。</strong></p>
+<ol>
+<li><strong><code>SafeToDisplayAsUnicode()</code></strong> ——7段の検査。このうち「全字がキリル文字の偽装」を見る検査は、<strong>ハードコードされた28文字の一覧に全字が含まれるときにしか発動しません。</strong> <strong>一覧に無い ө が1字混じれば、発動しません</strong>（研究者はこれを「breaker」と呼びます）。</li>
+<li><strong><code>GetSimilarTopDomain()</code></strong> ——約8,462件の著名ドメインとの比較。符号（skeleton）を作るときに発音記号は落ちますが（ó→o）、<strong>ө のバーと ƙ のフックは結合記号として残ります。</strong>残るので、本物と一致しません。</li>
+<li><strong>移動時の警告（Safety Tips）</strong> ——近似一致のときに出ます。<strong>ただし「1文字違い」か「隣接の入れ替え」までで、2文字以上違うと出ません。</strong> <strong>TLD の前が5文字未満のドメインには、そもそも働きません。</strong></li>
+</ol>
+<p><strong>аррӏө.com（apple）は2文字違いなので③に掛かりません。</strong> <strong>oƙta.com（okta）は4文字なので③の対象外です。</strong>研究者は20件のそっくりドメインを実際に登録し、<strong>Chrome 154 で Unicode 表示のまま、有効な証明書付きで出ることを示しました。</strong></p>
+<p><strong>メールのほうがさらに緩いです。</strong> <strong>Gmail（ウェブ）は20件すべてを Unicode で表示し、Outlook Web は正当な IDN まで Punycode で表示しました。</strong> <strong>どちらもそっくりドメインの検査をしていません</strong>（研究者の表現では「Gmail はすべてを復号し、Outlook Web は何も復号しなかった」）。</p>
+<p><strong>規模の見積りがあります。</strong> .com のゾーンファイル（2026年10月）の全数調査で、<strong>733,509件の IDN のうち161,894組が ASCII のドメインと見かけ上一致します。</strong> <strong>ただしこれは「偽装の登録が16万件ある」という意味ではありません</strong>—— <strong>防御目的の登録や多言語対応の登録も含まれます</strong>（研究者の注記）。</p>
+<p><strong>本記録の作成者は、Google への事前通知の有無・ベンダーの見解・実際の悪用の観測を、いずれも確認できませんでした。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>Google（Chromium）への事前通知の有無とベンダーの見解</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録が取得した Have I Been Squatted の記事本文には、 Google・Mozilla・Microsoft・Verisign 等への通知の記述が無く、 ベンダーの回答も記載されていない。** **The Register の記事にもベンダーのコメントは含まれていない。** **したがって「報告したが未修正」なのか「報告していない」のかを 本記録は区別できない**（本記録の留保）。 **これは評価の前提として重要である**—— **責任ある開示の経過が分からないため、 本記録は「放置されている」とは書かない**（本記録の判断）</div></li><li><span class=ui>実際の攻撃での悪用の観測</span><span class="b rsn">探索したが未発見</span><div class=sm>**ө・ƙ を用いたそっくりドメインが実際のフィッシングに使われた事例は、 本記録が確認した資料には現れない。** **登録されている20件はいずれも研究者自身のものである。** **161,894組の見かけ上の一致についても、 研究者は「偽装が確認されたものではない」と明記している。** **本記録は悪用を未確認として扱う**</div></li><li><span class=ui>CVE 番号の割当</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が確認した資料に CVE 番号は現れない。** **Chromium 自身の文書は、IDN の表示の問題を 「Chrome 固有の不具合ではなく、ブラウザ全般における URL の 表示の仕方の限界である」と位置づけている**（検索結果にもとづく記述）。 **この立場では脆弱性として番号が付かないことがある**（本記録の読み）</div></li><li><span class=ui>修正の予定と時期</span><span class="b rsn">公表されていない</span><div class=sm>**ө・ү・ї を一覧に加えるのか、 全か無かの判定そのものを変えるのかは公表されていない。** **確認できるのは、キリル文字の м が2026年9月11日に追加され、 Chrome 155 の分岐より後だったため Chrome 155 には入らない、 という経過だけである**（研究者の記述）。 **文字単位の追補が続く限り、同じ形の迂回は次の文字で再現しうる** （本記録の評価）</div></li><li><span class=ui>Chromium 以外のブラウザ（Firefox・Safari）での表示挙動</span><span class="b rsn">公表されていない</span><div class=sm>**研究者の試験は Chrome 154（macOS）で行われている。** **The Register は「Chromium 系ブラウザ」「Chrome と Edge」と記述しており、 Firefox・Safari の挙動には触れていない。** **2017年の先行事例では Mozilla が Firefox を変更しない判断をした経緯がある** （Pindrop の記述）が、現在の挙動は本記録では確認していない</div></li><li><span class=ui>メールクライアントのデスクトップ版・モバイル版の挙動</span><span class="b rsn">公表されていない</span><div class=sm>**試験されたのは Gmail（ウェブ）と Outlook Web の2つのみである。** **日本で広く使われている他のクライアント （Outlook デスクトップ・各社のモバイルアプリ）の挙動は公表されていない** ——**自組織で確かめるほかない**（本記録の整理）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Have I Been Squatted（研究・公表の主体）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Google（Chrome / Chromium）</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Microsoft（Edge / Outlook Web）</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Google（Gmail ウェブ版）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Apple</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Okta</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>その他のなりすまされたブランド（17件）</span><span class="b role">なりすまされた・装われた組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>3層すべてを迂回するのに要した文字の種類数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>文字</span></div><div class=fn>**ө（U+04E9。キリル文字の barred o）と ƙ（Latin k with hook）。** **ө は e・o に、ƙ は k に見える**（The Register の記述）。 **ү・ї も同じ性質の breaker として残っている**（研究者の記述）</div></div><div class=fig><div class=fh><span class=fl>研究者が実際に登録したそっくりドメインの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>20<span class=fu>ドメイン</span></div><div class=fn>**キリル文字15件＋ƙ による5件。** **登録者は Have I Been Squatted であり、 各ドメインには迂回の仕組みを説明する研究用のページが置かれている。** **Chrome 154 では15件のキリル文字のドメインすべてが Unicode のまま表示された**</div></div><div class=fig><div class=fh><span class=fl>Chromium がハードコードしているキリル文字のそっくり文字の一覧の文字数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>28<span class=fu>文字</span></div><div class=fn>**研究者は「28／29文字の一覧」と記述している**—— **2026年9月11日に м が追加されて29文字になったが、 Chrome 155 の分岐より後だったため Chrome 155 には28文字が載る。** **この一覧に全字が含まれるときにしか検査が発動しない** （全か無かの作り）</div></div><div class=fig><div class=fh><span class=fl>GetSimilarTopDomain() が比較する著名ドメインの件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>8,462<span class=fu>ドメイン</span></div><div class=fn>**研究者の値は8,462件である。** **The Register は「ほぼ8,500件」と記述しており、同じものを指す。** **ここに載っていないブランドは、2層目の検査の対象にならない** （本記録の注記）</div></div><div class=fig><div class=fh><span class=fl>SafeToDisplayAsUnicode() の検査の段数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>7<span class=fu>段</span></div><div class=fn>**1段でも落ちれば Punycode で表示される**（The Register の記述）。 **本件で問題になったのは、そのうち 「全字がキリル文字の偽装」を見る段（whole-script confusable）である。** **ICU の偽装検査・混在文字（script mixing）・アイスランド語・ ラテン文字のシュワー・中点の各段は、 аррӏө がキリル文字だけで構成され、かつ許可された文字であるため通過した**</div></div><div class=fig><div class=fh><span class=fl>.com に委任されているドメインの総数（2026年10月のゾーンファイル）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>167,226,216<span class=fu>ドメイン</span></div><div class=fn>**研究者の全数調査の母数である。** **The Register は「約1億6,700万件」と丸めている**</div></div><div class=fig><div class=fh><span class=fl>.com のうち IDN（`xn--` 形式）のドメイン数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>733,509<span class=fu>ドメイン</span></div><div class=fn>**ASCII 以外の文字を含み Punycode で保存されているもの。** **IDN であること自体は不正を意味しない**（本記録の注記）</div></div><div class=fig><div class=fh><span class=fl>IDN と ASCII のドメインが見かけ上一致する組の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>161,894<span class=fu>組</span></div><div class=fn>**IDN 側は154,567件、相手方の ASCII 名は133,953件。** **7,009件の IDN が2件以上の ASCII 名に似ており、7,327組を加えている。** **研究者は「16万件の偽装ドメインが存在するという意味ではない」と明記している** ——**防御目的の登録、同一企業による多言語サイト、無関係の登録も含まれる。** **本記録もこれを「偽装の件数」として扱わない**（本記録の注記）</div></div><div class=fig><div class=fh><span class=fl>組のうち、生成した綴りが完全に一致し Unicode で表示されるものの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>102,592<span class=fu>組</span></div><div class=fn>**このうち非ラテン文字によるものは42件のみ （ギリシャ文字20・キリル文字15・アラビア文字4・漢字3）。** **残りはラテン文字の発音記号等によるものである**（本記録の読み）。 **ほかに「逆方向の混同」が Unicode 表示46,522組・ Punycode 表示12,780組ある**</div></div><div class=fig><div class=fh><span class=fl>移動時の警告（Safety Tips）が働かないドメインの長さ（TLD の前）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>文字</span></div><div class=fn>**5文字未満のドメインには近似一致の検査が働かない** （The Register・研究者の記述）。 **oƙta.com は4文字であるため対象外である。** **近似一致の条件自体も「完全一致・1文字違い・隣接の入れ替え」までで、 аррӏө.com は2文字違いのため掛からない**</div></div><div class=fig><div class=fh><span class=fl>試験したメールクライアントの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>クライアント</span></div><div class=fn>**Gmail（ウェブ）と Outlook Web。いずれも既定設定。** **20件の差出人ドメインについて、 Gmail は全件を Unicode で表示し、Outlook Web は全件を Punycode で表示した。** **デスクトップ版・モバイル版の挙動は試験されていない**（本記録の注記）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない。** **本記録が記録するのは、研究者が実際に登録した20件のドメインで 成立を示した経路である**（本記録の方針）。 **段は `reconnaissance`（そっくりに見える名前を見つけて登録する）と `initial-access`（利用者が表示を信頼する）の2段に絞る** ——**この先（認証情報の入力・マルウェアの配布）は本研究の範囲外であり、 無理に埋めない。** **防御の論点は、表示の検査ではなく 「表示を信頼しない認証方式になっているか」の側にある**（本記録の評価）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ハードコードされた一覧に無い文字（breaker）を含むそっくりドメインを選び、 登録する。** **研究者は ө（U+04E9）と ƙ を用い、 さらに短いブランド名（TLD の前が5文字未満）を選ぶと 移動時の警告の対象外になることを示した**（oƙta・sƙy・vƙ）。 **.com のゾーンファイルの全数調査では、 733,509件の IDN のうち161,894組が ASCII のドメインと 見かけ上一致している** ——**ただし研究者は「偽装が確認されたものではない」と明記している。** **本記録はこの段を「成立を示した経路」として記録する** ——**実際の攻撃者による登録は観測されていない**</div><div class=fn>根拠: Have I Been Squatted が登録した20件のドメインと .com ゾーンファイルの全数調査</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**利用者がアドレスバーまたはメールの差出人欄の表示を信頼する。** **Chrome 154 では、登録した15件のキリル文字のドメインが Unicode のまま、有効な証明書付きで表示された**（研究者の試験）。 **аррӏө.com は本物から2文字違いであるため移動時の警告が出ず、 oƙta.com は4文字であるため警告の対象にならない。** **メールでは Gmail（ウェブ）が20件すべてを Unicode で表示し、 Outlook Web は正当な IDN まで Punycode で表示した** ——**どちらもそっくりドメインの検査をしていない。** **攻撃者が自ら登録したドメインでは SPF・DKIM・DMARC がすべて通る** （研究者の記述）</div><div class=fn>根拠: Chrome 154（macOS）での表示結果の画面、Gmail・Outlook Web の試験結果（いずれも研究者の記事）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**研究者は、迂回の仕組み（どの検査がどの理由で通るか）、 登録した20件のドメインの完全な一覧、 対応する Punycode、Chrome の版、.com ゾーンファイルの全数調査の内訳を すべて公開した。** **各ドメインには、迂回の仕組みを説明する研究用のページを置いている。** **Google 等への事前通知の有無は記事に書かれていない。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **公開することで、読者（防御側）は自分のブラウザで挙動を確かめられる。** **同時に、使える breaker の文字と 「短いブランド名は警告の対象外」という条件も公開される** ——**攻撃側にとっても手順になる**（本記録の整理）。 **ただし ө の性質は Chromium のソースコードと Unicode の表を見れば 誰でも導けるものであり、 公開によって新しく生まれた情報は少ない**（本記録の判断）。</div></li></ul></div>
+<section id="s6"><h2>3層の検査が、それぞれ単独で「問題なし」と判断した——どの層も他の層の判断を見ていない<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>аррӏө.com（apple.com の模倣）が、なぜ3層すべてを通るのかを順に書きます</strong>（すべて Have I Been Squatted の記述にもとづきます）。</p>
+<p><strong>第1層: <code>SafeToDisplayAsUnicode()</code>——7段の検査。1段でも落ちれば Punycode 表示。</strong></p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>аррӏө での結果</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ICU の偽装検査</td>
+<td>通過</td>
+<td>単一文字体系（キリル文字のみ）で、許可された文字だけ</td>
+</tr>
+<tr>
+<td>混在文字（script mixing）</td>
+<td>通過</td>
+<td>混在していない</td>
+</tr>
+<tr>
+<td>アイスランド語・ラテン文字のシュワー・中点</td>
+<td>通過</td>
+<td>該当しない</td>
+</tr>
+<tr>
+<td><strong>全字がキリル文字の偽装（whole-script confusable）</strong></td>
+<td><strong>通過</strong></td>
+<td><strong>ө が一覧に無い</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>最後の段が本件の鍵です。</strong>この検査は、<strong>ハードコードされた28文字の一覧に「すべての文字」が含まれるときにしか発動しません。</strong> <strong>ө は一覧にありません。</strong> だから1字混じるだけで発動しません。<strong>研究者はこの性質を持つ文字を「breaker」と呼び、ө・ї・ү を挙げています</strong>（Chrome 154 時点）。</p>
+<p><strong>第2層: <code>GetSimilarTopDomain()</code>——約8,462件の著名ドメインとの比較。</strong></p>
+<p>ここでは符号（skeleton）を作ります。発音記号は落ちます（ó→o）。m は rn に写されます。<strong>ところが ө のバーと ƙ のフックは、結合記号として符号に残ります。</strong></p>
+<ul>
+<li><strong>oƙta.com</strong> の符号 → <code>[o k ' t a . c o r n]</code></li>
+<li><strong>аррӏө.com</strong> の符号 → <code>[a p p l o - . c o r n]</code></li>
+</ul>
+<p><strong>どちらも本物（okta.com / apple.com）の符号と一致しません。</strong> ƙ は1文字として格納されているため、<strong>発音記号を落とす処理では分解できません</strong>（研究者の記述）。</p>
+<p><strong>第3層: 移動時の警告（Safety Tips）。</strong></p>
+<p>これは近似一致で出ます。<strong>ただし条件が2つあります。</strong></p>
+<ul>
+<li><strong>完全一致・1文字違い・隣接の入れ替えまで。</strong> <strong>аррӏө.com は2文字違いなので掛かりません。</strong></li>
+<li><strong>TLD の前が5文字以上。</strong> <strong>oƙta.com は4文字なので対象外です。</strong></li>
+</ul>
+<p><strong>なお、よく訪れるサイトに対しても同じ検査が働きますが、訪問履歴が十分でない利用者ではこの層が機能しません</strong>（The Register の記述）。</p>
+<p><strong>対照例が示されています。</strong> <strong>ínstagarm[.]com</strong> は、発音記号が落ちて <code>instagarm</code> になり、instagram.com と2文字の入れ替えで一致するため、<strong>第3層の警告が出ます</strong>（The Register）。<strong>つまり第3層は動いています</strong>—— <strong>動かないのは「2文字以上違う」「短い」という条件のときです。</strong></p>
+<p><strong>研究者の総括がこの節の結論です</strong>—— <strong>「それぞれの層が自分だけで判断を下し、どの層も他の層が何を決めたかを確かめていない」</strong>（原文英語。本記録の訳）。</p></section>
+<section id="s7"><h2>20件を実際に登録し、Chrome 154 で Unicode 表示のまま有効な証明書付きで出ることを示した<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>研究者は机上の指摘ではなく、ドメインを登録して確かめています。</strong></p>
+<p><strong>キリル文字による15件</strong>（いずれも ө などの breaker を含みます）—— apple・openai・skype・sharepoint・pinterest・spacex・shell・xerox・opera・chess・kaspersky・lexisnexis・nexon・one・paychex。<strong>Chrome 154（macOS）では、15件すべてが Unicode のまま表示されました。</strong> <strong>記事には、аррӏө.com が有効な証明書付きで表示されている画面が載っています。</strong></p>
+<p><strong>ƙ による5件</strong>——okta・nike・sky・vk・kickstarter。<strong>このうち okta（4文字）・sky（3文字）・vk（2文字）は、TLD の前が5文字未満であるため、第3層の警告の対象外です。</strong></p>
+<p><strong>本記録が読者に重要と見るのはこの組み合わせです</strong>（本記録の評価）—— <strong>短いブランド名を持つ組織は、層が1つ少ない状態に置かれます。</strong> <strong>認証の入口を提供する事業者（Okta）がこの条件に当てはまることは、フィッシングの標的としての価値から見て意味があります。</strong></p>
+<p><strong>Punycode で見れば、まったく違う名前です。</strong></p>
+<table>
+<thead>
+<tr>
+<th>表示される名前</th>
+<th>Punycode（本来の姿）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>аррӏө[.]com</td>
+<td>xn--80a6aa68c8d.com</td>
+</tr>
+<tr>
+<td>срасөх[.]com</td>
+<td>xn--80a5aeq0fr0c.com</td>
+</tr>
+<tr>
+<td>oƙta[.]com</td>
+<td>xn--ota-f6a.com</td>
+</tr>
+<tr>
+<td>niƙe[.]com</td>
+<td>xn--nie-g6a.com</td>
+</tr>
+</tbody>
+</table>
+<p><strong>なお本記録の作成者は、これらのドメインへの接続を行っていません</strong>（研究者は安全であると述べていますが、本記録は確認していない接続先を自ら叩かない方針です）。</p>
+<p><strong>規模の見積りもあります</strong>（.com のゾーンファイル・2026年10月）。</p>
+<ul>
+<li>委任済みの .com: <strong>167,226,216件</strong></li>
+<li>IDN（<code>xn--</code> 形式）: <strong>733,509件</strong></li>
+<li>ASCII のドメインと見かけ上一致する IDN: <strong>154,567件</strong></li>
+<li>組の数: <strong>161,894組</strong>（相手方の ASCII 名は133,953件）</li>
+</ul>
+<p><strong>この16万という数字の読み方に注意が要ります。</strong> <strong>研究者自身が「偽装の登録が16万件あるという意味ではない」と明記しています</strong>——防御目的の登録、同一企業による多言語サイト、無関係の登録が含まれます。<strong>意味があるのは「そっくりに見える名前を作る余地がこれだけある」ことのほうです</strong>（本記録の整理）。</p></section>
+<section id="s8"><h2>メールクライアントは検査をしていない——Gmail はすべてを Unicode で、Outlook Web は正当な IDN まで Punycode で表示した<span class="b slot">波及・関係先</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>ここは本事案で最も実務に近い部分です</strong>（本記録の評価）。</p>
+<p>研究者は、差出人（<code>From</code>）ヘッダに A-label（<code>xn--</code> 形式）を入れた試験メールを送り、既定設定のクライアントでの表示を見ています。</p>
+<ul>
+<li><strong>Gmail（ウェブ）</strong>: <strong>20件すべてを Unicode で表示しました。</strong> <code>test@аррӏө.com</code> も <code>applıcation.com</code> も、攻撃者が望む形で出ます。<strong>Punycode は別欄（<code>mailed-by</code>）にのみ現れます。</strong></li>
+<li><strong>Outlook Web</strong>: <strong>20件すべてを A-label（Punycode）で表示しました。</strong> <strong><code>café.com</code> のような正当な IDN まで Punycode になります。</strong></li>
+</ul>
+<p><strong>研究者の総括</strong>——<strong>「Gmail はすべてを復号し、Outlook Web は何も復号しなかった」</strong>（原文英語。本記録の訳）。<strong>どちらもそっくりドメインの検査をしていません。</strong></p>
+<p><strong>本記録が取り出す意味を3つ書きます</strong>（本記録の評価）。</p>
+<ol>
+<li><strong>ブラウザの話として読むと取りこぼします。</strong>フィッシングの入口はメールです。<strong>ブラウザに3層あっても、メールの段階では0層です。</strong></li>
+<li><strong>Outlook Web の挙動は「安全側」ですが、副作用があります。</strong>正当な IDN まで Punycode になるため、<strong>利用者は <code>xn--</code> という文字列に慣れてしまいます。</strong>慣れると、異常の合図として働かなくなります（本記録の読み）。</li>
+<li><strong>SPF・DKIM・DMARC は、この攻撃を止めません。</strong> <strong>研究者が明記しています</strong>—— <strong>攻撃者が自分で登録したそっくりドメインでは、SPF・DKIM・DMARC はすべて通ります</strong>（原文英語。本記録の訳）。<strong>認証は「このドメインから送られたこと」を保証するだけで、「このドメインが本物に見える別のドメインであること」は見ません。</strong></li>
+</ol>
+<p><strong>研究者の推奨策のうち、メールに関するものを挙げます。</strong></p>
+<ul>
+<li>メールゲートウェイのそっくりドメイン／なりすまし対策の機能を使う</li>
+<li><strong>差出人ドメインが <code>xn--</code> のメールに印を付ける</strong></li>
+<li>外部送信者の表示（external-sender banner）を残す</li>
+<li><strong><code>xn--</code> の名前を DNS・プロキシのログで合図として扱い、許可一覧の外のものは記録・警告・遮断する</strong></li>
+</ul></section>
+<section id="s9"><h2>塞ぎ方が文字単位である限り、同じ形の迂回は次の文字で再現する<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>評価・示唆の節です</strong>（ここからは本記録の判断です）。</p>
+<p><strong>経過を並べると、形が見えます。</strong></p>
+<table>
+<thead>
+<tr>
+<th>時点</th>
+<th>塞がれたもの</th>
+<th>残ったもの</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2017年（Chrome 58）</td>
+<td>全字キリル文字の аррӏе.com</td>
+<td>（記録なし）</td>
+</tr>
+<tr>
+<td>2026年5月（Chrome 148）</td>
+<td>ҏ・ӿ</td>
+<td><strong>ү・ө・ї</strong></td>
+</tr>
+<tr>
+<td>2026年9月11日</td>
+<td>キリル文字の м（Chrome 155 には未収載）</td>
+<td><strong>ө・ү・ї</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>一覧に1文字ずつ足していく作り</strong>です。<strong>一覧に足りない文字が1つでもあれば検査が発動しない</strong>という全か無かの判定と組み合わさると、<strong>塞ぐ速さと新しい文字が使えるようになる速さの競争になります</strong>（本記録の評価）。</p>
+<p><strong>さらに、修正が利用者に届くまでに版の分岐が入ります。</strong>キリル文字の м は2026年9月11日に追加されましたが、<strong>Chrome 155 の分岐より後だったため Chrome 155 には入りません。</strong> <strong>「修正済み」と「利用者の手元で有効」の間に、1版ぶんの差があります</strong>（本記録の整理）。</p>
+<p><strong>したがって本記録は、読者が取る行動を「ブラウザの修正を待つ」側に置きません。</strong> <strong>置くのは次の3つです</strong>（本記録の判断）。</p>
+<ol>
+<li><strong>アドレスバーの目視を安全の根拠から外す。</strong> <strong>利用者教育で「URL を確認する」と教えている組織は、教え方を変える必要があります</strong>—— <strong>本件は「正しく読める」という前提そのものを崩しています。</strong></li>
+<li><strong>認証をドメインに縛る。</strong> <strong>研究者の一文がこの節で最も実用的です</strong>—— <strong>「apple.com に登録されたパスキーは、アドレスバーに何が表示されていようと、xn--80a6aa68c8d.com のログインページには応答しない」</strong>（原文英語。本記録の訳）。<strong>FIDO2・パスキーは、見た目ではなく実際のドメインで判定します。</strong> <strong>人が読み間違える問題を、人に読ませないことで解く手です。</strong></li>
+<li><strong><code>xn--</code> を合図として扱う。</strong> DNS・プロキシのログで <code>xn--</code> の名前を記録し、許可一覧の外は警告か遮断に回す。<strong>正当な IDN を使う取引先がある組織では許可一覧の整備が要りますが、日本の多くの組織では <code>xn--</code> の宛先はそもそも少ないはずです</strong>（本記録の評価。実測はしていない）。</li>
+</ol>
+<p><strong>最後に、本件の位置づけを書きます。</strong> <strong>これは「Chromium が甘い」事案ではありません。</strong> <strong>研究者自身が「Chromium の IDN 検査はどのブラウザよりも厳しく、それでもなお安全性と使いやすさを一部交換している」と書いています。</strong> <strong>多言語のドメインを使えるようにすることと、見た目の偽装を全部止めることは、同時には成立しません</strong>（本記録の整理）。<strong>成立しないのなら、防御の重心を表示の検査から認証の方式に移すのが筋だと本記録は判断します。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>Chromium（Google Chrome・Microsoft Edge ほかの Chromium 系ブラウザ）の国際化ドメイン名（IDN）の表示検査</td></tr><tr><th>ベンダー</th><td>Google（Chromium プロジェクト）</td></tr><tr><th>finding_name</th><td>公式の名称は付いていない（研究者は該当する文字を「breaker」と呼んでいる）</td></tr><tr><th>affected_versions</th><td>**研究者が試験したのは Chrome 154（macOS。2026年9月22日 安定版公開）である。** **キリル文字の м が一覧へ追加されたのは2026年9月11日だが、 Chrome 155 の分岐より後であるため、Chrome 155 にも28文字の一覧が載る** （研究者の記述）。 **ө・ү・ї はいずれの版でも残っている。** **Chrome 148（2026年5月。ICU 78.2／Unicode 17）で ҏ・ӿ は塞がれた。** **Microsoft Edge も Chromium 系であり同じ検査を共有する** （The Register は「Chrome と Edge」と明記）。 **Firefox・Safari の挙動は本記録では確認していない。**</td></tr><tr><th>exploit_status</th><td>**実際の攻撃での悪用は観測されていない**（本記録が確認した範囲）。 **成立は研究者が20件のドメインを実際に登録して実証している** ——**各ドメインには迂回の仕組みを説明する研究用のページが置かれている。** **.com のゾーンファイルには161,894組の「見かけ上一致する」組があるが、 研究者は「偽装が確認されたものではない」と明記しており、 本記録もこれを悪用の件数として扱わない。**</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月11日</td></tr><tr><th>patch</th><td>**本件に対する修正は公表されていない。** **確認できるのは文字単位の追補の経過だけである**—— **①Chrome 148（2026年5月）で ҏ・ӿ を塞いだ。** **②2026年9月11日にキリル文字の м を一覧へ追加した （Chrome 155 の分岐より後のため Chrome 155 には入らない）。** **ө・ү・ї を加えるのか、 全か無かの判定そのものを変えるのかは公表されていない**（本記録の未確定事項）。</td></tr><tr><th>vendor_response</th><td>**公表されていない。** **研究者の記事にはベンダーへの通知と回答の記述が無く、 The Register の記事にも Google・Microsoft のコメントが含まれていない。** **本記録は「報告したが未修正」か「報告していない」かを区別できない** 〈齟齬に記録〉。</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> フィッシング耐性のある認証（FIDO2・パスキー）へ移す　<b>状況:</b> 研究者の推奨（本記録の最優先）　<b>副作用:</b> **端末の紛失・交換時の再登録の運用が要る。** **対応していない旧い端末・ブラウザの利用者を切り捨てるか、 代替手段を残すかの判断が必要になり、 代替手段を残すとそこが弱点として残る**（本記録の評価）。　<b>数値の出所:</b> Have I Been Squatted の推奨策</div><div class=sub><b>数え方:</b> DNS・プロキシのログで `xn--` を含む宛先を記録し、許可一覧の外を警告または遮断する　<b>状況:</b> 研究者の推奨　<b>副作用:</b> **正当な IDN を使う取引先・国際化サイトへの到達が止まる。** **許可一覧の整備と維持の運用が発生する** ——**件数を測らずに遮断すると業務が止まる**（本記録の評価）。　<b>数値の出所:</b> Have I Been Squatted の推奨策</div><div class=sub><b>数え方:</b> メールゲートウェイのそっくりドメイン／なりすまし対策を使い、差出人ドメインが `xn--` のメールに印を付ける　<b>状況:</b> 研究者の推奨　<b>副作用:</b> **正当な IDN の差出人にも印が付き、 利用者が印に慣れて合図として働かなくなる** ——**Outlook Web が正当な IDN まで Punycode 表示にしているのと 同じ副作用である**（本記録の評価）。　<b>数値の出所:</b> Have I Been Squatted の推奨策</div><div class=sub><b>数え方:</b> 自社ブランドについて、符号の比較を通過する綴り（ө・ү・ƙ を使うもの）を防御的に登録する　<b>状況:</b> 研究者の推奨　<b>副作用:</b> **登録・更新の費用が継続的に発生し、 塞ぐべき綴りは文字が増えるたびに増える**（本記録の評価）。 **網羅はできない**——**組み合わせの数が多いため、 優先順位（4文字以下のブランド名・認証の入口になるドメイン）で絞るほかない。**　<b>数値の出所:</b> Have I Been Squatted の推奨策</div><div class=sub><b>数え方:</b> 保護対象のドメインから2文字以内の新しい `xn--` 登録を監視する　<b>状況:</b> 研究者の推奨　<b>副作用:</b> **誤検知が多くなる**——**161,894組の多くは防御目的の登録や 多言語サイトであり、偽装ではない**（研究者の注記）。 **選別の手間を見込む必要がある**（本記録の評価）。　<b>数値の出所:</b> Have I Been Squatted の推奨策</div><div class=sub><b>数え方:</b> 利用者教育から「アドレスバーの目視で本物を確認する」を安全の根拠として外す　<b>状況:</b> 本記録の整理　<b>副作用:</b> **「URL を確認する」は長年教えてきた項目であり、 外すと「では何を見ればよいのか」という問いが残る。** **代替（ブックマーク・自動入力の不発）を同時に配らないと、 利用者は判断の手がかりを失う**（本記録の評価）。　<b>数値の出所:</b> 本記録の整理</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2017年4月</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**【先行事例】研究者 Xudong Zheng が、全字をキリル文字で構成した аррӏе.com を登録し、Chrome・Firefox が apple.com と同じ見た目で 表示することを示した**（The Register の記述）。 **本人の2017年の記事は「すべての文字を1つの外国語の似た文字に置き換えると 保護が働かない」と述べている。** **Google はこれを Chrome 58 で修正した**（Pindrop の記述）</td></tr><tr><td class="sm nowrap tw">2017年</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**ベンダー各社が、T1 を受けて偽装の検査を導入し始めた** （The Register の記述）。 **Chromium では `SafeToDisplayAsUnicode()` の7段の検査として実装され、 その1つに「ラテン文字の代わりに使われることが知られているキリル文字」の ハードコードされた一覧が置かれた** ——**この一覧が全字を覆うときにしか発動しない作りが、 本件の迂回の前提である**（本記録の整理）</td></tr><tr><td class="sm nowrap tw">2026年5月（Chrome 148）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Chrome 148 が、ICU 78.2（Unicode 17）での再分類を受けて ҏ と ӿ を breaker として使えなくした**（研究者の記述）。 **一方で ү・ө・ї は引き続き使える状態で残った。** **塞ぐ作業は継続しているが、文字単位の追補である**（本記録の読み）</td></tr><tr><td class="sm nowrap tw">2026年9月11日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Chromium のキリル文字の一覧にキリル文字の м が追加された。** **ただし Chrome 155 の分岐より後だったため、 Chrome 155 には28文字の一覧がそのまま載る**（研究者の記述）。 **本記録はこれを、修正が利用者に届くまでに 版の分岐という遅れが入る例として記録する**（本記録の整理）</td></tr><tr><td class="sm nowrap tw">2026年9月22日</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Chrome 154 が安定版として公開された**（The Register の記述）。 **研究者が試験に用いたのはこの版（macOS）であり、 登録した15件のキリル文字のドメインはすべて Unicode のまま表示された**</td></tr><tr><td class="sm nowrap tw">2026年10月3日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Have I Been Squatted が記事「Turning IDN edge cases into typosquats」を 公開した**（著者 Ian Muscat・Leanne Briffa）。 **ө と ƙ による3層すべての迂回、20件の登録済みドメイン、 Chrome 154 での表示結果、.com ゾーンファイルの全数調査、 Gmail・Outlook Web の表示挙動、推奨策を示した**</td></tr><tr><td class="sm nowrap tw">2026年10月（.com ゾーンファイル）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**研究者が .com のゾーンファイルの全数を突き合わせた**—— **委任済み167,226,216件のうち IDN（`xn--` 形式）が733,509件、 そのうち ASCII のドメインと見かけ上一致するものが154,567件、 組の数では161,894組（相手方の ASCII 名は133,953件）。** **研究者は「これらは偽装の可能性があるという意味であり、 確認された偽装ではない」と明記している**</td></tr><tr><td class="sm nowrap tw">2026年10月10日 10:15 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Register が報じた。** **Chrome 154 の安定版公開日（9月22日）、 Chromium が比較する著名ドメインが「ほぼ8,500件」であること、 ínstagarm[.]com のような発音記号を使う例では Safety Tips が働くこと、 および「ブラウザだけの話であり、メールクライアントは さらに選り好みをしない」という整理を加えている**</td></tr><tr><td class="sm nowrap tw">2026年10月11日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】Have I Been Squatted の記事本文と The Register の記事を 本記録の作成者が直接取得して内容を確認した。** **Google・Microsoft の見解、および本件を受けた修正の予告は いずれも発見できなかった。** **実際の攻撃での悪用の観測も発見できなかった。** **本記録の作成者は、登録された20件のドメインへの接続は行っていない**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**研究者は「28／29文字の一覧」と記述している。** **本記録の読み**——**キリル文字の м が2026年9月11日に追加されて29文字になったが、 Chrome 155 の分岐より後であるため Chrome 155 には28文字が載る、 という時点の違いである**（本記録の整理）。 **Chrome 154 時点では28文字として扱うのが整合する。** **本記録はソースコードで確認していない。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**研究者は8,462件、The Register は「almost 8,500」と記述している。** **同じものを指しており、後者は丸めた表現と読める**（本記録の判断）。 **本記録は figures に8,462件を置き、注記に The Register の表現を併記した。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**`SafeToDisplayAsUnicode()`・`GetSimilarTopDomain()`・ 一覧の文字数・著名ドメインの件数は、 いずれも研究者の記述と The Register の記述に依拠している。** **本記録の作成者は Chromium のソースコードを読んでいない。** **検証は可能である**（公開されている） ——**本記録はそれを行っていない、という留保である。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**研究者は20件を自ら登録し、The Register も 「試してみてよい。安全である」と記述している。** **しかし本記録の作成者は、確認していない接続先を自ら叩かない方針のため、 接続して表示を確かめていない。** **したがって「Chrome 154 で Unicode 表示される」は 研究者の試験結果に依拠している。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**Xudong Zheng の2017年の記事は、本人のサイトではなく リンクログ（pxlnv.com）経由で参照している。** **「Google は Chrome 58 で修正し、Mozilla は Firefox を変更しない判断をした」は Pindrop の記述を介したものであり、 本記録は Chrome のリリースノートで確認していない。**</div></li><li><span class="b dk">当事者の公表なし</span><div class=sm>**本記録の作成者は、本件についての Google・Microsoft の公表を 探索したが発見できなかった**（2026年10月11日時点）。 **研究者の記事にもベンダーへの通知と回答の記述が無く、 The Register の記事にもコメントが含まれていない。** **したがって「報告したが未修正」か「報告していない」かを 本記録は区別できない**——**この区別が付かないため、 本記録は「放置」という評価を書かない**（本記録の判断）。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**Apple・Okta・Nike・OpenAI・Microsoft（SharePoint・Skype）・ Kaspersky ほかの名前で登録されたドメインについて、 各ブランドの側の声明・措置は、 本記録が確認した資料のいずれにも現れない。** **研究者が登録者であるため、商標上の争いが生じていない可能性がある** （本記録の読み）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ө が1字混じるだけで1層目が発動せず、 バーが結合記号として残るため2層目が一致せず、 2文字違い・4文字の名前には3層目が働かない—— メールの段階では検査そのものが無い</div><div class=svgwrap><svg viewBox="0 0 998 630" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,264.0 C91.0,264.0 91.0,366.0 16,366.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,366.0 C193.0,366.0 193.0,220.0 220,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C397.0,220.0 397.0,220.0 424,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C397.0,220.0 397.0,322.0 424,322.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C397.0,220.0 397.0,417.0 424,417.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,220.0 C601.0,220.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,322.0 C601.0,322.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,417.0 C601.0,417.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C499.0,220.0 499.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C499.0,220.0 499.0,264.0 628,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,220.0 C499.0,220.0 499.0,366.0 628,366.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C907.0,111.0 907.0,206.0 832,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,308.0 C907.0,308.0 907.0,206.0 832,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,410.0 C907.0,410.0 907.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,468.0 C703.0,468.0 703.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,570.0 C703.0,570.0 703.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,322.0 C295.0,322.0 295.0,220.0 220,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,417.0 C295.0,417.0 295.0,220.0 220,220.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,512.0 C907.0,512.0 907.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">そっくりドメインを登録す</text><text x="91.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る者（研究者が成立を実証</text><text x="91.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">。実際の悪用は未観測）</text><text x="91.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">登録は正規の手続き。禁止</text><text x="91.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">する手段が無い</text><rect x="16" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">breaker の文字:</text><text x="91.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> ө（U+04E9）・ƙ</text><text x="91.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（k with hoo…</text><text x="91.0" y="385.0" text-anchor="middle" fill="#ffcc80" font-size="10">Chrome 148 で</text><text x="91.0" y="397.0" text-anchor="middle" fill="#ffcc80" font-size="10"> ҏ・ӿ は塞がれた。м</text><rect x="220" y="176.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">登録された20件（арр</text><text x="295.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ӏө.com・oƙta.</text><text x="295.0" y="226.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">com・niƙe.co…</text><text x="295.0" y="239.0" text-anchor="middle" fill="#ffcc80" font-size="10">キリル文字15件＋ƙ 5</text><text x="295.0" y="251.0" text-anchor="middle" fill="#ffcc80" font-size="10">件。有効な証明書付き</text><rect x="424" y="176.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1層目 SafeToDi</text><text x="499.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">splayAsUnico</text><text x="499.0" y="226.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">de()（7段）</text><text x="499.0" y="239.0" text-anchor="middle" fill="#f48fb1" font-size="10">全字キリル文字の検査は2</text><text x="499.0" y="251.0" text-anchor="middle" fill="#f48fb1" font-size="10">8/29文字の一覧に全字</text><rect x="424" y="278.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2層目 GetSimil</text><text x="499.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">arTopDomain(</text><text x="499.0" y="328.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">)（著名8,462件と…</text><text x="499.0" y="341.0" text-anchor="middle" fill="#f48fb1" font-size="10">発音記号は落ちるが、バー</text><text x="499.0" y="353.0" text-anchor="middle" fill="#f48fb1" font-size="10">・フックは結合記号として</text><rect x="424" y="380.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="402.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3層目 Safety T</text><text x="499.0" y="416.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ips（移動時の警告）</text><text x="499.0" y="429.0" text-anchor="middle" fill="#f48fb1" font-size="10">1文字違い・隣接入替まで</text><text x="499.0" y="441.0" text-anchor="middle" fill="#f48fb1" font-size="10">／TLD前が5文字未満は</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アドレスバー: Unic</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ode のまま本物同様に</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表示（Chrome 1…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">Punycode なら </text><text x="703.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">xn--80a6aa68</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Gmail（ウェブ）: </text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">20件すべてを Unic</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ode 表示</text><text x="703.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">Punycode は m</text><text x="703.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">ailed-by 欄にの</text><rect x="628" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Outlook Web:</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 20件すべてを Pun</text><text x="703.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ycode 表示（ca…</text><text x="703.0" y="283.0" text-anchor="middle" fill="#64b5f6" font-size="10">安全側だが、利用者が x</text><text x="703.0" y="295.0" text-anchor="middle" fill="#64b5f6" font-size="10">n-- に慣れて合図にな</text><rect x="628" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SPF・DKIM・DMA</text><text x="703.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">RC: 攻撃者が登録した</text><text x="703.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ドメインでは全て通る</text><text x="703.0" y="385.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証は「このドメインから</text><text x="703.0" y="397.0" text-anchor="middle" fill="#f48fb1" font-size="10">送られた」ことしか保証し</text><rect x="832" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者（表示を根拠に本物</text><text x="907.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">と判断）</text><text x="907.0" y="123.0" text-anchor="middle" fill="#8892b0" font-size="10">「アドレスバーを確認せよ</text><text x="907.0" y="135.0" text-anchor="middle" fill="#8892b0" font-size="10">」は正しく読めることを前</text><rect x="832" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">なりすまされたブランド（</text><text x="907.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Apple・Okta・N</text><text x="907.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ike ほか17件）</text><text x="907.0" y="225.0" text-anchor="middle" fill="#80cbc4" font-size="10">各ブランド側の見解は公表</text><text x="907.0" y="237.0" text-anchor="middle" fill="#80cbc4" font-size="10">されていない</text><rect x="832" y="264.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.com の規模: ID</text><text x="907.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">N 733,509件／見</text><text x="907.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">かけ上一致 161,8…</text><text x="907.0" y="327.0" text-anchor="middle" fill="#ffcc80" font-size="10">偽装が確認された件数では</text><text x="907.0" y="339.0" text-anchor="middle" fill="#ffcc80" font-size="10">ない（防御登録・多言語サ</text><rect x="832" y="366.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="388.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避①: 認証をドメイン</text><text x="907.0" y="402.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に縛る（FIDO2・パス</text><text x="907.0" y="416.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">キー）</text><text x="907.0" y="429.0" text-anchor="middle" fill="#f48fb1" font-size="10">表示ではなく実際のドメイ</text><text x="907.0" y="441.0" text-anchor="middle" fill="#f48fb1" font-size="10">ンで判定する</text><rect x="628" y="424.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="446.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避②: DNS・プロキ</text><text x="703.0" y="460.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シのログで xn-- を</text><text x="703.0" y="474.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">抽出し、許可一覧の外を…</text><text x="703.0" y="487.0" text-anchor="middle" fill="#f48fb1" font-size="10">人の目ではなく機械が読む</text><text x="703.0" y="499.0" text-anchor="middle" fill="#f48fb1" font-size="10">場所に移す</text><rect x="628" y="526.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="548.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避③: メールゲートウ</text><text x="703.0" y="562.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ェイで xn-- の差出</text><text x="703.0" y="576.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">人に印を付ける</text><text x="703.0" y="589.0" text-anchor="middle" fill="#f48fb1" font-size="10">クライアント側の検査は存</text><text x="703.0" y="601.0" text-anchor="middle" fill="#f48fb1" font-size="10">在しない</text><rect x="220" y="278.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避④: ө・ү・ƙ を</text><text x="295.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">使った綴りを防御的に登録</text><text x="295.0" y="328.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（4文字以下は優先）</text><text x="295.0" y="341.0" text-anchor="middle" fill="#f48fb1" font-size="10">符号の比較を通過する綴り</text><text x="295.0" y="353.0" text-anchor="middle" fill="#f48fb1" font-size="10">が対象</text><rect x="220" y="380.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="402.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避⑤: 2文字以内の新</text><text x="295.0" y="416.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">規 xn-- 登録を監視</text><text x="295.0" y="429.0" text-anchor="middle" fill="#f48fb1" font-size="10">ブラウザが見ない範囲が監</text><text x="295.0" y="441.0" text-anchor="middle" fill="#f48fb1" font-size="10">視すべき範囲</text><rect x="832" y="468.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="490.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避⑥: 教育から「UR</text><text x="907.0" y="504.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Lを目視で確認」を安全の</text><text x="907.0" y="518.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">根拠として外す</text><text x="907.0" y="531.0" text-anchor="middle" fill="#f48fb1" font-size="10">ブックマーク・自動入力の</text><text x="907.0" y="543.0" text-anchor="middle" fill="#f48fb1" font-size="10">不発を合図に置き換える</text></svg></div><div class=fn>Have I Been Squatted の記事（2026年10月3日。Ian Muscat・Leanne Briffa）、 The Register（2026年10月10日）にもとづく （本記録が2026年10月11日に各資料を確認）。 **Google・Microsoft の見解は公表されておらず、 事前通知の有無も確認できなかった。** **実際の攻撃での悪用は観測されていない** ——**登録されている20件はいずれも研究者自身のものである。** **CVE 番号は確認できなかった。** **本記録の作成者は、登録された20件のドメインへの接続を行っていない。** **点線は回避策で、研究者の推奨策と本記録の整理である**</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**機会はあるが、ほとんどの組織で見ていない**（本記録の評価）。 **検知できる場所は2つある。** **①新規のドメイン登録の監視**—— **研究者は「保護対象のドメインから2文字以内の 新しい `xn--` 登録を監視せよ」と推奨している。** **②自組織のブランドの防御的登録**—— **研究者は「符号の比較を通過してしまう綴り（ө・ү・ƙ を使うもの）を 自ら登録せよ」としている。** **どちらも「気づく」ための仕組みを先に作っていなければ働かない** ——**本記録が確認した限り、 なりすまされた20ブランドの側からの反応は公表されていない**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**利用者による目視では現実的な検知機会が無い**（本記録の評価）。 **理由**——**表示される文字列が本物と見分けられない形で描画され、 証明書も有効であり、メール認証（SPF・DKIM・DMARC）も通る。** **「アドレスバーを確認する」という助言は、 そこにある名前が正しく読めることを前提にしている** （研究者の指摘）。 **ただし機械的な検知は可能である**—— **DNS・プロキシのログに現れる名前は Punycode（`xn--`）であり、 人の目に見える形とは違う。** **見る場所を人の目からログへ移せば、検知の機会は生まれる** （本記録の判断）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>認証をドメインに縛る方式へ移す（FIDO2・パスキー）。表示ではなく実際のドメインで判定されるため、そっくりドメインのログインページには応答しない</div><div class=ctl><span class="b eff">検知できた</span>DNS・プロキシのログで `xn--` を含む宛先を記録し、許可一覧の外は警告または遮断する</div><div class=ctl><span class="b eff">検知できた</span>メールゲートウェイのそっくりドメイン／なりすまし対策を有効にし、差出人ドメインが `xn--` のメールに印を付ける</div><div class=ctl><span class="b eff">影響を限定できた</span>自組織のブランドについて、符号の比較を通過する綴り（ө・ү・ƙ を使うもの）を防御的に登録する。4文字以下のブランド名では特に優先する</div><div class=ctl><span class="b eff">検知できた</span>保護対象のドメインから2文字以内の新しい `xn--` 登録を監視する</div><div class=ctl><span class="b eff">影響を限定できた</span>利用者教育から「アドレスバーの目視で本物を確認する」を安全の根拠として外し、ブックマーク・パスワードマネージャの自動入力の不発を異常の合図として教える</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**研究者は、迂回の仕組み（どの検査がどの理由で通るか）、 登録した20件のドメインの完全な一覧、 対応する Punycode、Chrome の版、.com ゾーンファイルの全数調査の内訳を すべて公開した。** **各ドメインには、迂回の仕組みを説明する研究用のページを置いている。** **Google 等への事前通知の有無は記事に書かれていない。**</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の判断である。** **機能した点**——**①成立を実物で示し、検証可能にした。** **②.com の全数調査で規模の上限を示し、かつ 「偽装が確認されたものではない」と明記して過大な読みを封じた。** **③防御側の行動（パスキー・`xn--` の監視・防御的登録）まで書いた。** **不十分な点**——**ベンダーへの通知と回答の経過が書かれていないため、 読者は「修正を待てるのか」を判断できない**（本記録の評価）。 **本記録はこの不足のため、 「放置されている」とも「報告済みである」とも書かない。**</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**利用者教育の「URL を目で確認する」を、安全の根拠から外す**</div><div class=lw>**本件は、アドレスバーの表示が本物と見分けられない形で描画されることを 実物で示している**（Chrome 154 で15件が Unicode 表示・有効な証明書付き）。 **研究者の指摘は「『アドレスバーを確認せよ』という助言は、 そこにある名前が正しく読めることを前提にしている」である** （原文英語。本記録の訳）。 **前提が崩れている以上、この教育項目は 「やってもよいが、これで安全とは言えない」ものになる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **フィッシング訓練・教育資料の文面を1回見直し、 「URL を確認する」を単独の対策として掲げている箇所を書き換える。** **代わりに置くのは「ブックマークか社内ポータルから入る」 「パスワードマネージャが自動入力しないサイトは疑う」 「心当たりのないメールのリンクは踏まない」である** ——**いずれも人の読解力に依存しない**（本記録の判断）。</div></li><li><div class=lp>**4文字以下の短いブランド名を持つなら、防御の層が1つ少ないと認識する**</div><div class=lw>**Chrome の移動時の警告（Safety Tips）は、 TLD の前が5文字未満のドメインには働かない** （研究者・The Register の記述）。 **研究者は oƙta.com（4文字）・sƙy.com（3文字）・vƙ.com（2文字）を 実際に登録している。** **さらに近似一致の条件は「1文字違い・隣接の入れ替え」までであり、 2文字以上違う偽装には働かない。**</div><div class=la><b>取るべき行動</b> **自組織のブランド名（ドメインの TLD より前の部分）の文字数を数える。** **5文字未満なら、ブラウザ側の警告は期待できないものとして扱い、 防御的登録と `xn--` の監視に予算を振る。** **5文字以上でも、2文字以上の置き換えには警告が働かないため 安心はできない**（本記録の注記）。</div></li><li><div class=lp>**なりすまし対策の予算を「表示の検査」から「認証の方式」へ移す**</div><div class=lw>**塞ぎ方が文字単位である**—— **Chrome 148 で ҏ・ӿ を塞ぎ、2026年9月11日に м を追加したが、 ө・ү・ї は残っている**（研究者の記述）。 **さらに м の追加は Chrome 155 の分岐より後であり、 Chrome 155 には入らない。** **「修正済み」と「利用者の手元で有効」の間に版ぶんの差がある** （本記録の整理）。 **一方で、パスキーは表示ではなく実際のドメインで判定する**—— **「apple.com に登録されたパスキーは、アドレスバーに何が表示されていようと、 xn--80a6aa68c8d.com のログインページには応答しない」** （研究者。原文英語。本記録の訳）。</div><div class=la><b>取るべき行動</b> **①自社の従業員向け・顧客向けのログインのうち、 フィッシング耐性のある認証（FIDO2・パスキー）に移していないものを一覧にする。** **②そのうち「盗まれたら最も痛い」上位3つを選び、 今期の移行対象として決める。** **③移行できないものについては、 そっくりドメインでは認証が通ってしまうことを前提に、 事後の検知（ログイン元・振る舞い）側で手当てすると決めて記録する。**</div></li><li><div class=lp>**自組織の利用者が使うメールクライアントの表示挙動を一度確かめる**</div><div class=lw>**研究者が試験したのは Gmail（ウェブ）と Outlook Web の2つだけで、 前者は20件すべてを Unicode で表示し、 後者は正当な IDN まで Punycode で表示した。** **どちらもそっくりドメインの検査をしていない。** **デスクトップ版・モバイル版の挙動は公表されていない** （本記録の未確定事項）——**自組織で確かめるほかない。**</div><div class=la><b>取るべき行動</b> **自組織の標準メールクライアント（デスクトップ・モバイルを含む）で、 `xn--` 形式の差出人ドメインがどう表示されるかを1回試す。** **Unicode で表示されるなら、ゲートウェイ側で印を付ける設定を検討する。** **Punycode で表示されるなら、 利用者が `xn--` に慣れて合図として働かなくなるため、 「正当な取引先の IDN」の許可一覧を作る**（本記録の判断）。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**`xn--` を DNS・プロキシのログの検知条件に入れる**</div><div class=lw>**人の目に見える文字列と、ログに残る文字列は違う** ——**аррӏө.com はログでは `xn--80a6aa68c8d.com` として現れる** （本記録の整理）。 **研究者は「`xn--` の名前を DNS とプロキシのログで合図として扱い、 許可一覧の外のものは記録・警告・遮断せよ」と推奨している。** **人が読み間違える問題を、機械が読む場所に移す**（本記録の判断）。</div><div class=la><b>取るべき行動</b> **①直近30日の DNS・プロキシのログから `xn--` を含む宛先を抽出し、 件数と内訳を見る。** **②正当なもの（取引先の IDN・国際化サイト）を許可一覧にする。** **③以後、許可一覧の外の `xn--` を警告に回す。** **件数が少なければ遮断まで踏み込める** ——**まず件数を測ってから決める。**</div></li><li><div class=lp>**自社ブランドについて、符号の比較を通過する綴りを防御的に登録する**</div><div class=lw>**`GetSimilarTopDomain()` の符号化では、 発音記号（ó→o）は落ちるが、ө のバーと ƙ のフックは結合記号として残る** ——**残るので本物と一致せず、2層目の検査を通過する**（研究者の記述）。 **つまり「発音記号を使った綴り」は塞がれているが、 「バー・フックを使った綴り」は空いている。**</div><div class=la><b>取るべき行動</b> **自社ブランド名について、ө・ү・ƙ を使った綴りを列挙し、 未登録のものを防御的に登録する** （研究者の推奨策。4文字以下のブランド名では優先度を上げる）。 **登録済みのそっくりドメインが第三者のものであれば、 登録者と用途を確認する。**</div></li><li><div class=lp>**新規のドメイン登録の監視条件を「2文字以内の `xn--`」まで広げる**</div><div class=lw>**аррӏө.com は apple.com から2文字違いである。** **Chrome の近似一致の警告は「1文字違い・隣接の入れ替え」までしか働かない** ——**ブラウザが見ない範囲が、監視の対象にすべき範囲である** （本記録の整理）。</div><div class=la><b>取るべき行動</b> **保護対象ドメインの監視条件に、 「`xn--` 形式で、ASCII へ写すと2文字以内の違いになるもの」を加える** （研究者の推奨策）。 **監視の仕組みを持っていない場合は、 少なくとも四半期に1回、主要ブランドについて `xn--` の新規登録を手で確認する。**</div></li><li><div class=lp>**ブラウザの版と検査の内容がずれることを前提に、配布の遅れを測る**</div><div class=lw>**キリル文字の м は2026年9月11日に Chromium の一覧へ追加されたが、 Chrome 155 の分岐より後だったため Chrome 155 には入らない** （研究者の記述）。 **「修正済み」と「利用者の手元で有効」は別である**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **自組織の端末で稼働している Chrome・Edge の版の分布を1回測る。** **最新の安定版より2版以上古い端末がどれだけあるかを知っておく。** **ブラウザの更新が遅れている組織では、 表示の検査に期待できる度合いがさらに下がる**（本記録の判断）。</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 従業員向け・顧客向けのログインで、フィッシング耐性のある認証（FIDO2・パスキー）を使っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 利用者教育・フィッシング訓練で「URL を目で確認する」ことを対策として掲げている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> DNS・プロキシのログで `xn--` を含む宛先を抽出・警告できない（許可一覧も無い）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 自社ブランドの防御的登録と新規登録の監視を、ө・ү・ƙ のような結合記号が残る文字まで広げていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社ブランド名が TLD の前で4文字以下である</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自組織の標準メールクライアントが `xn--` の差出人ドメインをどう表示するかを確かめていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月3日 Have I Been Squatted（Ian Muscat・Leanne Briffa）</span> <a href="https://haveibeensquatted.com/blog/turning-idn-edge-cases-into-typosquats" target="_blank" rel="noreferrer noopener nofollow">Turning IDN edge cases into typosquats</a> <span class="b kind">調査レポート</span><span class=sm>（(原文英語。**本事案の一次の研究であり、すべての数値と技術的記述の出所である。** ө・ƙ による3層の迂回、`SafeToDisplayAsUnicode()` の7段と 全字キリル文字の検査が28／29文字の一覧に依存すること、 `GetSimilarTopDomain()` の符号化（8,462件の著名ドメイン、 oƙta → `[o k &#x27; t a . c o r n]`、аррӏө → `[a p p l o - . c o r n]`）、 Safety Tips の近似一致の条件と5文字未満の除外、 登録した20件の一覧、Chrome 154（macOS）での表示結果、 Chrome 148 での ҏ・ӿ の除去、м の2026年9月11日の追加と Chrome 155 の分岐、 .com ゾーンファイルの全数調査（167,226,216／733,509／154,567／161,894／ 133,953／102,592／46,522／12,780）、 Gmail・Outlook Web の表示挙動、推奨策の出所。 **Google 等への事前通知とベンダーの回答には触れていない。** **同社はタイポスクワットの監視を提供する事業者である**)）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[2]</span> <span class=sm>公開日は本記録では特定していない Chromium プロジェクト</span> <a href="https://chromium.googlesource.com/chromium/src/+show/9fc418b51a6680a328b090f1af90edb724fbc990/docs/idn.md" target="_blank" rel="noreferrer noopener nofollow">Chromium の IDN に関する文書・`idn_spoof_checker.h`</a> <span class="b kind">ブログ</span><span class=sm>（(原文英語。**検査の実装側の資料。** `SafeToDisplayAsUnicode()` の宣言と、 「全字がラテン文字に似たキリル文字で構成されたラベルを遮断する」 という設計の経緯（Chromium の bug 683314）がここにある。 **Chromium 自身の文書は、IDN の表示の問題を 「Chrome 固有の不具合ではなく、ブラウザ全般における URL の表示の仕方の限界である」と位置づけている。** **本記録はこの資料をソースコードまで遡って確認していない** ——**検索結果と The Register の記述を介して参照している**〈齟齬に記録〉)）</span></li><li><span class=rid>[4]</span> <span class=sm>2017年4月14日 Xudong Zheng（個人研究者）</span> <a href="https://pxlnv.com/linklog/phishing-with-unicode-domains/" target="_blank" rel="noreferrer noopener nofollow">Phishing with Unicode Domains</a> <span class="b kind">ブログ</span><span class=sm>（(原文英語。**先行事例の資料。** 全字をキリル文字で構成した аррӏе.com により Chrome・Firefox が apple.com と同じ見た目で表示したこと、 「すべての文字を1つの外国語の似た文字に置き換えると保護が働かない」 という指摘の出所。 **Google は Chrome 58 で修正し、Mozilla は Firefox を変更しない判断をした** とされる。 **本記録はこの資料を本人の原文ではなくリンクログ経由で参照しており、 Chrome 58 での修正は Pindrop の記述を介している**〈齟齬に記録〉)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月10日 10:15 UTC The Register - Security</span> <a href="https://www.theregister.com/security/2026/10/10/two-characters-open-up-a-world-of-typosquatting-opportunities-in-chromium-browsers/5302383" target="_blank" rel="noreferrer noopener nofollow">Two characters open up a world of typosquatting opportunities in Chromium browsers</a> <span class="b kind">記事</span><span class=sm>（(原文英語。本文は保存分 〈output/articles/20261010/0151_the-register-security_two-characters-open-up-a-world-of-typosquatting-op.md〉 で確認した。 **Chrome 154 の安定版公開日（2026年9月22日）、 Chromium が比較する著名ドメインが「ほぼ8,500件」、 ө がカザフ語・モンゴル語・タタール語、ƙ がハウサ語・カライカライ語で使われること、 2017年の Xudong Zheng の先行事例と2017年以降のベンダーの対応、 Chrome 148 での ҏ・ӿ の除去、 ínstagarm[.]com では Safety Tips が働くという対照例、 「メールクライアントはさらに選り好みをしない」という整理、 登録された20件は研究者のものであり訪問して安全であるという記述の出所。** **Google・Microsoft のコメントは含まれていない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月11日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月10日収集分の The Register の記事 〈output/articles/20261010/0151_the-register-security_two-characters-open-up-a-world-of-typosquatting-op.md〉 を起点に、**一次資料の探索を行った。** **結果**——**①一次の研究である Have I Been Squatted の記事 「Turning IDN edge cases into typosquats」（2026年10月3日）を直接取得し、 3層の迂回の仕組み・20件の登録ドメイン・Chrome 154 での表示結果・ .com ゾーンファイルの全数調査・メールクライアントの挙動・ 推奨策を確認した。** **②Google・Microsoft の公表は探索したが発見できなかった。** **③研究者の記事にもベンダーへの通知と回答の記述が無く、 「報告したが未修正」か「報告していない」かを区別できなかった。** **④CVE 番号は確認できなかった。** **⑤Chromium のソースコード、および先行事例（2017年）の原文は 直接確認していない**——**いずれも齟齬に記録した。** **⑥登録された20件のドメインへの接続は行っていない** （研究者は安全であるとしているが、 本記録は確認していない接続先を自ら叩かない方針である）。
+**本記録が中心に置いたのは、2文字という手数の少なさではなく、 「3層がそれぞれ単独で判断している」という構造である** （研究者の総括「どの層も他の層が何を決めたかを確かめていない」）。 **1層目は全か無かの判定（一覧に全字が含まれるときだけ発動）、 2層目は符号化の残り（バー・フックが結合記号として残る）、 3層目は条件の狭さ（1文字違い／5文字以上）で、 それぞれ別の理由で通過する。** **塞ぎ方が文字単位である以上、同じ形は次の文字で再現する** （Chrome 148 で ҏ・ӿ、2026年9月11日に м。ө・ү・ї は残存）。
+**したがって読者の行動を「ブラウザの修正を待つ」側に置かず、 ①認証をドメインに縛る（FIDO2・パスキー）、 ②`xn--` をログの検知条件にする、 ③4文字以下のブランド名は防御の層が1つ少ないと認識する、 の3点に寄せて書いた。** **研究者の一文（「apple.com に登録されたパスキーは、 アドレスバーに何が表示されていようと、 xn--80a6aa68c8d.com のログインページには応答しない」）を 最も実用的な記述と判断し、lessons と applicability の両方に置いた。**
+**メールの節を独立させた**——**フィッシングの入口はメールであり、 ブラウザに3層あってもメールでは0層である。** **Gmail（ウェブ）が20件すべてを Unicode 表示し、 Outlook Web が正当な IDN まで Punycode 表示したという対照は、 「安全側の挙動にも副作用がある」（利用者が `xn--` に慣れる）という 読みとともに記録した。** **SPF・DKIM・DMARC が通ることも明記した** ——**攻撃者が自分で登録したドメインでは認証は障害にならない。**
+**数値の扱い。** **161,894組は「偽装の件数ではない」という 研究者の注記を figures と本文の両方に明記した** ——**防御目的の登録・多言語サイト・無関係の登録が含まれる。** **一覧の文字数（28／29）と著名ドメインの件数（8,462／ほぼ8,500）の揺れは 齟齬（unit_ambiguity）に記録した。**
+**status は `new`。** ベンダーの対応も実際の悪用も確認できていない。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">IDN</span><span class="b tag">ホモグリフ</span><span class="b tag">タイポスクワット</span><span class="b tag">Chromium</span><span class="b tag">Chrome</span><span class="b tag">Punycode</span><span class="b tag">フィッシング</span><span class="b tag">パスキー</span><span class="b tag">Have I Been Squatted</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-11 08:13 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
