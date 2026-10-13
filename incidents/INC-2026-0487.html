@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>AnyDeskに未認証RCEのPoC公開 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0487</span>AnyDeskに未認証RCEのPoC公開</h1>
+<header class="site-header">
+  <p class="subtitle">2026年10月8日、V12 セキュリティチームの研究者がリモートデスクトップソフト AnyDesk の
+Linux 版に対する実証コード「AnyPwn」を GitHub へ公開した。
+セッションプロトコルの mode 5 ストリームパケット処理がペイロード長を検証せず、
+32ビット演算のラップアラウンドで過小なヒープ領域を確保するため、
+**利用者が画面共有を承認する前に root 権限でコマンドを実行できる**。
+4日後の10月12日に MITRE が CVE-2026-109390（CVSS 9.8）を採番したが、
+**修正は2026年6月23日の 8.0.3 で無言のうちに入っており、
+ベンダーのアドバイザリは本記録の確認範囲では存在しない**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月8日（実証コードの公開。CVE の採番は10月12日）</span>
+  <span>最終更新: 2026年10月13日</span>
+</div>
+
+<div class="lead"><p><strong>直ったのは6月、知らされたのは10月です。</strong></p>
+<p>2026年10月8日、V12 セキュリティチームの Rick de Jager 氏が、リモートデスクトップソフト <strong>AnyDesk の Linux 版 8.0.2</strong> に対する実証コード<strong>「AnyPwn」</strong> を GitHub へ公開しました（出典2）。<strong>セッションプロトコルの mode 5 ストリームパケット処理が、リモートから指定されたペイロード長を検証せずに信用する</strong>ため、32ビット演算のラップアラウンドで過小なヒープ領域が確保され、領域外書き込みが起きます。<strong>AnyDesk のサービスは Linux では通常 root で動くため、利用者が画面共有を承認する前に root 権限でコマンドが実行されます</strong>（出典2）。</p>
+<p>4日後の <strong>10月12日</strong>、MITRE が <strong>CVE-2026-109390</strong> を採番しました。<strong>CVSS 3.1 の基本値は 9.8（AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H）</strong>、弱点の種類は <strong>CWE-130</strong> です（出典1）。CISA の Vulnrichment は <strong>悪用状況「poc」・自動化可能性「yes」・技術的影響「total」</strong> と評価しています（出典1）。</p>
+<p><strong>本件の読みどころは、脆弱性そのものより公表の順序です。</strong>報道（出典3）によれば、<strong>修正は現地時間2026年6月23日公開の 8.0.3 に入っていたものの、更新履歴では言及されていませんでした</strong>。<strong>CVE が付いたのは実証コードの公開後</strong>です。つまり、6月から10月までの約3か月半、Linux 版の利用者は「これは緊急で上げるべき更新だ」と判断する材料を持っていませんでした（本記録の評価）。</p>
+<p><strong>ベンダー自身のアドバイザリは、本記録の確認範囲では存在しません。</strong> AnyDesk のサイト（更新履歴・セキュリティ情報）は自動取得に対して 403 を返すため、<strong>本記録は「更新履歴に言及が無かった」という報道の記述を一次資料で裏取りできていません</strong>〈齟齬に記録〉。<strong>CISA KEV（2026年10月8日版・1,739件）には AnyDesk の項目が1件もありません</strong>（本記録が原データで確認）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>AnyDesk 自身による公表（アドバイザリ・勧告）の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録はベンダーのサイト（更新履歴・セキュリティ情報）へ3通りの方法で到達を試みたが、
+いずれも HTTP 403 が返り本文を取得できなかった**（出典6。T6）。
+**したがって「アドバイザリが無い」とは断定しない**——
+**確認できたのは「本記録の手段では到達できない」という事実だけである**（本記録の留保）。
+**CVE の参照先にもベンダーのアドバイザリは挙げられておらず、
+更新履歴のページが示されているだけである**（出典1）。
+</div></li><li><span class=ui>Windows 版・macOS 版への影響</span><span class="b rsn">公表されていない</span><div class=sm>**CVE レコードの影響範囲は platforms: Linux・バージョン 8.0.0 以上 8.0.3 未満であり、
+既定の状態（defaultStatus）は unaffected である**（出典1。本記録が JSON 原本で確認）。
+**つまり記録上は Linux のみが影響対象だが、
+「他プラットフォームは影響しない」と明記した一次資料は本記録の確認範囲には無い。**
+**実証コードも Linux 8.0.2 に限って成立を示している**（出典2）。
+**脆弱な処理はセッションプロトコルという共通部分にあるため、
+本記録は他プラットフォームの安全を断定しない**（本記録の留保）。
+</div></li><li><span class=ui>8.0.0 より前の版（7.x 以前）の扱い</span><span class="b rsn">公表されていない</span><div class=sm>**CVE の影響版の起点は 8.0.0 である**（出典1）。
+**7.x 以前が影響しないのか、調査の対象外なのかは書かれていない**
+（本記録の指摘）。**研究者も 8.0.1 への移植は「読者への課題」としており、
+旧版での成立を否定していない**（出典2）。
+</div></li><li><span class=ui>実際の悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**悪用の報告は本記録の確認範囲では見つかっていない。**
+**CISA KEV の2026年10月8日版に AnyDesk の項目は1件も無いが、
+この版は CVE 公開（10月12日）より前であり、反証にはならない**（出典4。T6）。
+**CISA の SSVC 評価は「Exploitation: poc」であり、
+「実際の悪用が観測された（active）」ではない**（出典1）。
+</div></li><li><span class=ui>発見日・ベンダーへの報告日</span><span class="b rsn">公表されていない</span><div class=sm>**研究者の README には発見の経緯・報告日・ベンダーとのやり取りが書かれていない**（出典2）。
+**したがって報告から修正までの所要（ベンダーの対応速度）は算出できない**（本記録の注記）。
+**また、6月の修正が本報告を受けたものなのか、
+別の経路（内部で見つけた不具合の修正）だったのかも分からない**（本記録の留保）。
+</div></li><li><span class=ui>日本国内の影響・注意喚起</span><span class="b rsn">公表されていない</span><div class=sm>**JPCERT/CC・IPA の注意喚起は本記録の確認範囲（2026年10月13日時点）には現れていない。**
+**AnyDesk の国内利用台数も公表されていない**（本記録の注記）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>AnyDesk Software GmbH</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Rick de Jager（V12 セキュリティチーム）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>MITRE（CVE 採番機関）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">監督官庁</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-109390 の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>スコア</span></div><div class=fn>**CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H。評価者は MITRE**（出典1）。
+**NVD では Secondary（二次評価）として記録されており、NVD 自身の評価は未了である**
+（出典5）。
+**PR:N（権限不要）・UI:N（利用者操作不要）が揃っていることが 9.8 の中身である**
+——**S:U（スコープ変更なし）なので 10.0 にはならないが、
+Linux のサービスは root で動くため、実質の影響は「その端末の全権」である**
+（本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>修正版の公開から実証コードの公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>107<span class=fu>日</span></div><div class=fn>**2026年6月23日（8.0.3 公開）から2026年10月8日（実証コード公開）まで、
+本記録が算出した**。
+**この107日間、Linux 版の利用者は「未認証で root を取られる脆弱性が直った更新」である
+ことを知る手がかりを持たなかった**（報道によれば更新履歴に言及が無かったため。出典3）。
+**8.0.3 の公開日はベンダー原本では未確認である**〈齟齬1〉。
+</div></div><div class=fig><div class=fh><span class=fl>実証コードの公開から CVE 採番までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fn>**2026年10月8日21時19分 UTC から2026年10月12日14時40分 UTC まで、本記録が算出した。**
+**CVE レコードの予約時刻と公開時刻が1秒差であることから、
+実証コードの公開を受けて事後に採番されたと読める**（本記録の評価）。
+</div></div><div class=fig><div class=fh><span class=fl>実証コードが対象としたサービスの待ち受けポート</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>7,070<span class=fu>TCP ポート番号</span></div><div class=fn>**実証コードは TCP 7070 番への直接接続で成立を示している**（出典2）。
+**ただし研究者は「同じ脆弱なセッションプロトコルの経路は
+AnyDesk のリレー接続経由でも到達でき、最小限の Frida トリガで検証した」と書いている**
+（出典2。本記録の訳）——**ポートを閉じることは緩和にはなるが、
+対処の代わりにはならない**（本記録の評価）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない**（本記録が確認した範囲。T6）。
+**ここに記録するのは、公開された実証コードから読み取れる成立経路の骨格である**
+（本記録の方針）。
+**段は initial-access（TCP 7070 番またはリレー経由でセッションプロトコルに到達）・
+execution（mode 5 パケットで整数の一周を起こしヒープを破壊）・
+impact（承認前に root でコマンド実行）の3つ。**
+**権限昇格の段は置かない**——**サービスが最初から root で動いているため、
+昇格の操作が要らない**（出典2。本記録の整理）。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AnyDesk のサービスが待ち受けるセッションプロトコルの経路へ到達する。**
+**実証コードの経路は TCP 7070 番への直接接続（同一セグメント・
+または外部から到達可能な環境）である**（出典2）。
+**認証は不要**——**CVE の記述は「認証されていないリモートの攻撃者」である**（出典1）。
+</div><div class=fn>根拠: 実証コードの実行手順（`python3 anypwn.py --host &lt;target&gt; --command ...`）と CVE の記述（出典1・2）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**mode 5 のストリームパケットで、宣言するペイロード長を `0xfffffff0` にする。**
+**16バイトのオブジェクトヘッダを32ビット演算で加算すると値が一周して0になり、
+確保されるのは0〜15バイトだけになる。
+オブジェクトのデータポインタは「確保の先頭＋0x10」のまま、
+長さも元の大きな値のままなので、本体の書き込みが領域の外へ出る**（出典1・2）。
+**実証コードは、サイズを段階的に変えた100個ずつの mode 5 オブジェクトでヒープを整え、
+10本の追加接続で犠牲オブジェクトを並べ、
+破壊後に `ret` ガジェットの長い滑走路を含む `0xf000` バイトのオブジェクトを20個散布して
+ROP 連鎖へ着地させる**（出典2）。
+</div><div class=fn>根拠: 実証コードの README における仕組みの説明と CVE の記述（出典1・2）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**破壊したオブジェクトの制御データ（vtable・スタックピボットのガジェット）を通じて
+実行を奪い、散布した ROP 連鎖で任意のコマンドを実行する。**
+**AnyDesk のサービスは Linux では通常 root で動くため、
+利用者がデスクトップ操作を承認する前に root でのコマンド実行に至る**（出典1・2）。
+</div><div class=fn>根拠: CVE の記述「被害者がデスクトップ操作を承認しないまま root としてコマンドを実行できる」（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**ベンダーは2026年6月23日公開の 8.0.3 で修正を入れた一方、
+CVE の採番を行わず、本記録の確認範囲ではアドバイザリも出していない。**
+**報道は「更新履歴などでは言及されていなかったという」と伝えている**（出典3）。
+**CVE は4か月後、実証コードの公開を受けて MITRE が採番した**（出典1）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **無言修正には、公表しないことで悪用の手がかりを与えないという利点がある**
+（一般論。本記録の整理）。
+**一方で代償は利用者が払う**——**①更新を急ぐ判断ができない
+②脆弱性管理の仕組み（CVE を入力とする資産管理・診断）に何も流れない
+③第三者が実証コードを公開した時点で、未更新の利用者が丸ごと露出する。**
+**本件では、その第三者公開が修正から107日後に起きた**（本記録の算出）。
+</div></li></ul></div>
+<section id="s6"><h2>長さを信用して領域を確保する——32ビットの加算が一周した瞬間に、確保は0バイトになる<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>CVE の記述は短いので、まず正確に写します</strong>（原文英語。本記録の訳。出典1）。</p>
+<blockquote>
+<p><strong>「8.0.3 より前の AnyDesk は、ヒープベースのバッファオーバーフローにより、認証されていないリモートの攻撃者が任意のコードを実行できる。Linux では、被害者がデスクトップ操作を承認しないまま root としてコマンドを実行できることが実証されている。セッションプロトコルの mode 5 用ストリームパケットハンドラで、ペイロード長の値が検証されていない。」</strong></p>
+</blockquote>
+<p><strong>研究者の説明は、ここをもう一段ほどいています</strong>（出典2。本記録の訳・要約）。</p>
+<p>mode 5 のパケットは <code>frame_len</code>（2バイト）・<code>assigned_stream_id</code>（2バイト）・モード前置（1バイト）・<strong><code>mode5_declared_len</code>（可変長整数）</strong>・本体、という形をとります。正しいパケットなら、宣言された長さはフレームに残っているバイト数を超えてはいけません。<strong>脆弱な経路は、この検証を行う前に、宣言された32ビットの長さから裏付けとなる領域の大きさを計算します。</strong></p>
+<ul>
+<li>宣言する長さを <strong><code>0xfffffff0</code></strong> にする</li>
+<li><strong><code>0xfffffff0 + 0x10</code>（16バイトのオブジェクトヘッダ）= <code>0x1_0000_0000</code></strong></li>
+<li><strong>32ビットに切り詰めると 0</strong> になる</li>
+</ul>
+<p><strong><code>0xfffffff0</code> から <code>0xffffffff</code> の範囲は、確保されるのが0〜15バイトだけになります。</strong>ところが<strong>オブジェクトのデータポインタは「確保の先頭＋0x10」のまま、長さも元の大きな値のまま</strong>です。<strong>結果、本体を1バイト書き込むだけで領域の外へ出ます。</strong> <strong>4ギガバイトを送る必要はありません</strong>——外側のフレームは小さいまま、可変長整数が整数の一周を起こし、本体が溢れる分を供給します（出典2）。</p>
+<p><strong>本記録の整理</strong>——<strong>これは「入力の検証漏れ」より一段深い種類の不備です。</strong>検証そのものは存在していて、<strong>検証に使う値と、領域確保に使う値が別の順序で流れている</strong>ことが問題でした。<strong>同じ構造は、長さ付きのバイナリプロトコルを自作している箇所に広く潜みます</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>承認の前に root でコマンドが動く——「画面共有を許可しなければ安全」という前提が崩れる<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>リモートデスクトップソフトの利用者が持っている安全の感覚は、おおむね「相手が接続してきても、自分が承認しなければ何も起きない」です。</strong> <strong>本件はその前提の外側で成立します</strong>（出典1・2）。</p>
+<p>研究者の表現は明確です。<strong>「サービスは Linux では通常 root で動くため、悪用に成功するとデスクトップ操作の承認より前に root でのコマンド実行に至る」</strong>（出典2。原文英語。本記録の訳）。CVE も <strong>「被害者がデスクトップ操作を承認しないまま root としてコマンドを実行できることが実証されている」</strong> と書いています（出典1）。</p>
+<p><strong>実証コードが示した成立条件は次のとおりです</strong>（出典2）。</p>
+<ul>
+<li>対象: <strong>AnyDesk Linux 8.0.2（x86_64）・サービスモード（<code>anydesk --service</code>）</strong></li>
+<li>経路: <strong>TCP 7070 番への直接接続</strong></li>
+<li>前提: <strong>ヒープの配置は確率的</strong>で、狙ったオブジェクトが隣に来ないとコマンド実行ではなくサービスのクラッシュになる</li>
+<li>オフセットは<strong>そのビルド専用</strong>（SHA-256 まで README に明記）であり、他のビルドでは動かない</li>
+</ul>
+<p><strong>「確率的」「ビルド専用」は、攻撃の難しさを意味しますが、防御側の安心材料にはなりません</strong>（本記録の評価）。<strong>失敗した場合に起きるのはサービスのクラッシュ</strong>です。つまり<strong>攻撃者は何度でも試せて、防御側から見えるのは「AnyDesk がときどき落ちる」という現象だけ</strong>になります。</p>
+<p><strong>そしてポートの話です。</strong>研究者は<strong>「同じ脆弱なセッションプロトコルの経路は AnyDesk のリレー接続経由でも到達でき、最小限の Frida トリガで検証した。工数を抑えるため、同梱の最小 PoC は直接の TCP 7070 接続でのみ完全な悪用を示している」</strong>と書いています（出典2。本記録の訳）。<strong>したがって「7070 番を閉じたから対処済み」とは言えません</strong> ——リレーは AnyDesk の標準的な接続経路です（本記録の評価）。</p></section>
+<section id="s8"><h2>6月に無言で直し、10月に実証コードが出てから CVE が付いた——利用者は優先度を判断する材料を持たなかった<span class="b slot">再発防止</span><span class=srcs>出典 [1] [2] [3] [6]</span></h2><p><strong>時間の並びを整理します。</strong></p>
+<table>
+<thead>
+<tr>
+<th>時点</th>
+<th>出来事</th>
+<th>利用者が知りうること</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年6月23日</td>
+<td>8.0.3 公開（本脆弱性を修正）</td>
+<td>報道によれば更新履歴に言及なし（出典3）</td>
+</tr>
+<tr>
+<td>2026年9月23日</td>
+<td>8.1.0 公開</td>
+<td>通常の更新として扱われる</td>
+</tr>
+<tr>
+<td>2026年10月8日</td>
+<td>実証コード公開（出典2）</td>
+<td>ここで初めて外部から見える</td>
+</tr>
+<tr>
+<td>2026年10月12日</td>
+<td>MITRE が CVE-2026-109390 を採番（出典1）</td>
+<td>CVSS 9.8 として整理される</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正から実証コードの公開まで107日</strong>（本記録の算出）。<strong>その間、Linux 版の利用者は「この更新は緊急か」を判断できませんでした</strong> ——<strong>脆弱性情報が無いということは、資産管理の仕組みにも、脆弱性管理の台帳にも、何も流れないということです</strong>（本記録の評価）。</p>
+<p><strong>CVE の採番者が MITRE であることにも意味があります</strong>（出典1）。ベンダーが CNA として自ら採番したのではなく、<strong>第三者が後から番号を付けた</strong>形です。<strong>予約時刻と公開時刻が1秒差</strong>（2026年10月12日14時40分09秒・10秒）であり、<strong>実証コードの公開を受けた事後の処理だと読めます</strong>（本記録の評価）。</p>
+<p><strong>本記録はベンダーの振る舞いを断定しません。</strong> 更新履歴に実際に何が書かれていたかを原本で確認できていないためです（出典6 は 403 を返します）〈齟齬1〉。<strong>確認できたのは次の3点です</strong>—— <strong>①CVE の参照先にベンダーのアドバイザリが挙げられていない②研究者が「8.0.3 で修正済み」と書いている③研究者が「PoC 動画の公開を受けてベンダーは 8.0.2 のビルドを削除したように見える」と推測の形で述べている</strong>（出典1・2）。</p>
+<p><strong>実務上の教訓は、ベンダーの善悪ではなく運用の側にあります</strong>（本記録の結論）。<strong>「セキュリティ修正と書かれていない更新」を後回しにする運用は、無言修正（silent fix）の前では機能しません。</strong> <strong>リモート接続ソフトのような「ネットワークに面した常駐サービス」は、更新履歴の文言ではなく、版の新しさで管理する必要があります。</strong></p></section>
+<section id="s9"><h2>CISA は「poc・自動化可能・影響は全面的」と評価したが、KEV には入っていない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [4] [5]</span></h2><p><strong>CVE レコードには、CISA の ADP（Vulnrichment）による補足が付いています</strong>（出典1）。</p>
+<ul>
+<li><strong>Exploitation: poc</strong> ——実証コードは存在するが、実際の悪用は観測されていない</li>
+<li><strong>Automatable: yes</strong> ——偵察から悪用までを自動化できる</li>
+<li><strong>Technical Impact: total</strong> ——成立時の技術的影響は全面的</li>
+<li><strong>実証コードの URL に exploit タグが付与されている</strong></li>
+</ul>
+<p><strong>「poc」と「automatable: yes」の組み合わせが、本件の緊急度の実質です</strong>（本記録の整理）。<strong>未認証・利用者操作不要（PR:N／UI:N）で、公開された実証コードがあり、探索と悪用を機械化できる</strong>——<strong>この条件が揃った脆弱性は、悪用が観測されるまでの時間が短くなります。</strong></p>
+<p><strong>一方で KEV には入っていません。</strong>本記録が確認した<strong>2026年10月8日版（catalogVersion 2026.10.08・収載1,739件）には、AnyDesk の項目が1件も存在しません</strong>（出典4）。<strong>ただしこのカタログ版は CVE 公開（10月12日）より前</strong>であり、<strong>「悪用されていない」ことの根拠にはなりません</strong>（本記録の留保）。</p>
+<p><strong>NVD 側の状態も確認しました</strong>——<strong>登録はされているが状態は「Received」で、NVD 自身の分析（CVSS の独自評価・CPE の確定）は未了です</strong>（出典5）。<strong>自動化された脆弱性管理の仕組みは、NVD の分析完了を待って情報を取り込むものが多く、その設計だと本件は「まだ見えない」状態にあります</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>AnyDesk（リモートデスクトップソフト）の Linux 版・セッションプロトコル</td></tr><tr><th>ベンダー</th><td>AnyDesk Software GmbH</td></tr><tr><th>finding_name</th><td>AnyPwn: AnyDesk Pre-auth Heap Buffer Overflow RCE（研究者による命名）</td></tr><tr><th>affected_versions</th><td>**CVE-2026-109390**: **8.0.0 以上 8.0.3 未満（platforms: Linux。既定の状態は unaffected）**
+（出典1。本記録が JSON 原本で確認）。
+**修正版は 8.0.3（現地時間2026年6月23日公開。日付は報道値）**。
+**その後 8.1.0 が2026年9月23日に公開されている**（出典3）。
+**実証コードが成立を示したのは 8.0.2（x86_64・サービスモード・
+バイナリ SHA-256 62ee04ad48dc039dd9c927f998e56143c87a9c5e12d28654f78c7f6340394f5a）**
+（出典2）。
+**8.0.0 より前の版（7.x 以前）の扱いは公表されていない**〈未確定事項に記録〉。
+</td></tr><tr><th>CVE番号</th><td><ul class=cl><li>CVE-2026-109390</li></ul><span class="b rsn">stated</span><div class=fn>**採番は MITRE（assignerShortName: mitre）**で、2026年10月12日14時40分 UTC に
+予約と公開が同時に行われている（出典1）。
+**ベンダーが CNA として採番した CVE ではない**（本記録の指摘）。
+**弱点の種類は CWE-130（長さパラメータの不整合の不適切な処理）。**
+</div></td></tr><tr><th>cvss</th><td>9.8（CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H。MITRE による評価。NVD では Secondary）<span class="b rsn">stated</span></td></tr><tr><th>exploit_status</th><td>**実証コードは公開されている。実際の悪用は観測・報告されていない**
+（本記録が確認した範囲）。
+**①実証コード**——**2026年10月8日21時19分 UTC に GitHub（v12-security/pocs）へ公開。
+Python 3 と `rich` を使い、TCP 7070 番へ到達できる対象に対してコマンドを実行する。
+ヒープ配置に依存するため確率的で、失敗時はサービスがクラッシュする**（出典2）。
+**②CISA の SSVC 評価**——**Exploitation: poc／Automatable: yes／
+Technical Impact: total。実証コードの URL に exploit タグが付与されている**（出典1）。
+**③KEV**——**2026年10月8日版（1,739件）に AnyDesk の項目は1件も無い。
+ただしこの版は CVE 公開より前であり、悪用の否定には使えない**（出典4。本記録の留保）。
+**④NVD**——**状態は「Received」で、NVD 自身の分析は未了**（出典5）。
+</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月13日</td></tr><tr><th>patch</th><td>**修正は 8.0.3 に含まれている**（出典1・2）。
+**報道によれば 8.0.3 は現地時間2026年6月23日公開で、
+更新履歴では本脆弱性に言及されていなかった**（出典3）〈齟齬1〉。
+**実務上の指示は単純である**——**最新版（2026年9月23日公開の 8.1.0 以降）へ上げる。**
+**緩和策としては TCP 7070 番の到達範囲を絞ることが考えられるが、
+研究者がリレー接続経由での到達性を述べているため、根本対処の代わりにはならない**
+（出典2。本記録の評価）。
+</td></tr><tr><th>vendor_response</th><td>**本記録はベンダーの対応を評価する材料を持っていない。**
+**確認できたのは次の3点である。**
+**①修正は 8.0.3 に入っている（出典1・2）。**
+**②CVE の採番はベンダーではなく MITRE が行い、
+参照先にベンダーのアドバイザリは無い（出典1）。**
+**③ベンダーのサイトは自動取得に対して HTTP 403 を返し、
+本記録は更新履歴・セキュリティ情報の内容を確認できていない（出典6）。**
+**研究者は「我々の PoC 動画の公開を受けて、ベンダーは 8.0.2 のビルドを
+削除したように見える」と推測の形で書いている**（出典2。本記録の訳）。
+</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **Linux 版を 8.0.3 以上（実務上は最新の 8.1.0 以降）へ上げる**（唯一の根本対処）
+　<b>状況:</b> ベンダーが提供（8.0.3 は2026年6月23日公開・報道値）　<b>副作用:</b> **更新のためにサービスの再起動が必要で、
+進行中のリモート支援セッションは切断される。**
+**保守委託先が常用している端末では、
+作業時間の調整が要る**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **TCP 7070 番の到達範囲をホストのファイアウォールで絞る**（緩和）
+　<b>状況:</b> 本記録の推奨（ベンダーの指示にはない）　<b>副作用:</b> **同一 LAN 内での直接接続（AnyDesk が速度のために使う経路）が切れ、
+リレー経由に落ちるため接続品質が下がる場合がある。**
+**また、リレー経由では同じ脆弱な経路に到達できると研究者が述べているため、
+「対処済み」と記録してしまうと更新が止まる危険がある**（本記録の評価）。
+　<b>source:</b> 2</div><div class=sub><b>数え方:</b> **AnyDesk サービスの異常終了を記録・監視する**（検知の確保）
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **運用上の不具合によるクラッシュも拾うため、
+最初は誤検知が多い。** **基準線を作るまでは警告ではなく記録に留める必要がある**
+（本記録の評価）。
+　<b>source:</b> 2</div><div class=sub><b>数え方:</b> **不要な端末から AnyDesk を削除する（保守委託先が持ち込んだ分を含む）**
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **緊急時の遠隔支援の手段が減る。**
+**削除の前に、保守契約上の支援方法を確認しないと
+障害対応が遅れる**（本記録の評価）。
+　<b>source:</b> 2</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">現地時間2026年6月23日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**AnyDesk Linux 版 8.0.3 が公開され、本脆弱性が修正された。**
+**CVE の影響版の記述は「8.0.0 以上 8.0.3 未満」であり、8.0.3 が修正版である**（出典1）。
+**研究者の README も「AnyDesk 8.0.3 で修正済み（Fixed in AnyDesk 8.0.3）」と書いている**
+（出典2。本記録の訳）。
+**報道は「6月の更新で修正されていたが、公開当初は言及されていなかった」としている**
+（出典3）——**この「言及が無かった」点は本記録では裏取りできていない**〈齟齬1〉。
+</td></tr><tr><td class="sm nowrap tw">2026年9月23日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**AnyDesk Linux 版 8.1.0 が公開された**（出典3）。
+**本記録の注記**——**8.0.3 以降も更新は続いており、
+現在入手できる最新版は修正を含む。**
+**したがって作業は「最新版へ上げる」で足りる**（本記録の整理）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月8日 21時19分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**実証コード「AnyPwn」が GitHub リポジトリ v12-security/pocs に公開された**
+（本記録が GitHub API でコミット日時「2026-10-08T21:19:54Z・Add anydesk」を確認。出典2）。
+**内容は、AnyDesk Linux 8.0.2（x86_64・サービスモード）に対して
+TCP 7070 番へ直接接続し、任意コマンドを実行する Python のスクリプトである。**
+**README は対象ビルドの SHA-256（62ee04ad…94f5a）・検証 VM（Linux Mint 22.3・kernel 6.14.0-37）まで
+明示している**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日 14時40分 UTC</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**MITRE が CVE-2026-109390 を採番・公開した**（出典1）。
+**「8.0.3 より前の AnyDesk は、ヒープベースのバッファオーバーフローにより、
+認証されていないリモートの攻撃者が任意のコードを実行できる。
+Linux では、被害者がデスクトップ操作を承認しないまま root としてコマンドを
+実行できることが実証されている。セッションプロトコルの mode 5 用
+ストリームパケットハンドラで、ペイロード長の値が検証されていない」**
+（原文英語。本記録の訳。出典1）。
+**CVSS 9.8・CWE-130。参照先は実証コードのリポジトリと AnyDesk の Linux 版更新履歴の2件。**
+**予約（dateReserved）と公開（datePublished）が同一時刻であり、
+実証コードの公開を受けた事後の採番と読める**（本記録の評価）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日 05時59分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Security NEXT が報道。**
+**「6月の更新で修正されていたが、公開当初は言及されていなかったという」
+「すでに実証コードも公開されており、注意が必要」**と伝えた（出典3）。
+**8.0.3 の公開日（現地時間2026年6月23日）と 8.1.0 の公開日（2026年9月23日）は
+この報道が示した値である**（本記録の注記。ベンダー原本では未確認）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】次の4点を確認した。**
+**①CVE-2026-109390 は NVD にも登録されているが、状態は「Received」であり
+NVD 自身の分析は未了である**（出典5）。
+**②CISA KEV の2026年10月8日版（catalogVersion 2026.10.08・1,739件）に
+AnyDesk の項目は1件も無い**（出典4。ただしこの版は CVE 公開より前）。
+**③AnyDesk のサイト（更新履歴・セキュリティ情報）は自動取得に対して
+HTTP 403 を返し、本文を取得できない**（出典6。Cloudflare の遮断画面が返る）。
+**④実証コードのリポジトリは公開が続いており、star は1,111件**
+（本記録が GitHub API で確認。出典2）。
+</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><div class=sm>**出典3（Security NEXT）は「現地時間2026年6月23日にリリースされた同8.0.3で修正済み。
+更新履歴などでは言及されていなかったという」と書いている。**
+**本記録はこの記述をベンダーの原本で裏取りできていない**——
+**AnyDesk のサイト（出典6）は UA を付けた取得・WebFetch・アーカイブ経由のいずれでも
+HTTP 403 を返す**（2026年10月13日時点。T6）。
+**本記録が独立に確認できたのは、研究者の README に
+「8.0.3 で修正済み」と書かれていることだけである**（出典2）。
+**したがって日付（6月23日・9月23日）は報道値として扱い、
+「無言修正だった」という評価には留保を付ける。**
+</div></li><li><span class="b dk">当事者の公表なし</span><div class=sm>**CVE レコードの参照先は実証コードのリポジトリと Linux 版更新履歴の2件のみで、
+ベンダーのセキュリティアドバイザリは挙げられていない**（出典1）。
+**本記録の検索範囲でもベンダーの公表は見つかっていない。**
+**ただし「存在しない」と断定はしない**——**サイト自体が自動取得を遮断しているため、
+到達できていないだけの可能性が残る**（本記録の留保）。
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**CVE レコードは platforms: Linux・既定の状態 unaffected と記録しており、
+記録上は Linux のみが対象である**（出典1。本記録が JSON 原本で確認）。
+**しかし「他のプラットフォームは影響を受けない」と明示した一次資料は、
+本記録の確認範囲には無い。**
+**脆弱な処理はセッションプロトコルという共通部分にあるため、
+本記録は他プラットフォームの安全を断定しない**（本記録の留保）。
+</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**本記録の推定である。** **根拠は2つ**——
+**①CVE レコードの予約時刻（2026年10月12日14時40分09秒 UTC）と
+公開時刻（同14時40分10秒 UTC）が1秒差である
+②採番機関がベンダーではなく MITRE である**（出典1。本記録が JSON 原本で確認）。
+**MITRE が何をきっかけに採番したかは公表されていない**ため、断定はしない。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>未認証の接続が TCP 7070 番（またはリレー経由）でセッションプロトコルに届く →
+mode 5 パケットの宣言長 0xfffffff0 が32ビット演算で一周し、確保は0〜15バイトになる →
+オブジェクトは元の大きな長さを保持したまま領域外へ書き込む →
+root で動くサービスを乗っ取り、承認前にコマンドが実行される
+</div><div class=svgwrap><svg viewBox="0 0 1202 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,111.0 C193.0,111.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C397.0,60.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1009.0,60.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1009.0,60.0 1009.0,155.0 1036,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C703.0,162.0 703.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証のリモート接続元（</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実際の攻撃は未観測）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE の記述は「認証さ</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">れていないリモートの攻撃</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TCP 7070 番への</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">直接接続（実証コードの経</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">路）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">同一セグメントまたは外部</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">から到達できる環境</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AnyDesk のリレー</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">接続（同じ経路に到達可能</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・Frida で検証）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">公開 PoC の対象外。</text><text x="295.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">ポートを閉じても残る経路</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セッションプロトコル m</text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ode 5 ストリームパ</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ケットハンドラ</text><text x="499.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">ペイロード長を検証せずに</text><text x="499.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">領域の大きさを計算する（</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0xfffffff0 +</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 0x10 の32ビット</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">切り詰め → 確保0〜…</text><text x="703.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">オブジェクトの論理長は元</text><text x="703.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">の大きな値のまま</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AnyDesk サービス</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（Linux・通常 ro</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ot で動作）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">ヒープ破壊 → vtab</text><text x="907.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">le／スタックピボットの</text><rect x="1036" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">承認前の root コマ</text><text x="1111.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ンド実行</text><text x="1111.0" y="72.0" text-anchor="middle" fill="#ffcc80" font-size="10">「被害者がデスクトップ操</text><text x="1111.0" y="84.0" text-anchor="middle" fill="#ffcc80" font-size="10">作を承認しないまま」（C</text><rect x="1036" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">失敗時はサービスのクラッ</text><text x="1111.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シュ（唯一の観測可能な合</text><text x="1111.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">図）</text><text x="1111.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">ヒープ配置は確率的。防御</text><text x="1111.0" y="186.0" text-anchor="middle" fill="#ffcc80" font-size="10">側から見えるのはこれだけ</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Linux 版 8.0.</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3（2026年6月23日</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）／8.1.0（同9月…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正済み。更新履歴での言</text><text x="907.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">及は本記録では未確認</text></svg></div><div class=fn>CVE-2026-109390 の記録（MITRE・2026年10月12日）と、
+V12 セキュリティチームの実証コード README（2026年10月8日）にもとづく
+（本記録が2026年10月13日に両方の原本を取得して確認）。
+**実際の悪用は観測されていない。**
+**リレー経由の経路（破線相当）は研究者が Frida で到達性を検証したと述べているもので、
+公開された実証コードは直接接続のみを対象としている。**
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（悪用事例が無いため）。
+**本記録の整理**——**見るべきは「誰が 7070 番へ来ているか」である。**
+**①AnyDesk を入れた Linux 端末の 7070 番への接続元を1週間記録し、
+正規の運用（社内の保守経路）以外からの接続があるかを数える。**
+**②社外から到達できる構成になっていれば、それ自体を異常として扱う。**
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の判断である**（公表された悪用事例は無いため、一般論としての評価）。
+**機会は存在する**——**失敗が必ずサービスのクラッシュとして現れるためである**（出典2）。
+**具体的には ①AnyDesk サービスの異常終了・再起動の回数を記録し、
+基準線から外れたら調べる ②クラッシュダンプ（core）の有無を確認する、の2つ。**
+**「落ちたら再起動する」だけの運用にしていると、
+この唯一の合図を自分で消すことになる**（本記録の評価）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。**
+**本記録の整理**——**検知点は脆弱性固有ではなく任意コード実行の一般形である。**
+**①AnyDesk のサービスプロセスからの想定外の子プロセス生成
+②同プロセスからの想定外の外向き通信
+③`/tmp` 等への書き込み（実証コードは `id&gt;/tmp/anypwn` を例示している）。**
+**Linux 端末に EDR が入っていない組織では、どれも見えない**（本記録の評価）。
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**ベンダーは2026年6月23日公開の 8.0.3 で修正を入れた一方、
+CVE の採番を行わず、本記録の確認範囲ではアドバイザリも出していない。**
+**報道は「更新履歴などでは言及されていなかったという」と伝えている**（出典3）。
+**CVE は4か月後、実証コードの公開を受けて MITRE が採番した**（出典1）。
+</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**本記録の判断である。** **評価の対象は「修正したこと」ではなく「伝え方」である。**
+**修正自体は実証コード公開の107日前に完了しており、
+最新版（8.1.0）を使っていた利用者は影響を受けない**（出典2・3）。
+**不十分と判断する理由は3つ。**
+**①未認証で root を取られる種類の脆弱性で、CVE の採番が第三者任せになった
+②CVE の参照先にベンダーのアドバイザリが無く、
+利用者が一次情報に辿り着けない（出典1）
+③ベンダーのページが自動取得を遮断しており、
+脆弱性情報の突き合わせを機械で行う運用側から見えない（出典6）。**
+**留保**——**本記録はベンダーの公表の有無を断定できていない。
+到達できていないだけの可能性が残る**（齟齬1）。
+</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**リモート接続ソフトを「便利な道具」ではなく「ネットワークに面した常駐サービス」として
+資産台帳に載せる**
+</div><div class=lw>**本件は、利用者が承認する前に root でコマンドが実行される脆弱性である**（出典1・2）。
+**AnyDesk のサービスは常駐し、ネットワークからの接続を待ち受けている**
+——**その性質は、業務アプリより VPN 装置やリモートアクセス基盤に近い**
+（本記録の整理）。
+**保守用に入れた1台が、全権を取られる経路になる。**
+</div><div class=la><b>取るべき行動</b> **①リモート接続ソフト（AnyDesk／TeamViewer／RustDesk 等）の導入台数と版を
+棚卸しする。保守委託先が持ち込んだ分を忘れやすい。**
+**②台帳上の重要度を、業務端末ではなくリモートアクセス基盤と同じ区分に置く。**
+**③その区分に「更新の目標時間」「待ち受けポートの到達範囲」の2つを約束として書く**
+（本記録の推奨）。
+</div></li><li><div class=lp>**「セキュリティ修正と書かれていない更新」を後回しにする運用を見直す**
+</div><div class=lw>**本件の修正は2026年6月23日の 8.0.3 に入っていたが、
+報道によれば更新履歴では言及されていなかった**（出典3）。
+**CVE が付いたのは実証コード公開後の10月12日である**（出典1）。
+**修正から実証コード公開まで107日**（本記録の算出）——
+**この間、更新履歴の文言を判断材料にしていた組織は、
+何も知らないまま脆弱な版を動かし続けた。**
+</div><div class=la><b>取るべき行動</b> **①ネットワークに面した常駐サービスについては、
+「脆弱性情報の有無」ではなく「版の新しさ」で更新の要否を決める基準に切り替える。**
+**②自動更新を切っている製品を洗い出し、切っている理由を1件ずつ確認する。**
+**③更新履歴に依存した判断をしている製品の一覧を作り、
+無言修正が起きても困らない運用（定期的な最新化）へ移す**（本記録の推奨）。
+</div></li><li><div class=lp>**ベンダーの情報が「機械で読めるか」を調達・運用の評価項目に入れる**
+</div><div class=lw>**本記録は AnyDesk のページへ3通りの方法で到達を試みたが、
+いずれも HTTP 403 が返った**（出典6。T6）。
+**CVE レコードの参照先にベンダーのアドバイザリは無く、
+更新履歴のページだけが挙げられている**（出典1）。
+**脆弱性管理を自動化している組織では、
+「人が見れば分かる情報」は実質的に存在しないのと同じである**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①主要ベンダーについて、セキュリティ情報の提供形態
+（RSS・CSAF／VEX・メール配信・CVE の自社採番の有無）を一覧にする。**
+**②提供が無いベンダーの製品は、版の監視（インストール済み版と最新版の比較）で
+代替する仕組みを用意する。**
+**③新規調達時に「脆弱性情報の提供形態」を質問項目へ加える**（本記録の推奨）。
+</div></li><li><div class=lp>**「悪用は未観測」ではなく「自動化できる実証コードが公開済み」を判断の基準にする**
+</div><div class=lw>**CISA の SSVC 評価は Exploitation: poc・Automatable: yes・
+Technical Impact: total である**（出典1）。
+**未認証・利用者操作不要で、公開された実証コードがあり、
+探索と悪用を機械化できる**——**この組み合わせは、
+悪用が観測されるまでの時間が短い類型である**（本記録の整理）。
+**一方 KEV にはまだ載っておらず、NVD の分析も未了である**（出典4・5）。
+</div><div class=la><b>取るべき行動</b> **①KEV 収載を待つ運用になっていないか確認する。
+本件のように KEV 収載前・NVD 分析前の段階で実証コードが出る事案に対応できる経路を作る。**
+**②実証コードの公開（GitHub・Exploit-DB 等）を監視対象に入れ、
+自社資産に該当するものだけを拾う。**
+**③SSVC の「Automatable: yes」を優先度判定の入力として採用する**（本記録の推奨）。
+</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**Linux 版 AnyDesk を 8.0.3 以上（実務上は最新の 8.1.0 以降）へ上げる**
+</div><div class=lw>**CVE の影響範囲は「8.0.0 以上 8.0.3 未満」で、修正版は 8.0.3 である**（出典1）。
+**8.1.0 が2026年9月23日に公開されており、
+最新版へ上げれば本件は解消する**（出典3）。
+**実証コードは 8.0.2 に対して公開されている**（出典2）。
+</div><div class=la><b>取るべき行動</b> **①`anydesk --version` で全台の版を集める（サーバ・踏み台・保守端末を含む）。**
+**②8.0.3 未満を最優先で更新する。**
+**③更新後に版を記録し、台帳へ反映する。**
+**④8.0.0 より前の版（7.x 以前）の扱いは公表されていないため、
+これも併せて最新化する**（本記録の推奨。未確定事項に記録）。
+</div></li><li><div class=lp>**TCP 7070 番の到達範囲を測る。ただし「閉じたから対処済み」としない**
+</div><div class=lw>**実証コードは TCP 7070 番への直接接続で成立を示している**（出典2）。
+**一方、研究者は同じ脆弱な経路がリレー接続経由でも到達できることを
+Frida で検証したと書いている**（出典2。本記録の訳）——
+**リレーは AnyDesk の標準的な接続経路であり、
+ポートを閉じても経路が残る**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①AnyDesk を入れた端末の 7070 番へ、外部および他セグメントから到達できるかを実測する。**
+**②不要な到達経路はホストのファイアウォールで閉じる（緩和としては有効）。**
+**③ただし更新を「後でよい理由」にはしない。
+リレー経由の到達可能性が残るため、根本対処は版の更新である**（本記録の推奨）。
+</div></li><li><div class=lp>**AnyDesk サービスの異常終了を監視対象に入れる**
+</div><div class=lw>**実証コードはヒープの配置に依存するため、
+失敗するとコマンド実行ではなくサービスのクラッシュになる**（出典2）。
+**攻撃者は何度でも試せるが、防御側に見えるのはクラッシュだけである**
+——**つまりクラッシュの回数が、現実的に唯一の合図になる**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①`systemd` のサービス（anydesk）の異常終了を journald から拾い、
+回数を日次で記録する。**
+**②基準線（平常時はほぼ0のはず）から外れたら、接続元の記録と併せて調べる。**
+**③自動再起動の設定だけで済ませない——再起動の記録を残す**（本記録の推奨）。
+</div></li><li><div class=lp>**長さ付きのバイナリプロトコルを自作している箇所で、同じ型の不備を探す**
+</div><div class=lw>**本件の核心は「検証に使う値」と「領域確保に使う値」が別の順序で流れていたことである**
+（出典1・2。本記録の整理）。
+**`declared_len + header_size` を32ビットで計算すれば、
+同じ一周がどの実装でも起きる**——**言語や製品に固有の話ではない。**
+</div><div class=la><b>取るべき行動</b> **①自社製品・内製ツールで、受信した長さから領域を確保している箇所を列挙する。**
+**②「長さの検証」が確保より前に来ているかを1件ずつ確認する。**
+**③加算・乗算を行う箇所の型幅（32ビット／64ビット）を確認し、
+オーバーフロー検査を入れる。**
+**④ファジングの対象に、長さフィールドの境界値
+（`0xfffffff0`〜`0xffffffff`）を明示的に含める**（本記録の推奨）。
+</div></li><li><div class=lp>**サービスが root で動く必要があるかを設計として問い直す**
+</div><div class=lw>**本件が root でのコマンド実行になったのは、
+AnyDesk のサービスが Linux では通常 root で動いているからである**（出典2）。
+**同じメモリ破壊でも、権限が分離されていれば影響は1段小さくなる**
+（一般論。本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①常駐サービスの実行ユーザを棚卸しし、root で動いているものを列挙する。**
+**②そのうち、ネットワークからの接続を待ち受けているものを優先して見る。**
+**③製品側で選択できない場合は、
+コンテナ・名前空間・`systemd` の権限制限（`ProtectSystem`・`NoNewPrivileges` 等）で
+影響範囲を絞る余地があるかを確認する**（本記録の推奨。製品の対応状況に依存する）。
+</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AnyDesk の Linux 版を 8.0.3 より前の版で動かしている端末・サーバがある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AnyDesk をサービスモード（常駐・`anydesk --service`）で動かしている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AnyDesk を入れた端末の TCP 7070 番へ、外部または他セグメントから到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 製品の更新を「更新履歴にセキュリティ修正と書かれているか」で判断している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性管理の仕組みが CVE／NVD を入力としており、NVD の分析完了を待つ設計になっている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 保守委託先・外部支援者が持ち込んだリモート接続ソフトが、自社の台帳に載っていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[6]</span> <span class=sm>公開日は確認できていない（ページ自体の取得に失敗） AnyDesk Software GmbH</span> <a href="https://anydesk.com/en/changelog/linux" target="_blank" rel="noreferrer noopener nofollow">AnyDesk Linux 版 変更履歴（Changelog / Linux）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（原文英語。**CVE レコードが参照先として挙げているベンダーのページ**（出典1）。
+**ただし本記録は内容を確認できていない**——
+**UA を付けた取得・WebFetch・アーカイブ経由のいずれでも HTTP 403 が返り、
+Cloudflare の「Just a moment...」画面が返る**（2026年10月13日時点）。
+**したがって「8.0.3 の公開日」「更新履歴にセキュリティ修正の言及が無かったこと」は
+本記録では裏取りできていない**〈齟齬1〉。
+**availability を live としたのは、CVE の参照先として有効なページが存在すると
+考えられるためで、本記録が到達を確認したわけではない。**）
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月12日 14時40分 UTC（最終更新 2026年10月13日 03時55分 UTC） MITRE（CVE Program）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-109390" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-109390（CVE Record / CVE Services API）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（原文英語。**本事案の基礎資料。**
+**本記録は JSON 原本を取得し、脆弱性の記述・CVSS 3.1（9.8／AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H）・
+CWE-130・影響範囲（platforms: Linux、8.0.0 以上 8.0.3 未満、defaultStatus: unaffected）・
+採番機関（mitre）・予約と公開が同一時刻であること・
+CISA ADP の SSVC 評価（poc／yes／total）を確認した。**
+**参照先は実証コードのリポジトリと AnyDesk の Linux 版更新履歴の2件のみで、
+ベンダーのアドバイザリは挙げられていない。**）
+）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月8日版（catalogVersion 2026.10.08・収載1,739件） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（JSON 原本）</a> <span class="b kind">統計・集計資料</span><span class=sm>（（原文英語。**本記録がカタログ原本を取得して確認した事項の出所。**
+**①CVE-2026-109390 は未収載
+②ベンダー名・製品名に AnyDesk を含む項目は1件も無い
+③この版は本 CVE の公開（2026年10月12日）より前であり、悪用の否定には使えない。**）
+）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月12日 15時17分 UTC（最終更新 2026年10月13日 04時17分 UTC） NIST（NVD）</span> <a href="https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2026-109390" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-109390（NVD API 2.0）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（原文英語。**NVD 側の登録状態の出所。**
+**本記録が確認した内容**——**①状態は「Received」で NVD 自身の分析は未了
+②CVSS 9.8 は cve@mitre.org による Secondary（二次）評価として記録されている
+③影響範囲と CWE-130 は CVE レコードと一致する。**）
+）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月8日 21時19分 UTC（リポジトリへの追加コミット） V12 セキュリティチーム（Rick de Jager）</span> <a href="https://github.com/v12-security/pocs/tree/main/anydesk" target="_blank" rel="noreferrer noopener nofollow">AnyPwn: AnyDesk Pre-auth Heap Buffer Overflow RCE（v12-security/pocs）</a> <span class="b kind">調査レポート</span><span class=sm>（（原文英語。**技術的内容の一次資料。**
+**本記録は README の原文を取得し、整数ラップの仕組み（`0xfffffff0 + 0x10` の32ビット切り詰め）・
+mode 5 パケットの形式・対象ビルド（Linux 8.0.2 x86_64・SHA-256 62ee04ad…94f5a・
+サービスモード・TCP 7070・Linux Mint 22.3）・ヒープスプレーと ROP の手順・
+「8.0.3 で修正済み」「リレー接続経由でも到達可能（Frida で検証）」
+「ベンダーは 8.0.2 のビルドを削除したように見える」の各記述を確認した。**
+**公開日時と star 数（1,111件）は GitHub API で確認した。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月13日 05時59分 UTC Security NEXT</span> <a href="https://www.security-next.com/191346" target="_blank" rel="noreferrer noopener nofollow">「AnyDesk」に脆弱性、実証コードも - 6月の更新で修正</a> <span class="b kind">記事</span><span class=sm>（（**8.0.3 の公開日（現地時間2026年6月23日）・8.1.0 の公開日（2026年9月23日）・
+「更新履歴などでは言及されていなかったという」という記述の出所。**
+**本記録はこの3点をベンダー原本で裏取りできていない**〈齟齬1〉。）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月13日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月13日収集分の記事
+〈output/articles/20261013/0154_security-next_anydesk-6.md〉を起点に、
+**CVE レコードの JSON 原本（cveawg.mitre.org）・NVD API・
+実証コードのリポジトリ README と GitHub API のコミット日時・
+CISA KEV の JSON 原本を本記録が取得して裏を取った。**
+**ベンダー（AnyDesk）のサイトは UA 付きの取得・WebFetch・アーカイブ経由のいずれでも
+HTTP 403 となり、更新履歴の内容を確認できなかった**〈齟齬1に記録〉。
+**その結果、報道が伝える「6月の無言修正」は報道値として扱い、
+本記録が独立に確認できた事項（CVE の採番者・時刻・影響範囲・
+実証コードの技術的内容と公開日時・KEV 未収載・NVD の状態）と区別して記述した。**
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">AnyDesk</span><span class="b tag">CVE-2026-109390</span><span class="b tag">未認証RCE</span><span class="b tag">ヒープオーバーフロー</span><span class="b tag">整数オーバーフロー</span><span class="b tag">実証コード公開</span><span class="b tag">無言修正</span><span class="b tag">リモートデスクトップ</span><span class="b tag">Linux</span><span class="b tag">CWE-130</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-13 18:08 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

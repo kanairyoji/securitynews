@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Twitch拡張がOAuthトークン転送 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0488</span>Twitch拡張がOAuthトークン転送</h1>
+<header class="site-header">
+  <p class="subtitle">2026年9月11日、セキュリティ企業 Socket が、ブラウザ拡張
+「Twitch Enhanced Viewer | JeetBot」（Chrome 約3万人・Firefox 552人）が
+Twitch の **アカウント権限を持つ OAuth トークンを、運営元のプロキシへ
+クエリパラメータ `&amp;auth=` で平文のまま転送していた**と公表した。
+ストアの「データを収集しない」表示とプライバシーポリシーには転送の記載がなかった。
+転送機構は Firefox 版 85.8.7（9月16日確認）・Chrome 版 85.8.9（9月25日確認）で削除され、
+開発元は開示が不十分だったことを認めたが、
+**既に転送されたトークンの無効化は利用者自身の再認証に委ねられている**</p>
+  <div><span class="b type">意図せぬ露出（設定不備等で外部から到達可能だった）</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月11日（Socket の公表）</span>
+  <span>最終更新: 2026年10月13日</span>
+</div>
+
+<div class="lead"><p><strong>拡張が盗んだのではなく、拡張の「設計どおり」にトークンが外へ出ていました。</strong></p>
+<p>2026年9月11日、セキュリティ企業 <strong>Socket</strong>（調査は Kush Pandya 氏）が、ブラウザ拡張 <strong>「Twitch Enhanced Viewer | JeetBot」</strong> の挙動を公表しました（出典1）。<strong>Chrome 約3万人・Firefox 552人、合計約3.1万人</strong>が入れていた拡張です。広告ブロック・1080p 強制・地域制限の解除・チャンネルポイントの自動収集を謳っています。</p>
+<p><strong>仕組みはこうです</strong>（出典1）。拡張は Twitch 公式クライアントの <strong><code>Authorization</code> ヘッダ</strong>を取得し、前置を外して<strong>生の OAuth トークン</strong>を得ます。そのうえで <strong><code>usher.ttvnw.net</code>（Twitch の動画プレイリスト）への要求を、運営元のプロキシ（既定値 <code>enhanced[.]jeetbot[.]cc</code>）へ差し替え</strong>、<strong><code>&amp;auth=</code> というクエリパラメータにトークンを付けて送ります</strong>。<strong>クエリパラメータに載せた資格情報は、受け手のリクエストログに平文で残ります。</strong></p>
+<p><strong>問題はトークンの種類です。</strong> Socket は<strong>これが動画再生用の限定トークンではなく、アカウントに紐づくOAuth トークン（bearer 資格情報）である</strong>と判断しています。<strong>ウィスパー（個人間メッセージ）の閲覧・送信、チャットへの投稿、アカウント設定の変更、チャンネルポイントの消費</strong>ができる種類のものです。<strong>パスワードも二要素認証も経ずに使えます</strong>（出典1）。</p>
+<p><strong>開示はされていませんでした。</strong> <strong>ストアの「データ安全性」欄は「データを収集・使用しない」、リンクされたプライバシーポリシーは「利用者データを収集・保存・処理しない」としており、OAuth トークンへの言及はありませんでした</strong>（出典1）。</p>
+<p><strong>修正は入っています。</strong> <strong>Firefox 版 85.8.7 で <code>auth</code> パラメータが空に固定されたことを Socket が9月16日に確認、Chrome 版は 85.8.9 で転送が無いことを9月25日に確認</strong>しています（出典1）。<strong>開発元（JeetBot）は記事公開後に Socket へ連絡し、トークン取り扱いのリスクと、ストアの説明・プライバシーポリシーでの開示が不十分だったことを認めました</strong>（出典1）。</p>
+<p><strong>ただし、既に転送されたトークンは利用者が自分で無効化する必要があります。</strong> Socket の推奨は<strong>「拡張を更新したうえで、Twitch の設定から全セッションを切断し、再認証する」</strong>です（出典1）。<strong>拡張の更新だけでは、プロキシのログに残ったトークンは無効になりません</strong>（本記録の指摘）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>転送されたトークンが実際に悪用されたか</span><span class="b rsn">公表されていない</span><div class=sm>**Socket は「トークンがプロキシのリクエストログに平文で残りうる」こと、
+および「悪用されればアカウントのチャット・個人間メッセージ・設定へ
+第三者が到達しうる」ことを述べているが、
+実際の悪用の確認には触れていない**（出典1）。
+**本記録の指摘**——**確認も反証もできない構造である。**
+**検証に要るのはプロキシ側のアクセスログで、
+それを持つのは転送先を運用していた開発元だけである。**
+</div></li><li><span class=ui>プロキシのログの保持期間・保管場所・第三者の到達範囲</span><span class="b rsn">公表されていない</span><div class=sm>**開発元は転送の事実と開示不足を認めたが、
+ログをいつまで・どこに保持していたか、
+ログに誰が到達できたかについての説明は公表されていない**（出典1。T5）。
+**本記録の評価**——**資格情報が平文でログに残る設計では、
+ここが被害の実質を決める。** **説明が無い限り、
+利用者側で取れる前提は「漏れたものとして扱う」しかない。**
+</div></li><li><span class=ui>版 4.8 より前の挙動（露出の実際の開始時期）</span><span class="b rsn">公表されていない</span><div class=sm>**Socket が挙動を示したのは版 4.x（4.8・2026年1月）以降である**（出典1）。
+**それより前の版でトークン送信があったかは分からない**（本記録の注記）。
+**したがって露出期間は「少なくとも8か月」までしか言えない**（figures）。
+</div></li><li><span class=ui>既存トークンの一括無効化が行われたか（Twitch 側・開発元側）</span><span class="b rsn">公表されていない</span><div class=sm>**Socket の推奨は利用者自身による全セッションの切断と再認証である**（出典1）。
+**Twitch による一括無効化・利用者への通知が行われたかは公表されていない。**
+**本記録の指摘**——**拡張の更新だけでは、
+既に転送されたトークンは有効なまま残る。**
+</div></li><li><span class=ui>Twitch（Amazon）および配布プラットフォームの対応</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の確認範囲では、Twitch・Google・Mozilla のいずれからも
+本件に関する公表は見つかっていない**〈齟齬2〉。
+**Chrome Web Store の掲載は2026年10月13日時点で続いている**（出典3。T7）。
+**Firefox 版は AMO の公開 API から参照できない状態だが、
+削除・非公開・ID の誤りのいずれであるかを本記録は区別できない。**
+</div></li><li><span class=ui>開発元の意図（窃取目的があったか）</span><span class="b rsn">公表されていない</span><div class=sm>**開発元の説明は「プレイリストを取得するために再生プロキシへ転送していた」である**
+（出典1。T5）。
+**一方 Socket は、版 4.x が専用の `set-token` エンドポイントへ POST し、
+5秒のクールダウンで重複送信を抑えていた点、
+コード中にロシア語のコメントで「送信が失敗したら静かに失敗せよ」と
+指示があった点を挙げている**（出典1）。
+**本記録は意図を断定しない**——**設計の結果として
+資格情報が外部に残る状態であったこと、それが開示されていなかったことが
+確認できる事実である**（本記録の方針）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>「Twitch Enhanced Viewer | JeetBot」の利用者（Chrome 約3万人・Firefox 552人）</span><span class="b role">被害組織</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Twitch（Amazon 傘下）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JeetBot（拡張の開発・運営元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Socket</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Google（Chrome Web Store）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Mozilla（Firefox Add-ons）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>転送の対象となりうる利用者数（Chrome と Firefox の合計）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>31,000<span class=fu>人</span></div><div class=fn>**Socket の公表時点（2026年9月11日）の値**——**Chrome 約30,000人・Firefox 552人**（出典1）。
+**これは「拡張を入れていた利用者の数」であり、
+「トークンが実際に転送された数」でも「悪用された数」でもない**（本記録の注記）。
+**ハードコードされた10チャンネルの視聴時は転送されなかったとされるため、
+転送の有無は視聴先にも依存する**（出典1）。
+**単位は「人」ではなく正確には「ストアが表示する利用者数（アカウント数）」であり、
+1人が複数ブラウザで使っていれば重複する**（本記録の留保）。
+</div></div><div class=fig><div class=fh><span class=fl>Chrome 版の利用者数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>30,000<span class=fu>人</span></div><div class=fn>**Socket の公表時点の値**（出典1）。
+**本記録が2026年10月13日に Chrome Web Store の掲載ページを取得したところ、
+表示は「30,000 users」で変わっていない**（出典3。T7）——
+**ストアの表示は丸められているため、増減は読み取れない**（本記録の注記）。
+</div></div><div class=fig><div class=fh><span class=fl>Firefox 版の利用者数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>552<span class=fu>人</span></div><div class=fn>**Socket の値**（出典1）。
+**報道では「600人超」（出典4）や「604人」とされており食い違う**〈齟齬1〉。
+**本記録は Socket の値を採る**——**公表日が最も古く、
+確認の方法（拡張 ID での照会）が示されているためである**（本記録の判断）。
+</div></div><div class=fig><div class=fh><span class=fl>公表から Firefox 版の修正確認までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>日</span></div><div class=fn>**2026年9月11日（公表）から9月16日（Socket が 85.8.7 を確認）まで、本記録が算出した。**
+</div></div><div class=fig><div class=fh><span class=fl>公表から Chrome 版の修正確認までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**2026年9月11日（公表）から9月25日（Socket が 85.8.9 を確認）まで、本記録が算出した。**
+**差（Firefox 5日・Chrome 14日）は審査の所要によるものと読める**
+——**Socket は9月16日時点で Chrome 版が審査待ちだったと書いている**（出典1。本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>確認できる露出の最短期間（版 4.8 から公表まで）</span><span class="b conf">最少</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>か月</span></div><div class=fn>**2026年1月（版 4.8 の挙動が確認されている時点）から
+2026年9月11日（公表）まで、本記録が算出した。**
+**confidence を min とした理由**——**4.8 より前の版の挙動が公表されていないため、
+実際の露出はこれより長い可能性がある**（本記録の留保）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**これは外部からの攻撃ではなく、拡張の設計による資格情報の露出である**（本記録の整理）。
+**段は credential-access（Twitch 公式クライアントの `Authorization` ヘッダから
+OAuth トークンを取り出す）・exfiltration（宛先を運営元プロキシへ差し替え、
+`&amp;auth=` でトークンを送る）・collection（プロキシのリクエストログに平文で残る）の3つ。**
+**悪用（アカウント操作）の段は置かない**——**実際の悪用は公表されていない**
+〈未確定事項に記録〉。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**コンテンツスクリプトが、Twitch 公式 Web クライアントが使う
+`Authorization` ヘッダを取得し、拡張のバックグラウンドワーカーへ渡す。**
+**ワーカーが前置を外して生の OAuth トークンを得る**（出典1）。
+**Socket は、これが再生用の限定トークンではなく
+アカウントに紐づく bearer 資格情報であると判断している。**
+</div><div class=fn>根拠: Socket による拡張コードの解析（出典1）</div></li><li><div class=stg><span class="b stage">2. 持ち出し</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**`usher.ttvnw.net` への動画プレイリスト要求を、
+運営元のプロキシ（既定値 `enhanced[.]jeetbot[.]cc`）へ差し替え、
+`&amp;auth=` というクエリパラメータにトークンを付けて送る**（出典1）。
+**Firefox では blocking な `webRequest` リスナー、
+Chrome では `declarativeNetRequest` の `regexSubstitution` ルールで実現している。**
+**旧版（4.8・2026年1月）は `set-token` エンドポイントへ直接 POST し、
+`deno.dev`・`deno.net` を控えに使っていた**（出典1）。
+</div><div class=fn>根拠: Socket による拡張コードの解析と転送先ドメインの特定（出典1）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">推定</span><span class=srcs></span></div><div>**クエリパラメータに載ったトークンが、プロキシのリクエストログに平文で残りうる**
+（出典1）。
+**旧版については、同じトークンを5秒のクールダウンで重複送信しない実装から、
+Socket は受信側での保存を推測している**（断定ではない）。
+</div><div class=fn>根拠: Socket の分析（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>確認できる露出の開始から第三者の公表まで</div><div class=mv>**少なくとも約8か月**（2026年1月の版 4.8 → 2026年9月11日の公表。本記録の算出）。 **4.8 より前の版の挙動は公表されていないため、実際はこれより長い可能性がある** （本記録の留保）。 **気づいたのは利用者でもストアでも Twitch でもなく、 第三者のセキュリティ企業である**（本記録の指摘）</div></div><div class=met><div class=ml>公表から転送機構の削除確認まで</div><div class=mv>**Firefox 版は5日**（9月11日 → 9月16日に Socket が 85.8.7 を確認）、 **Chrome 版は14日**（同 → 9月25日に 85.8.9 を確認）。 **差は審査の所要と読める**——**9月16日時点で Chrome 版（85.8.4）はまだ転送しており、 修正は審査待ちだった**（出典1。本記録の整理）。 **ただし「転送の停止」は「既に渡ったトークンの無効化」ではない**（本記録の指摘）</div></div><div class=met><div class=ml>影響を受けた利用者への通知</div><div class=mv>**確認できていない**（本記録の確認範囲）。 **Socket は利用者向けの推奨（更新・全セッションの切断・再認証）を記事に書いているが、 開発元・Twitch・各ストアからの個別通知が行われたかは公表されていない** 〈未確定事項に記録〉。 **拡張の更新はストア経由で自動的に届くが、 それは「転送が止まる」ことしか意味しない**（本記録の指摘）</div></div><div class=met><div class=ml>当事者（開発元）自身による公表</div><div class=mv>**確認できていない**（本記録の確認範囲）。 **開発元の説明として参照できるのは、Socket へ連絡した内容だけである**（出典1。T5）。 **公式サイト・ストア掲載ページのいずれにも本件の告知は見つかっていない** （出典2・3。T7）〈齟齬2〉</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**転送機構を削除する更新（Firefox 85.8.7・Chrome 85.8.9）は出されたが、
+既に転送されたトークンの無効化は利用者自身の再認証に委ねられている**（出典1）。
+**Socket の推奨は「拡張を更新し、Twitch の設定から全セッションを切断して
+再認証する」である。**
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **利用者任せにすることで、サービスの中断は避けられる**
+（全利用者のセッションを切れば、正規の利用者も再ログインを強いられる）。
+**代償は、対処する利用者と対処しない利用者に分かれることである**
+——**記事を読まない大多数は、トークンがそのまま有効なまま残る**
+（本記録の評価）。
+</div></li><li><div class=ui>**ストアの「データ安全性」欄は「データを収集・使用しない」と表示され、
+プライバシーポリシーは「利用者データを収集、保存、処理しない」としており、
+OAuth トークンの転送は記載されていなかった**（出典1）。
+**開発元は記事公開後、この開示が不十分だったことを認めた**（T5）。
+</div><div class=fn><b>トレードオフ:</b> **「データを収集しない」という表示は、インストール率を上げる**
+（ストアの表示は利用者の判断材料である）。
+**代償は、利用者が実際のリスクを判断できないことである**
+——**本件では、約3.1万人が「収集されない」という表示のもとで
+アカウント権限のトークンを外部へ渡していた**（本記録の評価）。
+</div></li></ul></div>
+<section id="s6"><h2>資格情報を URL のクエリパラメータに載せた——受け手のログに平文で残る形で、約3.1万人分が運営元へ渡っていた<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>Socket が示した経路を順に追います</strong>（出典1。本記録の訳・整理）。</p>
+<ol>
+<li><strong>コンテンツスクリプトが、Twitch 公式 Web クライアントが使う<code>Authorization</code> ヘッダを取得し、拡張のバックグラウンドワーカーへ渡す。</strong></li>
+<li><strong>ワーカーが前置（<code>OAuth</code> 等）を外し、生のトークンを取り出す。</strong></li>
+<li><strong><code>usher.ttvnw.net</code>（Twitch の動画プレイリストの取得先）への要求を、運営元のプロキシ（既定値 <code>enhanced[.]jeetbot[.]cc</code>）へ差し替える。このとき <code>&amp;auth=</code> というクエリパラメータにトークンを付ける。</strong></li>
+<li><strong>トークンはプロキシのリクエストログに平文で残りうる。</strong></li>
+</ol>
+<p><strong>実装はブラウザごとに違いますが、結果は同じです</strong>（出典1）。<strong>Firefox では blocking な <code>webRequest</code> リスナー、Chrome では <code>declarativeNetRequest</code> の <code>regexSubstitution</code> ルール</strong>で宛先の差し替えを行っていました。<strong>例外はハードコードされた10チャンネル（ロシア語配信者など）だけで、それ以外の視聴では常に転送されていた</strong>とされます。</p>
+<p><strong>ここで本記録が強調したい点は、手口の巧妙さではありません。</strong> <strong>URL のクエリパラメータは、ログに残ることを前提とした場所です。</strong> Web サーバ、プロキシ、CDN、負荷分散装置——経路上のあらゆる装置がアクセスログに URL を丸ごと書きます。<strong>資格情報をそこへ載せれば、「意図せず保存される」のではなく「設計上保存される」</strong>（本記録の整理）。</p>
+<p><strong>旧版はもっと直接的でした</strong>（出典1）。<strong>版 4.8（2026年1月）は、取得したトークンを <code>set-token</code> という専用エンドポイントへPOST で送っていました。</strong> 送信先は主系のほか <code>deno.dev</code>・<code>deno.net</code> の控え付き。<strong>同じトークンを5秒のクールダウンで重複送信しないようにしていた</strong>ことから、<strong>Socket は受信側でトークンを保存していたと推測しています</strong>（断定ではありません）。<strong>これらのエンドポイントは現在停止しています。</strong></p></section>
+<section id="s7"><h2>転送されたのは再生用の限定トークンではなく、アカウント権限を持つ bearer 資格情報だった<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p><strong>トークンの種類が、本件の重さを決めています。</strong></p>
+<p><strong>Socket の判断</strong>——<strong>これは動画再生用に限定されたトークンではなく、アカウントに紐づく OAuth トークン（bearer 資格情報）である</strong>（出典1）。<strong>bearer 資格情報とは「持っている者が本人として扱われる」種類のもの</strong>で、<strong>パスワードの入力も二要素認証も要りません。</strong></p>
+<p><strong>Socket が挙げた、トークンでできること</strong>（出典1。本記録の訳）。</p>
+<ul>
+<li><strong>ウィスパー（個人間メッセージ）の閲覧と送信</strong></li>
+<li><strong>チャットへの投稿</strong></li>
+<li><strong>アカウント関連の設定の変更</strong></li>
+<li><strong>チャンネルポイントの消費</strong></li>
+</ul>
+<p><strong>本記録の評価</strong>——<strong>この4つの組み合わせは、「配信を見るための拡張」の権限としては明らかに過大です。</strong> <strong>とくにウィスパーの閲覧は、個人間のやり取りの内容そのものに届きます。</strong> <strong>チャットへの投稿は、アカウントを使った詐欺・スパムの発射台になります。</strong></p>
+<p><strong>そして、二要素認証では止まりません</strong>（本記録の指摘）。二要素認証はログインの入口を守る仕組みであり、<strong>すでに発行されたセッション資格情報の持ち出しには効きません。</strong> <strong>本件の対処が「パスワード変更」ではなく「全セッションの切断と再認証」である理由はここにあります</strong>（出典1）。</p>
+<p><strong>組織の観点では、同じ構図が業務用 SaaS でも成立します</strong>（本記録の整理）。<strong>ログイン中のページの <code>Authorization</code> ヘッダを読める拡張は、そのサービスのセッションをそのまま外へ出せます。</strong> <strong>拡張の権限表示は「このサイトのデータの読み取りと変更」という一行に丸められるため、利用者にはこの違いが見えません。</strong></p></section>
+<section id="s8"><h2>ストアの表示は「データを収集しない」、プライバシーポリシーは「処理しない」——開示の欠落そのものが本件の中心である<span class="b slot">経営責任</span><span class=srcs>出典 [1]</span></h2><p><strong>Socket が指摘した開示の状態</strong>（出典1。本記録の訳）。</p>
+<ul>
+<li><strong>ストアの「データ安全性」欄</strong>: <strong>「データを収集・使用しない」</strong></li>
+<li><strong>リンクされたプライバシーポリシー</strong>: <strong>「利用者データを収集、保存、処理しない」</strong></li>
+<li><strong>OAuth トークンへの言及</strong>: <strong>無し</strong></li>
+</ul>
+<p><strong>開発元はこれを認めました</strong>（出典1。T5）。<strong>「以前の版はプレイリストを取得するために、視聴者の Twitch の OAuth トークンを当社の再生プロキシへ転送していた。トークンの取り扱いについて提起された懸念を受け止め、プライバシーの開示がこれを十分に説明していなかったことを認める」</strong>（原文英語。本記録の訳）。</p>
+<p><strong>本記録の評価</strong>——<strong>本件を「悪意ある拡張」として読むと、学べることが減ります。</strong>開発元の説明には技術的な筋があります。<strong>広告ブロックや画質強制のためにプレイリストを自前のプロキシで取るなら、Twitch の認証を通す必要がある</strong>——その実装として最も安易な方法が<strong>クエリパラメータへの付与</strong>でした。<strong>悪意の有無を問わず、資格情報は第三者のログに残ります</strong>（本記録の整理）。</p>
+<p><strong>したがって読者（CISO・技術者）が持ち帰るべき判定基準は、「作者が信頼できるか」ではありません</strong>（本記録の結論）。<strong>「この拡張は、ログイン中のサービスの通信を中継するか」</strong>です。<strong>中継するなら、その拡張はそのサービスのセッション資格情報に届きうる</strong> ——<strong>ストアの表示がどうあれ、技術的にはそうなります。</strong> <strong>Socket が利用者向けの助言としてまさにこの一文を置いています</strong>—— <strong>「ログイン済みサービスのトラフィックを中継する拡張は、そのセッション資格情報にアクセスできると考えること」</strong>（出典1。本記録の訳）。</p></section>
+<section id="s9"><h2>修正は5日（Firefox）と14日（Chrome）で入ったが、既に外へ出たトークンの無効化は利用者任せのまま<span class="b slot">組織の対応</span><span class=srcs>出典 [1]</span></h2><p><strong>修正の経過は速いほうです</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>時点</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年9月11日</td>
+<td>Socket が公表</td>
+</tr>
+<tr>
+<td>2026年9月16日</td>
+<td><strong>Firefox 85.8.7</strong> で <code>auth</code> が空に固定されたことを Socket が確認（5日）</td>
+</tr>
+<tr>
+<td>2026年9月16日</td>
+<td>Chrome 版（85.8.4）はまだ転送しており、修正は審査待ち</td>
+</tr>
+<tr>
+<td>2026年9月25日</td>
+<td><strong>Chrome 85.8.9</strong> で転送が無いことを Socket が確認（14日）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ブラウザ間の差（5日と14日）は審査の所要です</strong>（本記録の整理）。<strong>組織にとっての意味</strong>——<strong>「修正版が出た」という情報と「自分の環境に届いた」は別の時点です。</strong> <strong>拡張の更新は利用者のブラウザが取りに行くまで反映されません。</strong></p>
+<p><strong>そして、ここが本件で最も実務的な論点です</strong>（本記録の指摘）。<strong>転送機構が消えても、すでにプロキシのログへ渡ったトークンは有効なままです。</strong> <strong>Socket の推奨は3段構えです</strong>（出典1。本記録の訳）。</p>
+<ul>
+<li><strong>利用者</strong>: <strong>85.8.7 以降へ更新し、Twitch の設定で全セッションを切断して再認証する</strong></li>
+<li><strong>開発者</strong>: <strong>認証ヘッダやトークンを第三者サーバへ送らない。やむを得ず中継する場合は、ブラウザ側で資格情報を除去し、中継を明示する</strong></li>
+<li><strong>セキュリティチーム</strong>: <strong>両ストアの拡張 ID を棚卸しし、85.8.7 より前の版を検出して、影響を受けた利用者にセッション取り消しを促す</strong></li>
+</ul>
+<p><strong>本記録の評価</strong>——<strong>トークンの無効化が利用者の手作業に委ねられている点が、本件の未解決部分です。</strong> <strong>Twitch 側による一括無効化や通知が行われたかは公表されていません</strong>〈未確定事項に記録〉。<strong>プロキシのログの保持期間も説明がないため、「いつまで危険が残るか」を利用者が見積もることもできません。</strong></p></section>
+<section id="s10"><h2>掲載は続いている——本記録が確認した時点の版は 85.9 で、Socket が検証した 85.8.9 より後である<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>本記録が2026年10月13日に確認した状態です</strong>（T7）。</p>
+<p><strong>Chrome Web Store</strong>（出典3）—— <strong>掲載は続いています。</strong> 名称「Twitch Enhanced Viewer | JeetBot」、<strong>版 85.9・更新日 2026年10月6日・「30,000 users」・サイズ 484KiB・10言語対応。</strong>説明文はロシア語で「TEV Jeetbot | 1080/2K 制限解除、広告ブロック、Jeetbot との連携、報酬の自動収集、レイドからの自動退出」とあります。</p>
+<p><strong>重要な留保</strong>——<strong>版 85.9 は、Socket が転送の無いことを確認した 85.8.9 より後の版です。</strong> <strong>本記録はこの版の挙動を検証していません。</strong> <strong>したがって「現在は安全である」とも「再び転送している」とも述べません</strong>（本記録の方針）。</p>
+<p><strong>Firefox Add-ons</strong>——<strong>AMO の公開 API で「Twitch Enhanced Viewer」を検索しても該当は現れず、Socket が示した拡張 ID での照会は「認証が必要」という応答になりました</strong>（T7）。<strong>公開が取り下げられたのか、削除されたのか、ID の表記の問題なのかは本記録では区別できません</strong>〈齟齬2〉。</p>
+<p><strong>開発元のサイト</strong>（出典2）——<strong><code>jeetbot.cc</code> は HTTP 200 で応答するロシア語の商用サイト（Twitch／Kick／VK Live 向けのボット SaaS）で、本記録の確認範囲では本件に関する告知を見つけられませんでした。</strong></p>
+<p><strong>本記録の整理</strong>——<strong>組織が確認すべきことは1つです。</strong> <strong>自組織の端末にこの拡張（Chrome ID: pnhhdhhcadcjfckjhpmjneldiegbojfb）が入っていないか、入っていた場合に版が 85.8.7 より前の時期に使われていたか。</strong> <strong>後者なら、該当利用者の Twitch セッションの取り消しを促す必要があります</strong>（Socket の推奨。出典1）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>exposure_cause</th><td>**拡張の設計による資格情報の第三者転送である。**
+**Twitch 公式クライアントの `Authorization` ヘッダから OAuth トークンを取り出し、
+動画プレイリスト要求の宛先を運営元プロキシへ差し替える際に
+`&amp;auth=` というクエリパラメータとして付与していた**（出典1）。
+**結果、トークンはプロキシのリクエストログに平文で残りうる状態だった。**
+**ストアの「データ安全性」欄とプライバシーポリシーには転送の記載が無かった**（出典1）。
+</td></tr><tr><th>露出期間</th><td>**確認できる開始は2026年1月（版 4.8 の挙動）、解消は
+Firefox 版が2026年9月16日・Chrome 版が2026年9月25日（いずれも Socket の確認日）**
+（出典1）。
+**期間は少なくとも約8か月**（本記録の算出）。
+**版 4.8 より前の挙動は公表されていないため、開始時期はこれより早い可能性がある**
+〈未確定事項に記録〉。
+**なお「解消」は転送機構の削除を指し、
+既に転送されたトークンの無効化は含まない**（本記録の指摘）。
+</td></tr><tr><th>exposed_data</th><td>**Twitch のアカウント権限を持つ OAuth トークン（bearer 資格情報）**（出典1）。
+**Socket は、これが動画再生用の限定トークンではないと判断している。**
+**トークンで可能とされること**——**ウィスパー（個人間メッセージ）の閲覧・送信、
+チャットへの投稿、アカウント関連の設定の変更、チャンネルポイントの消費。**
+**パスワード・二要素認証を経ずに使える**（出典1）。
+**なお Socket は、トークンが悪用された場合にアカウントのチャット・私信・設定へ
+第三者が到達しうるとしているが、実際の到達・悪用は確認していない。**
+</td></tr><tr><th>外部からの到達性</th><td>**到達できたのは、転送先プロキシのリクエストログに触れる者である**（出典1）。
+**すなわち運営元（JeetBot）と、そのログ基盤に到達できる者。**
+**不特定多数に公開されていたという記述は無い**（本記録の注記）。
+**ただしログの保持期間・保管場所・到達範囲は公表されていない**
+〈未確定事項に記録〉——**第三者による検証の手段が無い。**
+</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月13日（本記録の確認時点）　<b>補足:</b> **Socket は悪用の確認に触れていない**（出典1）。 **本記録も悪用の報告を見つけていない。** **ただし「悪用が無かった」とは述べない**—— **確認・反証の手段がプロキシ側のログに限られ、 それを持つのは転送先を運用していた開発元だけである**（本記録の指摘）</td></tr><tr><th>ログの有無</th><td>**検証に要るログは、転送先プロキシのアクセスログである。** **これは運営元の管理下にあり、保持期間・保管場所・到達範囲のいずれも公表されていない** 〈未確定事項に記録〉。 **利用者側・利用者の所属組織側には、転送の痕跡が残らない**—— **通信は TLS で、URL の中身は端末外から観測できない**（本記録の整理）。 **組織が確認できるのは「宛先ドメインへの通信があったか」までで、 DNS／プロキシのログの保持期間がそれを決める。**</td></tr><tr><th>iocs</th><td><div class=sub><b>item:</b> 転送先（既定値）: enhanced[.]jeetbot[.]cc</div><div class=sub><b>item:</b> 旧版の送信先の控え: deno[.]dev / deno[.]net（いずれも正規の開発者向けホスティング。これ自体は悪性ではない）</div><div class=sub><b>item:</b> Chrome 拡張 ID: pnhhdhhcadcjfckjhpmjneldiegbojfb</div><div class=sub><b>item:</b> Firefox 拡張 ID（Socket の記載）: twitchenhancedviewer@example.com</div><div class=sub><b>item:</b> 転送が確認された版: Chrome 85.8.4 以前 / Firefox 85.8.6 以前（修正は Chrome 85.8.9・Firefox 85.8.7）</div><span class="b rsn">stated</span><div class=fn>**本記録は抽出した値の悪性を検証していない。**
+**照合先のテレメトリが無いため、検知にそのまま使わないこと**（本プロジェクトの方針）。
+**とくに `deno[.]dev`／`deno[.]net` は正規のホスティングであり、
+ドメイン単位で遮断する対象ではない**——**拡張の利用と結びつけてから判断する**
+（本記録の注記）。
+**版の境界について**——**Socket が転送を確認した最後の版は Chrome 85.8.4（9月16日時点）、
+修正の確認は Chrome 85.8.9（9月25日）・Firefox 85.8.7（9月16日）である**（出典1）。
+**85.8.5〜85.8.8 の挙動は公表されていない。**
+</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **拡張を更新したうえで、Twitch の設定から全セッションを切断して再認証する**
+（Socket の推奨。既存トークンの無効化はこれでしか行えない）
+　<b>状況:</b> Socket が推奨（2026年9月11日の記事）　<b>副作用:</b> **全セッションの切断により、利用中の端末・配信ツール・連携アプリの
+ログインがすべて切れる。** **連携アプリの再認可が必要になり、
+配信中の作業であれば中断する**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **業務端末から当該拡張を削除する（拡張 ID で棚卸し）**
+　<b>状況:</b> Socket がセキュリティチーム向けに推奨　<b>副作用:</b> **利用者が目的（広告ブロック・画質強制・自動報酬収集）のために入れているため、
+削除には説明が要る。** **代替手段を示さないと、
+個人端末での利用に移って見えなくなる**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **DNS／プロキシのログで `jeetbot[.]cc`・`deno[.]dev`・`deno[.]net` への通信を
+遡及検索し、該当端末の利用者にセッション取り消しを促す**
+　<b>状況:</b> 本記録の推奨（Socket の推奨を実務手順に落としたもの）　<b>副作用:</b> **`deno[.]dev`／`deno[.]net` は正規のホスティングであり、
+無関係な通信も多数ヒットする。** **ドメインだけで判断すると誤検知になる**
+（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **業務 SaaS のドメインで動く拡張を許可リスト運用に切り替える**
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **利用者の利便が落ち、申請・審査の運用負荷が生じる。**
+**審査できる人がいない組織では、
+許可リストが形だけになって実効を失う**（本記録の評価）。
+　<b>source:</b> 1</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年1月（拡張の版 4.8。これより前の開始時期は不明）</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>**【露出の開始（確認できる最も古い時点）】**
+**拡張の版 4.8（2026年1月）は、取得したトークンを
+運営元インフラの `set-token` エンドポイントへ直接 POST していた**（出典1）。
+**送信先は主系の `enhanced[.]jeetbot[.]cc` に加え、`deno.dev` と `deno.net` の控え。**
+**同じトークンを5秒のクールダウンで重複送信しないようにしていたことから、
+受信側でトークンを保存していたと Socket は推測している**（出典1。断定ではない）。
+**これらのエンドポイントは現在停止している**（出典1）。
+**本記録の注記**——**4.8 より前の版の挙動は公表されていないため、
+これが露出の開始時点であるとは限らない**〈未確定事項に記録〉。
+</td></tr><tr><td class="sm nowrap tw">2026年9月11日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Socket が分析を公表した。**
+**「Twitch のブラウザ拡張が約3万人の利用者の OAuth トークンを
+ロシアのボットサービスへ露出させていた」**（出典1。原文英語。本記録の訳）。
+**公表時点の利用者数は Chrome 約30,000人・Firefox 552人。**
+**当時の実装は、`usher.ttvnw.net` へのプレイリスト要求を
+運営元プロキシへ差し替える際に `&amp;auth=` でトークンを付与するもので、
+ハードコードされた10チャンネル（ロシア語配信者など）の視聴時だけが例外だった**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月16日</td><td class=nowrap><span class="b kind">露出の解消</span></td><td>**【露出の解消（Firefox 版）】**
+**Socket が Firefox 版 85.8.7 で `auth` パラメータが空に固定され、
+認証トークン関連のパラメータが除去されたことを確認した**（出典1）。
+**同日時点で Chrome 版（85.8.4）はまだトークンを転送しており、
+修正版は審査待ちだった**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">露出の解消</span></td><td>**【露出の解消（Chrome 版）】**
+**Socket が Chrome 版 85.8.9 でトークンを転送しないことを確認した**（出典1）。
+**公表（9月11日）から14日後である**（本記録の算出）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月（記事公開後。具体的な日付は公表されていない）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**開発元（JeetBot）が Socket へ連絡した。**
+**トークン取り扱いのセキュリティ上のリスクを認め、
+ストアの説明文とプライバシーポリシーで十分に開示されていなかったことも認めた**
+（出典1）。
+**「以前の版はプレイリストを取得するために、視聴者の Twitch の OAuth トークンを
+当社の再生プロキシへ転送していた。トークンの取り扱いについて提起された懸念を
+受け止め、プライバシーの開示がこれを十分に説明していなかったことを認める」**
+（原文英語。本記録の訳。開発元の説明として報じられた文面）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日 13時01分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**台湾の iThome が報道した**（出典4）。
+**Socket の公表から32日後**（本記録の算出）。
+**記事は利用者数を「約3.1万人（Chrome 約3万人・Firefox 600人超）」、
+修正版を「Chrome 85.8.9・Firefox 85.8.7」とし、
+「利用者は Twitch の全セッションからログアウトして再ログインし、
+既存のトークンを失効させるべき」と伝えている。**
+**Firefox の利用者数は Socket の552人と食い違う**〈齟齬1〉。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】公開状況を確認した。**
+**①Chrome Web Store の掲載は続いている**——
+**名称「Twitch Enhanced Viewer | JeetBot」・版 85.9・更新日 2026年10月6日・
+「30,000 users」・サイズ 484KiB・10言語対応・説明文はロシア語**
+（本記録が掲載ページの HTML を取得して確認。出典3）。
+**②版 85.9 は Socket が転送の無いことを確認した 85.8.9 より後の版であり、
+本記録はこの版の挙動を検証していない**（本記録の留保）。
+**③Firefox 版は AMO の公開 API で検索しても現れず、
+拡張 ID での照会は「認証が必要」という応答になった**——
+**現在の状態（公開・非公開・削除）は確定できない。**
+**④開発元の公式サイト（jeetbot.cc）は HTTP 200 で応答するロシア語の商用サイトで、
+本記録の確認範囲では本件に関する告知を見つけられなかった**（出典2）。
+</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**Socket は公表時点（2026年9月11日）の Firefox 利用者を552人としている**（出典1）。
+**iThome は「逾600」（600人超）と書いており**（出典4）、
+**別の報道では604人という値も伝えられている。**
+**本記録の扱い**——**Socket の552人を正とする。**
+**理由は、公表日が最も古く、拡張 ID による確認の方法が示されていること、
+および報道がいずれも Socket の分析を出所としていることである**（本記録の判断）。
+**食い違いの原因は、参照した時点の違い（利用者数は日々変わる）だと考えられるが、
+断定はしない。**
+**実務上の意味は小さい**——**どちらでも「Chrome 約3万人が大半」という構図は変わらない。**
+</div></li><li><span class="b dk">当事者の公表なし</span><div class=sm>**開発元（JeetBot）の説明として参照できるのは、
+Socket へ連絡した内容だけである**（出典1。T5）。
+**本記録は公式サイト（出典2）と Chrome Web Store の掲載ページ（出典3）を取得したが、
+本件に関する告知は見つけられなかった**（2026年10月13日時点）。
+**Twitch（トークンの発行元）・Google・Mozilla の公表も、
+本記録の確認範囲では見つかっていない。**
+**ただし「存在しない」とは断定しない**——**探索の範囲に限りがあるためである**
+（本記録の留保）。
+**実務上の意味**——**利用者が「自分が影響を受けたか」を
+当事者から知る経路が無い。** **Socket の記事に届いた人だけが対処できる構造である**
+（本記録の評価）。
+</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**Socket が転送の無いことを確認したのは Chrome 版 85.8.9（2026年9月25日）である**
+（出典1）。
+**本記録が2026年10月13日に確認した掲載版は 85.9（更新日2026年10月6日）であり、
+これより後の版である**（出典3。T7）。
+**本記録は拡張をインストールしておらず、通信の実測も行っていない。**
+**したがって「現在は安全である」とも「再び転送している」とも述べない**
+（本記録の方針）。
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**Chrome Web Store の表示は「30,000 users」であり、
+本記録が2026年10月13日に取得した時点でも同じ表示である**（出典3）。
+**これは丸められた値で、増減を読み取れない。**
+**また1人が複数のブラウザ・複数のプロファイルで使っていれば重複する**
+（本記録の留保）。
+**「約3.1万人」は Chrome の丸め値と Firefox の実数の合計であり、
+人数としての精度はない。**
+</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**本記録は AMO の公開 API で「Twitch Enhanced Viewer」を検索したが該当が現れず、
+Socket が示した拡張 ID（`twitchenhancedviewer@example.com`）での照会は
+「認証が必要」という応答になった**（T7）。
+**本記録の読み**——**公開参照できない状態（非公開化・削除・
+あるいは ID 表記の相違）のいずれかだが、区別する材料が無い。**
+**「削除された」と書かないのはこのためである**（本記録の留保）。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>Twitch 公式クライアントの Authorization ヘッダ → 拡張のコンテンツスクリプト →
+バックグラウンドワーカーが生の OAuth トークンを取り出す →
+usher.ttvnw.net 宛の要求を運営元プロキシへ差し替え、&amp;auth= でトークンを付与 →
+プロキシのリクエストログに平文で残る。
+ストアの表示は「データを収集しない」だった
+</div><div class=svgwrap><svg viewBox="0 0 1406 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,264.0 832,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C1009.0,162.0 1009.0,162.0 1036,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C1213.0,162.0 1213.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,213.0 C703.0,213.0 703.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">拡張の利用者（Chrom</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e 約3万人・Firef</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ox 552人）</text><text x="91.0" y="181.0" text-anchor="middle" fill="#8892b0" font-size="10">ストアの表示は「データを</text><text x="91.0" y="193.0" text-anchor="middle" fill="#8892b0" font-size="10">収集・使用しない」</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Twitch 公式 We</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">b クライアント（Aut</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">horization …</text><text x="295.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">トークンはアカウント権限</text><text x="295.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">を持つ bearer 資</text><rect x="424" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">拡張のコンテンツスクリプ</text><text x="499.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト</text><text x="499.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">ヘッダを取得してバックグ</text><text x="499.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">ラウンドワーカーへ渡す</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バックグラウンドワーカー</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（前置を外して生のトーク</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ンを取り出す）</text><text x="703.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">Firefox は bl</text><text x="703.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">ocking webRe</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">usher.ttvnw.</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">net（本来の宛先・Tw</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">itch のプレイリス…</text><text x="907.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">例外の10チャンネル視聴</text><text x="907.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">時はここへ直接向かう</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">運営元プロキシ enha</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nced[.]jeetb</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ot[.]cc（&amp;au…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">既定の転送先。差し替えは</text><text x="907.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">視聴のたびに起きる</text><rect x="1036" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プロキシのリクエストログ</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（トークンが平文で残りう</text><text x="1111.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る）</text><text x="1111.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">保持期間・到達範囲は公表</text><text x="1111.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">されていない</text><rect x="832" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">旧版の set-toke</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">n エンドポイント（de</text><text x="907.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">no.dev／deno…</text><text x="907.0" y="283.0" text-anchor="middle" fill="#64b5f6" font-size="10">版 4.8（2026年1</text><text x="907.0" y="295.0" text-anchor="middle" fill="#64b5f6" font-size="10">月）。5秒のクールダウン</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トークンでできること（ウ</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ィスパー閲覧送信・チャッ</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト投稿・設定変更・ポイ…</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">実際の悪用は公表されてい</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">ない（本記録の未確定事項</text><rect x="628" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版（Firefox </text><text x="703.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">85.8.7／Chrom</text><text x="703.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e 85.8.9）</text><text x="703.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">auth パラメータを空</text><text x="703.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">に固定。既存トークンは無</text></svg></div><div class=fn>Socket の分析（2026年9月11日公表・Firefox 85.8.7 を9月16日、Chrome 85.8.9 を9月25日に確認）
+にもとづく（本記録が2026年10月13日に原文を取得して確認）。
+**実際の悪用は公表されていない。**
+**旧版（4.8・2026年1月）は set-token エンドポイントへ直接 POST し、
+deno.dev／deno.net を控えに使っていた（現在は停止）。**
+</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の判断である。**
+**端末側・利用者側に現実的な検知機会は無い**——
+**拡張のコードを読む以外に、この段を外から観測する方法が無い。**
+**組織として取れるのは検知ではなく事前の制限である**
+（拡張の許可リスト運用・企業ポリシーでの導入制限）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の判断である。**
+**機会は存在する**——**宛先ドメインは観測できるためである。**
+**①業務端末の DNS／プロキシのログで `jeetbot[.]cc`・`deno[.]dev`・`deno[.]net` への
+通信を探す（過去ログの遡及も可能）。**
+**②Twitch の視聴に伴う通信が `usher.ttvnw.net` ではなく
+別ホストへ向いていることを、基準線との差として見る。**
+**ただし一般の組織で Twitch の通信を監視している例は少なく、
+実際には見逃される**（本記録の評価）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の判断である。**
+**外部からの検知・検証は不可能である。**
+**取れる前提は「渡ったトークンは無効化する」の一手だけであり、
+それが Socket の推奨（全セッションの切断と再認証）の根拠でもある**（出典1）。
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**転送機構を削除する更新（Firefox 85.8.7・Chrome 85.8.9）は出されたが、
+既に転送されたトークンの無効化は利用者自身の再認証に委ねられている**（出典1）。
+**Socket の推奨は「拡張を更新し、Twitch の設定から全セッションを切断して
+再認証する」である。**
+</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**本記録の判断である。**
+**機能した点**——**転送機構の削除は5日（Firefox）・14日（Chrome）で入り、
+Socket が実機で確認している**（出典1）。
+**不十分な点**——**①既に外へ出たトークンの扱いが、
+情報を得た一部の利用者の手作業に委ねられている
+②プロキシのログの保持期間が公表されていないため、
+利用者は「いつまで危険が残るか」を見積もれない
+③Twitch 側の一括無効化・通知が行われたかが分からない。**
+</td></tr><tr><td>**ストアの「データ安全性」欄は「データを収集・使用しない」と表示され、
+プライバシーポリシーは「利用者データを収集、保存、処理しない」としており、
+OAuth トークンの転送は記載されていなかった**（出典1）。
+**開発元は記事公開後、この開示が不十分だったことを認めた**（T5）。
+</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**本記録の判断である。**
+**開発元は事後に開示不足を認め、修正版を出した**（出典1）——
+**この部分は機能したと評価できる。**
+**不十分なのは、開発元自身による公表が確認できないことである**
+（公式サイト・ストア掲載ページに告知が無い。出典2・3）〈齟齬2〉。
+**Socket の記事を読まない利用者には、何も届いていない**（本記録の指摘）。
+</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**ブラウザ拡張を「資格情報に届く第三者コンポーネント」として管理対象に入れる**
+</div><div class=lw>**本件で外へ出たのは、アカウント権限を持つ OAuth トークンである**（出典1）。
+**拡張がログイン中のページで動く以上、
+その拡張はそのサービスのセッション資格情報に届きうる**
+——**Socket の助言もこの一点に要約されている**（出典1。本記録の訳）。
+**権限表示は「このサイトのデータの読み取りと変更」に丸められ、
+利用者には判断材料が渡らない**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①業務端末に入っている拡張の一覧を取得する
+（Chrome／Edge は企業ポリシーで報告させられる）。**
+**②「業務で使う SaaS のドメインで動く拡張」を抜き出し、
+そこだけでも許可リスト運用に切り替える。**
+**③新規導入は申請制にし、申請時に「通信を中継するか」を必ず確認項目に入れる**
+（本記録の推奨）。
+</div></li><li><div class=lp>**二要素認証は「セッション資格情報の持ち出し」には効かないことを、
+リスク評価の前提として明文化する**
+</div><div class=lw>**転送されたのは bearer 資格情報であり、
+パスワードも二要素認証も経ずにアカウント操作ができる**（出典1）。
+**本件の対処が「パスワード変更」ではなく
+「全セッションの切断と再認証」である理由はここにある**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①主要な SaaS について、セッションの強制失効（全端末のサインアウト）を
+管理者が実行できるかを確認し、手順を書いておく。**
+**②できないサービスを一覧にし、それが業務上の重要データを持つなら
+代替手段（トークンの有効期間の短縮・デバイス束縛）を検討する。**
+**③インシデント手順の「認証情報の初期化」の節に、
+パスワード変更とセッション失効を別項目として書き分ける**（本記録の推奨）。
+</div></li><li><div class=lp>**ストアの「データを収集しない」表示を、審査済みの保証として扱わない**
+</div><div class=lw>**本件ではストアの「データ安全性」欄が「データを収集・使用しない」、
+プライバシーポリシーが「収集、保存、処理しない」となっていた一方、
+実際にはアカウント権限のトークンが外部プロキシへ渡っていた**（出典1）。
+**開発元自身が開示不足を認めている**（T5）。
+**本記録が2026年10月13日に確認した時点でも、
+Chrome Web Store の掲載は続いている**（出典3。T7）。
+</div><div class=la><b>取るべき行動</b> **①調達・利用許可の判断を、ストアの表示ではなく
+「要求している権限」と「通信先」で行う方針を文書化する。**
+**②重要業務の端末では、拒否リストではなく許可リストを既定にする。**
+**③過去に許可した拡張について、権限の変更（更新で権限が増える）を
+監視する仕組みがあるかを確認する**（本記録の推奨）。
+</div></li><li><div class=lp>**「気づいたのは第三者だった」という事実を、監視の設計の前提にする**
+</div><div class=lw>**確認できる露出は少なくとも約8か月（2026年1月 → 9月11日）続き、
+発見したのは利用者でもストアでも Twitch でもなく、
+セキュリティ企業 Socket だった**（本記録の算出。出典1）。
+**組織側にこの種の露出を自力で見つける手段はほぼ無い**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①自力検知を前提にせず、外部の公表を自組織の資産へ突き合わせる
+経路（拡張 ID・ドメインでの遡及検索）を用意する。**
+**②DNS／プロキシのログの保持期間を確認する
+——8か月遡れないなら、露出の有無を後から確認できない。**
+**③突き合わせの担当と所要時間を決めておく**（本記録の推奨）。
+</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**拡張 ID で棚卸しし、版が 85.8.7 より前の時期に使われていた利用者に
+Twitch セッションの取り消しを促す**
+</div><div class=lw>**Socket がセキュリティチーム向けに示した推奨そのものである**
+——**「両ストアの拡張 ID を棚卸しし、85.8.7 より前の版を検出して、
+影響を受けた利用者にセッション取り消しを促す」**（出典1。本記録の訳）。
+**転送機構の削除は、既に渡ったトークンを無効にしない**（本記録の指摘）。
+</div><div class=la><b>取るべき行動</b> **①Chrome／Edge の管理コンソールで拡張 ID
+`pnhhdhhcadcjfckjhpmjneldiegbojfb` の導入端末を検索する。**
+**②該当者には、Twitch の設定から全セッションを切断して再認証するよう案内する。**
+**③Firefox の管理下端末では、Socket が示した ID
+（`twitchenhancedviewer@example.com`）での確認を試す
+——ただし本記録は AMO 側でこの ID を公開参照できなかった**（T7。本記録の留保）。
+</div></li><li><div class=lp>**DNS／プロキシのログで転送先ドメインを遡及検索する**
+</div><div class=lw>**転送先は既定値 `enhanced[.]jeetbot[.]cc` で、
+旧版は `deno.dev`・`deno.net` を控えに使っていた**（出典1）。
+**通信の中身（URL）は TLS で見えないが、宛先は観測できる**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①`jeetbot[.]cc`（サブドメインを含む）・`deno[.]dev`・`deno[.]net` への通信を、
+保持しているログの全期間で検索する。**
+**②`deno.dev`／`deno.net` は正規の開発者向けホスティングであり、
+それ自体は悪性ではない——該当があっても拡張の利用と結びつけてから判断する。**
+**③該当端末が見つかったら、利用者の Twitch セッションの取り消しを優先する**
+（本記録の推奨）。
+</div></li><li><div class=lp>**自社のサービスで、資格情報が URL のクエリパラメータに載る経路が無いか点検する**
+</div><div class=lw>**本件の技術的な核心は「資格情報をクエリパラメータに載せた」ことである**
+（出典1）。
+**URL は経路上のあらゆる装置（Web サーバ・プロキシ・CDN・負荷分散装置）の
+アクセスログに書かれる**——**意図せず保存されるのではなく、
+設計上保存される**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①自社のアクセスログを `token=`・`auth=`・`key=`・`sig=` 等の
+パターンで検索し、資格情報が記録されていないか確認する。**
+**②見つかったら、ヘッダ（`Authorization`）へ移すか、
+ログ側でマスクする。**
+**③外部サービスへのリダイレクト・プロキシ経路で
+資格情報を引き継いでいる箇所を洗い出す**（本記録の推奨）。
+</div></li><li><div class=lp>**拡張の権限（`webRequest`／`declarativeNetRequest`）を、
+審査の観点として理解しておく**
+</div><div class=lw>**本件の転送は、Firefox では blocking な `webRequest` リスナー、
+Chrome では `declarativeNetRequest` の `regexSubstitution` ルールで
+実現されていた**（出典1）。
+**どちらも「通信の宛先を書き換える」ための正規の仕組みである**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①許可申請の審査で、manifest の `permissions`／`host_permissions` と
+`declarative_net_request` のルールを見る項目を作る。**
+**②`&lt;all_urls&gt;` や業務 SaaS のドメインを含む拡張は、
+利用者任せにせず個別に判断する。**
+**③判断できる人が社内にいない場合は、許可リストを小さく保つ方針に倒す**
+（本記録の推奨）。
+</div></li><li><div class=lp>**「現在の版が安全か」を自分で確かめるまで、解決済みとして記録しない**
+</div><div class=lw>**Socket が転送の無いことを確認したのは Chrome 版 85.8.9 である**（出典1）。
+**本記録が2026年10月13日に確認した掲載版は 85.9（更新日2026年10月6日）で、
+これより後の版であり、本記録は挙動を検証していない**（出典3。T7）。
+**拡張は更新のたびに挙動が変わりうる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①許可リストに載せた拡張について、版の更新を検知する仕組みを持つ。**
+**②重要な端末で使う拡張は、更新のたびに通信先を確認する
+（端末のプロキシログで宛先の変化を見る）。**
+**③検証できないなら、その拡張を業務端末で使わない判断に倒す**（本記録の推奨）。
+</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 業務端末でブラウザ拡張の導入が利用者に委ねられている（許可リスト運用でない）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 業務で使う SaaS のセッション資格情報が、長命の bearer トークンで保たれている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 利用中の SaaS に「全端末のセッションを強制失効させる」機能があるかを把握していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> DNS／プロキシのログの保持期間が、露出の推定期間（本件では8か月以上）より短い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 拡張の版の更新（権限や通信先の変化）を監視していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 自社サービスで、資格情報が URL のクエリパラメータに載る経路が残っている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>公開日の記載なし（本記録の取得時点の内容） JeetBot（拡張の開発・運営元）</span> <a href="https://jeetbot.cc" target="_blank" rel="noreferrer noopener nofollow">JeetBot 公式サイト（Twitch／Kick／VK Live 向けボットサービス）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（原文ロシア語。**開発元自身が運営するサイト。**
+**本記録が2026年10月13日に取得し、HTTP 200 で応答するロシア語の商用サイト
+（「Twitch、Kick、VK Live 向けの最良のボット｜TTS、コマンド、タイマー」）であることを
+確認した。**
+**本記録の確認範囲では、本件（OAuth トークンの転送）に関する告知を
+このサイト上で見つけられなかった。**
+**開発元の説明として引用できるのは、Socket 経由で伝えられた文面だけである**〈齟齬2〉。）
+）</span></li><li><span class=rid>[3]</span> <span class=sm>版 85.9・更新日 2026年10月6日（掲載ページの表示） 開発元（Chrome Web Store 掲載ページ）</span> <a href="https://chromewebstore.google.com/detail/pnhhdhhcadcjfckjhpmjneldiegbojfb" target="_blank" rel="noreferrer noopener nofollow">Twitch Enhanced Viewer | JeetBot（Chrome Web Store・ID pnhhdhhcadcjfckjhpmjneldiegbojfb）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（原文ロシア語・英語。**開発元がストアに掲載している説明と版情報。**
+**本記録が2026年10月13日に HTML を取得し、
+版 85.9・更新日 2026年10月6日・「30,000 users」・サイズ 484KiB・10言語対応・
+ロシア語の説明文を確認した。**
+**版 85.9 は Socket が検証した 85.8.9 より後の版であり、
+本記録はこの版の挙動を検証していない。**）
+）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月11日（その後 Firefox 版・Chrome 版の修正確認を追記） Socket（調査: Kush Pandya）</span> <a href="https://socket.dev/blog/malicious-twitch-browser-extension" target="_blank" rel="noreferrer noopener nofollow">Twitch Browser Extension Exposes 30,000 Users&#x27; OAuth Tokens to Russian Bot Service</a> <span class="b kind">ブログ</span><span class=sm>（（原文英語。**本事案の基礎資料であり、発見・分析の一次資料。**
+**本記録が確認した内容**——**拡張の名称と ID（Chrome: pnhhdhhcadcjfckjhpmjneldiegbojfb）・
+利用者数（Chrome 約30,000人・Firefox 552人）・
+`Authorization` ヘッダの取得から `&amp;auth=` パラメータでの転送までの経路・
+転送先（既定値 `enhanced[.]jeetbot[.]cc`）・
+実装の差（Firefox は blocking webRequest、Chrome は declarativeNetRequest の
+`regexSubstitution`）・例外の10チャンネル・
+版 4.8（2026年1月）の `set-token` への POST と `deno.dev`／`deno.net` の控え・
+5秒のクールダウン・トークンでできること（ウィスパー閲覧送信・チャット投稿・
+設定変更・チャンネルポイント消費）・ストアとプライバシーポリシーの開示状態・
+修正版（Firefox 85.8.7 を9月16日確認／Chrome 85.8.9 を9月25日確認）・
+利用者・開発者・セキュリティチームへの推奨・開発元からの連絡内容。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月13日 13時01分 UTC iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179628" target="_blank" rel="noreferrer noopener nofollow">Twitch瀏覽器外掛洩露近3.1萬用戶OAuth權杖</a> <span class="b kind">記事</span><span class=sm>（（原文中国語（繁体）。**本記録がこの事案を収集した起点の記事。**
+**内容は Socket の分析の要約で、独自の取材は含まれない。**
+**Firefox の利用者数を「600人超」としており、
+Socket の552人と食い違う**〈齟齬1〉。
+**修正版（Chrome 85.8.9・Firefox 85.8.7）と、
+全セッションからのログアウト・再ログインの推奨は Socket の記述と一致する。**）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月13日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月13日収集分の記事
+〈output/articles/20261013/0138_ithome-security_twitch31oauth.md〉を起点に、
+**発見者である Socket の分析記事（2026年9月11日公表）を本記録が取得して裏を取った。**
+**さらに本記録が独立に確認した事項**——
+**①Chrome Web Store の掲載が続いており、版 85.9・更新日2026年10月6日・
+「30,000 users」であること（Socket が検証した 85.8.9 より後の版である）
+②Firefox 版は AMO の公開 API から参照できない状態であること
+③開発元の公式サイト（jeetbot.cc）は稼働しているが本件の告知が見つからないこと。**
+**報道（iThome）の Firefox 利用者数「600人超」は Socket の552人と食い違うため、
+齟齬として記録した。**
+</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Twitch</span><span class="b tag">ブラウザ拡張</span><span class="b tag">OAuthトークン</span><span class="b tag">セッション資格情報</span><span class="b tag">JeetBot</span><span class="b tag">Socket</span><span class="b tag">サプライチェーン</span><span class="b tag">開示の欠落</span><span class="b tag">Chrome Web Store</span><span class="b tag">二要素認証の限界</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-13 18:08 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
