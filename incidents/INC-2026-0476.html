@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>GitLabにCVSS 10.0の未認証RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0476</span>GitLabにCVSS 10.0の未認証RCE</h1>
+<header class="site-header">
+  <p class="subtitle">2026年10月12日、GitLab が CE/EE の緊急パッチ 19.4.2・19.3.5・19.2.8 を公開し、
+CI/CD の正規表現コンパイラにある整数オーバーフロー（CVE-2026-97229・CVSS 10.0）で
+**未認証の利用者がサーバ上で任意コードを実行できた**と公表した。
+同時に修正された CVE は24件。GitLab.com は適用済み・Dedicated は対応不要で、
+**対象は自己管理（self-managed）のインスタンスに限られる**。
+一方で、報道と2つの政府系 CERT が修正版を「19.3.4」と記載しており、
+GitLab 自身の記載（19.3.5）と食い違っている</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月12日（GitLab の緊急パッチリリース）</span>
+  <span>最終更新: 2026年10月13日</span>
+</div>
+
+<div class="lead"><p><strong>CVSS 10.0 は、GitLab にとって今年2度目です。</strong></p>
+<p>2026年10月12日、GitLab は CE/EE の緊急パッチ <strong>19.4.2・19.3.5・19.2.8</strong> を公開しました。本命は <strong>CVE-2026-97229</strong>——<strong>CI/CD の正規表現コンパイラにある整数オーバーフロー</strong>で、パイプライン設定に細工した正規表現を置くと、<strong>認証を経ていない利用者がサーバ上で任意のコードを実行できた</strong>とされます。CVSS は <strong>10.0</strong>（AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H）。発見者は HackerOne 経由で報告した研究者 joaxcar です。</p>
+<p><strong>悪用の報告はありません</strong>（GitLab の公表に悪用の記述は無く、本記録が確認した2026年10月8日版の CISA KEV にも収載されていません）。ただし<strong>先月の CVE-2026-85706（同じく最高深刻度）は、公表の翌日に KEV に収載され、米連邦機関には3日という異例の期限が付きました</strong>（本記録が KEV の原データで確認）。GitLab は CISA が2021年11月以降に悪用を確認した製品であり、<strong>「悪用されないほうが例外」という前提で動くべき対象です</strong>。</p>
+<p><strong>そして、この事案には読者にとって実害のある食い違いが1つあります。</strong> BleepingComputer・CERT-EU・CERT-FR の3者はいずれも修正版を<strong>「19.3.4」</strong>と記載していますが、<strong>GitLab 自身のリリース名と影響版の記述は「19.3.5」</strong>です。19.3 系を使っている組織が報道と CERT だけを見て 19.3.4 へ上げると、<strong>直したつもりで脆弱なまま残ります</strong>。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>「特定の条件下で（under certain conditions）」の具体的な条件</span><span class="b rsn">公表されていない</span><div class=sm>**GitLab は未認証で任意コード実行に至ると書いているが、
+どの経路でパイプライン設定が未認証の利用者から投入されうるのかを書いていない**
+（出典1）。
+**公開プロジェクトのマージリクエスト経由か、特定の設定が有効な場合か、
+本記録は区別できない。** **攻撃面の見積り（自組織が条件に当たるか）は、
+この情報が無い限り各組織では行えない**（本記録の評価）。
+</div></li><li><span class=ui>実際の悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**GitLab の公表に悪用への言及が無く、CERT-EU・CERT-FR も悪用には触れていない。**
+**2026年10月8日版の KEV には未収載だが、これはパッチ公開前のカタログであり
+反証にはならない**（本記録の留保。T8）。
+</div></li><li><span class=ui>PoC（実証コード）の公開状況</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録が確認した4件の資料のいずれにも PoC への言及が無い。**
+**GitLab は HackerOne の報告を一定期間後に公開する運用で知られるが、
+本件の公開予定日は資料に無い**（本記録の注記）。
+</div></li><li><span class=ui>日本国内の影響を受けた組織・インスタンス数</span><span class="b rsn">公表されていない</span><div class=sm>**JPCERT/CC・IPA の注意喚起は本記録の確認範囲（2026年10月13日時点）には現れていない。**
+**自己管理の GitLab は社内に置かれることが多く、外部からの計数も難しい**
+（本記録の整理）。
+</div></li><li><span class=ui>報告から修正までの所要（joaxcar の報告日）</span><span class="b rsn">公表されていない</span><div class=sm>**謝辞に HackerOne 経由であることだけが書かれており、報告日が無いため
+ベンダーの対応速度は算出できない**（本記録の注記）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>GitLab Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>joaxcar（研究者ハンドル）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CERT-EU（EU 機関の CERT）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CERT-FR（ANSSI）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">監督官庁</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-97229 の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>10.0<span class=fu>スコア</span></div><div class=fn>**CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H**（出典1）。
+**PR:N（権限不要）・UI:N（利用者操作不要）・S:C（スコープ変更あり）が揃っており、
+10.0 はこの3つが同時に成立したことによる**（本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>同一リリースで修正された CVE の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>24<span class=fu>件</span></div><div class=fn>**本記録が GitLab のリリースページ本文から CVE 番号を抽出し、
+重複を除いて24件であることを確認した**（出典1）。
+**CERT-EU の「24件」、CERT-FR の列挙（24件）と一致する**（出典2・3）。
+</div></div><div class=fig><div class=fh><span class=fl>本命以外で深刻度が高かったものの CVSS</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.7<span class=fu>スコア</span></div><div class=fn>**CVE-2026-92883（構文強調における XSS。認証済み利用者が細工したリポジトリを介して
+他利用者のブラウザで任意の JavaScript を実行できる）が 8.7。**
+**ほかに CVE-2026-16301（8.5。開発者権限で保護ブランチのパイプラインを実行できる認可の不備）、
+保護された CI/CD 変数を露出しうるキャッシュ汚染（8.2）がある**（出典2）。
+</div></div><div class=fig><div class=fh><span class=fl>影響を受けた保守中の系列の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>系列</span></div><div class=fn>**19.2 系（19.2.8 未満）・19.3 系（19.3.5 未満）・19.4 系（19.4.2 未満）**（出典1）。
+**19.1 以前の扱いは本 CVE については記述されていない**
+（CVE-2026-92883 の影響版は「19.1 以降」と書かれており、CVE ごとに起点が違う）。
+</div></div><div class=fig><div class=fh><span class=fl>【比較】先月の CVE-2026-85706 に米連邦機関へ課された是正期限の日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**KEV 収載2026年9月11日・期限2026年9月14日から本記録が算出した**（出典5）。
+**KEV の標準的な期限は3週間であり、3日は例外的に短い**（本記録の整理）。
+**本 CVE に同様の期限が付くかは、悪用が観測されるかに依存する。**
+</div></div><div class=fig><div class=fh><span class=fl>GitLab の登録利用者数（ベンダーの自己申告）</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>30,000,000<span class=fu>人</span></div><div class=fn>**「3,000万人超の登録利用者、Fortune 100 の半数超が利用。
+Nvidia・T-Mobile・Lockheed Martin・Airbus・Goldman Sachs を含む」**
+（出典4 が引く GitLab の説明。原文英語。本記録の訳）。
+**これは製品全体の普及規模であり、脆弱な自己管理インスタンスの数ではない**
+（本記録の注記。母数が異なるので被害規模として読んではならない）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない**（本記録が確認した範囲。T8）。
+**本記録が記録するのは、ベンダーの記述から読み取れる成立経路の骨格だけである**
+（本記録の方針）。
+**段は execution（細工した正規表現を CI/CD 設定に載せる）と
+impact（サーバ上での任意コード実行）の2つにとどめる** ——
+**GitLab が「特定の条件下で」としか書いていないため、
+initial-access（どうやって未認証で投入するか）を書けない**〈未確定事項に記録〉。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**細工した正規表現を CI/CD のパイプライン設定に置く。**
+**GitLab の CI/CD 正規表現コンパイラが、その正規表現を
+解析・コンパイル・評価する過程で整数オーバーフローを起こす** ——
+**検証が不十分だったためである**（出典1・4）。
+</div><div class=fn>根拠: GitLab のパッチリリースにおける脆弱性の記述（出典1）</div></li><li><div class=stg><span class="b stage">2. 影響（暗号化・破壊・改ざん）</span><span class="b conf">推定</span><span class=srcs></span></div><div>**GitLab サーバ上で任意のコードが実行される。**
+**CVSS のベクタは S:C（スコープ変更あり）であり、
+脆弱な部品の権限境界を越えて影響が及ぶことを示している**（出典1）。
+**自己管理の GitLab にはソースコードと CI/CD の資格情報が集まるため、
+1台の実行が供給網側へ波及しうる**（本記録の評価。公表された被害事例は無い）。
+</div><div class=fn>根拠: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**GitLab は、脆弱性の種類（整数オーバーフロー）・場所（CI/CD 正規表現コンパイラ）・
+前提（未認証）・原因（正規表現の検証不足）・CVSS とベクタ・影響版・報告者を
+同日に公開した一方、「特定の条件下で」の具体的条件と再現手順は公開していない**（出典1）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **防御側は、自組織が「特定の条件」に当たるかを判定できない。**
+**結果として全インスタンスが最優先で上げる以外の選択肢を持たない** ——
+**緊急パッチの適用を一斉に強いる形になり、変更管理の余裕がない組織に負荷が集中する**
+（本記録の整理）。
+</div></li></ul></div>
+<section id="s6"><h2>未認証で任意コード実行に至る経路が、CI/CD 設定の正規表現という「設定ファイルの一行」にあった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [4]</span></h2><p><strong>GitLab の記述を正確に写します</strong>（原文英語。本記録の訳）。</p>
+<blockquote>
+<p><strong>「GitLab は、特定の条件下で、正規表現の検証が不十分であったために、未認証の利用者が CI/CD 設定中の細工された正規表現を介してGitLab サーバ上で任意のコードを実行できた問題を修正した。」</strong></p>
+</blockquote>
+<p><strong>弱点の種類は整数オーバーフロー</strong>で、<strong>場所は CI/CD の正規表現コンパイラ</strong>です。これは<strong>プロジェクトのパイプライン設定ファイル（<code>.gitlab-ci.yml</code> 等）に書かれた正規表現を解析・コンパイル・評価する部品</strong>です（出典4）。<code>rules:if</code> や <code>only/except</code> のパターン照合に使われる種類の処理にあたります。</p>
+<p><strong>ここが本件の勘所です。</strong>パイプライン設定は「コードではなく設定」として扱われ、レビューの対象からも、権限設計の検討からも外れがちな場所です。ところが<strong>その設定ファイルの一行が、サーバ側のコンパイラを壊して任意コード実行に到達した</strong>ことになります（本記録の整理）。</p>
+<p><strong>CVSS 10.0 の内訳も、この性質を映しています。</strong> PR:N（権限不要）・UI:N（利用者操作不要）・S:C（スコープ変更あり）。S:C は「脆弱な部品の権限境界を越えて影響が及ぶ」ことを意味し、CI/CD ランナーやサーバのプロセス権限で任意コードが動く状況と整合します。</p>
+<p><strong>ただし「未認証でどう投入するのか」は公表されていません</strong>〈未確定事項に記録〉。GitLab の文面は「特定の条件下で」としか言っておらず、<strong>公開プロジェクトのマージリクエスト経由なのか、特定機能を有効にしている場合なのかを読者は判断できません。</strong> <strong>したがって「自分のインスタンスは条件に当たらないから後回し」という判断は、現時点では根拠を持ちません</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>修正版の番号が、GitLab は19.3.5・報道と2つの CERT は19.3.4——上げても直らない取り違えが起きうる<span class="b slot">再発防止</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p><strong>本記録が原本で確認した事実を並べます。</strong></p>
+<p><strong>GitLab 自身</strong>（出典1）——リリースの題名は <strong>「GitLab Critical Patch Release: 19.4.2, 19.3.5, 19.2.8」</strong>。CVE-2026-97229 の影響版は <strong>「19.2 から 19.2.8 未満、19.3 から 19.3.5 未満、19.4 から 19.4.2 未満のすべての版」</strong>。<strong>ページ本文に現れる「19.3.5」は33か所、「19.3.4」は1か所</strong>（本記録がページを取得して数えた）。</p>
+<p><strong>BleepingComputer</strong>（出典4）——「19.3 before 19.3.4」。<strong>CERT-EU</strong>（出典2）——「19.4.2, 19.3.4 and 19.2.8 を公開」「before 19.3.4」。<strong>CERT-FR</strong>（出典3）——「19.3.x versions antérieures à 19.3.4」。</p>
+<p><strong>3者が揃って 19.3.4 と書いています。</strong> <strong>実務上の意味は明確です</strong>——<strong>19.3 系を運用していて、報道か CERT の勧告だけを見て19.3.4 へ上げた組織は、GitLab の記述に従えば依然として脆弱なままです</strong>（本記録の評価）。</p>
+<p><strong>なぜこうなったかは推測できますが、断定はしません。</strong>リリース直前に 19.3 系の版番号が繰り上がった（19.3.4 の公開を取り消して 19.3.5 を出した等）と考えれば、3者が同じ誤りを共有していることと、GitLab のページに 19.3.4 が1か所だけ残っていることの両方が説明できます。<strong>ただし GitLab は改訂の経緯を公表していません</strong>〈齟齬に記録〉。</p>
+<p><strong>読者が取るべき行動は1つです。</strong> <strong>版番号は必ずベンダーのリリースページで確認する。</strong> CERT の勧告は「上げるべきかの判断」には使えますが、<strong>「どの版に上げるか」の確認には一次資料を見る必要があります</strong>（本記録の結論）。</p></section>
+<section id="s8"><h2>悪用の報告は無いが、GitLab は「悪用されるまでの時間が短い」実績を持つ製品である<span class="b slot">概観</span><span class=srcs>出典 [1] [4] [5]</span></h2><p><strong>現時点で悪用の報告はありません。</strong> GitLab の公表に記述は無く、CERT-EU・CERT-FR も触れていません。本記録が確認した <strong>2026年10月8日版の CISA KEV（1,739件）にも収載されていません</strong> ——もっともこのカタログ版はパッチ公開より前なので、反証にはなりません（T8）。</p>
+<p><strong>一方で、同じ製品の直近の履歴は重く読むべきです</strong>（出典4・5）。</p>
+<ul>
+<li><strong>2026年9月</strong>: 最高深刻度 <strong>CVE-2026-85706</strong>（未認証で資格情報等を読み出せる。弱点はコミット API のパストラバーサルと認証強制の欠落）を修正。</li>
+<li><strong>2026年9月11日</strong>: CISA が KEV へ収載。<strong>是正期限は2026年9月14日——3日</strong>（本記録が KEV 原データで確認）。KEV の通常の期限は3週間であり、3日は「すでに実害が出ている」場合に用いられる長さです（本記録の整理）。</li>
+<li><strong>2026年1月</strong>: 高深刻度の2要素認証迂回（CVE-2026-0723）を修正。</li>
+<li><strong>通算</strong>: <strong>CISA は2021年11月以降、攻撃に悪用された GitLab の脆弱性を5件挙げており、うち1件はランサムウェア集団に悪用された</strong>（出典4）。</li>
+</ul>
+<p><strong>本記録の評価</strong>——<strong>「悪用の報告が無い」を待機の理由にできる製品ではありません。</strong>自己管理の GitLab は、ソースコードと CI/CD の資格情報（クラウドの鍵・レジストリの認証情報・署名鍵）が集まる場所です。<strong>1台の侵害が供給網の侵害に直結する位置にあり、優先度は「CVSS 10.0」よりむしろ「何が置いてあるか」で決まります。</strong></p></section>
+<section id="s9"><h2>本命以外の23件にも、CI/CD の権限境界を崩すものが混じっている<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>CVSS 10.0 に目を奪われると、同時に直った23件を見落とします。</strong> CERT-EU が抜き出しているのは次の3つです（出典2）。</p>
+<ul>
+<li><strong>CVE-2026-92883（CVSS 8.7）</strong> ——構文強調の出力における HTML 属性の無害化不備による XSS。<strong>認証済み利用者が細工したリポジトリを置くと、それを閲覧した他利用者のブラウザで任意の JavaScript が動く</strong>（出典1）。影響版の起点が 19.1 であり、本命より広い。</li>
+<li><strong>CVE-2026-16301（CVSS 8.5）</strong> ——下流パイプライン生成の認可の不備。<strong>開発者（Developer）権限の利用者が、権限無しに保護ブランチでパイプラインを実行できた。</strong></li>
+<li><strong>キャッシュ汚染（CVSS 8.2）</strong> ——マージリクエストのキャッシュキー構成の不備により、<strong>保護された CI/CD 変数が露出しうる。</strong></li>
+</ul>
+<p><strong>この3つは、いずれも「CI/CD の権限境界」を崩すものです</strong>（本記録の整理）。保護ブランチ、保護変数、レビュー済みコードといった<strong>前提の上に本番デプロイを載せている組織では、内部の悪意ある利用者・侵害されたアカウント1つの影響範囲が、設計上の想定より広がります。</strong></p>
+<p><strong>残りの CVE も認可の不備（Incorrect Authorization）が多数を占めます</strong> ——GraphQL のノートウィジェット、ワークアイテム階層、パッケージレジストリ、カスタムロール、細粒度の個人アクセストークン、リポジトリ取り込みの SSRF など（本記録がリリースページ本文から確認）。<strong>「認可の網羅的な見直しが一度に入った」リリースだと読めます</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>GitLab Community Edition（CE）／Enterprise Edition（EE）の CI/CD 正規表現コンパイラ</td></tr><tr><th>ベンダー</th><td>GitLab Inc.</td></tr><tr><th>finding_name</th><td>Integer Overflow issue in CI/CD Regular Expression Compiler（GitLab の表記）</td></tr><tr><th>affected_versions</th><td>**CVE-2026-97229**: **19.2 から 19.2.8 未満、19.3 から 19.3.5 未満、
+19.4 から 19.4.2 未満のすべての CE/EE**（出典1）。
+**修正版は 19.4.2・19.3.5・19.2.8。**
+**GitLab.com は修正版で稼働済み、GitLab Dedicated は対応不要**（出典1）。
+**参考**——**同時修正の CVE-2026-92883（XSS・8.7）は影響版の起点が 19.1 であり、
+CVE ごとに起点が異なる**（出典1）。
+</td></tr><tr><th>CVE番号</th><td><ul class=cl><li>CVE-2026-97229</li><li>CVE-2026-92883</li><li>CVE-2026-16301</li></ul><span class="b rsn">stated</span><div class=fn>**同一リリースで修正された CVE は24件**（本記録がページ本文から抽出・重複排除して確認）。
+**ここに挙げたのは本命（97229）と、CERT-EU が深刻度の高いものとして抜き出した2件である。**
+**全24件の番号は CERT-FR の勧告（出典3）に列挙されている。**
+</div></td></tr><tr><th>cvss</th><td>10.0（CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H。GitLab による評価）<span class="b rsn">stated</span></td></tr><tr><th>exploit_status</th><td>**悪用は観測・報告されていない**（本記録が確認した範囲）。
+**GitLab の公表に悪用への言及は無く、CERT-EU・CERT-FR も触れていない。**
+**2026年10月8日版の CISA KEV（1,739件）に CVE-2026-97229 は未収載だが、
+このカタログ版はパッチ公開より前であり、悪用の否定には使えない**（本記録の留保）。
+**PoC の公開も本記録の確認範囲では見つかっていない。**
+</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月13日</td></tr><tr><th>patch</th><td>**2026年10月12日に 19.4.2・19.3.5・19.2.8 が公開された**（出典1）。
+**GitLab の文面**——**「これらの版には重要な不具合修正とセキュリティ修正が含まれる。
+すべての自己管理 GitLab インストールを直ちにいずれかの版へ上げることを強く推奨する」**
+（原文英語。本記録の訳）。
+**注意**——**19.3 系の修正版は 19.3.5 である。報道と CERT 2者の「19.3.4」は誤り**（齟齬1）。
+</td></tr><tr><th>vendor_response</th><td>**ベンダーの対応は速く、情報は揃っている**（本記録の評価）。
+**同日に ①修正版3本の公開 ②24件の CVE の内容・CVSS・影響版・報告者の一覧
+③SaaS／Dedicated の扱いの明記、を行っている**（出典1）。
+**公開していないのは「特定の条件下で」の具体的条件と再現手順である**
+〈未確定事項に記録〉。
+</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **19.2.8・19.3.5・19.4.2 以上へ上げる**（唯一の根本対処。GitLab の指示）
+　<b>状況:</b> ベンダーが提供（2026年10月12日）　<b>副作用:</b> **緊急適用のため、通常の変更管理（検証環境での確認・計画停止の調整）を
+省略せざるを得ない組織がある。** **GitLab の更新は移行作業（マイグレーション）を伴い、
+大規模インスタンスでは停止時間が読みにくい**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **インターネットに面したインスタンスから先に適用する**（CERT-EU の指示）
+　<b>状況:</b> CERT-EU の推奨　<b>副作用:</b> **社内のみのインスタンスの適用が後回しになり、
+内部からの投入経路（認証済み利用者・侵害されたアカウント）が残る期間が延びる**
+（本記録の評価）。
+　<b>source:</b> 2</div><div class=sub><b>数え方:</b> **適用後に CI/CD の保護変数（クラウドの鍵・レジストリ認証・署名鍵）を更新する**
+　<b>状況:</b> 本記録の推奨（ベンダーの指示にはない）　<b>副作用:</b> **資格情報の更新はパイプラインの一時的な失敗を招き、
+連携先（クラウド・レジストリ）側の設定変更も必要になる。**
+**更新の手順が整備されていない組織では、作業そのものが事故の原因になりうる**
+（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **外部露出の棚卸しと、不要な露出の閉鎖（VPN・IP 制限・認証付きプロキシの後ろへ）**
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **社外の協力会社・外部 CI との連携が切れる。**
+**連携の経路を把握していない組織では、閉じた結果として
+業務側の不具合が後から出る**（本記録の評価）。
+　<b>source:</b> 2</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年1月</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**【先行事例】GitLab が高深刻度の2要素認証の迂回（CVE-2026-0723）を修正した** ——
+**対象アカウントの ID を知っている攻撃者が CE/EE サーバで2要素認証を回避できるもの**
+（出典4 の記述）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月（公表日は出典4 が「先月」と記述）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**【先行事例】GitLab が最高深刻度の CVE-2026-85706 を修正した** ——
+**未認証の攻撃者が資格情報等の機密データを読み出せるもの**（出典4）。
+**本記録が KEV の原データで確認した内容**——
+**弱点はリポジトリのコミット API におけるパストラバーサルで、
+パスの封じ込めの不備と認証強制の欠落による**（出典5）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月11日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>**【先行事例】CISA が CVE-2026-85706 を KEV（悪用が確認された脆弱性の一覧）へ収載し、
+米連邦機関の是正期限を2026年9月14日に設定した**（出典5。本記録が原データで確認）。
+**出典4 は「公表の翌日に収載され、3日以内の対処が命じられた」と記述しており、
+KEV の原データ（収載9月11日・期限9月14日）と整合する。**
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日</td><td class=nowrap><span class="b kind">公表</span></td><td>**GitLab が緊急パッチリリース 19.4.2・19.3.5・19.2.8 を公開した。**
+**本命は CVE-2026-97229（CVSS 10.0）** ——
+**「特定の条件下で、未認証の利用者が CI/CD 設定中の細工された正規表現を介して
+GitLab サーバ上で任意のコードを実行できた。正規表現の検証が不十分であったため」**
+（原文英語。本記録の訳。出典1）。
+**同リリースで修正された CVE は24件。**
+**「これらの版には重要な不具合修正とセキュリティ修正が含まれる。
+すべての自己管理インストールを直ちにいずれかの版へ上げることを強く推奨する」**
+（原文英語。本記録の訳。出典1・4）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日 14時57分 UTC</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CERT-EU が勧告 2026-016 を発出した。**
+**「24件のセキュリティ問題を修正。うち1件は未認証の攻撃者がサーバ上で
+任意コードを実行できる重大な脆弱性」と整理し、
+インターネットに面したインスタンスから優先して上げるよう指示している**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CERT-FR（ANSSI）が勧告 CERTFR-2026-AVI-1294 を発出し、
+24件の CVE 番号を列挙した**（出典3）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日 13時09分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**BleepingComputer が報道。**
+**「CISA は2021年11月以降、攻撃に悪用された GitLab の脆弱性を5件挙げており、
+うち1件はランサムウェア集団に悪用された」と記述している**（出典4）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】CVE-2026-97229 は、2026年10月8日版の CISA KEV（1,739件）に収載されていない**
+（本記録がカタログ原本を取得して確認。出典5）。
+**ただしこのカタログ版はパッチ公開（10月12日）より前であり、
+「悪用されていない」ことの根拠にはならない**（本記録の留保）。
+**GitLab の公表にも悪用への言及は無い**（出典1）。
+</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**GitLab のリリース題名は「19.4.2, 19.3.5, 19.2.8」で、
+CVE-2026-97229 の影響版も「19.3 から 19.3.5 未満」と書かれている。**
+**本記録がページを取得して数えたところ、「19.3.5」は33か所、「19.3.4」は1か所だった**（出典1）。
+**一方 BleepingComputer（出典4）・CERT-EU（出典2）・CERT-FR（出典3）はいずれも 19.3.4 と記載している。**
+**本記録の扱い**——**一次資料（出典1）の 19.3.5 を正とする。**
+**原因は公表されていない**（リリース直前の版番号の繰り上がりであれば
+3者が同じ誤りを共有していることと説明がつくが、断定しない）。
+**実務上の意味**——**19.3.4 へ上げた組織は脆弱なまま残る可能性がある。**
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**出典1には悪用（in the wild）への記述が一切無く、CERT-EU・CERT-FR も触れていない。**
+**本記録は「悪用が無い」とも「ある」とも断定しない。**
+**確認できたのは、2026年10月8日版の KEV に未収載であることだけであり、
+この版はパッチ公開より前である**（T8）。
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**CERT-EU は「24 security issues」と書き、CERT-FR は24件の CVE を列挙している。**
+**本記録は GitLab のページ本文から CVE 番号を抽出し、重複排除して24件であることを確認した。**
+**一方、同リリースには CVE の付かない不具合修正も多数含まれる** ——
+**「24」は CVE の件数として読むのが正しい**（本記録の整理）。
+</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典4 は「先月（last month）」と書いており、具体的な日付が無い。**
+**本記録は KEV 収載日（2026年9月11日）と
+「公表の翌日に収載された」という出典4 の記述から、
+公表が2026年9月10日前後であると推定している**（本記録の推定。断定しない）。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>未認証の利用者が CI/CD 設定に細工した正規表現を置く →
+正規表現コンパイラが整数オーバーフローを起こす →
+GitLab サーバ上で任意コードが実行される。
+対象は自己管理インスタンスのみで、GitLab.com と Dedicated は分岐の外にある
+</div><div class=svgwrap><svg viewBox="0 0 998 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,155.0 C193.0,155.0 193.0,155.0 220,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,155.0 C397.0,155.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,104.0 832,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,250.0 628,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,206.0 C601.0,206.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,199.0 C805.0,199.0 805.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の利用者（実際の攻</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">撃は未観測）</text><text x="91.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">GitLab の記述は「</text><text x="91.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">未認証の利用者（unau</text><rect x="220" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CI/CD 設定ファイル</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">中の細工された正規表現</text><text x="295.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">投入経路は公表されていな</text><text x="295.0" y="179.0" text-anchor="middle" fill="#ffcc80" font-size="10">い（本記録の未確定事項）</text><rect x="424" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CI/CD 正規表現コン</text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パイラ（整数オーバーフロ</text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ー・CVE-2026-…</text><text x="499.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">正規表現の検証が不十分。</text><text x="499.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS 10.0（S:</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自己管理の GitLab</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> CE/EE（19.2.</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">8／19.3.5／19…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">任意コード実行が成立する</text><text x="703.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">範囲</text><rect x="832" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CI/CD の資格情報・</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ソースコード</text><text x="907.0" y="116.0" text-anchor="middle" fill="#ffcc80" font-size="10">侵害時に到達しうる資産（</text><text x="907.0" y="128.0" text-anchor="middle" fill="#ffcc80" font-size="10">公表された被害事例は無い</text><rect x="628" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitLab.com（修</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">正版で稼働済み）</text><text x="703.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">利用者の作業は不要（出典</text><text x="703.0" y="179.0" text-anchor="middle" fill="#64b5f6" font-size="10">1）</text><rect x="628" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitLab Dedic</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ated（対応不要と明記</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="703.0" y="269.0" text-anchor="middle" fill="#64b5f6" font-size="10">利用者の作業は不要（出典</text><text x="703.0" y="281.0" text-anchor="middle" fill="#64b5f6" font-size="10">1）</text><rect x="424" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="499.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CERT-EU／CERT</text><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-FR の勧告（同日発出</text><text x="499.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="499.0" y="225.0" text-anchor="middle" fill="#b0bec5" font-size="10">ともに修正版を「19.3</text><text x="499.0" y="237.0" text-anchor="middle" fill="#b0bec5" font-size="10">.4」と記載（齟齬1）</text><rect x="832" y="155.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="907.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（202</text><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">6年10月8日版・本 C</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VE は未収載）</text><text x="907.0" y="218.0" text-anchor="middle" fill="#b0bec5" font-size="10">カタログ版はパッチ公開前</text><text x="907.0" y="230.0" text-anchor="middle" fill="#b0bec5" font-size="10">。悪用の否定にはならない</text></svg></div><div class=fn>GitLab のパッチリリース（2026年10月12日）、CERT-EU 2026-016、
+CERT-FR CERTFR-2026-AVI-1294、BleepingComputer（いずれも2026年10月12日）にもとづく
+（本記録が2026年10月13日に各資料を確認）。
+**「特定の条件下で」の具体的条件は公表されていないため、
+未認証の投入経路（破線）は確定していない。**
+**実際の攻撃は観測されていない。**
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**GitLab は検知の可否について何も述べていない。**
+**本記録の整理**——**検知を期待できる場所は「設定の変更」ではなく
+「その結果として動くもの」の側である。**
+**具体的には ①GitLab サーバ／ランナーの子プロセスの生成
+②サーバからの想定外の外向き通信 ③ランナーが持つ資格情報の想定外の利用、の3つ。**
+**いずれも脆弱性固有ではなく、任意コード実行の一般的な検知点である。**
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（悪用事例が無いため）。
+**本記録の整理**——**GitLab サーバを「開発基盤」ではなく
+「本番と同等の資格情報を持つ資産」として監視対象に入れているかが分かれ目になる。**
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**GitLab は、脆弱性の種類（整数オーバーフロー）・場所（CI/CD 正規表現コンパイラ）・
+前提（未認証）・原因（正規表現の検証不足）・CVSS とベクタ・影響版・報告者を
+同日に公開した一方、「特定の条件下で」の具体的条件と再現手順は公開していない**（出典1）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の判断である。**
+**機能した点**——**①影響版・CVSS・修正版を同日に揃え、CERT 2者が同日に勧告を出せた。**
+**②GitLab.com と Dedicated の扱いを明記し、SaaS 利用者の無駄な作業を防いだ。**
+**不十分な点**——**①修正版の番号で3者（報道・CERT 2件）が「19.3.4」と誤記する事態を
+招いており、リリース直前の版番号の変更について説明が無い**〈齟齬1〉。
+**②「特定の条件下で」のままでは、各組織が緊急度を自分で判断できない。**
+</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**自己管理の開発基盤を「社内システム」から「本番相当の資産」へ分類し直す**
+</div><div class=lw>**自己管理の GitLab には、ソースコードに加えて CI/CD の資格情報
+（クラウドの鍵・コンテナレジストリの認証情報・署名鍵）が集まる。**
+**CVSS 10.0 の未認証 RCE は、その1台の制圧を意味する**（出典1）。
+**GitLab は CISA が2021年11月以降に5件の悪用を記録した製品であり、
+うち1件はランサムウェア集団に悪用されている**（出典4）。
+</div><div class=la><b>取るべき行動</b> **①資産台帳で開発基盤（GitLab／Jenkins／Artifactory 等）の重要度区分を確認し、
+本番系と同じ区分に置く。** **②その区分に紐づく約束（パッチ適用の目標時間・
+監視の有無・停止判断の権限）を1枚で書き出し、現状との差を埋める。**
+**③CI/CD が持つ本番資格情報の棚卸しを1回行い、
+基盤の侵害＝本番の侵害になる経路を数える**（本記録の推奨）。
+</div></li><li><div class=lp>**緊急パッチの「版番号の確認」を、一次資料に限定する運用として明文化する**
+</div><div class=lw>**本件では BleepingComputer・CERT-EU・CERT-FR の3者が
+修正版を「19.3.4」と記載し、GitLab 自身の「19.3.5」と食い違った**
+（本記録が原本で確認。齟齬1）。
+**CERT の勧告は信頼される一次情報として社内に回るため、
+誤った版へ上げて「対応済み」と記録される危険が現実にある**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①脆弱性対応手順に「適用先の版番号はベンダーのリリースページで確認する」を1行入れる。**
+**②対応記録に、参照した一次資料の URL と取得日時を残す欄を作る。**
+**③今回 19.3 系を運用していた組織は、適用後の版が 19.3.5 以上であることを
+いま確認する**（本記録の推奨）。
+</div></li><li><div class=lp>**「悪用の報告が無い」を待機の理由に使わない製品のリストを持つ**
+</div><div class=lw>**同じ製品の先月の最高深刻度（CVE-2026-85706）は、
+KEV 収載が2026年9月11日・是正期限が同9月14日——3日だった**
+（本記録が KEV 原データで確認。出典5）。
+**KEV の通常の期限は3週間であり、3日は実害が先行している場合の長さである**
+（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①過去2年で KEV に収載された製品を自組織の資産台帳と突き合わせ、
+「悪用されやすい製品」の一覧を作る。**
+**②その一覧に載る製品は、悪用報告の有無を待たずに緊急適用の対象とする基準を決める。**
+**③基準は時間で書く（例: CVSS 9.0 以上かつ一覧掲載製品は72時間以内）**（本記録の推奨）。
+</div></li><li><div class=lp>**CVSS 10.0 の1件ではなく、同時に直った24件の性格を見る**
+</div><div class=lw>**同リリースの他の修正は、認可の不備（Incorrect Authorization）が多数を占め、
+保護ブランチでのパイプライン実行（CVE-2026-16301・8.5）や
+保護された CI/CD 変数の露出（キャッシュ汚染・8.2）を含む**（出典1・2）。
+**これらは「レビュー済みコードだけが本番へ行く」という前提そのものを崩す**
+（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①本番デプロイの経路が、保護ブランチと保護変数のどの前提に依存しているかを図に書く。**
+**②その前提が崩れた場合に何が起きるかを1回机上で確認する
+（デプロイ鍵の悪用・改ざんコードの本番到達）。**
+**③依存が深いなら、デプロイ側に独立した承認（環境の手動承認・署名検証）を1段入れる**
+（本記録の推奨）。
+</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**19.2／19.3／19.4 系の自己管理インスタンスを、19.2.8・19.3.5・19.4.2 以上へ上げる**
+</div><div class=lw>**影響版は「19.2 から 19.2.8 未満、19.3 から 19.3.5 未満、19.4 から 19.4.2 未満の
+すべての版」であり、GitLab は「直ちに」上げることを強く推奨している**（出典1）。
+**19.3 系の修正版は 19.3.5 である——報道と CERT の「19.3.4」は誤りである**
+（本記録が原本で確認）。
+</div><div class=la><b>取るべき行動</b> **①`gitlab-rake gitlab:env:info` か管理画面で現行版を確認する。**
+**②インターネットに面したインスタンスを先に上げる（CERT-EU の指示。出典2）。**
+**③適用後に版番号を記録し、19.3 系は 19.3.5 以上であることを目視で確かめる。**
+**④GitLab.com・GitLab Dedicated の利用者は作業不要**（出典1）。
+</div></li><li><div class=lp>**GitLab サーバとランナーの「子プロセス生成」「外向き通信」を監視対象に入れる**
+</div><div class=lw>**悪用の具体的条件が公表されていないため、入口を塞ぐ設計判断ができない**
+（出典1）。
+**一方、任意コード実行の結果として現れる現象（予期しない子プロセス・
+予期しない宛先への外向き通信）は、脆弱性の詳細を知らなくても監視できる**
+（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①GitLab サーバとランナーのホストに EDR が入っているかを確認する
+（開発基盤は除外設定になっていることが多い）。**
+**②CI/CD の正規動作を1週間分集めて、宛先ドメイン・IP の基準線を作る。**
+**③基準線の外への通信を警告に回す。件数が多ければまず記録だけから始める**
+（本記録の推奨）。
+</div></li><li><div class=lp>**パイプライン設定（`.gitlab-ci.yml` 等）の変更を、コード変更と同じレビュー対象に置く**
+</div><div class=lw>**本件の攻撃面は「設定ファイル中の正規表現」である**（出典1・4）。
+**設定は「コードではない」扱いでレビューを省く運用が多いが、
+本件ではそこがサーバ上の任意コード実行の入口になった**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①`.gitlab-ci.yml` と CI 関連ファイルを CODEOWNERS の対象に加える。**
+**②パイプライン設定の変更だけを含むマージリクエストの直近90日の件数と承認状況を数え、
+無承認で通っている経路があれば閉じる**（本記録の推奨）。
+</div></li><li><div class=lp>**保護ブランチ・保護変数に依存した権限設計を、今回の修正内容で再点検する**
+</div><div class=lw>**CVE-2026-16301（8.5）は開発者権限での保護ブランチのパイプライン実行を許し、
+キャッシュ汚染（8.2）は保護された CI/CD 変数を露出しうる**（出典2）。
+**どちらも「権限を分けているから安全」という前提を崩す**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①保護変数に入っている資格情報を一覧にし、
+本番に効くもの（クラウドの鍵・署名鍵）を特定する。**
+**②パッチ適用を機に、本番に効く資格情報を短命トークン（OIDC 連携等）へ移す計画を立てる。**
+**③当面の措置として、保護変数の値を適用後に更新する**（本記録の推奨）。
+</div></li><li><div class=lp>**自己管理インスタンスのインターネット露出を数え、不要な露出を閉じる**
+</div><div class=lw>**CERT-EU は「インターネットに面したものから先に上げよ」と明示している**（出典2）。
+**未認証・利用者操作不要（PR:N／UI:N）の脆弱性では、
+到達可能性がそのまま被害確率になる**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①外部から到達できる GitLab のエンドポイントを棚卸しする
+（社外の協力会社・CI の連携のために開けた経路を忘れやすい）。**
+**②必要な露出は VPN か IP 制限、もしくは認証付きプロキシの後ろへ移す。**
+**③残る露出については、適用までの時間を他より短く設定する**（本記録の推奨）。
+</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> GitLab CE/EE を自己管理（self-managed）で運用しており、版が 19.2・19.3・19.4 系にある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自己管理インスタンスがインターネットから到達できる（社外の協力会社・外部 CI 連携のための露出を含む）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> CI/CD の保護変数に本番環境へ効く長命の資格情報（クラウドの鍵・レジストリ認証・署名鍵）を置いている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> パイプライン設定ファイルの変更が、コード変更と同じレビュー・承認の対象になっていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性対応の手順に「適用先の版番号を一次資料で確認する」工程が無い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 開発基盤が資産台帳で本番系より低い重要度に置かれ、パッチ適用の目標時間が決まっていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月12日 GitLab Inc.</span> <a href="https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-4-2-released/" target="_blank" rel="noreferrer noopener nofollow">GitLab Critical Patch Release: 19.4.2, 19.3.5, 19.2.8</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（原文英語。**本事案の一次資料。**
+**CVE-2026-97229 の記述・CVSS 10.0 とベクタ・影響版・報告者（joaxcar／HackerOne）、
+24件の CVE 一覧、GitLab.com は適用済み・Dedicated は対応不要、の出所である。**
+**本記録はページ本文を取得し、CVE 番号の重複排除で24件、
+「19.3.5」33か所・「19.3.4」1か所を確認した。**）
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月12日 14時57分 UTC CERT-EU</span> <a href="https://cert.europa.eu/publications/security-advisories/2026-016/" target="_blank" rel="noreferrer noopener nofollow">2026-016: Critical Vulnerability in GitLab CE and EE</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（原文英語。**インターネットに面したインスタンスから優先せよという指示、
+CVE-2026-92883／CVE-2026-16301／キャッシュ汚染（8.2）の抜き出しの出所。**
+**ただし修正版を「19.3.4」と記載しており、GitLab の記述と食い違う**〈齟齬に記録〉。）
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月12日 CERT-FR（ANSSI）</span> <a href="https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1294/" target="_blank" rel="noreferrer noopener nofollow">Multiples vulnérabilités dans GitLab (12 octobre 2026) / CERTFR-2026-AVI-1294</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（原文フランス語。**24件の CVE 番号の列挙と、リスク（遠隔任意コード実行・
+機密性/完全性の侵害・方針の迂回・SSRF・XSS）の整理の出所。**
+**修正版の記載は「19.3.4」**〈齟齬に記録〉。）
+）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月8日版（catalogVersion 2026.10.08・収載1,739件） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（JSON 原本）</a> <span class="b kind">統計・集計資料</span><span class=sm>（（原文英語。**本記録がカタログ原本を取得して確認した事項の出所。**
+**①CVE-2026-97229 は未収載（ただしこの版はパッチ公開より前）。**
+**②CVE-2026-85706 は2026年9月11日収載・期限2026年9月14日・
+ランサムウェア利用は「Unknown」。**
+**③比較のため見た CVE-2026-0257（Palo Alto）は2026年5月29日収載・
+期限2026年6月1日・ランサムウェア利用「Known」。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月12日 13時09分 UTC BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/gitlab-warns-of-max-severity-rce-flaw-in-regex-compiler-engine/" target="_blank" rel="noreferrer noopener nofollow">GitLab warns of max severity code execution vulnerability</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**CI/CD 正規表現コンパイラの役割の説明、過去の CVE（CVE-2026-0723・
+CVE-2026-85706）、CISA が2021年11月以降に挙げた GitLab の悪用済み脆弱性5件、
+利用規模（登録3,000万人超・Fortune 100 の半数超）の出所。**
+**修正版の記載は「19.3.4」**〈齟齬に記録〉。）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月13日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月12日収集分の3記事
+〈output/articles/20261012/0119_bleepingcomputer_gitlab-warns-of-max-severity-code-execution-vulner.md、
+0097_cert-eu_2026-016-critical-vulnerability-in-gitlab-ce-and-e.md、
+0161_cert-fr-anssi_multiples-vulnrabilits-dans-gitlab-12-octobre-2026.md〉を起点に、
+**GitLab のパッチリリース本文と CISA KEV の JSON 原本を本記録が取得して裏を取った。**
+**その過程で、報道と CERT 2者が修正版を「19.3.4」と記載していること（GitLab は 19.3.5）を
+発見し、齟齬として記録した。**
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">GitLab</span><span class="b tag">CI/CD</span><span class="b tag">CVE-2026-97229</span><span class="b tag">未認証RCE</span><span class="b tag">整数オーバーフロー</span><span class="b tag">自己管理インスタンス</span><span class="b tag">CERT-EU</span><span class="b tag">CERT-FR</span><span class="b tag">KEV</span><span class="b tag">開発基盤</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-13 09:01 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

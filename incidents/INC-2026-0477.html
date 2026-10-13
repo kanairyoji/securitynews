@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Bricksforgeの未認証RCEが即日悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0477</span>Bricksforgeの未認証RCEが即日悪用</h1>
+<header class="site-header">
+  <p class="subtitle">WordPress の商用プラグイン Bricksforge に未認証の任意ファイルアップロード
+（CVE-2026-85097・CVSS 10.0）が見つかり、Patchstack の観測では
+**2026年10月7日 21時47分 UTC——修正版の公開と同じ日**から実際の悪用が始まった。
+63個の IP から自動化された試行が届き、44 IP が同一ペイロードを数秒内に投げる群と、
+3 IP が同一の一時ファイルに対し PHP 拡張子と符号化の25通りを試す群の2つに分かれた。
+一方でベンダーの変更履歴に 3.1.8.10 の項目は無く、
+同種の修正は 4.0.1（10月8日）に記載されている</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月7日（Patchstack のデータベース掲載）</span>
+  <span>最終更新: 2026年10月13日</span>
+</div>
+
+<div class="lead"><p><strong>修正版が出た日に、もう攻撃が来ていました。</strong></p>
+<p><strong>CVE-2026-85097</strong>。WordPress の商用プラグイン <strong>Bricksforge</strong> に、<strong>未認証で任意のファイルをアップロードでき、そのまま PHP として実行させられる</strong>不備がありました。CVSS は <strong>10.0</strong>（Patchstack・The Hacker News の表記。SecurityWeek は 9.8 と書いており、ここは食い違っています）。影響は <strong>3.1.8.9 以下</strong>、修正は <strong>3.1.8.10</strong>。</p>
+<p>Patchstack の観測では、<strong>最初の悪用は2026年10月7日 21時47分17秒 UTC</strong>。<strong>同社のデータベース掲載も同じ10月7日</strong>です。届いた試行は <strong>63個の IP</strong> から。内訳が攻撃の性格を語っています—— <strong>①44 IP が同一のペイロードを数秒のうちに56回投げる群②3 IP が同一の一時ファイルに対して PHP の拡張子と符号化の25通りを試す群。</strong> <strong>Patchstack は「どちらも回転プロキシか分散インフラ越しの自動化を示すが、それだけで単一の攻撃者に帰属させるものではない」と明記しています</strong>（原文英語。本記録の訳）。</p>
+<p><strong>手口は3手です。</strong> 未認証で nonce を発行するエンドポイントから nonce を取る → GIF と PHP の両方として成立するファイルを上げて MIME 検査を通す →フォーム送信で「書き込み先」を <code>.php</code> に指定する。<strong>検証されていなかったのは、この最後の「書き込み先」でした。</strong></p>
+<p><strong>そしてもう1つ。</strong> ベンダーの変更履歴には <strong>3.1.8.10 の項目がありません</strong>。Pro Forms のファイルアップロードの修正は <strong>4.0.1（10月8日）</strong>に書かれており、<strong>「アップロード欄が無いサイトも対象」</strong>とされています。<strong>版の系列が2本あるとき、変更履歴と脆弱性情報のどちらを見るかで「直したつもり」が生まれます。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際に侵害されたサイトの数</span><span class="b rsn">公表されていない</span><div class=sm>**Patchstack が示したのは試行のテレメトリ（63 IP・群の構成・ペイロードの形）であり、
+成功した件数には触れていない**（出典1）。
+**攻撃が自動化されており、群2が検査の抜け道を探す形であることから
+一定の成功が想定されるが、本記録は件数を推定しない**（本記録の留保）。
+</div></li><li><span class=ui>修正版 3.1.8.10 の公開日時と変更履歴への記載の欠落の理由</span><span class="b rsn">公表されていない</span><div class=sm>**Patchstack のデータベースは「3.1.8.10 で修正」と記載する一方、
+公開日を示していない**（出典3）。
+**ベンダーの公式変更履歴には 3.1.8.10 の項目が存在せず、
+Pro Forms のアップロードの修正は 4.0.1（2026年10月8日）に書かれている**（出典4）。
+**本記録は、3.x 系向けの個別パッチが変更履歴に反映されていないと読んでいるが、
+ベンダーの説明は無い**〈齟齬に記録〉。
+</div></li><li><span class=ui>ベンダー（Bricksforge）による本件の告知・利用者への通知</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録が確認した範囲（変更履歴ページ・報道3件）に、
+ベンダー名義の本件についての告知・勧告は見つかっていない**（2026年10月13日時点）。
+**4.0.1 の変更履歴の記載が、実質的な唯一の利用者向け説明である**（本記録の整理）。
+</div></li><li><span class=ui>攻撃者の帰属と目的（ウェブシェル設置後の活動）</span><span class="b rsn">公表されていない</span><div class=sm>**Patchstack は「自動化を示すが単一の攻撃者への帰属にはならない」と明記している**
+（出典1・2）。
+**侵害後に何が置かれたか（ウェブシェル・スパム挿入・リダイレクト・
+さらなる水平展開）についての記述は無い**（本記録の注記）。
+</div></li><li><span class=ui>報告から修正までの所要（d.v4n_s3c の報告日）</span><span class="b rsn">公表されていない</span><div class=sm>**報告者名のみが公表されており、報告日も調整開示の経過も示されていない**（出典3）。
+**したがってベンダーの対応速度は評価できない**（本記録の注記）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Bricksforge（Bricks ビルダー向け商用アドオンの開発元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Patchstack（WordPress 専門のセキュリティ企業）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>d.v4n_s3c（研究者ハンドル）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Bricksforge を使う約6,000件の WordPress サイト（不特定）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-85097 の CVSS（Patchstack の評価）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>10.0<span class=fu>スコア</span></div><div class=fn>**Patchstack の記事とデータベース掲載、および The Hacker News の報道が 10.0**（出典1・3・5）。
+**SecurityWeek は 9.8 と記載している**〈齟齬1〉。
+**本記録は Patchstack の値（10.0）を主に採る**——**同社が評価の主体であるため。**
+</div></div><div class=fig><div class=fh><span class=fl>脆弱性情報の掲載から最初の悪用の観測までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>0<span class=fu>日（同日）</span></div><div class=fn>**Patchstack のデータベース掲載（2026年10月7日）と、
+同社テレメトリにおける最初の試行（同日 21時47分17秒 UTC）が同じ日である**
+（出典1・3）。
+**公表から悪用までの猶予は実質的に無かった**（本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>悪用の試行を送った固有 IP の数（Patchstack のテレメトリ）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>63<span class=fu>IP</span></div><div class=fn>**上位6 IP で全試行の約46%を占める**（出典1）。
+**この数は Patchstack の顧客サイトに届いた分であり、
+インターネット全体の試行数ではない**（本記録の注記。母数が異なる）。
+</div></div><div class=fig><div class=fh><span class=fl>群1——同一ペイロードを数秒内に投げた IP 数と要求数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>44<span class=fu>IP（要求は56件）</span></div><div class=fn>**44個の IP が、同一のペイロードを数秒のうちに56回送っている**（出典1・2）。
+**Patchstack の評価**——**回転プロキシか分散インフラ越しの自動化を示す**
+（原文英語。本記録の訳）。
+</div></div><div class=fig><div class=fh><span class=fl>群2——同一の一時ファイルに試された PHP 拡張子・符号化の通り数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>25<span class=fu>通り（IP は3個）</span></div><div class=fn>**3個の IP が、同じ一時ファイルに対して PHP の拡張子と符号化の25通りを試した**
+（出典1・2）。
+**本記録の評価**——**群1が「配布された既成の攻撃」、
+群2が「検査の抜け道を手探りしている攻撃」に見える。
+ただし Patchstack は帰属を主張していない。**
+</div></div><div class=fig><div class=fh><span class=fl>画像パスと PHP 宛先の組み合わせだった要求の割合</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>95<span class=fu>％（約）</span></div><div class=fn>**捕捉した要求の約95%が、サーバ側のパスに `.gif` か `.png` を、
+宛先 URL に PHP 関連の拡張子を組み合わせていた**（出典1）。
+**これが検知条件として最も使える形である**（本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>Bricksforge を使っているサイト数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>6,000<span class=fu>サイト（約）</span></div><div class=fn>**Patchstack の説明として SecurityWeek が伝えた値**（出典2）。
+**Patchstack の記事本文には設置数の記載が無い**（本記録が確認）。
+**これは母数であり、被害件数ではない**（本記録の注記）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の悪用が観測されている事案である**（出典1）。
+**本記録が記録するのは、Patchstack が示した成立経路と、
+同社のテレメトリに現れた自動化された試行の形である。**
+**侵害後の活動（ウェブシェル設置後に何をしたか）は公表されていない**
+〈未確定事項に記録〉ため、段は initial-access・execution・impact の3つにとどめる。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**未認証で nonce を取得する。**
+**`bricksforge_regenerate_nonce` という AJAX のエンドポイントが
+認証を要求せずに nonce を発行していたため、
+外部の攻撃者がフォーム送信の手続きを完結できた**（出典1）。
+</div><div class=fn>根拠: Patchstack の解析記事における手口の記述（出典1）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**GIF と PHP の両方として成立する多重形式ファイルを上げ、
+MIME 検査を通して一時ディレクトリに置く。**
+**続いてフォーム送信の `temporaryFileUploads` パラメータで、
+ファイルのパスにその画像を、`url` フィールドに `.php` で終わる宛先を指定する。**
+**`url` が検証されていないため、プラグインは一時ファイルの内容を
+指定された PHP の場所へ書き出す**（出典1・3）。
+</div><div class=fn>根拠: **Patchstack の解析（該当コードは
+`includes/elements/pro-forms/actions/init.php` と `base.php`）、
+および観測された約95%の要求が「サーバ側パスに `.gif`／`.png`、
+宛先 URL に PHP 関連拡張子」の組み合わせであったこと**（出典1）
+</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**書き出された PHP ファイルがサーバで実行される** ——
+**未認証の遠隔コード実行が成立し、サイトの完全な制御に至りうる**
+（出典1・2）。
+**侵害後に何が設置されたかは公表されていない**（本記録の注記）。
+</div><div class=fn>根拠: Patchstack・SecurityWeek による影響の記述（出典1・2）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Patchstack は、手口を再現可能な粒度で公開した** ——
+**未認証 nonce のエンドポイント名、`temporaryFileUploads` の `url` が未検証であること、
+GIF/PHP 多重形式で MIME 検査を通す手順、該当コードのファイル名、
+攻撃元 IP とそのネットワーク（AbuseIPDB の件数つき）まで記載している**（出典1）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **防御側は検知条件と事後確認の観点を即日得られる。**
+**同時に、まだ更新していないサイトに対する攻撃の再現も容易になる** ——
+**約6,000件の利用サイトのうち更新が遅れたものは、
+この公開によって危険が増す側に回る**（本記録の整理）。
+</div></li><li><div class=ui>**Patchstack は自社の緩衝規則（RapidMitigate）を
+「最初の攻撃が届く前に稼働させていた」と記述している**（出典1）。
+**すなわち、修正版の適用を待たずに防御側の遮断を先行させる方式を採った。**
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **緩衝規則は同社の顧客にしか効かない。**
+**約6,000件の利用サイトの大半は、自力で更新するほかに手段が無い**
+（本記録の整理）。
+**また、仮想パッチが効いていると利用者が更新を後回しにする誘因も生まれる。**
+</div></li></ul></div>
+<section id="s6"><h2>検証されていなかったのは「アップロード先」だった——nonce・MIME 検査・書き込み先の3つが別々に緩かった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>Patchstack の説明にもとづき、成立の順に並べます</strong>（出典1・3）。</p>
+<p><strong>第1手: nonce を未認証で手に入れる。</strong> <code>bricksforge_regenerate_nonce</code> という AJAX のエンドポイントが、<strong>認証を要求せずに nonce を発行していました。</strong> WordPress の nonce は「正規の画面から来た操作であること」を示す仕組みであり、<strong>これが未認証で取れると、以降の手続きが外部から完結します。</strong></p>
+<p><strong>第2手: MIME 検査を通る多重形式ファイルを上げる。</strong> <strong>GIF と PHP の両方として成立するファイル（polyglot）</strong>を送ると、<strong>アップロード時の MIME 判定は「画像である」と判断し、ファイルは一時ディレクトリに置かれます。</strong></p>
+<p><strong>第3手: 書き込み先を <code>.php</code> に指定する。</strong>フォーム送信（<code>temporaryFileUploads</code> パラメータ）では、<strong>ファイルのパスに先ほどの画像を、<code>url</code> フィールドに PHP 拡張子で終わる宛先を指定します。</strong> <strong><code>url</code> は検証されていませんでした。</strong>プラグインは一時ファイルの内容を <code>url</code> の場所へ書き出し、<strong>サーバはそれを PHP として実行します</strong>（該当コードは<code>includes/elements/pro-forms/actions/init.php</code> と <code>base.php</code>）。</p>
+<p><strong>到達するエンドポイントは <code>POST /wp-json/bricksforge/v1/form_submit</code>。</strong> <strong>観測では、1件だけ <code>/wp-admin/admin-ajax.php</code> の<code>bricksforge_form_submit</code> アクション経由のものがありました</strong>（出典1）。</p>
+<p><strong>本記録の整理</strong>——<strong>この3つはどれも単独なら「よくある緩さ」です。</strong> nonce の未認証発行は「nonce は認証ではない」で済まされ、MIME 検査は「拡張子より厳しい」と信じられ、書き込み先の検証は「内部で組み立てる値だから」と省かれます。<strong>緩さが3つ重なった結果が、未認証の任意コード実行（CVSS 10.0）です。</strong></p></section>
+<section id="s7"><h2>公表と悪用が同じ日に起きた——「公表から悪用まで」の猶予は実質ゼロだった<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>時系列を並べると、猶予が無かったことが分かります</strong>（出典1・3）。</p>
+<ul>
+<li><strong>2026年10月7日</strong>: Patchstack が脆弱性データベースに掲載（修正版 3.1.8.10）。</li>
+<li><strong>2026年10月7日 21時47分17秒 UTC</strong>: <strong>最初の悪用の試行を観測。</strong></li>
+<li><strong>2026年10月8日</strong>: Patchstack が解析記事を公開。</li>
+<li><strong>2026年10月8日</strong>: ベンダーが 4.0.1 を公開（Pro Forms のアップロードの修正）。</li>
+</ul>
+<p><strong>Patchstack は「緩衝規則（RapidMitigate）は最初の攻撃が届く前に稼働していた」と書いています</strong>（出典1）——<strong>自社の防御については先行できたという主張です。</strong> <strong>ただしこれは同社の顧客に限った話であり、約6,000件の利用サイトの多くには当てはまりません</strong>（本記録の注記）。</p>
+<p><strong>観測された試行の形も、自動化の度合いを示しています。</strong></p>
+<ul>
+<li><strong>固有 IP は63個。上位6 IP で全試行の約46%。</strong></li>
+<li><strong>群1: 44 IP が同一ペイロードを数秒のうちに56回。</strong></li>
+<li><strong>群2: 3 IP が同一の一時ファイルに PHP 拡張子と符号化の25通り。</strong></li>
+<li><strong>約95%の要求が「サーバ側パスに <code>.gif</code>／<code>.png</code>、宛先 URL に PHP」の組み合わせ。</strong></li>
+</ul>
+<p><strong>Patchstack の留保をそのまま引きます</strong>（原文英語。本記録の訳）—— <strong>「どちらの型も、回転プロキシまたは分散インフラ越しの自動化された悪用を示す。それ自体で、この活動を単一の攻撃者に帰属させるものではない。」</strong></p>
+<p><strong>本記録の評価</strong>——<strong>群1と群2の違いは読む価値があります。</strong>群1は<strong>配布された既成の攻撃コードが一斉に走った形</strong>、群2は<strong>検査の抜け道を手探りしている形</strong>に見えます。<strong>後者が存在することは、最初の修正が不完全だった場合にすぐ次の変種が来ることを意味します</strong>（断定はしません）。</p>
+<p><strong>WordPress プラグインの脆弱性で「パッチが出てから動く」運用は、この時間感覚では間に合いません。</strong> <strong>自動更新を有効にしているか、WAF の緩衝規則が入っているか、この2つが実質的な防御線になります</strong>（本記録の結論）。</p></section>
+<section id="s8"><h2>版の系列が2本あり、変更履歴に 3.1.8.10 が無い——「直したつもり」が生まれる構造<span class="b slot">再発防止</span><span class=srcs>出典 [3] [4]</span></h2><p><strong>本記録がベンダーの公式変更履歴を確認した結果です</strong>（出典4）。</p>
+<ul>
+<li><strong>3.1.8.10 の項目は存在しない。</strong></li>
+<li><strong>3.1.8.9（2026年8月28日）の項目はある</strong>が、内容は<strong>メールデザイナのテンプレート描画のセキュリティ強化</strong>で、本件とは別件。</li>
+<li><strong>4.0.0（2026年9月17日）</strong>で 4.x 系が始まる。</li>
+<li><strong>4.0.1（2026年10月8日）</strong>に<strong>「Pro Forms のファイルアップロードのセキュリティ問題を修正した」</strong>とあり、<strong>「Pro Forms が有効なすべてのサイトが対象であり、フォームにアップロード欄が無くても影響を受ける」</strong>と注意書きが付く。</li>
+</ul>
+<p><strong>一方 Patchstack のデータベースは「3.1.8.9 以下が影響・3.1.8.10 で修正」と記載します</strong>（出典3）。</p>
+<p><strong>本記録の読み</strong>——<strong>3.x 系を使い続ける利用者向けに個別パッチ 3.1.8.10 が出され、変更履歴には反映されなかった、と読むのが自然です。</strong> <strong>ただしベンダーの説明は無いため、断定はしません</strong>〈齟齬に記録〉。</p>
+<p><strong>実務上の意味は2つあります</strong>（本記録の整理）。</p>
+<p><strong>①どの版へ上げるかを変更履歴だけで判断すると詰まる。</strong>変更履歴に 3.1.8.10 が無いので、「該当する修正は 4.0.1」と読んでメジャー更新に踏み切れず、放置する流れになります。<strong>脆弱性情報（CVE・Patchstack）と変更履歴の両方を見る必要があります。</strong></p>
+<p><strong>②「アップロード欄が無いから無関係」は成り立たない。</strong>ベンダー自身が 4.0.1 の記載で明確に否定しています。<strong>フォームの設定を根拠に除外判断をしてはいけません。</strong></p></section>
+<section id="s9"><h2>Patchstack の「KEV」印は CISA の KEV ではない——悪用の確認元を取り違えないこと<span class="b slot">帰属</span><span class=srcs>出典 [3] [6]</span></h2><p><strong>本記録が確認した事実を2つ並べます。</strong></p>
+<ul>
+<li><strong>Patchstack のデータベース掲載には「Known to be exploited!（KEV）」の印が付いている</strong>（出典3）。</li>
+<li><strong>CISA の KEV カタログ（2026年10月8日版・収載1,739件）にCVE-2026-85097 は入っていない</strong>（本記録がカタログの JSON 原本を取得して確認。出典6）。</li>
+</ul>
+<p><strong>これは矛盾ではありません。</strong> <strong>Patchstack の印は同社自身のテレメトリに基づく「悪用されている」の表示であり、CISA KEV は米政府の収載判断です</strong>（本記録の整理）。</p>
+<p><strong>本記録の評価</strong>——<strong>取り違えると2方向に間違えます。</strong> <strong>①CISA KEV に無いことを根拠に「まだ悪用されていない」と判断する</strong> ——<strong>実際には10月7日から試行が届いています。</strong> <strong>②Patchstack の「KEV」印を CISA の収載と読み、連邦機関の是正期限のような外形的な強制力があると考える</strong> ——<strong>ありません。</strong></p>
+<p><strong>悪用の有無は、情報源ごとに「誰が何を見て言っているか」を分けて読む必要があります</strong>（本記録の結論）。<strong>WordPress プラグインの脆弱性は CISA KEV に載りにくい領域であり（連邦機関の資産に入りにくいため）、KEV を唯一の悪用判定に使うと、この領域の緊急度を過小評価します。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>Bricksforge（WordPress の Bricks ビルダー向け商用アドオン）の Pro Forms</td></tr><tr><th>ベンダー</th><td>Bricksforge</td></tr><tr><th>finding_name</th><td>Unauthenticated Arbitrary File Upload via temporaryFileUploads parameter（Patchstack の表記）</td></tr><tr><th>affected_versions</th><td>**3.1.8.9 以下のすべての版**（出典3）。
+**修正版は 3.1.8.10。**
+**4.x 系では 4.0.1（2026年10月8日）に
+「Pro Forms のファイルアップロードのセキュリティ問題を修正した」と記載がある**（出典4）。
+**ベンダーの注意書き**——**「Pro Forms が有効なすべてのサイトが対象であり、
+フォームにアップロード欄が無くても影響を受ける」**（原文英語。本記録の訳。出典4）。
+</td></tr><tr><th>CVE番号</th><td><ul class=cl><li>CVE-2026-85097</li></ul><span class="b rsn">stated</span><div class=fn>**CVE-2026-85097。Patchstack が採番・公表した**（出典1・3）。
+**ベンダーの変更履歴に CVE 番号の記載は無い**（出典4。齟齬2）。
+</div></td></tr><tr><th>cvss</th><td>10.0（Patchstack の評価。SecurityWeek は 9.8 と記載——齟齬1）<span class="b rsn">stated</span></td></tr><tr><th>exploit_status</th><td>**実際に悪用されている。**
+**Patchstack のテレメトリにおける最初の試行は2026年10月7日 21時47分17秒 UTC** ——
+**データベース掲載と同日である**（出典1・3）。
+**固有63 IP、上位6 IP で全試行の約46%。**
+**群1は44 IP が同一ペイロードを数秒内に56回、
+群2は3 IP が同一の一時ファイルに PHP 拡張子と符号化の25通りを試した。**
+**約95%の要求が「サーバ側パスに `.gif`／`.png`、宛先 URL に PHP 関連拡張子」の組み合わせ。**
+**Patchstack は帰属を保留している**（「自動化を示すが単一の攻撃者への帰属にはならない」）。
+**成功件数・侵害後の活動は公表されていない。**
+**2026年10月8日版の CISA KEV には未収載**（本記録が原本で確認。齟齬3）。
+</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月13日</td></tr><tr><th>patch</th><td>**3.1.8.10（公開日は公表されていない。ベンダーの変更履歴に項目が無い）**（出典3・4。齟齬2）。
+**4.x 系は 4.0.1（2026年10月8日）**（出典4）。
+**Patchstack は自社の緩衝規則（RapidMitigate）を
+「最初の攻撃が届く前に稼働させていた」と記述している**（出典1）
+——**同社顧客に限って効く措置である。**
+</td></tr><tr><th>vendor_response</th><td>**ベンダー名義の本件についての告知は、本記録の確認範囲では見つかっていない**
+（2026年10月13日時点）。
+**確認できるのは変更履歴の 4.0.1 の記載のみで、
+そこには「Pro Forms が有効な全サイトが対象。アップロード欄が無くても影響を受ける」
+という利用者向けの注意が書かれている**（出典4）。
+**本記録は「告知していない」と「告知が別の場所（会員向け・Facebook グループ等）にある」を
+区別できない**〈齟齬に記録〉。
+</td></tr><tr><th>iocs</th><td><ul class=cl><li>IP: 177.75.57.20（EXPLORERNET・ブラジルの固定回線 ISP。AbuseIPDB 報告8件）</li><li>IP: 23.97.62.146（Microsoft Azure。AbuseIPDB 報告1,270件超）</li><li>IP: 84.247.60.125（HostRoyale。AbuseIPDB 報告12件・CleanTalk 掲載）</li><li>IP: 38.154.185.97（B2 Net Solutions。AbuseIPDB 報告11件・CleanTalk 掲載）</li><li>IP: 150.109.16.166（Tencent。AbuseIPDB 報告185件・CleanTalk 掲載）</li><li>IP: 153.75.90.146（Cloudzy・データセンター。AbuseIPDB 報告35件・CleanTalk 掲載）</li><li>URI: POST /wp-json/bricksforge/v1/form_submit（未ログイン元からの連続要求）</li><li>URI: /wp-admin/admin-ajax.php?action=bricksforge_form_submit（観測は1件）</li><li>URI: bricksforge_regenerate_nonce（未認証で nonce を発行するエンドポイント）</li><li>ペイロードの形: サーバ側パスに .gif / .png、宛先 url に PHP 拡張子（観測の約95%）</li></ul><span class="b rsn">stated</span><div class=fn>**出所は Patchstack の記事の表（上位の攻撃元 IP）である**（出典1）。
+**本記録はこれらの IP の悪性を独立に検証していない** ——
+**照合先のテレメトリを持たないため、検知の根拠として使ってはならない**
+（本記録の留保。プロジェクトの方針）。
+**IP は回転プロキシ・クラウド事業者の共有アドレスを含むため、
+遮断すると正規の通信を止めうる**（Azure・Tencent が含まれる）。
+**実務で使えるのは、IP よりもエンドポイントとペイロードの形である**（本記録の整理）。
+</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **3.1.8.10 以上（4.x 系なら 4.0.1 以上）へ更新する**（唯一の根本対処）
+　<b>状況:</b> ベンダーが提供（3.1.8.10 の公開日は不明）　<b>副作用:</b> **4.x 系はメジャー更新であり、既存のフォーム・アニメーション設定の
+互換性確認が必要になる。**
+**3.x 系の個別パッチは変更履歴に記載が無いため、
+「本当に修正済みか」を利用者が確認しにくい**（本記録の評価。齟齬2）。
+　<b>source:</b> 3</div><div class=sub><b>数え方:</b> **アップロード先ディレクトリ（`wp-content/uploads` 配下）で PHP の実行を禁止する**
+　<b>状況:</b> 本記録の推奨（ベンダー・Patchstack の指示にはない）　<b>副作用:</b> **一部のプラグインがアップロード先に PHP を置いて動かす実装を採っている場合、
+その機能が壊れる。**
+**設定後にサイトの機能を通して確認する必要がある**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **WAF・managed WordPress の仮想パッチで、更新までの時間を埋める**
+　<b>状況:</b> Patchstack が自社の緩衝規則で実施　<b>副作用:</b> **仮想パッチが効いていると、本体の更新が後回しになる誘因が生まれる。**
+**規則の対象外の変種（群2が試していた符号化の違い）には効かない可能性がある**
+（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **事後確認——`wp-content/uploads` 配下の `.php` と、
+2026年10月7日以降に作成・更新された PHP ファイルを一覧する**
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **件数が多いサイトでは正規のファイルとの切り分けに時間がかかる。**
+**侵害が確認された場合、更新だけでは不十分で、
+設置物の削除と資格情報の更新まで必要になる**（本記録の評価）。
+　<b>source:</b> 1</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年8月28日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**【別件】Bricksforge 3.1.8.9 が公開された。**
+**変更履歴の記載はメールデザイナのテンプレート描画に関する
+「セキュリティ強化」1件で、「緊急の更新を推奨する。
+詳細は調整された開示の後に示す」と書かれている**
+（原文英語。本記録の訳。出典4）。
+**本記録の注記**——**これは本件（Pro Forms のファイルアップロード）とは別の修正である。**
+</td></tr><tr><td class="sm nowrap tw">2026年9月17日</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**【背景】Bricksforge 4.0.0 が公開された**（出典4）。
+**以後、3.x 系と 4.x 系の2本が並行する状態になる**（本記録の整理）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月7日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Patchstack が脆弱性データベースに CVE-2026-85097 を掲載した** ——
+**「Bricksforge &lt;= 3.1.8.9 における未認証の任意ファイルアップロード
+（`temporaryFileUploads` パラメータ経由）」。
+CVSS 10、修正版 3.1.8.10、報告者 d.v4n_s3c**（出典3）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月7日 21時47分17秒 UTC</td><td class=nowrap><span class="b kind">発生</span></td><td>**実際の悪用の最初の観測。** **Patchstack のテレメトリにおける最初の試行の時刻である**
+（出典1）。
+**同社は「緩衝規則は最初の攻撃が届く前に稼働していた」と記述している。**
+</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Patchstack が解析記事を公開した。**
+**手口（未認証 nonce → GIF/PHP 多重形式ファイル → `url` を `.php` に指定）、
+対象エンドポイント（`POST /wp-json/bricksforge/v1/form_submit`）、
+該当コード（`includes/elements/pro-forms/actions/init.php` と `base.php`）、
+63 IP のテレメトリと2つの群を示した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Bricksforge 4.0.1 が公開された。**
+**変更履歴は「Pro Forms のファイルアップロードのセキュリティ問題を修正した」と記載し、
+「Pro Forms が有効なすべてのサイトが対象で、フォームにアップロード欄が無くても
+影響を受ける」と注意している**（出典4）。
+**本記録の読み**——**4.x 系に対する同一問題の修正とみられるが、
+変更履歴に CVE 番号の記載は無く、ベンダーは関係を明示していない**〈齟齬に記録〉。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日 09時02分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が報道** ——**CVSS 10.0、未認証で任意の PHP コードを
+アップロードして実行できる、実際に悪用されている、と記述**（出典5）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日 13時14分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**SecurityWeek が報道。**
+**Patchstack の2つの群（44 IP が同一ペイロードを数秒内に56回／
+3 IP が同一の一時ファイルに25通りの PHP 拡張子と符号化を試す）と、
+「どちらも自動化を示すが単一の攻撃者への帰属にはならない」という留保、
+利用サイト約6,000件を伝えた。**
+**ただし CVSS を 9.8 と記載している**〈齟齬に記録〉（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】CVE-2026-85097 は、2026年10月8日版の CISA KEV（1,739件）に
+収載されていない**（本記録がカタログ原本を取得して確認。出典6）。
+**一方 Patchstack のデータベース掲載には「Known to be exploited!（KEV）」の印が付く**
+——**同社の印は自社の観測に基づくものであり、CISA KEV とは別物である**
+（本記録の整理。齟齬に記録）。
+**また、ベンダーの公式変更履歴に 3.1.8.10 の項目は無い**（出典4）。
+</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**Patchstack の記事とデータベース掲載、The Hacker News は 10.0**（出典1・3・5）。
+**SecurityWeek は 9.8 と記載している**（出典2）。
+**本記録は 10.0 を主に採る**——**評価の主体が Patchstack であるため。**
+**本記録の読み**——**未認証の任意ファイルアップロード→RCE は
+9.8（スコープ変更なし）と 10.0（スコープ変更あり）の双方で付きうる形であり、
+S（Scope）の判断の差とみられる。断定はしない。**
+**実務上は、どちらであっても最優先の区分に入る。**
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**Patchstack は「3.1.8.10 で修正」と記載する**（出典3）。
+**本記録がベンダーの公式変更履歴を確認したところ、
+3.1.8.10 の項目は無く、Pro Forms のファイルアップロードの修正は
+4.0.1（2026年10月8日）に書かれていた**（出典4）。
+**3.1.8.9（2026年8月28日）はメールデザイナの別件のセキュリティ強化である。**
+**本記録の読み**——**3.x 系の利用者向けに個別パッチが出され、
+変更履歴に反映されていないと読むのが自然だが、ベンダーの説明は無い。**
+**実務上の意味**——**変更履歴だけを見ると
+「該当する修正は 4.0.1」と読み、メジャー更新をためらって放置に至る。**
+</div></li><li><span class="b dk">一次資料に裏付けなし</span><div class=sm>**この印は Patchstack 自身の表示であり、CISA の KEV カタログとは別物である**
+（本記録の整理）。
+**本記録が CISA KEV の JSON 原本（2026年10月8日版・1,739件）を取得して確認した結果、
+CVE-2026-85097 は収載されていない**（出典6）。
+**悪用の事実そのものは Patchstack のテレメトリ（63 IP・最初の試行の時刻）で
+裏付けられており、ここで問題にしているのは
+「どの機関の判定か」の取り違えである。**
+</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録の収集時に本文の取得に失敗している（`content_source: fetch_failed`）ため、
+参照できたのは冒頭部分（CVSS 10.0・未認証 RCE・Patchstack による悪用の確認）のみである**
+（出典5）。
+**本記録はこの記事に固有の事実を引いていない** ——
+**同じ内容は Patchstack の記事（出典1）で裏が取れている。**
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**SecurityWeek が Patchstack の説明として伝えた値である**（出典2）。
+**Patchstack の記事本文には設置数の記載が無い**（本記録が確認）。
+**商用プラグインは公式ディレクトリの設置数が公開されないため、
+ベンダーの販売実績に基づく推計である可能性がある**（本記録の読み。断定しない）。
+**いずれにせよ母数であり、被害件数ではない。**
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>未認証で nonce を取る → GIF と PHP の多重形式ファイルで MIME 検査を通す →
+フォーム送信の `url` を `.php` に指定して一時ファイルを書き出させる →
+サーバが PHP として実行する。
+Patchstack の緩衝規則は同社顧客にしか効かず、残りは自力更新しか手段が無い
+</div><div class=svgwrap><svg viewBox="0 0 1202 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,60.0 C193.0,60.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,162.0 C397.0,162.0 397.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,264.0 C397.0,264.0 397.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,213.0 C703.0,213.0 703.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1009.0,111.0 1009.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,206.0 C1009.0,206.0 1009.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自動化された攻撃元（固有</text><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">63 IP・上位6 IP</text><text x="91.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> で約46%）</text><text x="91.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">回転プロキシか分散インフ</text><text x="91.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ラ越し。単一の攻撃者への</text><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">群1——44 IP が同</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">一ペイロードを数秒内に5</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">6回</text><text x="91.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">既成の攻撃コードの一斉実</text><text x="91.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">行に見える（本記録の読み</text><rect x="16" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">群2——3 IP が同一</text><text x="91.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の一時ファイルに25通り</text><text x="91.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の拡張子・符号化</text><text x="91.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">検査の抜け道を手探りする</text><text x="91.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">形（本記録の読み）</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">bricksforge_</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">regenerate_n</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">once（未認証で n…</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">第1手。nonce は認</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">証ではないが手続きの通行</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GIF/PHP 多重形式</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ファイル（MIME 検査</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を通過し一時ディレクト…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">第2手。拡張子の検査が </text><text x="499.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">MIME 判定に依存して</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">POST /wp-jso</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">n/bricksforg</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e/v1/form_s…</text><text x="703.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">第3手。CVE-2026</text><text x="703.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">-85097 の本体。該</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WordPress サイ</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト（Bricksforg</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e &lt;= 3.1.8.…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">書き出された PHP が</text><text x="907.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">実行され、未認証 RCE</text><rect x="628" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Patchstack の</text><text x="703.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">緩衝規則（最初の攻撃より</text><text x="703.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">前に稼働と記述）</text><text x="703.0" y="232.0" text-anchor="middle" fill="#64b5f6" font-size="10">同社顧客にのみ効く。残り</text><text x="703.0" y="244.0" text-anchor="middle" fill="#64b5f6" font-size="10">のサイトは自力更新のみ</text><rect x="1036" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3.1.8.10（変更履</text><text x="1111.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">歴に項目が無い）</text><text x="1111.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">Patchstack は</text><text x="1111.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正版と記載。公開日は不</text><rect x="1036" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4.0.1（2026年1</text><text x="1111.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0月8日・Pro For</text><text x="1111.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ms のアップロード修…</text><text x="1111.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">「アップロード欄が無くて</text><text x="1111.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">も影響を受ける」とベンダ</text></svg></div><div class=fn>Patchstack の解析記事（2026年10月8日）とデータベース掲載（同10月7日）、
+SecurityWeek（同10月12日）、The Hacker News（同10月12日）、
+Bricksforge の変更履歴にもとづく
+（本記録が2026年10月13日に各資料を確認）。
+**侵害後に何が設置されたか、成功件数は公表されていない。**
+**攻撃者の帰属は Patchstack 自身が明示的に保留している。**
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">検知した</span><div class=sm>**Patchstack 自身は検知している**（63 IP のテレメトリ・最初の試行の時刻を特定）。
+**一方、個々のサイト運営者から見ると、この段は Web アクセスログに
+正常な 200 応答として残るだけである**（本記録の整理）。
+**自サイトで見るなら、`bricksforge_regenerate_nonce` への
+未ログイン元からの要求の急増が合図になる。**
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検知の機会は明確に存在する**（本記録の評価）。
+**①要求本体に「`.gif`／`.png` のパス」と「PHP 拡張子で終わる URL」が
+同時に現れる組み合わせ（観測の約95%）。**
+**②`/wp-json/bricksforge/v1/form_submit` への
+未ログイン元からの連続要求。**
+**③群2のように、同一の一時ファイルに対して拡張子・符号化を
+次々に変える試行（25通り）。**
+**ただし、これらを見るには WAF かアプリ層のログが必要で、
+多くの小規模サイトには無い**（本記録の整理）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の整理**——**事後に見るべきは3つ。**
+**①`wp-content/uploads` 配下の `.php` ファイルの存在
+（正常な運用では置かれない）。**
+**②一時ディレクトリに残った画像と、同名・近接時刻の PHP ファイルの組。**
+**③2026年10月7日以降に作成・更新された PHP ファイルの一覧。**
+**ファイル整合性の監視があれば検知できたが、
+多くの WordPress サイトには導入されていない。**
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Patchstack は、手口を再現可能な粒度で公開した** ——
+**未認証 nonce のエンドポイント名、`temporaryFileUploads` の `url` が未検証であること、
+GIF/PHP 多重形式で MIME 検査を通す手順、該当コードのファイル名、
+攻撃元 IP とそのネットワーク（AbuseIPDB の件数つき）まで記載している**（出典1）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の判断である。**
+**機能した点**——**①手口を段ごとに示し、検知条件に落とせる形で書いた。**
+**②帰属について「自動化を示すが単一の攻撃者への帰属にはならない」と明示し、
+過大な読みを封じた。** **③攻撃元 IP を AbuseIPDB の件数つきで示し、
+単なる列挙にしなかった。**
+**不十分な点**——**①成功件数・侵害後の活動に触れていないため、
+サイト運営者が「自分が侵害されたか」を判断する材料が弱い
+（ファイル確認の具体的な手順が無い）。**
+**②修正版 3.1.8.10 の公開日を示しておらず、
+ベンダーの変更履歴との食い違いにも触れていない**〈齟齬2〉。
+</td></tr><tr><td>**Patchstack は自社の緩衝規則（RapidMitigate）を
+「最初の攻撃が届く前に稼働させていた」と記述している**（出典1）。
+**すなわち、修正版の適用を待たずに防御側の遮断を先行させる方式を採った。**
+</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>**本記録は効果を評価できない** ——
+**規則が防いだ件数も、顧客以外のサイトでの被害件数も公表されていない**
+（本記録の留保）。
+</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**サイト構築に使っている商用プラグインを資産として台帳に載せる**
+</div><div class=lw>**本件は無料プラグインではなく商用アドオンで起きた。**
+**商用は「購入した部品」として調達側の管理に入りやすく、
+情報システム部門の脆弱性管理の対象から漏れる**（本記録の評価）。
+**影響は未認証の遠隔コード実行であり、
+コーポレートサイト1本の侵害が自社ブランドの改ざん・顧客への配布経路になる**
+（出典1・2）。
+</div><div class=la><b>取るべき行動</b> **①自社と子会社・事業部が持つ WordPress サイトを棚卸しし、
+有効なプラグイン（商用・無料）の一覧を出す。**
+**②各サイトの運用責任者と、更新を実行する者（制作会社か自社か）を明記する。**
+**③契約に「重大な脆弱性公表時の更新を何時間以内に行うか」を書き込む**（本記録の推奨）。
+</div></li><li><div class=lp>**「パッチが出たら更新する」運用では間に合わないことを前提に、防御の層を1つ足す**
+</div><div class=lw>**本件は、データベース掲載と最初の悪用が同じ日（2026年10月7日）だった**
+（T3・T4。出典1・3）。
+**攻撃は63 IP からの自動化で、44 IP が同一ペイロードを数秒内に投げる形だった**
+——**人が判断して動く速度ではない**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①主要サイトでプラグインの自動更新を有効にする（検証環境を持つなら
+本番の自動更新と検証の併用を決める）。**
+**②WAF か managed WordPress の仮想パッチを導入し、
+更新までの時間を埋める。**
+**③「更新が遅れてもよいサイト」を明示的に決め、
+そのサイトは外部公開の必要性そのものを見直す**（本記録の推奨）。
+</div></li><li><div class=lp>**悪用の判定を CISA KEV だけに依存しない**
+</div><div class=lw>**本件は Patchstack のデータベースでは「悪用されている」と表示される一方、
+2026年10月8日版の CISA KEV には収載されていない**
+（本記録がカタログ原本で確認。齟齬3）。
+**WordPress プラグインは連邦機関の資産に入りにくく、
+KEV に載りにくい領域である**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①脆弱性の緊急度判定に使う情報源を複数書き出し、
+領域ごとにどれが有効かを決める（WordPress 領域は Patchstack・Wordfence 等）。**
+**②判定の記録に「誰の観測による悪用か」を残す欄を作る。**
+**③KEV に無いことを待機の理由として使わない旨を手順に明記する**（本記録の推奨）。
+</div></li><li><div class=lp>**ベンダーの変更履歴と脆弱性情報が食い違う前提で、更新の完了基準を決める**
+</div><div class=lw>**Patchstack は「3.1.8.10 で修正」とするが、
+ベンダーの公式変更履歴に 3.1.8.10 の項目は無く、
+Pro Forms のアップロードの修正は 4.0.1（2026年10月8日）に書かれている**
+（齟齬2。出典3・4）。
+**変更履歴だけを見るとメジャー更新（4.x）が必要に見え、
+判断が止まる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①更新の完了基準を「版番号が修正版以上であること」で定義し、
+記録に実際の版番号を残す。**
+**②食い違いがある場合は、プラグインのファイル（`readme.txt` 等）で
+導入済みの版を実測して確認する。**
+**③3.x 系を使い続ける方針なら、ベンダーに個別パッチの位置づけを問い合わせる**
+（本記録の推奨）。
+</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**Bricksforge を 3.1.8.10 以上（4.x 系なら 4.0.1 以上）へ上げる**
+</div><div class=lw>**影響版は 3.1.8.9 以下、修正版は 3.1.8.10**（出典3）。
+**4.x 系では 4.0.1 に Pro Forms のファイルアップロードの修正が記載されている**
+（出典4）。
+**ベンダーは「Pro Forms が有効なすべてのサイトが対象であり、
+フォームにアップロード欄が無くても影響を受ける」と明記している**（出典4）。
+</div><div class=la><b>取るべき行動</b> **①管理画面でプラグインの版を確認する。**
+**②3.x 系を使い続けるなら 3.1.8.10 以上、
+4.x 系へ移るなら 4.0.1 以上へ上げる。**
+**③「アップロード欄を使っていない」を除外理由にしない**（本記録の推奨）。
+</div></li><li><div class=lp>**「画像パス＋PHP 宛先」の組み合わせを、ログの検索条件として1回走らせる**
+</div><div class=lw>**Patchstack の観測では、捕捉した要求の約95%が
+サーバ側パスに `.gif`／`.png`、宛先 URL に PHP 関連の拡張子を
+組み合わせたものだった**（出典1）。
+**これは誤検知が少なく、かつ事後確認にも使える条件である**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①2026年10月7日以降のアクセスログから
+`/wp-json/bricksforge/v1/form_submit` と
+`admin-ajax.php?action=bricksforge_form_submit` への POST を抽出する。**
+**②要求本体を保存している場合は、`.gif`／`.png` と `.php` が同時に現れるものを探す。**
+**③該当があれば、次の項目の事後確認に進む**（本記録の推奨）。
+</div></li><li><div class=lp>**`wp-content/uploads` 配下と一時ディレクトリに `.php` が無いかを確認する**
+</div><div class=lw>**成立すると、一時ファイルの内容が攻撃者の指定した PHP のパスへ書き出される**
+（出典1）。
+**正常な運用でアップロード先に `.php` が置かれることはない**（本記録の整理）。
+**侵害後に何が設置されたかは公表されていないため、
+痕跡の確認は自サイトで行うほかない**（本記録の注記）。
+</div><div class=la><b>取るべき行動</b> **①`find wp-content/uploads -name &#x27;*.php&#x27;` 相当の確認を行う。**
+**②2026年10月7日以降に作成・更新された PHP ファイルを一覧する。**
+**③該当があれば、更新だけで済ませず、
+設置物の削除と資格情報（管理者・DB・API キー）の更新まで行う**（本記録の推奨）。
+</div></li><li><div class=lp>**アップロード先のディレクトリで PHP の実行を止める**
+</div><div class=lw>**本件の成立は「書き込める」と「実行される」の2段で、
+後者はサーバ側の設定で切れる**（本記録の整理）。
+**プラグインの不備は防げないが、
+書き出された PHP が実行されなければ影響は大きく下がる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①`wp-content/uploads` 配下で PHP の実行を禁止する
+（nginx なら location での `.php` 拒否、Apache なら該当ディレクトリの設定）。**
+**②設定後にサイトの機能（ギャラリー・フォームの添付）を1回通して確認する。**
+**③同じ設定をステージング環境にも入れ、構成管理に残す**（本記録の推奨）。
+</div></li><li><div class=lp>**未認証で nonce を発行するエンドポイントの有無を、自作・委託開発のプラグインで点検する**
+</div><div class=lw>**本件の第1手は `bricksforge_regenerate_nonce` が未認証で nonce を出していたこと**
+（出典1）。
+**nonce は「正規の画面から来た操作」を示すだけで認証ではないが、
+未認証で発行すると後続の手続きが外部から完結する**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①自社で作った／委託して作ったプラグイン・テーマの
+`wp_ajax_nopriv_` 系の登録を一覧し、何を許しているかを確認する。**
+**②REST ルートの `permission_callback` が
+`__return_true` になっている箇所を洗い出す。**
+**③ファイルの書き込み先を外部入力から決めている箇所を探し、
+許可された拡張子と配置先の白名簿に置き換える**（本記録の推奨）。
+</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> WordPress サイトで Bricksforge を使っており、版が 3.1.8.9 以下である</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Bricks ビルダー／Bricksforge の Pro Forms を有効にしている（フォームにアップロード欄が無い場合も含む）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> プラグインの自動更新を切っており、更新を人の判断で行っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> アップロード先ディレクトリで PHP の実行を禁止していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> WAF かアプリ層のログが無く、POST の本体を後から検証できない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> サイトの制作・運用を外部に委託しており、脆弱性公表時の更新の責任と期限が契約で定まっていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>継続更新（本記録の確認は2026年10月13日） Bricksforge</span> <a href="https://bricksforge.io/version-changelog/" target="_blank" rel="noreferrer noopener nofollow">Version Changelog</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（原文英語。**ベンダー側の唯一の説明にあたる資料。**
+**①3.1.8.10 の項目が存在しないこと
+②3.1.8.9（2026年8月28日）はメールデザイナの別件の修正であること
+③4.0.0 が2026年9月17日
+④4.0.1（2026年10月8日）に「Pro Forms のファイルアップロードのセキュリティ問題を修正。
+Pro Forms が有効な全サイトが対象で、アップロード欄が無くても影響を受ける」とあること、
+の出所。**
+**本件について CVE 番号の記載や独立した告知は無い**〈齟齬2〉。）
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年10月8日版（catalogVersion 2026.10.08・収載1,739件） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（JSON 原本）</a> <span class="b kind">統計・集計資料</span><span class=sm>（（原文英語。**本記録がカタログ原本を取得し、
+CVE-2026-85097 が未収載であることを確認した**（2026年10月8日版）。
+**Patchstack の「KEV」印との違いを示すために参照した**〈齟齬3〉。）
+）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月8日 Patchstack</span> <a href="https://patchstack.com/articles/critical-unauthenticated-arbitrary-file-upload-vulnerability-exploited-in-bricksforge-plugin/" target="_blank" rel="noreferrer noopener nofollow">Critical Unauthenticated Arbitrary File Upload Vulnerability Exploited In Bricksforge Plugin</a> <span class="b kind">調査レポート</span><span class=sm>（（原文英語。**本事案の技術的な一次資料。**
+**手口の3手（未認証 nonce → GIF/PHP 多重形式 → `url` を `.php` に指定）、
+該当コード（`includes/elements/pro-forms/actions/init.php`・`base.php`）、
+対象エンドポイント、最初の悪用の時刻（2026年10月7日 21時47分17秒 UTC）、
+63 IP・上位6 IP で約46%・2つの群・約95%のペイロードの形、
+帰属についての留保、RapidMitigate 規則の記述の出所。**
+**利害関係**——**同社は WordPress サイトの防御を事業としており、
+テレメトリは自社顧客に届いた試行である。**）
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月7日 Patchstack（脆弱性データベース）</span> <a href="https://patchstack.com/database/wordpress/plugin/bricksforge/vulnerability/wordpress-bricksforge-plugin-3-1-8-9-unauthenticated-arbitrary-file-upload-via-temporaryfileuploads-parameter-vulnerability" target="_blank" rel="noreferrer noopener nofollow">WordPress Bricksforge Plugin &lt;= 3.1.8.9 — Unauthenticated Arbitrary File Upload via temporaryFileUploads parameter</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（原文英語。**掲載日2026年10月7日、CVSS 10、影響版 3.1.8.9 以下、修正版 3.1.8.10、
+報告者 d.v4n_s3c、「Known to be exploited!（KEV）」の印の出所。**
+**この「KEV」印は同社の表示であり、CISA KEV とは別物である**〈齟齬3〉。
+**修正版の公開日は記載されていない。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月12日 13時14分 UTC SecurityWeek</span> <a href="https://www.securityweek.com/bricksforge-wordpress-plugin-vulnerability-exploited-in-the-wild/" target="_blank" rel="noreferrer noopener nofollow">Bricksforge WordPress Plugin Vulnerability Exploited in the Wild</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**利用サイト約6,000件、2つの群の記述、
+「悪用は10月7日から」の出所。**
+**CVSS を 9.8 と記載しており、Patchstack・The Hacker News の 10.0 と食い違う**〈齟齬1〉。）
+）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月12日 09時02分 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/10/attackers-exploit-cvss-100-bricksforge.html" target="_blank" rel="noreferrer noopener nofollow">Attackers Exploit CVSS 10.0 Bricksforge WordPress Flaw Enabling Unauthenticated RCE</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**CVSS 10.0 の表記と「実際に悪用されている」の出所。**
+**本記録の収集では本文の取得に失敗しており（`content_source: fetch_failed`）、
+参照できたのは冒頭部分のみである**（本記録の注記）。）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月13日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月12日収集分の2記事
+〈output/articles/20261012/0118_securityweek_bricksforge-wordpress-plugin-vulnerability-exploit.md、
+0149_the-hacker-news_attackers-exploit-cvss-100-bricksforge-wordpress-f.md〉を起点に、
+**Patchstack の解析記事・脆弱性データベース掲載・ベンダーの公式変更履歴・
+CISA KEV の JSON 原本を本記録が取得して裏を取った。**
+**その過程で ①CVSS の食い違い（10.0 と 9.8）
+②ベンダーの変更履歴に 3.1.8.10 の項目が無いこと
+③Patchstack の「KEV」印が CISA KEV とは別物であること、を発見し齟齬に記録した。**
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">WordPress</span><span class="b tag">Bricksforge</span><span class="b tag">CVE-2026-85097</span><span class="b tag">未認証RCE</span><span class="b tag">任意ファイルアップロード</span><span class="b tag">Patchstack</span><span class="b tag">即日悪用</span><span class="b tag">プラグイン</span><span class="b tag">仮想パッチ</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-13 09:01 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
