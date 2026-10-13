@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>AssetViewにSYSTEM権限昇格の脆弱性 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0484</span>AssetViewにSYSTEM権限昇格の脆弱性</h1>
+<header class="site-header">
+  <p class="subtitle">2026年10月13日、JPCERT/CC と IPA が JVN#38664315 を公表し、
+ハンモックの IT 資産管理製品 AssetView に **SYSTEM 権限を取得できる権限昇格の脆弱性**
+（CVE-2026-101020・CWE-732・CVSS 4.0 基本値 8.5）があると公開した。
+**成立の前提は「管理コンソールまたはクライアントモジュールが動作する Windows に
+ログインできること」**——つまり**端末を使える一般利用者が SYSTEM になれる**。
+回避策は無く、対処はパッチ適用か対策版へのアップデートのみ。
+**AssetView Cloud＋ の対策版（Ver 2600.201.11）は公表より15日前の9月28日に出ている**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月13日（JVN#38664315 の公表。ハンモックの脆弱性情報ページも同日公開）</span>
+  <span>最終更新: 2026年10月13日</span>
+</div>
+
+<div class="lead"><p><strong>「端末にログインできる人は、SYSTEM になれる」——これが本件の結論です。</strong></p>
+<p>2026年10月13日、JPCERT/CC と IPA は JVN#38664315 を公表し、株式会社ハンモックの IT 資産管理製品 <strong>AssetView</strong> に権限昇格の脆弱性があると公開しました。<strong>CVE-2026-101020</strong>、<strong>CWE-732（重要なリソースに対する不適切なアクセス権の割り当て）</strong>、CVSS 4.0 基本値 <strong>8.5</strong>（CVSS 3.0 では 7.8）です。</p>
+<p>JVN の記述は短く、そして実務上は重いものです。<strong>「当該製品の管理コンソールまたはクライアントモジュールが動作する Windows システムにログイン可能な攻撃者によって、SYSTEM 権限を取得される可能性があります」</strong>（出典2）。ハンモック側の説明では、<strong>SYSTEM 権限で動作するプログラムを一般ユーザー権限で置き換えられる</strong>状態であり、<strong>この脆弱性を緩和する回避策は無い</strong>とされています（出典1）。</p>
+<p><strong>AssetView は、管理対象の全端末にクライアントモジュールを入れて使う製品です</strong>（出典3）。したがって「攻撃者」として想定すべきは外部の侵入者だけではありません。<strong>貸与端末を使う従業員、共用端末を使う派遣社員や協力会社の担当者、あるいはフィッシングで1台の標準ユーザー権限を取った攻撃者</strong>が、そのまま SYSTEM へ上がれることを意味します。<strong>AssetView 自身が内部不正対策（PC 操作ログ・デバイス制御・Web フィルタリング）を担っている組織では、監視する側の仕組みが昇格の踏み台になります</strong>（本記録の評価）。</p>
+<p><strong>悪用の報告はありません</strong>（JVN とハンモックの公表にいずれも悪用の記述が無く、本記録が確認した範囲で PoC の公開も見つかっていません）。</p>
+<p><strong>ただし、対処には注意すべき点が2つあります。</strong> <strong>第一に、AssetView Cloud＋ の対策版 Ver 2600.201.11 は、公表の15日前である2026年9月28日にリリースされています</strong>（出典1）。クラウド側の更新が先に進んでいた形であり、<strong>クライアントの更新が終わっているかは利用組織が自分で確認する必要があります</strong>。<strong>第二に、オンプレミスの AssetView と AssetView CLOUD の資材は「保守契約ユーザー専用サイト」（要ログイン）にしか置かれていません</strong>（出典1）。<strong>保守契約が終了している利用者は EC 営業部への問い合わせが案内されており、パッチを自力で取得できません</strong>。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>9</span></div><ul><li><span class=ui>不適切な権限が付与されていた具体的なリソース（ファイル・ディレクトリ・サービス・レジストリ）</span><span class="b rsn">公表されていない</span><div class=sm>**JVN は CWE-732 と記すのみ、ハンモックは「SYSTEM 権限で動作するプログラムを
+一般ユーザー権限で置き換えられる」と記すのみである**（出典1・2）。
+**どのパスのどの実行体が書き込み可能だったかが分からないため、
+利用組織は自前で「直ったこと」を確認できない**（本記録の評価）。
+</div></li><li><span class=ui>悪用の有無（実際に悪用された事例があるか）</span><span class="b rsn">公表されていない</span><div class=sm>**JVN とハンモックの公表のいずれにも悪用への言及が無い。**
+**本記録は「悪用が無い」とも「ある」とも断定しない**——
+**公表に記述が無いことは、悪用が無いことの証明ではない**（本記録の留保）。
+</div></li><li><span class=ui>脆弱性が存在していた期間（どのバージョンから影響があったか）</span><span class="b rsn">公表されていない</span><div class=sm>**影響版は「Ver 13.2.7Bより前」等の上限だけが示され、下限（起点のバージョン）が無い**
+（出典1・2）。**既に昇格に使われていた可能性を過去にさかのぼって調べるには、
+いつから脆弱だったかが必要になる**（本記録の評価）。
+</div></li><li><span class=ui>報告日と、報告から修正版提供までの所要</span><span class="b rsn">公表されていない</span><div class=sm>**報告者と報告経路（早期警戒パートナーシップ）は公表されているが、報告日は示されていない**
+（出典1・2）。**Cloud＋ の対策版が9月28日であることから、
+少なくともそれ以前に修正作業が完了していたと読めるだけである**（本記録の整理）。
+</div></li><li><span class=ui>オンプレミス AssetView／AssetView CLOUD の対策版・パッチの提供開始日</span><span class="b rsn">公表されていない</span><div class=sm>**ハンモックは Cloud＋ についてのみ「9月28日（月）リリース」と日付を記し、
+オンプレミスと CLOUD については保守契約ユーザー専用サイトからの取得を案内するだけで
+提供開始日を書いていない**（出典1）。
+</div></li><li><span class=ui>影響を受けた導入組織の数と端末数</span><span class="b rsn">公表されていない</span><div class=sm>**公表は製品バージョンの範囲のみで、導入規模に触れていない。
+ハンモックの製品サイトにも導入社数の総数の記載は無い**（出典1・2・3）。
+</div></li><li><span class=ui>AssetView CLOUD の対処方法が JVN とベンダーページで異なる理由</span><span class="b rsn">公表されていない</span><div class=sm>**JVN は AssetView CLOUD について「開発者のサポートグループに問い合わせてください」と記すが、
+ハンモックのページは AssetView と AssetView CLOUD を併記して
+保守契約ユーザー専用サイトからの資材取得を案内している**（出典1・2。〈齟齬1〉）。
+**どちらが正しいかは本記録では判定できない。**
+</div></li><li><span class=ui>保守契約が終了している利用者への対処の提供条件</span><span class="b rsn">公表されていない</span><div class=sm>**ハンモックは保守契約終了ユーザーの窓口として EC 営業部を案内しているが、
+パッチが提供されるのか、保守契約の再締結や有償対応が前提なのかは書かれていない**（出典1）。
+**対処が有償・条件付きであれば、旧版が現場に残り続ける構造的な要因になる**（本記録の評価）。
+</div></li><li><span class=ui>昇格後の影響範囲（管理サーバ経由で他端末へ波及しうるか）</span><span class="b rsn">公表されていない</span><div class=sm>**JVN の想定影響は「当該 Windows システムの SYSTEM 権限の取得」までであり、
+CVSS も SC:N/SI:N/SA:N（後続システムへの影響なし）と評価している**（出典2）。
+**AssetView は管理サーバから全端末へアプリケーション配布やリモート操作を行う製品であり、
+管理コンソール側で SYSTEM を取られた場合に配布機能が悪用されうるかは
+公表されていない**（本記録の問い）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社ハンモック</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**AssetView／AssetView CLOUD／AssetView Cloud＋ の開発元。**
+**AssetView は IT 資産管理・情報漏洩対策を担う統合型の IT 運用管理ツールで、
+オンプレミスとクラウドの両形態を提供している**（出典3）。</p><p class=org-p><span class=org-l>影響</span>**2026年10月13日に自社サイトで脆弱性情報ページを公開し、
+対策済みパッチと対策版の提供、問い合わせ窓口を案内した**（出典1）。</p></div></div><div class=org><div class=org-h><span class=org-n>JPCERT コーディネーションセンター（JPCERT/CC）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**情報セキュリティ早期警戒パートナーシップに基づき、開発者との調整を担当した**（出典2）。</p></div></div><div class=org><div class=org-h><span class=org-n>独立行政法人情報処理推進機構（IPA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**早期警戒パートナーシップの届出受付機関。報告者からの届出を受け、
+JVN#38664315／JVNDB-2026-000143 として公表された**（出典2）。</p></div></div><div class=org><div class=org-h><span class=org-n>株式会社サイバーディフェンス研究所</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**同社の永岡 悟 氏が、情報セキュリティ早期警戒パートナーシップに基づき IPA に報告した**
+（出典1・2）。**ハンモックは自社の脆弱性情報ページで同氏への謝辞を記載している**（出典1）。</p></div></div><div class=org><div class=org-h><span class=org-n>（AssetView を導入している組織）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**AssetView の管理コンソール・クライアントモジュールを運用する利用組織。
+対策版より前のバージョンを使っている間、
+端末にログインできる者による SYSTEM 権限の取得が成立しうる**（出典2）。</p><p class=org-p><span class=org-l>影響</span>**影響を受けた組織数・端末数は公表されていない**〈未確定事項に記録〉。</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.5<span class=fu>点</span></div><div class=fa>2026年10月13日 時点</div><div class=fn>**ベクタは CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N**（出典2）。
+**AV:L（ローカル）・PR:L（低い権限が必要）・UI:N（利用者操作不要）であり、
+「端末を使える人がいれば成立する」性格が読み取れる。**
+**SC:N/SI:N/SA:N は後続システムへの影響を評価していないことを示すが、
+これは CVSS の評価範囲の話であり、昇格後の横展開が無いことを意味しない**（本記録の留保）。
+</div></div><div class=fig><div class=fh><span class=fl>CVSS v3.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7.8<span class=fu>点</span></div><div class=fa>2026年10月13日 時点</div><div class=fn>**ベクタは CVSS:3.0/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H**（出典2）。
+**CVSS 3.0 では 7.8（重要）、4.0 では 8.5（重要）であり、版によって値が異なる。**
+**社内の優先度判定を CVSS の数値だけで行うと、どちらの版を見たかで結論が変わりうる**
+（本記録の注意）。
+</div></div><div class=fig><div class=fh><span class=fl>影響を受ける製品ライン数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>製品</span></div><div class=fn>**AssetView（オンプレミス）・AssetView CLOUD・AssetView Cloud＋ の3つ**（出典1・2）。
+**AssetView CLOUD は 13.2 系と 13.3 系で対策版が別（13.2.7B／13.3.7）であり、
+確認すべき版番号は実質4系統になる**（本記録の整理）。
+</div></div><div class=fig><div class=fh><span class=fl>AssetView Cloud＋ の対策版リリースから JVN 公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>15<span class=fu>日</span></div><div class=fn>**ハンモックが記載した Cloud＋ の対策版リリース日（2026年9月28日）と
+JVN の公表日（2026年10月13日）の差として本記録が算出した値。**
+**オンプレミスの AssetView／AssetView CLOUD の対策版・パッチの提供日は
+公表されていないため、同じ計算はできない**〈未確定事項に記録〉。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない**（本記録が確認した範囲。T5）。
+**本記録が記録するのは、2つの公表から読み取れる成立経路の骨格だけである。**
+**段は privilege-escalation（SYSTEM 権限で動作するプログラムを一般ユーザー権限で
+置き換える）と impact（SYSTEM 権限での情報アクセス・設定改竄・製品の停止）の2つにとどめる** ——
+**どのリソースの権限が不適切だったかが公表されていないため、
+具体的な手順の段を書けない**〈未確定事項に記録〉。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 権限昇格</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**AssetView の管理コンソールまたはクライアントモジュールが動作する Windows に
+一般ユーザーとしてログインした者が、SYSTEM 権限で動作するプログラムを
+一般ユーザー権限で置き換える。** **原因は、そのプログラム（重要なリソース）に対する
+パーミッションの割り当てが不適切で、保護が不完全だったことである**（出典1）。
+**結果として SYSTEM 権限が取得される**（出典2）。
+</div><div class=fn>根拠: ハンモックの脆弱性情報ページの原因・概要の記述（出典1）、JVN の想定される影響（出典2）</div></li><li><div class=stg><span class="b stage">2. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**SYSTEM 権限で、他のユーザーやシステム領域の機密情報へアクセスできる。
+システムファイル・設定・サービス・セキュリティ設定を改竄できる。
+製品が永続的に停止し復旧不能になるおそれがあり、システムへの影響も考えられる**
+（以上はハンモックが挙げる想定影響。出典1）。
+**CVSS の VC:H/VI:H/VA:H（3.0 では C:H/I:H/A:H）がこれに対応する**（出典2）。
+</div><div class=fn>根拠: ハンモックの「想定される影響」3項目（出典1）、CVSS のベクタ（出典2）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**ハンモックと JVN は、脆弱性の種類（CWE-732）・原因の性質（SYSTEM 権限プログラムの
+保護不備）・成立の前提（当該 Windows へのログイン）・CVSS とベクタ・影響版・
+対処方法・報告者を公表した一方、不適切な権限が付与されていた具体的なリソースと
+再現手順は公表していない**（出典1・2）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **防御側は、適用前の暫定措置（当該リソースの ACL を自前で締める）を取れず、
+適用後に権限が是正されたことを自前で確認することもできない。**
+**回避策が無いと明記されているため、パッチ適用までの期間は
+「使い続けるか、製品を止めるか」の二択になる**（本記録の整理）。
+</div></li></ul></div>
+<section id="s6"><h2>「端末にログインできる人が SYSTEM になれる」——前提の低さが本件の本質である<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>2026年10月13日、JPCERT/CC と IPA は JVN#38664315 を公表した。対象は株式会社ハンモックのIT 資産管理製品 AssetView で、脆弱性の分類は CWE-732「重要なリソースに対する不適切なアクセス権の割り当て」、CVE 番号は CVE-2026-101020、JVNDB-2026-000143 である。</p>
+<p>JVN が記す想定影響は次の一文である。「当該製品の管理コンソールまたはクライアントモジュールが動作する Windows システムにログイン可能な攻撃者によって、SYSTEM 権限を取得される可能性があります」。</p>
+<p>CVSS は 4.0 で基本値 8.5（AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N）、3.0 で 7.8（AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H）である。AV:L（ローカル）・PR:L（低い権限で足りる）・UI:N（利用者の操作を必要としない）という組み合わせは、「遠隔からは攻撃できないが、端末を触れる人には何の障壁も無い」ことを意味する。</p>
+<p>本記録の評価として、この前提の低さが本件の本質である。リモートコード実行の脆弱性は「インターネットに面しているか」で緊急度を切り分けられるが、ローカルの権限昇格は切り分けの軸が「誰が端末を使えるか」になる。貸与 PC を使う従業員、共用端末を使う派遣社員や協力会社の担当者、1台の標準ユーザー権限を取った攻撃者——いずれも成立条件を満たす。</p></section>
+<section id="s7"><h2>原因は「SYSTEM 権限で動くプログラムを一般ユーザーが置き換えられた」こと——対象のリソースは非公表<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>ハンモックの脆弱性情報ページ（2026年10月13日公開）は、原因を「重要なリソースに対する不適切なパーミッションの割り当て」とし、SYSTEM 権限で動作するプログラムの保護が不完全であったため、一般ユーザー権限でそのプログラムを置き換えられる状態だったと説明している。</p>
+<p>想定される影響としてハンモックが挙げるのは3点である。機密性（他のユーザーやシステム領域の機密情報へのアクセス）、完全性（システムファイル・設定・サービス・セキュリティ設定の改竄）、可用性（製品が永続的に停止し復旧不能になるおそれ、およびシステムへの影響）。JVN の「SYSTEM 権限を取得される」という表現より踏み込んで、昇格後に何ができるかを示している。</p>
+<p>一方で、どのファイル・ディレクトリ・サービス・レジストリに不適切な権限が付いていたのかはどちらの資料にも書かれていない。本記録の評価として、これは利用組織にとって実務上の制約になる。対象パスが分かれば、パッチ適用前の暫定措置として当該パスの ACL を自前で締めることや、適用後に権限が是正されたことを確認することができる。公表されていないため、利用組織は「ベンダーの言うとおりに上げて、直ったと信じる」以外の検証手段を持たない。</p>
+<p>なお、ハンモックは「この脆弱性を緩和する回避策はありません」と明記している。パッチ適用かバージョンアップのいずれかが必須である。</p></section>
+<section id="s8"><h2>影響版は4系統——Cloud＋ の対策版は公表の15日前にリリースされている<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p>影響を受けるバージョンは次のとおりである（出典1・2で一致）。</p>
+<ul>
+<li>AssetView: Ver 13.2.7B より前</li>
+<li>AssetView CLOUD: Ver 13.2.7B より前（13.2 系）、Ver 13.3.7 より前（13.3 系）</li>
+<li>AssetView Cloud＋: Ver 2600.201.11 より前</li>
+</ul>
+<p>製品ラインは3つだが、AssetView CLOUD が 13.2 系と 13.3 系で対策版を別に持つため、確認すべき版番号は実質4系統になる。ハンモックは、バージョンが分からない場合は管理コンソールを起動してウィンドウタイトルのバージョン情報を見るよう案内している。</p>
+<p>本記録が注目したのは、AssetView Cloud＋ の対策版 Ver 2600.201.11 のリリース日である。ハンモックは対処方法欄に「9月28日（月）リリースのVer 2600.201.11へクライアントを更新」と記しており、2026年9月28日は実際に月曜日である。JVN の公表（10月13日）より15日前であり、クラウド側では公表に先行して対策版の配布が始まっていたことになる。</p>
+<p>本記録の評価として、これは利用組織に確認作業を求める事実である。Cloud＋ の場合、更新の対象は「クライアント」であり、サーバ側が更新済みでも端末側のクライアントが 2600.201.11 になっているかは別問題である。9月28日から10月13日までの間にクライアントの更新が自動で進んでいた組織もあれば、更新が止まっていて気づいていない組織もありうる。公表日を起点に「これから対応する」と考えるのではなく、まず現行版を数えるのが先になる。</p></section>
+<section id="s9"><h2>資材は保守契約ユーザー専用サイトにしか無く、契約終了ユーザーは自力で取得できない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1]</span></h2><p>ハンモックが案内する対処方法は製品ごとに異なる。</p>
+<p>AssetView および AssetView CLOUD については、保守契約ユーザー専用サイト（要ログイン）の記事「AssetView 権限昇格の脆弱性対応（JVN#38664315）」からプログラム資材とマニュアルをダウンロードし、マニュアルに従って対策済みパッチを適用するか対策済みバージョンへアップデートする。ページに個別のパッチ番号や名称の記載は無い。</p>
+<p>AssetView Cloud＋ については、9月28日リリースの Ver 2600.201.11 へクライアントを更新する。</p>
+<p>問い合わせ窓口は契約状態で分かれている。保守契約ユーザーは AssetView サポートグループ（0120-994577、平日9:00〜12:00・13:00〜17:00）、保守契約が終了しているユーザーはEC 営業部（0120-922786、同時間帯）である。</p>
+<p>本記録の評価として、この構造には実務上の穴がある。回避策が無い脆弱性で、対処資材がログインを要する会員サイトにしか置かれていないため、保守契約が切れた利用者はパッチを自力で取得できない。その場合に何が提供されるのか（無償のパッチ提供か、保守契約の再締結か、有償対応か）は公表されていない。IT 資産管理製品は一度入れると長く使われ、契約が切れたまま稼働し続ける端末が残りやすい。対処の入手条件が公表されないことは、旧版が現場に残り続ける構造的な要因になる。</p></section>
+<section id="s10"><h2>内部不正対策の製品が内部不正の踏み台になる——AssetView 固有の反転が起きる<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>本記録の整理として、本件の重要性は CVSS の数値よりも「製品の役割」にある。</p>
+<p>AssetView の製品サイトが挙げる機能は、IT 資産管理、アプリケーション配布、リモートコンソール、モバイルデバイス管理、PC 操作ログ、メール監視・分析、デバイス制御、不正 PC 遮断、画面操作ログ、Web フィルタリング、ファイル暗号化、個人情報検索、エンドポイントセキュリティである。内部不正対策とデータ流出対策が中核に置かれている。</p>
+<p>ここに権限昇格の脆弱性があると、2つの反転が起きる。</p>
+<p>第一に、監視の無効化である。SYSTEM 権限を取れば、操作ログの収集、デバイス制御、Webフィルタリングといった仕組みそのものを止めたり設定を変えたりできる。ハンモック自身が完全性への影響として「セキュリティ設定が改竄されるおそれ」を挙げている。内部不正を見張るために入れた製品が、内部不正を実行する前に監視を外す手段を提供する形になる。</p>
+<p>第二に、最小権限の前提の崩壊である。多くの組織は「利用者に管理者権限を与えない」ことを統制の基礎に置いている。本脆弱性は、標準ユーザーのまま SYSTEM に上がれる経路を全端末に配ってしまう。EDR の除外設定、資産管理エージェントの常駐、管理者権限の剥奪——これらの組み合わせで成り立っていた前提が、エージェント1本の権限設定で崩れる。</p>
+<p>なお、AssetView には先行例がある。本記録が本文を確認した直近の例は2025年3月25日のJVN26321838 で、重要な機能に対する認証の欠如（CVE-2025-25060）と開発者への送信データからの機微な情報の取得（CVE-2025-27244）の2件が公表されている。報告者は別の組織（ベリサーブ）であった。製品が継続的に調査対象になっていること自体は健全だが、利用組織の側から見れば「この製品は年単位で脆弱性公表がある」という前提で更新体制を組む必要があるという意味になる（本記録の評価）。</p>
+<p>以上は本記録の評価であり、ハンモックや JVN の説明ではない。</p></section>
+<section id="s11"><h2>リソースの特定・悪用の有無・存在期間・契約終了ユーザーの扱いは公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p>本記録が2026年10月13日に出典1・2の本文を取得して確認した範囲では、次の点は公表されていない。</p>
+<ul>
+<li>不適切な権限が付与されていた具体的なリソース（ファイル・ディレクトリ・サービス・レジストリ）</li>
+<li>悪用の有無（JVN・ベンダーのいずれも言及していない）</li>
+<li>脆弱性が存在していた期間（影響版の下限が示されていない）</li>
+<li>報告日と、報告から修正版提供までの所要</li>
+<li>オンプレミス AssetView／AssetView CLOUD の対策版・パッチの提供開始日</li>
+<li>影響を受けた導入組織の数と端末数</li>
+<li>AssetView CLOUD の対処方法が JVN とベンダーページで異なる理由（〈齟齬1〉）</li>
+<li>保守契約が終了している利用者への対処の提供条件</li>
+<li>昇格後の影響範囲（管理コンソール側での昇格が配布機能を通じて他端末へ波及しうるか）</li>
+</ul>
+<p>このうち実務への影響が大きいのは「対象リソースの非公表」と「契約終了ユーザーの扱い」の2点である。前者は適用後の検証手段を利用組織から奪い、後者は旧版が残る動機を作る（本記録の評価）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>product</th><td>AssetView／AssetView CLOUD／AssetView Cloud＋（IT 資産管理・情報漏洩対策の統合型 IT 運用管理ツール）</td></tr><tr><th>ベンダー</th><td>株式会社ハンモック</td></tr><tr><th>finding_name</th><td>AssetViewにおける重要なリソースに対する不適切なアクセス権の割り当ての脆弱性（JVN の表記）／AssetViewにおける権限昇格の脆弱性（ベンダーの表記）</td></tr><tr><th>affected_versions</th><td>**AssetView: Ver 13.2.7B より前のバージョン。**
+**AssetView CLOUD: Ver 13.2.7B より前（13.2 系）、Ver 13.3.7 より前（13.3 系）。**
+**AssetView Cloud＋: Ver 2600.201.11 より前のバージョン**（出典1・2で一致）。
+**影響版の下限（どのバージョンから脆弱だったか）は公表されていない**
+〈未確定事項に記録〉。
+**バージョンの確認方法**——**管理コンソールを起動し、
+ウィンドウタイトルに表示されるバージョン情報を見る**（出典1）。
+</td></tr><tr><th>CVE番号</th><td><ul class=cl><li>CVE-2026-101020</li></ul><span class="b rsn">stated</span><div class=fn>**CVE-2026-101020。JVNDB 番号は JVNDB-2026-000143**（出典2）。
+**ベンダーのページ（出典1）には CVE 番号の記載が無い**〈齟齬3〉。
+</div></td></tr><tr><th>cvss</th><td>8.5（CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N）／7.8（CVSS:3.0/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H）。いずれも JVN による評価<span class="b rsn">stated</span></td></tr><tr><th>exploit_status</th><td>**悪用は観測・報告されていない**（本記録が確認した範囲）。
+**JVN とハンモックの公表のいずれにも悪用への言及が無く、
+PoC の公開も本記録の確認範囲では見つかっていない**〈齟齬2〉。
+**ローカル権限昇格であり、遠隔からの直接攻撃は成立しない。
+ただし1台の標準ユーザー権限を取得した後の段としては障壁が無い**（本記録の評価）。
+</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月13日</td></tr><tr><th>patch</th><td>**AssetView／AssetView CLOUD**——**保守契約ユーザー専用サイト（要ログイン）の記事
+「AssetView 権限昇格の脆弱性対応（JVN#38664315）」からプログラム資材とマニュアルを
+ダウンロードし、マニュアルに従って対策済みパッチを適用するか対策済みバージョンへ
+アップデートする。個別のパッチ番号・名称の記載は無い**（出典1）。
+**AssetView Cloud＋**——**2026年9月28日（月）リリースの Ver 2600.201.11 へ
+クライアントを更新する**（出典1）。
+**JVN 側の記載は、AssetView は最新版へのアップデートまたはパッチ適用、
+AssetView CLOUD は開発者のサポートグループへの問い合わせ、
+AssetView Cloud＋ は最新版へのアップデートである**（出典2。〈齟齬1〉）。
+</td></tr><tr><th>vendor_response</th><td>**開発者の公表は JVN と同日（2026年10月13日）で、情報は一定量揃っている**（本記録の評価）。
+**公表したもの**——**①原因の性質（SYSTEM 権限で動作するプログラムを一般ユーザー権限で
+置き換えられる・重要なリソースに対する不適切なパーミッションの割り当て）
+②機密性・完全性・可用性それぞれへの想定影響
+③影響版とバージョン確認方法 ④製品別の対処方法 ⑤回避策が無いこと
+⑥報告者への謝辞 ⑦契約状態別の問い合わせ窓口**（出典1）。
+**公表していないもの**——**①不適切な権限が付与されていたリソースの特定
+②CVE 番号 ③報告日 ④オンプレミス版の対策版提供日
+⑤保守契約終了ユーザーへの提供条件**〈未確定事項に記録〉。
+</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **対策版（AssetView 13.2.7B／AssetView CLOUD 13.2.7B・13.3.7／
+AssetView Cloud＋ 2600.201.11）以上へ上げる、またはパッチを適用する**
+（唯一の根本対処）
+　<b>状況:</b> ベンダーが提供（Cloud＋ は2026年9月28日リリース。オンプレミス版の提供日は非公表）　<b>副作用:</b> **AssetView／AssetView CLOUD の資材は保守契約ユーザー専用サイトにしか無く、
+契約が終了している利用者は自力で取得できない**（出典1）。
+**全端末に入るクライアントモジュールの更新であるため、
+台数が多い組織では配布の計画と失敗端末の追跡が必要になる**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **（回避策は提供されていない）** **ハンモックは
+「この脆弱性を緩和する回避策はありません」と明記している**
+　<b>状況:</b> ベンダーが明記（回避策なし）　<b>副作用:</b> **パッチ適用までの期間、暫定的にリスクを下げる公式な手段が無い。**
+**利用組織は「使い続ける」か「製品を止める」の二択になり、
+製品を止めれば資産管理・操作ログ・デバイス制御の機能も同時に失う**（本記録の整理）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **Cloud＋ 利用組織は、クライアントの版の分布を取り
+2600.201.11 未満の端末を抽出する**
+　<b>状況:</b> 本記録の推奨（ベンダーの指示は「クライアントを更新する」まで）　<b>副作用:</b> **版の分布を取る仕組みが無い組織では、集計そのものに工数がかかる。**
+**また更新が止まっている端末の原因（長期オフライン・通信遮断・更新失敗）の
+切り分けが別作業として発生する**（本記録の評価）。
+　<b>source:</b> 1</div><div class=sub><b>数え方:</b> **AssetView のインストール先配下の実行体を
+ファイル完全性監視・EDR の対象に入れる（除外設定の見直し）**
+　<b>状況:</b> 本記録の推奨　<b>副作用:</b> **AssetView は自ら更新プログラムを配布・適用する製品であり、
+正規の更新でも実行体が置き換わる。除外を外すと誤検知が増える。**
+**正規の更新プロセスを許可リストに入れる作業が前提になる**（本記録の評価）。
+　<b>source:</b> 1</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">公表されていない（報告日）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**株式会社サイバーディフェンス研究所の永岡 悟 氏が、情報セキュリティ早期警戒
+パートナーシップに基づき IPA へ本脆弱性を報告した。報告日は公表されていない**（出典1・2）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月28日（月）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**AssetView Cloud＋ の対策版 Ver 2600.201.11 がリリースされた**
+（ハンモックの対処方法欄に「9月28日（月）リリースのVer 2600.201.11」と記載。出典1）。
+**公表（10月13日）より15日前である。**
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">公表</span></td><td>**JPCERT/CC と IPA が JVN#38664315「AssetViewにおける重要なリソースに対する
+不適切なアクセス権の割り当ての脆弱性」を公表（CVE-2026-101020・JVNDB-2026-000143）。
+公開日・最終更新日はいずれも2026年10月13日**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">公表</span></td><td>**ハンモックが自社サイトに脆弱性情報ページ「AssetViewにおける権限昇格の脆弱性」を公開。
+更新履歴の記載は「2026.10.13 脆弱性情報ページを公開」の1行のみ**（出典1）。
+**対処方法として、保守契約ユーザー専用サイト（要ログイン）の記事
+「AssetView 権限昇格の脆弱性対応（JVN#38664315）」からの資材取得を案内している。**
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が JVN#38664315 とハンモックの脆弱性情報ページの本文を取得して確認。
+いずれにも悪用（in the wild）への言及は無く、PoC の公開も確認できなかった**（T5 は観測）。
+</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**JVN（出典2）は AssetView CLOUD について
+「開発者のサポートグループに問い合わせてください」と記している。**
+**一方ハンモックのページ（出典1）は「AssetView／AssetView CLOUD」を併記し、
+保守契約ユーザー専用サイトの記事から資材とマニュアルをダウンロードして
+パッチ適用または対策版へのアップデートを行うよう案内している。**
+**本記録の扱い**——**どちらが正しいかは判定できない。
+利用組織は開発者側の案内（出典1）を先に読み、
+専用サイトに資材が無い場合はサポートグループに問い合わせるのが実務上安全である**
+（本記録の整理）。
+**食い違いの理由は公表されていない。**
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**出典1・2 のいずれにも悪用（in the wild）への記述が無い。**
+**本記録は「悪用が無い」とも「ある」とも断定しない。**
+**確認できたのは、本記録が2026年10月13日に両資料の本文を取得した時点で
+悪用への言及と PoC の公開が見つからなかったことだけである**（T5）。
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**出典1 には JVN 番号（JVN#38664315）の記載はあるが、
+CVE-2026-101020 の記載が無い**（本記録が本文を確認）。
+**CVE 番号で脆弱性管理をしている組織は、
+ベンダーページだけを見ると自社の管理台帳と突き合わせられない**（本記録の注意）。
+**CVE と JVNDB 番号（JVNDB-2026-000143）は出典2 にある。**
+</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典1 は Cloud＋ の対策版を「9月28日（月）リリースのVer 2600.201.11」と
+日付のみで記載しており、年の記載が無い。**
+**本記録は、2026年9月28日が実際に月曜日であること、および
+公表（2026年10月13日）の直前の9月28日であることから2026年と判断した**（本記録の推定）。
+**日数差（15日）は本記録が算出した値であり、ベンダーの公表値ではない。**
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>端末にログインできる一般利用者が、SYSTEM 権限で動作するプログラムを
+一般ユーザー権限で置き換える → SYSTEM 権限を取得 →
+機密情報へのアクセス・セキュリティ設定の改竄・製品の停止。
+対策版（13.2.7B／13.3.7／2600.201.11）以上では成立しない
+</div><div class=svgwrap><svg viewBox="0 0 998 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,67.0 832,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C499.0,111.0 499.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,156.0 C295.0,156.0 295.0,111.0 16,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">当該 Windows に</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログイン可能な一般利用者</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（実際の攻撃は未観測）</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">JVN の記述は「ログイ</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">ン可能な攻撃者」。CVS</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SYSTEM 権限で動作</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">するプログラム（パーミッ</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ションの割り当てが不適…</text><text x="295.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">対象のファイル・サービス</text><text x="295.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">・レジストリは公表されて</text><rect x="424" y="22.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="44.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SYSTEM 権限の取得</text><text x="499.0" y="58.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（CVE-2026-10</text><text x="499.0" y="72.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1020・CVSS 4…</text><text x="499.0" y="85.0" text-anchor="middle" fill="#f48fb1" font-size="10">JVN の想定される影響</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AssetView の管</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理コンソール／クライアン</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トモジュールが動作する…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">クライアントモジュールは</text><text x="703.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">管理対象の全端末に入る（</text><rect x="832" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PC 操作ログ・デバイス</text><text x="907.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">制御・Web フィルタリ</text><text x="907.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ング等のセキュリティ設定</text><text x="907.0" y="86.0" text-anchor="middle" fill="#f48fb1" font-size="10">「セキュリティ設定が改竄</text><text x="907.0" y="98.0" text-anchor="middle" fill="#f48fb1" font-size="10">されるおそれ」（出典1）</text><rect x="832" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">他のユーザー・システム領</text><text x="907.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">域の機密情報</text><text x="907.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">ハンモックが挙げる機密性</text><text x="907.0" y="186.0" text-anchor="middle" fill="#ffcc80" font-size="10">への影響（出典1）</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策版（AssetVie</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">w 13.2.7B／CL</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OUD 13.3.7／…</text><text x="703.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">Cloud＋ の対策版は</text><text x="703.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年9月28日リリ</text><rect x="424" y="112.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="499.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JPCERT/CC・IP</text><text x="499.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">A（JVN#386643</text><text x="499.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">15・2026年10月…</text><text x="499.0" y="175.0" text-anchor="middle" fill="#b0bec5" font-size="10">早期警戒パートナーシップ</text><text x="499.0" y="187.0" text-anchor="middle" fill="#b0bec5" font-size="10">に基づく調整。報告者はサ</text></svg></div><div class=fn>ハンモックの脆弱性情報ページ（2026年10月13日）と JVN#38664315（同日）にもとづく
+（本記録が2026年10月13日に両資料の本文を取得して確認）。
+**不適切な権限が付与されていた具体的なリソースは公表されていないため、
+置き換え対象（破線）は特定できていない。**
+**実際の攻撃は観測されていない。**
+**昇格後に管理サーバの配布機能を通じて他端末へ波及しうるかは公表されていない
+（CVSS は SC:N/SI:N/SA:N と評価している）。**
+</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>**JVN もハンモックも検知の可否について述べていない。**
+**本記録の整理**——**検知を期待できるのは3か所である。**
+**①AssetView のインストール先ディレクトリ配下の実行体に対する、
+更新プロセス以外からの書き込み（ファイル完全性監視の対象に入れる）。**
+**②SYSTEM として起動した子プロセスのうち、製品の正規の処理系列に属さないもの。**
+**③サービスやスケジュールタスクの構成変更。**
+**いずれも本脆弱性固有ではなく、ローカル権限昇格の一般的な検知点である。**
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（悪用事例が無いため）。
+**本記録の整理**——**AssetView の収集するログを AssetView の外側
+（SIEM・ログ基盤）へ即時に転送しているかが分かれ目になる。**
+**端末内に留めている構成では、昇格した者がログを消せる。**
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**ハンモックと JVN は、脆弱性の種類（CWE-732）・原因の性質（SYSTEM 権限プログラムの
+保護不備）・成立の前提（当該 Windows へのログイン）・CVSS とベクタ・影響版・
+対処方法・報告者を公表した一方、不適切な権限が付与されていた具体的なリソースと
+再現手順は公表していない**（出典1・2）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の判断である。**
+**機能した点**——**①開発者の公表と JVN の公表が同日に揃い、影響版・対処・CVSS が
+一度に読める状態になった。** **②ハンモックが「回避策は無い」と明記したため、
+利用組織が無駄な暫定策の検討に時間を使わずに済む。**
+**③原因の説明（SYSTEM 権限プログラムを一般ユーザー権限で置き換えられる）が
+JVN の CWE 分類より具体的で、影響の読み替えができる。**
+**不十分な点**——**①対策資材が保守契約ユーザー専用サイトに限られ、
+契約終了ユーザーへの提供条件が書かれていない。**
+**②Cloud＋ の対策版が9月28日に出ていたことが公表日まで外から見えず、
+クライアント更新の確認が公表後になる組織が出る。**
+**③AssetView CLOUD の対処方法が JVN とベンダーページで食い違っている**〈齟齬1〉。
+</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「管理・監視のために全端末に入れている製品」を、最も優先度の高いパッチ対象に分類する**
+</div><div class=lw>**AssetView のクライアントモジュールは管理対象の全端末に入る**（出典3）。
+**そこに SYSTEM 権限昇格があると、影響範囲は「製品1つ」ではなく「全端末」になる**
+（本記録の評価）。
+**さらに本製品は PC 操作ログ・デバイス制御・Web フィルタリングを担うため、
+昇格した者が監視機能そのものを改竄しうる**
+（ハンモックは「セキュリティ設定が改竄されるおそれ」と記載。出典1）。
+</div><div class=la><b>取るべき行動</b> **①資産台帳で「全端末に常駐するエージェント」を列挙する
+（資産管理・EDR・バックアップ・リモート操作・暗号化）。**
+**②それらに本番サーバと同じかそれ以上のパッチ適用目標時間を設定する。**
+**③各エージェントのベンダーの脆弱性情報ページと JVN の該当製品を
+購読対象に入れ、担当者を名前で決める**（本記録の推奨）。
+</div></li><li><div class=lp>**保守契約の期限切れを「コストの話」ではなく「セキュリティの話」として管理する**
+</div><div class=lw>**本件の対策資材は保守契約ユーザー専用サイト（要ログイン）にしか置かれていない。
+保守契約が終了しているユーザーには EC 営業部の窓口が案内されるだけで、
+パッチ提供の条件は書かれていない**（出典1）。
+**回避策が無いと明記されているため、資材を取得できなければ対処の手段が無い**
+（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①稼働中の製品について保守契約の有効期限を一覧化し、
+期限切れのものに「脆弱性が出たら対処できない」という印を付ける。**
+**②その状態を許容するかを経営の判断として記録する（黙って放置しない）。**
+**③期限切れ製品は撤去か契約更新のどちらかに期限を切る**（本記録の推奨）。
+</div></li><li><div class=lp>**CVSS の数値ではなく「成立条件が自組織に当てはまるか」で緊急度を決める運用に変える**
+</div><div class=lw>**本件の CVSS は 4.0 で 8.5、3.0 で 7.8 と版によって異なる**（出典2）。
+**また AV:L（ローカル）という属性は、
+「遠隔ではないから後回し」という判断を招きやすい**（本記録の評価）。
+**しかし成立条件は「端末にログインできること」であり、
+共用端末・貸与端末・協力会社端末がある組織では条件が常に満たされている。**
+</div><div class=la><b>取るべき行動</b> **①脆弱性の優先度判定の基準に「成立条件が自組織の構成で満たされるか」の欄を加える。**
+**②ローカル権限昇格を「低」に固定している運用があれば、
+標準ユーザー運用を前提にしている組織では「高」に読み替える規則を書く。**
+**③CVSS を使う場合は版（3.0 か 4.0 か）を記録に残す**（本記録の推奨）。
+</div></li><li><div class=lp>**同一製品の脆弱性公表が繰り返されているかを、製品選定と更新体制の判断材料にする**
+</div><div class=lw>**AssetView には先行例がある。本記録が本文を確認した直近の例は
+2025年3月25日公表の JVN26321838（CVE-2025-25060・CVE-2025-27244）である**（出典4）。
+**報告者は別組織であり、製品が継続的に調査対象になっていることを示す**
+（本記録の整理。製品の優劣の評価ではない）。
+</div><div class=la><b>取るべき行動</b> **①主要な常駐エージェントについて、過去3年の JVN／CVE の公表件数を数える。**
+**②件数が多い製品には、より短いパッチ適用目標時間と、
+更新の自動化（または更新状況の可視化）を割り当てる**（本記録の推奨）。
+</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**AssetView の現行バージョンを全端末で数え、対策版（13.2.7B／13.3.7／2600.201.11）以上へ上げる**
+</div><div class=lw>**影響版は AssetView が Ver 13.2.7B より前、AssetView CLOUD が
+Ver 13.2.7B より前（13.2 系）と Ver 13.3.7 より前（13.3 系）、
+AssetView Cloud＋ が Ver 2600.201.11 より前である**（出典1・2）。
+**回避策は無く、パッチ適用か対策版へのアップデートが必須である**（出典1）。
+</div><div class=la><b>取るべき行動</b> **①管理コンソールを起動し、ウィンドウタイトルのバージョン情報で現行版を確認する
+（ハンモックの案内する確認方法）。**
+**②AssetView／AssetView CLOUD は保守契約ユーザー専用サイトの記事
+「AssetView 権限昇格の脆弱性対応（JVN#38664315）」から資材とマニュアルを取得する。**
+**③Cloud＋ は9月28日リリースの Ver 2600.201.11 へクライアントを更新する——
+サーバ側ではなくクライアント側の版を見る。**
+**④更新できない端末の台数と理由を一覧にして残す**（本記録の推奨）。
+</div></li><li><div class=lp>**Cloud＋ 利用組織は「9月28日以降にクライアント更新が通っていたか」を遡って確認する**
+</div><div class=lw>**Cloud＋ の対策版は JVN 公表の15日前（2026年9月28日）にリリースされている**（出典1）。
+**公表日を起点に作業を始めると、
+「もう更新されている端末」と「更新が止まっていた端末」を取り違える**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①クライアントの版の分布を取り、2600.201.11 未満の端末を抽出する。**
+**②更新が止まっている端末について原因を切り分ける
+（長期オフライン・通信経路の遮断・更新処理の失敗）。**
+**③更新の失敗が検知されずに放置される構成なら、
+版の分布を定期的に取る仕組みを作る**（本記録の推奨）。
+</div></li><li><div class=lp>**AssetView のインストール先配下の実行体への書き込みを、ファイル完全性監視の対象に入れる**
+</div><div class=lw>**攻撃の成立は「SYSTEM 権限で動作するプログラムを一般ユーザー権限で置き換える」ことである**
+（出典1）。
+**置き換え対象のパスは公表されていないが、
+製品のインストール先配下の実行体という範囲は分かる**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①AssetView のインストール先ディレクトリを EDR／ファイル完全性監視の対象に加える
+（資産管理エージェントは除外設定に入っていることが多いので確認する）。**
+**②製品の正規の更新プロセス以外からの書き込みを検知対象にする。**
+**③SYSTEM として起動した子プロセスのうち、
+製品の正規の処理系列に属さないものを記録に回す**（本記録の推奨。脆弱性固有の対策ではない）。
+</div></li><li><div class=lp>**AssetView が収集する操作ログを、端末内に留めず外部のログ基盤へ転送する**
+</div><div class=lw>**SYSTEM 権限を取得すると、セキュリティ設定の改竄が可能になる**
+（ハンモックの想定影響。出典1）。
+**操作ログ・デバイス制御の設定を変えられるため、
+記録が端末内にしか無い構成では昇格後の行為が消される**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①AssetView のログが最終的にどこに保存されるかを図に書き、
+端末内で完結している経路があるか確認する。**
+**②SIEM・ログ基盤への転送を即時に行う構成にする。**
+**③転送が止まったこと自体を警告の対象にする**（本記録の推奨）。
+</div></li><li><div class=lp>**保守契約が切れている AssetView の稼働台数を数え、撤去か契約更新の判断に上げる**
+</div><div class=lw>**対策資材は保守契約ユーザー専用サイトにしか置かれていない**（出典1）。
+**契約が切れている端末は、技術的にはパッチを当てられる状態でも
+資材を取得できない**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **①契約状態と稼働台数を突き合わせ、契約外で動いている台数を出す。**
+**②EC 営業部（0120-922786）に提供条件を確認し、回答を記録に残す。**
+**③提供されない場合は撤去の計画を立てる**（本記録の推奨）。
+</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AssetView／AssetView CLOUD／AssetView Cloud＋ のいずれかを運用しており、版が対策版（13.2.7B／13.3.7／2600.201.11）より前である</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 管理対象の端末にクライアントモジュールを配布しており、その台数が業務端末の全台に近い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 利用者に管理者権限を与えず、標準ユーザー権限での運用を統制の前提にしている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 共用端末・貸与端末があり、派遣社員・協力会社の担当者・退職予定者が対話的にログインできる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> AssetView の PC 操作ログ・デバイス制御・Web フィルタリングを内部不正対策の中核に置いている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> AssetView の保守契約が終了している、または契約状態と稼働台数を突き合わせていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月13日 株式会社ハンモック</span> <a href="https://www.hammock.jp/assetview/info/261013.html" target="_blank" rel="noreferrer noopener nofollow">AssetViewにおける権限昇格の脆弱性（JVN#38664315）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(開発者による一次公表。原因〈SYSTEM 権限で動作するプログラムを一般ユーザー権限で
+置き換えられる・重要なリソースに対する不適切なパーミッションの割り当て〉、機密性・完全性・
+可用性への想定影響、影響版、バージョン確認方法、対処方法〈保守契約ユーザー専用サイトからの
+資材取得／Cloud＋ は9月28日リリースの Ver 2600.201.11〉、回避策が無いこと、謝辞、
+更新履歴「2026.10.13 脆弱性情報ページを公開」、問い合わせ窓口の出典。
+CVE 番号の記載は無い。本記録が2026年10月13日に本文を取得して確認した)
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月13日 JPCERT/CC・IPA（Japan Vulnerability Notes）</span> <a href="https://jvn.jp/jp/JVN38664315/" target="_blank" rel="noreferrer noopener nofollow">JVN#38664315 AssetViewにおける重要なリソースに対する不適切なアクセス権の割り当ての脆弱性</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(CVE-2026-101020・JVNDB-2026-000143・CWE-732・CVSS 4.0 基本値 8.5 とベクタ・
+CVSS 3.0 基本値 7.8 とベクタ・影響版・想定される影響〈管理コンソールまたは
+クライアントモジュールが動作する Windows にログイン可能な攻撃者による SYSTEM 権限の取得〉・
+製品別の対策・報告者〈株式会社サイバーディフェンス研究所 永岡 悟 氏〉・
+公開日と最終更新日〈ともに2026年10月13日〉の出典。
+本記録が2026年10月13日に本文を取得して確認した)
+）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[3]</span> <span class=sm>株式会社ハンモック</span> <a href="https://www.hammock.jp/assetview/" target="_blank" rel="noreferrer noopener nofollow">AssetView 製品サイト</a> <span class="b kind">FAQ・よくあるご質問</span><span class=sm>（(AssetView の製品概要〈IT 資産管理・情報漏洩対策の統合型 IT 運用管理ツール〉、
+提供形態の違い〈オンプレミス／AssetView CLOUD／AssetView Cloud＋〉、
+主な機能〈IT 資産管理・アプリケーション配布・リモートコンソール・PC 操作ログ・
+デバイス制御・不正 PC 遮断・画面操作ログ・Web フィルタリング・ファイル暗号化・
+エンドポイントセキュリティ等〉の出典。導入社数の総数の記載は無く、
+掲載事例の台数は100〜1,000台以上の規模。本事案に関する記載はない。
+本記録が2026年10月13日に確認した)
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2025年3月28日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2025/03/28/52571.html" target="_blank" rel="noreferrer noopener nofollow">AssetView に複数の脆弱性</a> <span class="b kind">記事</span><span class=sm>（(先行例の出典。2025年3月25日公表の JVN26321838 で、AssetView に
+重要な機能に対する認証の欠如〈CVE-2025-25060〉と開発者への送信データからの
+機微な情報の取得〈CVE-2025-27244〉の2件が公表されたこと、報告者が
+株式会社ベリサーブの近藤隆雄氏であったことの出典。本事案とは別の脆弱性である。
+本記録が2026年10月13日に本文を取得して確認した)
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月13日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月13日収集分の記事
+〈output/articles/20261013/0009_jpcertcc-jvn-japan-vulner_assetview.md〉を起点に、
+**JVN#38664315 の本文とハンモックの脆弱性情報ページ
+（https://www.hammock.jp/assetview/info/261013.html）を本記録が取得して裏を取った。**
+**その過程で ①AssetView Cloud＋ の対策版が公表の15日前（2026年9月28日）に
+リリースされていたこと ②AssetView CLOUD の対処方法が JVN とベンダーページで
+食い違うこと ③ベンダーページに CVE 番号の記載が無いこと ④対策資材が
+保守契約ユーザー専用サイトに限られ、契約終了ユーザーへの提供条件が書かれていないこと、
+を確認して齟齬・未確定事項に記録した。**
+**先行例として2025年3月の JVN26321838 を ScanNetSecurity の記事で確認した。**
+</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">AssetView</span><span class="b tag">ハンモック</span><span class="b tag">CVE-2026-101020</span><span class="b tag">JVN</span><span class="b tag">JVN38664315</span><span class="b tag">権限昇格</span><span class="b tag">SYSTEM権限</span><span class="b tag">CWE-732</span><span class="b tag">権限管理</span><span class="b tag">IT資産管理</span><span class="b tag">エンドポイント管理</span><span class="b tag">資産管理エージェント</span><span class="b tag">ローカル権限昇格</span><span class="b tag">内部不正対策</span><span class="b tag">PC操作ログ</span><span class="b tag">回避策なし</span><span class="b tag">保守契約</span><span class="b tag">早期警戒パートナーシップ</span><span class="b tag">JPCERT/CC</span><span class="b tag">IPA</span><span class="b tag">サイバーディフェンス研究所</span><span class="b tag">国内製品</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-13 13:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
