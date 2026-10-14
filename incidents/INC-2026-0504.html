@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Docker Hub の PAT が他人名義へ転送 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0504</span>Docker Hub の PAT が他人名義へ転送</h1>
+<header class="site-header">
+  <p class="subtitle">Docker は2026年10月12日、個人アカウントを組織（Organization）へ変換する機能が 個人用アクセストークン（PAT）の所有者レコードだけを書き換え、秘密値の再発行も 当人の同意確認も行わないまま「指名された新オーナー」へ付け替えていたと公表した （CVE-2026-105445）——攻撃者は自分で作ったアカウントの PAT を手元に残したまま 標的ユーザーをオーナーに指名するだけで、そのトークンでレジストリ上は標的本人として イメージの取得・push・削除を行えた。露出期間は2024年8月26日から2026年9月30日までの 2年1か月で、Docker は報告受領から約3時間30分で修正を本番投入し、転送された トークンによる約304,000件の push を調べて「悪用の証拠は見つからなかった」としている</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月12日（Docker のセキュリティアドバイザリ公表）</span>
+  <span>最終更新: 2026年10月14日</span>
+</div>
+
+<div class="lead"><p><strong>「自分のトークンが、いつの間にか他人のものになっていた」——この事案で起きたのは、その逆です。他人のトークンが自分のものになり、秘密値は元の持ち主が握ったままでした。</strong></p>
+<p><strong>Docker は2026年10月12日、Docker Hub のセキュリティアドバイザリを公表しました</strong>（出典1）。<strong>個人アカウントを組織（Organization）へ変換する機能に不備があり、変換時に個人用アクセストークン（PAT）が「指名された新しいオーナー」へ付け替えられていました。CVE-2026-105445 として採番されています</strong>（出典1・2）。</p>
+<p><strong>成立の筋は4段です</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>攻撃者がアカウントを作り、PAT を発行する（秘密値は攻撃者の手元）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>そのアカウントを組織へ変換し、<strong>標的のユーザーをオーナーとして指名</strong>する</td>
+</tr>
+<tr>
+<td>3</td>
+<td>PAT の所有者レコードが標的ユーザーへ書き換わる。秘密値は変わらない</td>
+</tr>
+<tr>
+<td>4</td>
+<td>攻撃者は手元の秘密値で、レジストリに対し<strong>標的本人として</strong>認証できる</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Docker の説明——「トークンのスコープの範囲内で、付け替えられた PAT はレジストリのレベルで標的ユーザーとして振る舞った。つまり攻撃者は標的のリポジトリ、および標的がアクセスできる組織において、イメージの pull・push・削除を行い得た」</strong>（出典1・2。原文英語。本記録の訳）。<strong>Docker はこれを「正規の名前でイメージを公開できることを含む」ためソフトウェアサプライチェーンのリスクとして扱い、重要度を critical と評価しました</strong>（出典2）。</p>
+<p><strong>できなかったことも、はっきり書かれています。</strong> <strong>「この脆弱性は Docker Hub の Web インターフェースへのアクセスを与えず、標的のパスワード・メールアドレス・二要素設定の変更やアカウントの乗っ取りには使えなかった」</strong>（出典1。原文英語。本記録の訳）。</p>
+<p><strong>露出期間は2024年8月26日 20:33 UTC から、修正が本番投入された2026年9月30日 約19:10 UTC までです</strong>（出典1）。<strong>本記録の算出では765日——2年1か月にわたり、この経路は開いていました。</strong></p>
+<p><strong>一方で、報告を受けてからの速度は際立っています</strong>（出典1）。<strong>9月30日 11:40（米国東部）に security@docker.com で報告を受け、約13:30 に社内で独立に再現、約15:10 に修正を本番投入。本記録の算出で、報告から修正まで約3時間30分です。</strong></p>
+<p><strong>調査では、2024年8月26日以降のすべての変換を列挙し、レジストリの認証ログ・利用データ・IAM のトークン記録と突き合わせました</strong>（出典1）。<strong>転送されたトークンで行われた push 約304,000件を調べ、「この脆弱性が悪用された証拠は見つからなかった」としています</strong>（出典1）。</p>
+<p><strong>ただし Docker は、検知に頼らなかった理由を明示しています。</strong> <strong>「レジストリのログはトークンが使われた時刻を示すが、トークンが存在することは示さない。したがって転送されたが一度も使われなかったトークンは痕跡を残さない」</strong>（出典1。原文英語。本記録の訳）。<strong>そのため「露出期間中に変換を通過したすべての PAT を、影響を受けた可能性があるものとして扱った」としています</strong>（出典1）。</p>
+<p><strong>本記録の評価</strong>——<strong>この事案の読みどころは脆弱性そのものではなく、「所有者が移る資格情報」という設計パターンの危うさです。</strong> <strong>秘密値を変えずに所有者だけを書き換える処理は、監査上は「正当な権限委譲」として記録されます。</strong> <strong>Docker は恒久対策として、他の「資格情報の所有者を変更するフロー」も同じパターンで点検中だと述べています</strong>（出典1）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>通知された利用者数・組織数、および無効化された PAT の件数</span><span class="b rsn">公表されていない</span><div class=sm>**Docker の表現は「限られた数の」のみである**（出典1）。
+**本記録は推定しない。**
+</div></li><li><span class=ui>CVE-2026-105445 の CVSS 基本値と評価ベクトル</span><span class="b rsn">探索したが未発見</span><div class=sm>**アドバイザリは CVSS を記載せず、
+「ソフトウェアサプライチェーンのリスクとして扱い critical と評価した」と
+述べるにとどまる**（出典1・2。本記録の訳）。
+**本記録は2026年10月14日に NVD のページを取得しようとしたが到達できず、
+検索エンジンにも当該 CVE は索引されていなかった**〈齟齬1〉。
+</div></li><li><span class=ui>報告した研究者の氏名・所属・報奨の有無</span><span class="b rsn">公表されていない</span><div class=sm>**アドバイザリは「Researchers」と複数形で言及するのみである**（出典1）。
+</div></li><li><span class=ui>露出期間中に変換を通過した PAT の総数（＝影響可能性の母数）</span><span class="b rsn">公表されていない</span><div class=sm>**Docker は「露出期間中に変換を通過したすべての PAT を
+影響を受けた可能性があるものとして扱った」と述べているが、
+その総数は示していない**（出典1。本記録の訳）。
+**本記録の明示**——**母数が出ていないため、
+「約304,000件の push」が全体のどれだけを覆っているかは評価できない。**
+</div></li><li><span class=ui>本脆弱性を悪用した改ざんイメージが実際に配布されたか</span><span class="b rsn">調査したが確定せず</span><div class=sm>**Docker は「最もリスクの高い公開イメージを静的に解析した（実行はしていない）。
+マルウェア・クリプトマイナー・C2 の活動・資格情報の収集・永続化・
+改ざんはいずれも見つからなかった」としている**（出典1。本記録の訳）。
+**本記録の明示**——**「静的解析で見つからなかった」は
+「存在しなかった」とは別である。**
+**また解析対象は「最もリスクの高い公開イメージ」であり、
+非公開リポジトリと全量は対象外である。**
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Docker, Inc.（Docker Hub の提供元）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Docker Hub の被影響ユーザーおよびその組織オーナー（人数・組織数は非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>報告した研究者（氏名・所属は非公表）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>露出期間</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>765<span class=fu>日</span></div><div class=fn>**2024年8月26日 20:33 UTC から2026年9月30日 約19:10 UTC まで**（出典1）。
+**765日＝2年1か月（本記録の算出）。**
+**本記録の評価**——**この長さの意味は「2年間誰も気づかなかった」ではなく、
+「気づく手段が無かった」ことである。**
+**Docker 自身が「転送されたが一度も使われなかったトークンは痕跡を残さない」と
+述べている**（出典1。本記録の訳）。
+</div></div><div class=fig><div class=fh><span class=fl>転送されたトークンで行われ、調査対象となった push の件数</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>304,000<span class=fu>件</span></div><div class=fn>**Docker は「転送されたトークンで行われた約304,000件の push を調べた」と
+している**（出典1・2。原文英語。本記録の訳）。
+**結果は「push はいずれも、変換された組織のリポジトリか
+新オーナー自身のリポジトリにのみ着地していた」**（出典1）。
+**これは「影響を受けた利用者数」ではない**——**調べた操作の件数である**
+（本記録の明示）。
+</div></div><div class=fig><div class=fh><span class=fl>報告受領から修正の本番投入まで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>3.5<span class=fu>時間</span></div><div class=fn>**11:40（受領）→ 約15:10（本番投入）で約3時間30分**（本記録の算出）。
+**BleepingComputer は「4時間未満で本番へ修正を投入した」と報じている**
+（出典2。原文英語。本記録の訳）。
+</div></div><div class=fig><div class=fh><span class=fl>報告受領から転送済みトークンの無効化まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>日</span></div><div class=fn>**2026年9月30日 → 10月8日（本記録の算出）。**
+**本記録の評価**——**修正そのものは3時間半で終わったが、
+「すでに転送されてしまったトークン」の片付けには8日かかっている。**
+**脆弱性の封鎖と、残存する資格情報の失効は別の作業である。**
+</div></div><div class=fig><div class=fh><span class=fl>通知された利用者数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>0<span class=fu>件（数値は非公表）</span></div><div class=fn>**Docker の表現は「限られた数の（a limited number of）影響を受けた利用者と
+その組織オーナー」のみで、件数は示されていない**（出典1。本記録の訳）。
+**値0は「公表されていない」ことを表す便宜的な置き値であり、
+「0人だった」という意味ではない**（本記録の明示）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない**（出典1）。
+**以下は Docker のアドバイザリが記述する「成立し得た筋」であり、
+被害事例の再構成ではない**（本記録の明示）。
+**攻撃者は自分のアカウントで PAT を発行し、そのアカウントを組織へ変換して
+標的ユーザーをオーナーに指名するだけで、
+手元の秘密値のままレジストリ上は標的として認証できた**（出典1）。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者が自分のアカウントで個人用アクセストークン（PAT）を発行する**（出典1）。
+**この時点では、トークンは攻撃者自身の権限しか持たない。**
+</div><div class=fn>根拠: Docker のアドバイザリによる成立条件の記述（出典1）</div></li><li><div class=stg><span class="b stage">2. 権限昇格</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者が自分のアカウントを組織へ変換し、
+標的のユーザーをその組織のオーナーとして指名する**（出典1）。
+**変換処理は PAT の所有者レコードを標的ユーザーへ書き換えるが、
+秘密値のローテーションも失効も行わない。
+指名された当人への確認も通知も行わない**（出典1）。
+</div><div class=fn>根拠: Docker のアドバイザリによる変換処理の記述（出典1）</div></li><li><div class=stg><span class="b stage">3. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者が手元の秘密値でレジストリへ認証する。
+トークンは標的ユーザーのものとして扱われる**（出典1）。
+**「トークンのスコープの範囲内で、付け替えられた PAT は
+レジストリのレベルで標的ユーザーとして振る舞った」**
+（出典1。原文英語。本記録の訳）。
+</div><div class=fn>根拠: Docker のアドバイザリによる影響の記述（出典1）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**トークンのスコープと標的の権限に応じて、
+標的のリポジトリおよび標的がアクセスできる組織において
+イメージの pull・push・削除を行い得た**（出典1・2）。
+**Web インターフェースへのアクセス、パスワード・メールアドレス・
+二要素設定の変更、アカウントの乗っ取りはできなかった**（出典1）。
+</div><div class=fn>根拠: Docker のアドバイザリによる影響範囲の切り分け（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>露出の開始（2024年8月26日）から報告受領（2026年9月30日）まで</div><div class=mv>765日＝2年1か月（本記録の算出）。ただしこれは「侵入から検知まで」ではない。悪用は確認されておらず、測っているのは「不備が存在した期間」である</div></div><div class=met><div class=ml>報告受領から修正の本番投入まで</div><div class=mv>約3時間30分（本記録の算出。11:40 → 約15:10 米国東部）。報告・社内での独立再現・修正・本番投入が同一営業日に収まっている</div></div><div class=met><div class=ml>報告受領から被影響者への通知まで</div><div class=mv>2日（本記録の算出。2026年9月30日 → 10月2日）。通知対象の特定には全変換の列挙とログの突き合わせが必要だった（出典1）</div></div><div class=met><div class=ml>報告受領からアドバイザリ公表まで</div><div class=mv>12日（本記録の算出。2026年9月30日 → 10月12日）。公表は、転送済みトークンの無効化（10月8日）を終えた後に置かれている</div></div><div class=met><div class=ml>報告受領から転送済みトークンの無効化完了まで</div><div class=mv>8日（本記録の算出。2026年9月30日 → 10月8日）。ただし保持を明示的に希望した所有者のトークンは無効化対象から除外されている（出典1）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **公表を遅らせる間、同じ不備を自力で見つけた第三者が悪用する余地が残る。**
+**一方で、残存トークンを失効させる前に手口を公表すれば、
+「どのトークンがまだ有効か」を攻撃者に教えることになる**（本記録の整理）。
+</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **一律失効は安全側だが、動いている CI/CD を壊す。**
+**除外を認めれば、理論上は「攻撃者が秘密値を握ったままのトークン」が
+残り得る**（本記録の整理）。
+</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **限界を書けば「調べきれていない」と読まれる。**
+**書かなければ「約304,000件を調べて悪用は無かった」が
+全量調査として誤読される**（本記録の整理）。
+</div></li></ul></div>
+<section id="s6"><h2>秘密値を変えずに所有者だけを書き換えた——監査ログには「正当な権限委譲」として残る<span class="b slot">原因・手口</span></h2><p><strong>不備は、アカウント→組織の変換処理そのものにありました</strong>（出典1）。</p>
+<p>Docker の記述を段に分けます（出典1。原文英語。本記録の訳）。</p>
+<table>
+<thead>
+<tr>
+<th>処理</th>
+<th>行われたこと</th>
+<th>行われなかったこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>所有者の変更</td>
+<td>PAT の所有者レコードを新オーナーへ書き換えた</td>
+<td>秘密値のローテーション・失効</td>
+</tr>
+<tr>
+<td>指名</td>
+<td>任意のユーザーを組織オーナーとして指名できた</td>
+<td>指名された当人への確認</td>
+</tr>
+<tr>
+<td>通知</td>
+<td>—</td>
+<td>指名された当人への通知</td>
+</tr>
+</tbody>
+</table>
+<p><strong>この3つが揃うと、攻撃者は「自分が作ったトークン」を「標的が所有するトークン」に変えられます。秘密値は手元に残ったままです</strong>（出典1）。</p>
+<p><strong>本記録の評価</strong>——<strong>この形の怖さは、検知の側にあります。</strong>トークンの所有者が変わる操作は、プラットフォームから見れば正当な機能の実行です。<strong>レジストリの認証ログには「標的ユーザーとしての認証」が記録されますが、それは標的本人の操作と区別がつきません</strong>（出典1 の記述から。本記録の整理）。</p>
+<p>Docker 自身がこの点を明文化しています—— <strong>「レジストリのログはトークンが使われた時刻を示すが、トークンが存在することは示さない。したがって転送されたが一度も使われなかったトークンは痕跡を残さない。そのため我々は、誰が露出したかを決めるのに検知に頼らなかった」</strong>（出典1。原文英語。本記録の訳）。</p>
+<p><strong>影響範囲の決め方を「ログに出たもの」ではなく「構造上通過したもの」に置いた判断が、この事案の対応で最も評価できる部分です</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>できたこととできなかったことが切り分けて書かれている——「乗っ取り」ではなく「名義の借用」だった<span class="b slot">被害規模・影響範囲</span></h2><p><strong>Docker は影響の境界を明示しました</strong>（出典1・2）。</p>
+<p><strong>できたこと</strong>——<strong>「トークンのスコープの範囲内で、付け替えられた PAT はレジストリのレベルで標的ユーザーとして振る舞った。つまり攻撃者は標的のリポジトリ、および標的がアクセスできる組織において、イメージの pull・push・削除を行い得た」</strong>（出典1・2。原文英語。本記録の訳）。</p>
+<p><strong>できなかったこと</strong>——<strong>「この脆弱性は Docker Hub のWeb インターフェースへのアクセスを与えず、標的のパスワード・メールアドレス・二要素設定の変更やアカウントの乗っ取りには使えなかった」</strong>（出典1。原文英語。本記録の訳）。</p>
+<p><strong>影響の重さの評価は、Docker 自身の言葉に拠ります。</strong> <strong>「それは正規の名前でイメージを公開できることを含むため、我々はこれをソフトウェアサプライチェーンのリスクとして扱い、critical と評価した」</strong>（出典2。原文英語。本記録の訳）。</p>
+<p><strong>本記録の整理</strong>——<strong>「乗っ取り」ではなく「名義の借用」だったことは、被害の軽重とは別の問題を生みます。</strong>正規の名前で push されたイメージは、利用者側から見て正規のイメージです。<strong>署名やダイジェストの固定をしていない限り、<code>docker pull</code> の時点で区別する手立てはありません</strong>（本記録の評価）。</p>
+<p>なお影響は「トークンのスコープの範囲内」です（出典1）。<strong>読み取り専用のトークンであれば push はできず、スコープを絞る運用がそのまま被害の上限になっていたことになります</strong>（出典1 の記述から。本記録の整理）。</p></section>
+<section id="s8"><h2>報告から3時間半で修正、8日で残存トークンを失効——速さの内訳が時刻付きで出ている<span class="b slot">組織の対応</span></h2><p><strong>アドバイザリには、分単位の時刻の列が載っています</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>日時（米国東部）</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9月30日 11:40</td>
+<td>security@docker.com が報告を受領</td>
+</tr>
+<tr>
+<td>9月30日 約13:30</td>
+<td>社内で独立に再現</td>
+</tr>
+<tr>
+<td>9月30日 約15:10</td>
+<td>修正を本番投入（変換での PAT 転送を撤去）</td>
+</tr>
+<tr>
+<td>9月30日 約15:23</td>
+<td>ドキュメントを更新</td>
+</tr>
+<tr>
+<td>9月30日 16:59</td>
+<td>報告者へ修正を連絡</td>
+</tr>
+<tr>
+<td>10月2日 17:30</td>
+<td>露出した利用者と組織オーナーへメール通知</td>
+</tr>
+<tr>
+<td>10月8日 15:45</td>
+<td>転送済み PAT を無効化（保持希望を除く）</td>
+</tr>
+<tr>
+<td>10月12日</td>
+<td>アドバイザリ公表</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録の算出では、報告から修正まで約3時間30分、報告から残存トークンの失効まで8日です。</strong></p>
+<p><strong>本記録の評価</strong>——<strong>注目すべきは、速かった部分と時間がかかった部分の切れ目です。</strong> <strong>「脆弱性を閉じる」は3時間半で終わりました。一方「すでに転送されてしまったトークンを消す」には8日かかっています</strong>（本記録の算出）。その8日の中身は、全変換の列挙・ログとの突き合わせ・約304,000件の push の精査・対象者への通知・保持希望の受付です（出典1）。</p>
+<p><strong>資格情報が絡む事案では、修正の投入は対応の始まりにすぎません。</strong> <strong>「配ってしまった鍵をどう回収するか」の工程を事前に持っているかどうかが、収束までの時間を決めます</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>恒久対策は「同意」「監査」「他のフローの点検」の3点——Docker は同じパターンを探しに行った<span class="b slot">再発防止</span></h2><p><strong>Docker が挙げた対策は次のとおりです</strong>（出典1）。</p>
+<ol>
+<li><strong>即座の修正</strong>——<strong>「変換からの PAT 転送を完全に取り除いた」</strong>（出典1。本記録の訳）。</li>
+<li><strong>ドキュメントの更新</strong>——<strong>PAT は転送されず新オーナーが作り直す必要がある。自動化には組織用アクセストークンを推奨する</strong>（出典1）。</li>
+<li><strong>同意の導入</strong>——<strong>組織オーナーとして指名される前に当人の同意を要求し、指名されたときに通知する</strong>（出典1）。</li>
+<li><strong>監査の追加</strong>——<strong>「トークンの所有権変更のすべてについて監査可能な履歴を記録する」</strong>（出典1。本記録の訳）。</li>
+<li><strong>横展開の点検</strong>——<strong>「資格情報の所有権を変更する他のフローを同じパターンで見直している」</strong>（出典1。本記録の訳）。</li>
+</ol>
+<p><strong>本記録の評価</strong>——<strong>5点目が最も重要です。</strong> <strong>この事案は「変換機能のバグ」ではなく「所有者が移る資格情報」という設計パターンの問題だからです。</strong>同じパターンは、退職者のトークン引き継ぎ、組織統合、プロジェクトの移管、サービスアカウントの担当変更など、多くの場所に現れます。<strong>自組織の点検も「Docker Hub を使っているか」ではなく「秘密値を変えずに所有者を書き換える処理を持っていないか」で始めるべきです</strong>（本記録の評価）。</p>
+<p>利用者側に求められた行動は3つです（出典1）。<strong>①2026年10月2日のメールを受け取ったかを確認する（受け取っていなければ「このフローで転送された PAT は無い」）②Docker Hub の Account settings → Personal access tokens で、見覚えのないトークンや使っていないトークンを失効させる③組織の自動化には個人の PAT ではなく組織用アクセストークンを使う。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**Docker Hub（コンテナイメージの公開・取得を行うレジストリ）の、 個人アカウントを組織（Organization）へ変換する機能**（出典1・2）。 **対象となった資格情報は個人用アクセストークン（PAT） ——ツールやワークフローをレジストリに認証させるための秘密値で、 イメージの pull・push・削除に使える**（出典2）。 **Docker Desktop・Docker Engine などのクライアント側製品ではなく、 Docker Hub というサービス側の不備である**（出典1。本記録の明示）。 **Docker は「Docker 自身のインフラやサービスが 影響を受けた証拠は無い」としている**（出典1）</td></tr><tr><th>finding_name</th><td>**CVE-2026-105445**（出典1・2）。 **Docker のアドバイザリ題名は 「Docker Hub Security Advisory: CVE-2026-105445」で、 副題は「personal access tokens transferred during account-to-organization conversions」**（出典1）。 **CVSS の基本値と評価ベクトルは、本記録が確認した資料には記載がない** 〈齟齬1〉。 **Docker の重要度評価は「critical」で、その理由は 「正規の名前でイメージを公開できることを含むため、 ソフトウェアサプライチェーンのリスクとして扱った」** （出典2。原文英語。本記録の訳）</td></tr><tr><th>exploit_status</th><td>**悪用は確認されていない。** **Docker は2024年8月26日以降のすべての変換を列挙し、 レジストリの認証ログ・利用データ・IAM のトークン記録と突き合わせ、 転送されたトークンで行われた約304,000件の push を調べたうえで 「この脆弱性が悪用された証拠は見つからなかった」としている** （出典1。原文英語。本記録の訳）。 **push はいずれも、変換された組織のリポジトリか 新オーナー自身のリポジトリにのみ着地していた**（出典1）。 **最もリスクの高い公開イメージを静的に解析（実行はせず）した結果、 マルウェア・クリプトマイナー・C2 の活動・資格情報の収集・永続化・ 改ざんはいずれも見つからなかった**（出典1）。 **ただし Docker は検出の限界を明示している** ——**「転送されたが一度も使われなかったトークンは痕跡を残さない」** （出典1。本記録の訳）</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月14日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>**修正済み。** **2026年9月30日 約19:10 UTC に本番環境へ投入され、 変換処理からの PAT 転送は完全に撤去された**（出典1）。 **サービス側の修正であり、利用者側でのバージョン更新は不要である** （出典1。本記録の整理）。 **恒久対策として、組織オーナー指名前の同意要求・指名時の通知・ トークン所有権変更の監査履歴の記録・ 資格情報の所有権を変更する他のフローの点検が挙げられている**（出典1）</td></tr><tr><th>patch_status_as_of</th><td>2026年10月14日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月14日（本記録の確認時点）　<b>詳細:</b> **Docker は「悪用の証拠は見つからなかった」と述べている**（出典1）。 **本記録の明示**——**これは「悪用されなかった」とは別の言明である。** **Docker 自身が「レジストリのログはトークンが使われた時刻を示すが、 トークンが存在することは示さない」と限界を書いている**（出典1。本記録の訳）</td></tr><tr><th>ログの有無</th><td>**部分的に残っていた。** **レジストリの認証ログ・利用データ・IAM のトークン記録が 2024年8月26日以降の全変換と突き合わせられる状態で保存されていた**（出典1）。 **一方で「トークンが存在すること」自体はログに残らない構造であり、 転送されたが未使用のトークンは追跡できない**（出典1）。 **このため Docker は影響範囲の母数を 「露出期間中に変換を通過したすべての PAT」に置いた**（出典1）</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> Docker Hub の個人用アクセストークンを棚卸しし、見覚えのないもの・未使用のものを失効させる　<b>副作用:</b> 失効させたトークンを使っている自動化が停止する。棚卸しの前に利用箇所を確認すること　<b>補足:</b> **Docker が利用者に求めた行動**（出典1）。
+**Account settings → Personal access tokens で、
+説明文と作成日で確認できる**（出典1）。
+</div><div class=sub><b>item:</b> 2026年10月2日の Docker からの通知メールを確認する（受け取っていなければ対応不要）　<b>副作用:</b> 通知先が個人の受信箱で、退職・異動・迷惑メール振り分けにより届いていない場合、該当判定を誤る　<b>補足:</b> **Docker は「通知を受け取っていない利用者は、
+影響を受けておらず対応は不要と考えてよい」としている**
+（出典1。本記録の訳）。
+**本記録の評価**——**この判定はメールの到達を前提にしている。**
+</div><div class=sub><b>item:</b> 組織の自動化を個人用 PAT から組織用アクセストークンへ移す　<b>副作用:</b> 既存のパイプラインで認証情報の差し替えとテストが必要になる。スコープ設計を誤ると権限過剰になる　<b>補足:</b> **Docker の推奨**（出典1）。
+**ドキュメントは変換時にも「組織用アクセストークンの利用が
+トークンのサービス断を避ける選択肢である」と記載している**（出典1）。
+</div><div class=sub><b>item:</b> イメージの取得をタグからダイジェスト（sha256）固定へ切り替える　<b>副作用:</b> 更新が自動で入らなくなるため、更新の仕組み（Renovate / Dependabot 等）を別途整える必要がある　<b>補足:</b> **本記録の評価**——**Docker の推奨には含まれないが、
+「正規の名前で公開された改ざんイメージ」に対して
+取得側で効く唯一の対策である。**
+</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2024年8月26日 20:33 UTC</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>**アカウント→組織の変換処理が、個人アカウントの PAT を
+新しいオーナーへ付け替える挙動を開始した**（出典1）。
+**秘密値の失効もローテーションも行わず、
+指名されたオーナーへの確認も通知も行わなかった**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月30日 11:40（米国東部時間）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**security@docker.com が、本件を記述した脆弱性報告を受領した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月30日 約13:30（米国東部時間）</td><td class=nowrap><span class="b kind">判明</span></td><td>**Docker が社内で独立に問題を再現し、脆弱性の存在を確認した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月30日 約15:10（米国東部時間・約19:10 UTC）</td><td class=nowrap><span class="b kind">露出の解消</span></td><td>**修正を本番環境へ投入した。変換処理は PAT を転送しなくなった**（出典1）。
+**アドバイザリは「即座の修正は、変換からの PAT 転送を完全に取り除いた」と
+述べている**（出典1。原文英語。本記録の訳）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月30日 約15:23（米国東部時間）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**ドキュメントを更新した。PAT は転送されず新オーナーが作り直す必要があること、
+組織用アクセストークン（organization access tokens）の利用が
+推奨されることを記載した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年9月30日 16:59（米国東部時間）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**報告した研究者へ修正の完了を伝えた**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月2日 17:30（アドバイザリの表記は EST）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**露出した利用者とその組織オーナーへメールで通知した**（出典1）。
+**メールには対象トークンを説明文と作成日で列挙した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月8日 15:45（アドバイザリの表記は EST）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**特定した転送済み PAT を無効化した。
+期限前に保持を明示的に希望した所有者のものは除外した**（出典1・2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日</td><td class=nowrap><span class="b kind">公表</span></td><td>**セキュリティアドバイザリを公表した（CVE-2026-105445）**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**BleepingComputer・The Hacker News が報道した**（出典2・3）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録がアドバイザリ本文を取得して確認した**（出典1）。
+**NVD の CVE-2026-105445 のページには到達できず、
+CVSS の基本値と評価ベクトルは確認できていない**〈齟齬1〉。
+</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><div class=sm>**Docker のアドバイザリは CVSS を記載しておらず、
+「ソフトウェアサプライチェーンのリスクとして扱い critical と評価した」と
+述べるにとどまる**（出典1・2。本記録の訳）。
+**本記録は2026年10月14日に NVD の CVE-2026-105445 のページを
+取得しようとしたが、ページ本文に到達できなかった。**
+**検索エンジンにも当該 CVE は索引されていない（公表2日後のため）。**
+**したがって本記録は「critical」というベンダー評価のみを採り、
+スコアは記載しない**（本記録の留保）。
+</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録が起点とした記事〈0094_the-hacker-news_...〉は
+`content_source: fetch_failed` で、冒頭の要約のみが保存されている。**
+**読めた範囲（9月30日に修正・悪用の証拠なし・10月12日のアドバイザリ・
+個人アカウントの組織への変換機能）はいずれも出典1と一致する。**
+**本記録は出典1を主資料とし、この記事からは独自の事実を採らない**
+（本記録の方針）。
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**アドバイザリの時刻表は、9月30日の各時刻を米国東部時間で示し、
+10月2日と10月8日の時刻には「EST」の表記を付している**（出典1）。
+**ただし10月の米国東部は夏時間（EDT）である**（本記録の指摘）。
+**本記録は時刻をアドバイザリの表記どおりに引き写し、
+UTC への換算は露出終了（約19:10 UTC）のみ
+——これは出典1 自身が UTC で示している値——に限った**（本記録の方針）。
+**この揺れは1時間の範囲であり、本記録の算出
+（報告から修正まで約3時間30分等）には影響しない。**
+</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**Docker は「限られた数の」利用者と組織オーナーへ通知したとするが、
+通知を受けた側が何をしたか——トークンの作り直し・イメージの再検証・
+パイプラインの停止——はどの資料にも書かれていない**（出典1・2・3）。
+**本記録は推定しない**（本記録の方針）。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>攻撃者が自アカウントで PAT を発行 → そのアカウントを組織へ変換し標的を
+オーナーに指名 → Docker Hub が PAT の所有者レコードだけを書き換え
+（秘密値そのまま・標的への確認も通知も無し） → 攻撃者は手元の秘密値で
+レジストリに標的として認証 → 標的のリポジトリと所属組織でイメージを
+pull / push / 削除（Web UI とアカウント乗っ取りは不可） →
+正規の名前で公開されたイメージが下流の利用者へ配布される
+</div><div class=svgwrap><svg viewBox="0 0 1610 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,60.0 C193.0,60.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,60.0 C295.0,60.0 295.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C703.0,60.0 703.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C1213.0,60.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,60.0 C1417.0,60.0 1417.0,60.0 1444,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（Docker H</text><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ub の一般アカウントを</text><text x="91.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">無料で作成できる）</text><text x="91.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">必要な前提は標的のユーザ</text><text x="91.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ー名を知っていることだけ</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者が発行した PAT</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（秘密値は攻撃者の手元に</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">残る）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">発行自体は完全に正当な操</text><text x="295.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">作——検知の意味が無い段</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アカウント→組織の変換処</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理（標的をオーナーに指名</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">2024年8月26日 2</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">0:33 UTC から2</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Docker Hub（所</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">有者レコードのみ書き換え</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・秘密値は不変・標的に…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">CVE-2026-105</text><text x="703.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">445。恒久対策で同意要</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的ユーザー（自分がオー</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ナーに指名されたことを知</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る手段が無かった）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#8892b0" font-size="10">通知も確認も行われなかっ</text><text x="907.0" y="91.0" text-anchor="middle" fill="#8892b0" font-size="10">た（出典1）</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レジストリ（トークンのス</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コープ内で標的本人として</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証される）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">pull / push </text><text x="1111.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">/ 削除が可能。Web </text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的のリポジトリ／標的が</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アクセスできる組織のリポ</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジトリ</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">約304,000件の p</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">ush を調査——悪用の</text><rect x="1444" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1519.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">下流の利用者（docke</text><text x="1519.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r pull でイメージ</text><text x="1519.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を取得する側）</text><text x="1519.0" y="79.0" text-anchor="middle" fill="#8892b0" font-size="10">正規の名前で公開されるた</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#8892b0" font-size="10">め、ダイジェスト固定が無</text></svg></div><div class=fn>Docker のセキュリティアドバイザリ（2026年10月12日・出典1）にもとづく
+「成立し得た経路」である。**実際の悪用は確認されていない**（出典1）。
+**破線で示した下流への配布は、Docker が最もリスクの高い公開イメージを
+静的に解析した範囲では発生の証拠が無い**（出典1）。
+**太線の「所有者レコードの書き換え」が本件の核で、
+ここで秘密値が再発行されないことがすべての前提である**（出典1）。
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価**——**この段を検知対象にする意味は無い。**
+**Docker Hub 上で毎日大量に行われる正常操作である。**
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**プラットフォーム側では、変換イベントと所有者変更は記録され得た。**
+**実際に Docker は事後に「2024年8月26日以降のすべての変換を列挙」できている**
+（出典1）。
+**つまり記録は存在したが、監視対象になっていなかった**（本記録の整理）。
+**恒久対策として「トークンの所有権変更の監査可能な履歴」が
+追加されている**（出典1）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**Docker 自身が限界を明示している**——**「レジストリのログは
+トークンが使われた時刻を示すが、トークンが存在することは示さない。
+したがって転送されたが一度も使われなかったトークンは痕跡を残さない」**
+（出典1。本記録の訳）。
+</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価**——**利用者側で検知し得たのは
+「イメージのダイジェストが予期せず変わったこと」である。**
+**タグを固定せずダイジェストも記録していない運用では、
+この変化は観測できない。**
+</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**この順序は妥当だったと考える。**
+**修正は即日・個別通知は2日後・残存資格情報の失効は8日後・
+公表は失効後、という並びは、
+「開いている穴を塞ぐ」「使える鍵を回収する」「情報を出す」の
+優先順位として筋が通っている。**
+**ただしこれは結果論の余地がある評価である**
+——**悪用の証拠が出なかったからこの順序が正しかったと言えるのであり、
+2年間の露出期間に第三者が同じ不備を見つけていた場合、
+12日の遅れは別の評価を受けた**（本記録の留保）。
+</td></tr><tr><td></td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価**——**部分的に機能したと考える。**
+**影響範囲の特定を「検知」ではなく「構造上の通過」に置いた判断
+（出典1）と比べると、この除外は逆方向の緩和である。**
+**母数を広く取っておきながら、失効では当事者の希望を通している。**
+**保持を希望した件数も、希望を認める判断の基準も公表されていないため、
+これ以上の評価はできない**（本記録の留保）。
+</td></tr><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**この記述が、このアドバイザリの価値の中心である。**
+**「悪用の証拠は無い」という結論に、
+その証拠が原理的にどこまで取れるものかという限界が併記されている。**
+**一方で「影響を受けた利用者数」と「無効化したトークン数」は
+示されていない**〈未確定1〉——**限界の明示と件数の非開示が
+同じ文書に同居している点は指摘しておく。**
+</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「資格情報の所有者が移る処理」を、自社システムとSaaSの両方で棚卸しする**
+</div><div class=lw>**本件の原因は、変換機能のバグというより
+「秘密値を変えずに所有者を書き換える」という設計パターンである**
+（出典1。本記録の整理）。
+**Docker 自身が恒久対策として
+「資格情報の所有権を変更する他のフローを同じパターンで見直している」と
+述べている**（出典1。本記録の訳）。
+**同じパターンは、退職者のトークン引き継ぎ・組織統合・
+プロジェクト移管・サービスアカウントの担当変更に現れる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①自社の ID 管理・CI/CD・SaaS について
+「所有者が変わり得る資格情報」を一覧にする
+（API キー・PAT・サービスアカウント・署名鍵）。**
+**②各々について「所有者が変わったとき秘密値は再発行されるか」を確認し、
+されないものは手順に再発行を組み込む。**
+**③所有者変更の操作が監査ログに残るかを確認し、
+残らないものは「変更できない」運用に寄せる。**
+</div></li><li><div class=lp>**「悪用の証拠が無い」という報告を受け取ったら、その証拠が取れる範囲を聞く**
+</div><div class=lw>**Docker は約304,000件の push を調べて悪用の証拠を見つけなかったが、
+同時に「転送されたが一度も使われなかったトークンは痕跡を残さない」と
+述べている**（出典1。本記録の訳）。
+**つまり「証拠が無い」は「使われなかった」と
+「使われたが記録されなかった」の両方を含む**（本記録の評価）。
+**ベンダーの報告を受けて自社の対応を決める立場では、
+この差が「トークンを全部作り直すか否か」を分ける。**
+</div><div class=la><b>取るべき行動</b> **①ベンダーからの影響調査報告を受けたとき、
+「どのログで何を確認したか」「その手段で検出できないケースは何か」の
+2点を必ず質問する（質問テンプレートとして手順に入れる）。**
+**②回答が得られない場合は「影響があったものとして扱う」を既定にする。**
+**③その既定で何を作り直すことになるかを、事前に書き出しておく。**
+</div></li><li><div class=lp>**通知メールが唯一の判定材料になる事案がある。受信できる体制を先に作る**
+</div><div class=lw>**Docker は「通知を受け取っていない利用者は、
+影響を受けておらず対応は不要と考えてよい」としている**（出典1。本記録の訳）。
+**つまり自組織が該当するかは、2026年10月2日のメールが届いたかどうかで決まる。**
+**開発者個人のアカウントに紐づくメールは、
+退職・異動・迷惑メール振り分けで届かないことがある**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **①開発基盤の SaaS について、
+セキュリティ通知の宛先が「個人の受信箱」になっていないかを確認する
+（共有メールボックスかチケット系へ転送する）。**
+**②退職・異動時のアカウント処理手順に
+「通知先メールアドレスの引き継ぎ」を入れる。**
+**③主要な SaaS のセキュリティアドバイザリ公開先（ブログ・RSS）を
+巡回対象に登録し、メールが届かなくても気づける経路を二重化する。**
+</div></li><li><div class=lp>**サプライチェーンの脅威評価に「正規の名前で配られる改ざん物」を入れる**
+</div><div class=lw>**Docker がこれを critical とした理由は
+「正規の名前でイメージを公開できることを含む」ためである**
+（出典2。本記録の訳）。
+**侵害の対象はレジストリではなく、そこから取得する全ての下流である。**
+**本記録の評価**——**依存関係の脅威評価は
+「悪意あるパッケージを入れてしまうリスク」に偏りがちだが、
+本件は「正しいパッケージの正しい名前が、中身だけ入れ替わる」形である。**
+</div><div class=la><b>取るべき行動</b> **①本番と CI で取得する外部イメージ・パッケージの一覧を作り、
+タグ指定かダイジェスト指定かを棚卸しする。**
+**②重要なものからダイジェスト固定に切り替え、
+更新は意図的な作業として記録する。**
+**③「取得元が侵害された場合に何が止まり、何を作り直すか」を
+事業継続計画に1項目として置く。**
+</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**Docker Hub の PAT を棚卸しし、見覚えのないトークンを失効させる**
+</div><div class=lw>**Docker が利用者に求めた行動の中核がこれである**（出典1）。
+**本件では、自分が所有者になっているが秘密値を他人が握っている
+トークンが存在し得た**（出典1）。
+**トークンの一覧には、作成日と説明文が表示される**（出典1）。
+</div><div class=la><b>取るべき行動</b> **①Docker Hub の Account settings → Personal access tokens を開き、
+説明文と作成日で全件を確認する。**
+**②自分が作った記憶が無いもの、用途が説明できないもの、
+使っていないものを失効させる。**
+**③2026年10月2日の Docker からの通知メールを検索し、
+対象トークンの列挙があればその全てを失効させる
+（保持を希望したものが残っている可能性がある）。**
+</div></li><li><div class=lp>**CI/CD の認証を、個人の PAT から組織用アクセストークンへ移す**
+</div><div class=lw>**Docker は組織の自動化に組織用アクセストークンを推奨している**（出典1）。
+**本記録の評価**——**個人に紐づく資格情報をパイプラインに使うと、
+その個人の身分に起きた変化（本件のような所有者の付け替え、
+退職によるアカウント削除、権限の変更）が
+そのままビルドの可否に波及する。**
+</div><div class=la><b>取るべき行動</b> **①CI/CD の環境変数・シークレットストアを grep して、
+Docker Hub 認証に個人の PAT を使っている箇所を洗い出す。**
+**②組織用アクセストークンへ置き換え、スコープを
+必要最小（読み取りのみで足りるものは読み取りのみ）にする。**
+**③トークンの有効期限を設定し、更新を定期作業として登録する。**
+</div></li><li><div class=lp>**イメージの取得をダイジェスト（sha256）で固定する**
+</div><div class=lw>**本件で成立し得たのは「正規の名前での push」である**（出典1・2）。
+**タグを指定して取得している限り、
+中身が差し替わっても取得側は気づかない**（本記録の評価）。
+**ダイジェストを固定していれば、内容が変わった時点で取得が失敗する。**
+</div><div class=la><b>取るべき行動</b> **①Dockerfile の `FROM`、Kubernetes のマニフェスト、
+docker-compose の `image:` を棚卸しし、
+タグ指定になっているものを列挙する。**
+**②基盤イメージと外部提供のサイドカーから順にダイジェスト固定へ移す。**
+**③更新は Renovate / Dependabot 等で差分として見える形にし、
+「いつ、誰が、どのダイジェストに上げたか」を記録に残す。**
+</div></li><li><div class=lp>**自社サービスで「権限を与える操作」に、相手側の同意を要求する**
+</div><div class=lw>**本件の成立条件は「他人を自分の組織のオーナーに指名できる」ことだった**
+（出典1）。
+**Docker の恒久対策は、指名の前に当人の同意を求めることである**（出典1）。
+**本記録の評価**——**招待・権限付与・所有権移転は
+片側だけで完結させてはいけない操作である。**
+**同意が無い設計は、本件のように「与えた側が得をする」経路を作る。**
+</div><div class=la><b>取るべき行動</b> **①自社サービスの招待・権限付与・所有権移転の各フローを列挙し、
+相手側の操作が1回以上要るかを確認する。**
+**②要らないものには受諾のステップを追加し、
+少なくとも相手側へ通知を出す。**
+**③所有権が移る処理では、移転前の資格情報を無効化し新規発行させる
+（移転ではなく再発行にする）。**
+</div></li><li><div class=lp>**「ログに出たもの」で影響範囲を決めない。構造上通過したもので決める**
+</div><div class=lw>**Docker はこの判断を明文化している**
+——**「レジストリのログはトークンが使われた時刻を示すが、
+トークンが存在することは示さない」「そのため我々は、
+誰が露出したかを決めるのに検知に頼らなかった。
+露出期間中に変換を通過したすべての PAT を
+影響を受けた可能性があるものとして扱った」**
+（出典1。原文英語。本記録の訳）。
+</div><div class=la><b>取るべき行動</b> **①インシデント対応手順に「影響範囲の母数の決め方」の節を作り、
+ログベースと構造ベースのどちらを既定にするかを書く。**
+**②構造ベースで数えるために必要な記録
+（設定変更・権限変更・資格情報発行のイベント）が
+実際に取れているかを確認する。**
+**③取れていない項目は、取得の追加を課題として登録する。**
+</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 外部サービスの API キー・トークンを、個人アカウントに紐づけたまま自動化に使っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 自社システムに「資格情報の所有者を付け替える」処理がある（退職者の引き継ぎ・組織統合・プロジェクト移管）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 他人に権限を与える操作（招待・オーナー指名・権限委譲）が、与える側の操作だけで完了する</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> コンテナイメージや外部パッケージをタグ指定で取得しており、ダイジェストを固定していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> SaaS のセキュリティ通知が個人の受信箱に届く設定になっている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 資格情報の発行・所有者変更・失効のイベントを、監査ログとして保存・監視していない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月12日 Docker, Inc.（著者 Mark Lechner・CISO）</span> <a href="https://www.docker.com/blog/docker-hub-security-advisory-cve-2026-105445/" target="_blank" rel="noreferrer noopener nofollow">Docker Hub Security Advisory: CVE-2026-105445</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（原文英語。**本事案の一次公表。**
+**成立の筋・露出期間（分単位）・できたこと/できなかったことの切り分け・
+分単位の対応時刻・調査の方法と結果（約304,000件の push）・
+恒久対策・利用者の取るべき行動がここに揃っている。**
+**本記録は2026年10月14日に本文を取得して確認した。**
+**CVSS の基本値と評価ベクトルは、この資料には記載がない。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月13日 15:20 UTC BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/docker-hub-flaw-let-attackers-impersonate-users-tamper-with-images/" target="_blank" rel="noreferrer noopener nofollow">Docker Hub flaw let attackers impersonate users, tamper with images</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**アドバイザリの引用を日本語化する際の照合に用いた。**
+**「ソフトウェアサプライチェーンのリスクとして扱い critical と評価した」の
+引用、および「4時間未満で本番へ修正を投入した」という記述はこの資料による。**
+**PAT を「ツールやワークフローを認証するための秘密値」と説明する
+背景部分も含む。**）
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月13日 18:03 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/10/docker-fixes-critical-two-year-old-hub.html" target="_blank" rel="noreferrer noopener nofollow">Docker Fixes Critical Two-Year-Old Hub Flaw That Let One User Push Images as Another</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**本記録が収集した記事は本文の取得に失敗しており、
+冒頭の要約のみが残っている**〈齟齬2〉。
+**読めた範囲は「9月30日に修正」「悪用の証拠は見つかっていない」
+「10月12日のアドバイザリ」「個人アカウントを組織へ変換する機能」で、
+いずれも出典1と一致する。**）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月14日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月14日収集分の記事
+〈output/articles/20261014/0094_the-hacker-news_docker-fixes-critical-two-year-old-hub-flaw-that-l.md、
+0129_bleepingcomputer_docker-hub-flaw-let-attackers-impersonate-users-ta.md〉を
+起点に、**一次公表の裏取りを行った。**
+
+**裏取りできたもの**——**Docker のセキュリティアドバイザリ
+（https://www.docker.com/blog/docker-hub-security-advisory-cve-2026-105445/）
+の本文を直接取得し、①成立の筋（4段）②露出期間の開始時刻
+（2024年8月26日 20:33 UTC）と終了時刻（2026年9月30日 約19:10 UTC）
+③分単位の対応時刻の列（報告11:40 → 再現13:30 → 修正15:10 →
+通知10月2日 → 失効10月8日 → 公表10月12日）
+④調査の方法（全変換の列挙・ログとの突き合わせ・約304,000件の push の精査・
+公開イメージの静的解析）と、Docker 自身が書いた検出の限界
+⑤できたこと/できなかったことの切り分け
+⑥恒久対策5点と利用者の取るべき行動3点、を確認した。**
+
+**到達できなかったもの**——**①NVD の CVE-2026-105445 のページ
+（CVSS 基本値と評価ベクトルは未確認。齟齬1に記録）
+②The Hacker News の記事本文（収集時に取得失敗。齟齬2に記録）。**
+**検索エンジンにも当該 CVE は索引されていない（公表2日後のため）。**
+
+**本記録が独自に整理した点**——**①露出期間765日＝2年1か月の算出
+②報告から修正まで約3時間30分・残存トークンの失効まで8日・
+公表まで12日の算出③「修正は3時間半、鍵の回収は8日」という
+工程の切れ目④原因を「変換機能のバグ」ではなく
+「秘密値を変えずに所有者を書き換える設計パターン」として読むこと
+⑤取得側で効く対策はダイジェスト固定であること
+⑥アドバイザリの時刻表記が EST/EDT で揺れている点の指摘。**
+**いずれも〈本記録の評価〉〈本記録の算出〉と明示した。**
+
+**被影響者数・無効化トークン数・報告者の氏名は非公表のため、
+未確定事項として残した**（未確定1・3）。
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Docker Hub</span><span class="b tag">CVE-2026-105445</span><span class="b tag">個人用アクセストークン</span><span class="b tag">PAT</span><span class="b tag">コンテナレジストリ</span><span class="b tag">ソフトウェアサプライチェーン</span><span class="b tag">権限管理</span><span class="b tag">設計上の不備</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-14 15:02 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
