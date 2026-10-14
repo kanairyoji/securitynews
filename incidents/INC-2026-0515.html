@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>rustc の生存期間検査に11年越しの穴 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0515</span>rustc の生存期間検査に11年越しの穴</h1>
+<header class="site-header">
+  <p class="subtitle">Rust コンパイラ（rustc）に、構造体の生存期間（ライフタイム）制約を 共変なフィールド代入で回り込める健全性（soundness）の穴があることが 2026年10月13日に GitHub で報告された——unsafe を1文字も書いていない 安全な Rust コードが生存期間検査を通過してコンパイルに成功し、 Drop 実装で参照を外へ退避させることで、有効範囲を抜けた スタック上のメモリを実行時に読み出せる。報告者は nightly と 安定版 1.85.0 以降で再現すると述べ、別の報告者は 2015年10月公開の 1.4.0 でも再現すると示した。Rust チームは I-unsound / P-high を付与したが、 本記録の確認時点で修正提案 PR #164277 は未マージであり、 修正版の番号も公開時期も公表されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月13日（GitHub Issue</span>
+  <span>最終更新: 2026年10月14日</span>
+</div>
+
+<div class="lead"><p><strong>unsafe を書かなければメモリ安全、という前提そのものに穴がありました。</strong></p>
+<p><strong>2026年10月13日、Rust コンパイラ（rustc）の GitHub リポジトリに、構造体の生存期間制約を共変なフィールド代入で回り込める問題が報告されました（Issue #164250）</strong>（出典1）。<strong>報告者は jsnell 氏で、Rust チームの lcnr 氏が「struct's lifetime requirements can be bypassed via covariant field assignment」（原文英語: 構造体の生存期間要件が共変なフィールド代入で回り込める）に改題しています</strong>（出典1）。</p>
+<p><strong>本記録が重く見るのは、これが unsafe ブロックを使わない「安全な Rust」の側で起きている点です</strong>（出典1。評価は本記録）。<strong>Rust の売りは、所有権と借用検査によってコンパイル時にメモリ安全性を保証することにあります。</strong> <strong>設計上、生存期間の制約を満たさないコードはコンパイル段階で拒否されるはずで、unsafe を使わないコードは原則としてこの種の問題を生まないことになっています</strong>（出典3。整理は本記録）。</p>
+<p><strong>ところが報告された再現コードは、コンパイルを通ったうえで、実行するとスタック上の文字列をその有効範囲が終わった後に表示しました</strong>（出典1）。<strong>AddressSanitizer（メモリ検査ツール）を当てると「stack-use-after-scope」（有効範囲を抜けたスタックメモリの使用）で異常終了します</strong>（出典1）。<strong>つまりコンパイラが、本来許してはならない操作を止められていません。</strong></p>
+<p><strong>成立の鍵は Drop 実装です</strong>（出典1）。<strong>別の報告者 theemathas 氏の再現コードは、Drop 実装の中で<code>&amp;'static String</code> 型のフィールドへ <code>'static</code> ではない <code>&amp;String</code> を代入し、その参照をスレッドへ脱出させています</strong>（出典1）。<strong>lcnr 氏も <code>'static</code> を使わない変種を示しており、いずれも Drop 実装に依存します</strong>（出典1）。</p>
+<p><strong>期間の長さも際立ちます。</strong> <strong>報告者は「現在の nightly と、少なくとも 1.85.0 まで下った安定版で問題が起きる」（原文英語: "Issue on current nightly, and stables at least down to 1.85.0."）と述べました</strong>（出典1）。<strong>theemathas 氏は自分の変種が「1.18.0（2017年）以来ずっとコンパイルできている」（原文英語）と述べ、maxdexh 氏は別の変種が「1.4 以来、セグメンテーション違反を起こす／解放済みメモリを表示する」（原文英語）と報告しています</strong>（出典1）。<strong>Rust 1.4.0 は2015年10月の公開であり、約11年前にあたります</strong>（出典3）。<strong>lcnr 氏自身も「過去11年のあいだ見つからなかったこの種のバグが、実際にそう簡単に踏めるものであるはずがない」（原文英語: "A bug like this which has not been found during the last 11 years cannot actually be that easy to hit."）と書いています</strong>（出典1）。</p>
+<p><strong>一方で、慌てる種類の問題ではありません</strong>（出典1。評価は本記録）。<strong>lcnr 氏は「見た目は簡単に引ける（trigger できる）ように見えるが、これを悪用するには意図的に悪意のある Drop 実装が必要である」（原文英語: "While it looks easy to trigger, to exploit this you need an intentionally malicious <code>Drop</code> implementation."）と述べています</strong>（出典1）。<strong>また「この健全性の穴が偶然メモリ安全性の問題を引き起こしてきた可能性は非常に低い」（原文英語）とも書いています</strong>（出典1）。<strong>付与された優先度は I-unsound / P-high で、最上位の P-critical ではありません</strong>（出典1）。</p>
+<p><strong>ただし本記録は、これを「安心材料」とだけ読むべきではないと考えます</strong>（本記録の評価）。<strong>「意図的に悪意のある Drop 実装が要る」という条件は、言い換えれば「自分が書いていないコードを取り込む経路」では成立しうるということです</strong>（本記録の評価）。<strong>依存クレートの中身を読まずに使う運用、あるいは利用者が投稿したコードをコンパイル・実行する基盤では、条件の意味が変わります。</strong></p>
+<p><strong>修正はまだ着地していません</strong>（出典2）。<strong>2026年10月13日に PR #164277「require MIR local types to be well-formed」（原文英語: MIR のローカル変数の型に整合性を要求する）が提出され、MIR 借用検査の段階で一時変数の型に整合性検査を課す変更が示されています</strong>（出典2）。<strong>しかし本記録の確認時点でレビュー待ち（S-waiting-on-review）であり、承認は付いておらず、レビュア側からは検査範囲についての質問が未回答のまま残っています</strong>（出典2）。<strong>修正版の番号と公開時期は公表されていません。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>不備が導入された正確な時点・原因となった変更</span><span class="b rsn">公表されていない</span><div class=sm>**「少なくとも 1.4 以来」までは分かっているが、 どの変更で入ったのかは公表されていない**（出典1）。 **変種ごとに成立する最古の版が 1.4 / 1.18.0 と異なることから、 単一の原因とは限らない可能性がある**（本記録の評価）。</div></li><li><span class=ui>影響を受ける実際のコード・クレートの数</span><span class="b rsn">公表されていない</span><div class=sm>**「どれだけの既存コードがこの穴を踏んでいるか」を 調べた結果は公表されていない**（出典1・2・3）。 **lcnr 氏は「この健全性の穴が偶然メモリ安全性の問題を 引き起こしてきた可能性は非常に低い」（原文英語）と述べているが、 これは見立てであり、調査結果として示されたものではない**（出典1。評価は本記録）。</div></li><li><span class=ui>修正版の番号と公開時期</span><span class="b rsn">公表されていない</span><div class=sm>**PR #164277 は本記録の確認時点でレビュー待ちであり、 どの Rust 版で修正されるか、いつ出るかは公表されていない**（出典2）。 **既存の安定版へ遡って修正されるか（backport の有無）も示されていない** （本記録の留保）。</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**公開の議論の中に、実際に攻撃へ使われた事例への言及は無い**（出典1・3）。 **本記録でも悪用を示す資料は確認できなかった。**</div></li><li><span class=ui>修正によって既存コードがコンパイルできなくなる範囲</span><span class="b rsn">調査中</span><div class=sm>**PR #164277 の提出者自身が、高階（higher-ranked）生存期間の 既存試験がコンパイルエラーになることに気づき 「コンパイルエラーになります。これは期待された挙動ですか」 （原文英語: &quot;Will produce a compile error. Is that expected?&quot;）と 質問しているが、回答は示されていない**（出典2）。 **本記録の評価として、健全性の穴を閉じる修正は これまで通っていたコードを落としうるため、 利用者側の影響範囲が論点になる。**</div></li><li><span class=ui>検査範囲を型変換（cast）や型注釈（type ascription）まで広げるべきかの判断</span><span class="b rsn">調査中</span><div class=sm>**レビュアの dingxiangfei2009 氏が 「型変換やユーザの型注釈も整合性検査すべきではないか」 （原文英語: &quot;Hmm should we also WF-check casts and user type ascriptions?&quot;）と問うているが、回答は示されていない**（出典2）。 **本記録の評価として、これは「同じ型の穴が他の経路にも 残っていないか」という問いである。**</div></li><li><span class=ui>発見の端緒（なぜこの時点で見つかったか）</span><span class="b rsn">公表されていない</span><div class=sm>**jsnell 氏がどのような経緯でこの構造に行き当たったかは 公表されていない**（出典1）。 **11年潜んでいたものが2026年10月に報告された理由は読み取れない**（本記録の整理）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Rust Project（rust-lang）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Rust を利用する組織・開発者（nightly および安定版 1.85.0 以前を含む広範囲）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>jsnell</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>theemathas・maxdexh・lcnr（GitHub 上の報告者・メンテナ）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Li-Zheng-Rong</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>不備が発見されずに残っていた期間</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>11<span class=fu>年</span></div><div class=fn>**lcnr 氏の「過去11年のあいだ見つからなかった」という記述にもとづく**（出典1）。 **maxdexh 氏の変種が Rust 1.4（2015年10月公開）で再現することと整合する** （出典1・3）。 **confidence は approx とした**——**「11年」は丸めた表現であり、 不備が導入された正確な時点は公表されていない**（本記録の整理）〈未確定1〉。 **なお変種ごとに成立する最古の版は異なり、 theemathas 氏の変種は 1.18.0（2017年）以降である**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>再現が確認された最古の安定版（マイナー番号）</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>Rust 1.x のマイナー番号</span></div><div class=fn>**maxdexh 氏が「1.4 以来」再現すると報告していることにもとづく**（出典1）。 **値は「Rust 1.4」のマイナー番号 4 を表す。** **confidence は min とした**——**1.4 より前の版で再現するかは 検証されていない**（本記録の整理）。 **nature は population（規模の分母ではなく識別のための数値）として格納した** ——**figure_nature にバージョン番号に相当する語が無いためである**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>スレッドに投稿された再現コードの作者数（少なくとも）</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>名</span></div><div class=fn>**jsnell 氏（原報告）・theemathas 氏・lcnr 氏・maxdexh 氏の 4名が異なる再現コードを示している**（出典1）。 **confidence は min とした**——**一部のコメントが 重複・話題外として折りたたまれているため、全数は確認できない**（出典1）。 **単位は「名」（人）であり、再現コードの「件」数ではない**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>報告から修正提案の提出までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>0<span class=fu>日</span></div><div class=fn>**Issue #164250 の開設と PR #164277 の提出はいずれも 2026年10月13日である（同日）**（出典1・2。算出は本記録）。 **ただし提出が速いことは着地の速さを意味しない** ——**本記録の確認時点で PR は未マージである**（出典2。評価は本記録）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**以下は、報告された再現コードが実際に何をしたかの記述である**（出典1）。 **実環境での攻撃の観測ではない**〈未確定4〉。 **意図的に悪意のある Drop 実装を含む安全な Rust コード（unsafe 無し）が、 構造体の生存期間制約を共変なフィールド代入で回り込み、 コンパイラの生存期間検査を通過する**（出典1）。 **実行すると、Drop 実装によって退避された参照を通じて、 有効範囲を抜けたスタック上のメモリが読み出される**（出典1）。 **AddressSanitizer は stack-use-after-scope として検出する**（出典1）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**意図的に悪意のある Drop 実装を含む Rust コードが、 コンパイル対象として取り込まれる**（出典1。 「取り込まれる」という経路の整理は本記録）。 **lcnr 氏は「これを悪用するには意図的に悪意のある Drop 実装が 必要である」（原文英語）と述べている**（出典1）。 **実際にそのようなコードが配布された事例は公表されていない**〈未確定4〉。</div><div class=fn>根拠: Issue #164250 に投稿された再現コード群、および lcnr 氏の悪用条件に関する発言（出典1）。</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**構造体の生存期間制約（例: 型引数への `T: &#x27;static`）を、 共変なフィールドへの代入を経由して回り込む**（出典1）。 **コンパイラは、制約を満たさない短命な参照を `Option` のフィールドへ格納することを許す**（出典1・3）。 **コンパイルは成功し、エラーも警告も報告されない**（出典1）。</div><div class=fn>根拠: Issue の題名——&quot;struct&#x27;s lifetime requirements can be bypassed via covariant field assignment&quot;（原文英語）——および 報告された再現コードがコンパイルを通る事実（出典1）。</div></li><li><div class=stg><span class="b stage">3. 永続化</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**構造体の実体が破棄されるときに走る Drop 実装の中で、 制約を満たさない参照を別の場所へ退避させる**（出典1・3）。 **theemathas 氏の変種では、Drop 実装の中で `&amp;&#x27;static String` 型のフィールドへ非 `&#x27;static` の `&amp;String` を代入し、 その参照をスレッドへ脱出させている**（出典1）。 **lcnr 氏も `&#x27;static` を使わない変種を示しており、 いずれも Drop 実装に依存する**（出典1）。</div><div class=fn>根拠: Issue #164250 の再現コードと、 A-destructors ラベルの付与（出典1）。</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**元のデータが無効になった後も、退避された参照から読み出せる**（出典1・3）。 **報告者の試験プログラムは、実行後に 他のデータで上書きされたメモリの内容を読み出した**（出典3）。 **AddressSanitizer を当てると stack-use-after-scope（有効範囲を抜けたスタックメモリの使用）で 異常終了する**（出典1）。 **maxdexh 氏の変種は「セグメンテーション違反を起こす／ 解放済みメモリを表示する」（原文英語）**（出典1）。</div><div class=fn>根拠: 原報告の実行結果と AddressSanitizer の出力、 および maxdexh 氏の報告（出典1・3）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>報告（10月13日）から修正提案の提出（10月13日）まで</div><div class=mv>**0日（同日。本記録の算出）**（出典1・2）。 **ただしこれは着地までの時間ではない** ——**本記録の確認時点で PR は未マージであり、 承認レビューも付いていない**（出典2。評価は本記録）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **公開で進めれば、利用者は自分の環境が該当するかを 自分で判定でき、別の変種も集まる**（本記録の整理。 実際に4名が異なる再現コードを投稿している。出典1）。 **一方、修正版が存在しない状態で再現コードが そろって公開されていることになる**（本記録の整理）。</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **P-critical にすれば、修正と緊急リリースが急がれる**（本記録の整理）。 **一方、11年見つからなかった問題を最上位に置くと、 より踏まれやすい問題への資源配分が崩れる**（本記録の整理）。</div></li></ul></div>
+<section id="s6"><h2>unsafe を書いていないコードが、有効範囲を抜けたスタックメモリを読む<span class="b slot">原因・手口</span></h2><p><strong>Rust は、所有権と借用検査によって、プログラムがデータを参照していられる期間をコンパイル時に制限します</strong>（出典3）。<strong>データが無効になった後に読まれることを防ぐ仕組みであり、生存期間の制約を満たさないコードはコンパイル段階で拒否されるのが設計上の建前です</strong>（出典3）。</p>
+<p><strong>報告された不備は、この拒否が働かない経路です</strong>（出典1）。<strong>構造体に生存期間の制約が付いていても、共変（covariant）なフィールドへの代入を経由すると、制約を満たさない短命な参照を格納できます</strong>（出典1）。<strong>原報告の例では、型引数に <code>'static</code>（プログラムの実行期間ずっと有効）を要求しているにもかかわらず、局所的なブロックの中でしか有効でない文字列への参照を<code>Option</code> のフィールドへ入れることをコンパイラが許しました</strong>（出典1・3）。</p>
+<p><strong>ここで Drop 実装が効いてきます</strong>（出典1）。<strong>構造体の実体が破棄されるときに走る Drop の中で、その参照を別の場所へ退避させられます</strong>（出典1・3）。<strong>theemathas 氏の変種は、Drop 実装の中で<code>&amp;'static String</code> 型のフィールドへ非 <code>'static</code> の <code>&amp;String</code> を代入し、その参照をスレッドへ脱出させています</strong>（出典1）。<strong>結果として、元のデータが無効になった後も参照が生き残ります。</strong></p>
+<p><strong>報告者の試験プログラムはコンパイルを通っただけでなく、実行すると他のデータで上書きされたメモリの内容を読み出しました</strong>（出典3）。<strong>AddressSanitizer を当てると「stack-use-after-scope」（有効範囲を抜けたスタックメモリの使用）で止まります</strong>（出典1）。<strong>つまり実際に、本来許してはならない操作がコンパイラを通っています。</strong></p>
+<p><strong>修正提案が触っているのは、MIR（コンパイラの中間表現）の借用検査の型チェックです</strong>（出典2）。<strong>種別が <code>LocalKind::Temp</code>（一時変数）のローカル変数について、その型に整合性（WellFormed）の義務を課す変更であり、言い換えれば「一時変数の型が制約を満たしているかをこれまで確認していなかった」ということになります</strong>（出典2。整理は本記録）。</p></section>
+<section id="s7"><h2>11年前の安定版でも再現する——「どの版なら安全か」を言える状態ではない<span class="b slot">被害規模・影響範囲</span></h2><p><strong>影響範囲の広さは、報告されている再現版の幅から読み取れます</strong>（出典1）。</p>
+<p><strong>報告者 jsnell 氏は「現在の nightly と、少なくとも 1.85.0 まで下った安定版で問題が起きる」（原文英語）と述べました</strong>（出典1）。<strong>theemathas 氏は自分の変種が「1.18.0（2017年）以来ずっとコンパイルできている」（原文英語）と述べ、maxdexh 氏は別の変種が「1.4 以来、セグメンテーション違反を起こす／解放済みメモリを表示する」（原文英語）と報告しています</strong>（出典1）。<strong>Rust 1.4.0 の公開は2015年10月です</strong>（出典3）。</p>
+<p><strong>本記録が重く見るのは、変種ごとに成立する最古の版が1.4 / 1.18.0 / 1.85.0 とばらついている点です</strong>（出典1。評価は本記録）。<strong>これは「この版から入った」と特定できていないことを意味します。</strong> <strong>したがって利用者の側から見ると、「自分の使っている Rust の版は該当するか」を公表資料から判定する手立てが現時点ではありません</strong>（本記録の評価）。</p>
+<p><strong>一方で、影響の表れ方は限定的です</strong>（出典1）。<strong>lcnr 氏は「これを悪用するには意図的に悪意のある Drop 実装が必要である」（原文英語）と述べており、偶然のコードがこの穴を踏む可能性は低いという見立てです</strong>（出典1）。<strong>ただし「どれだけの既存コードが実際に踏んでいるか」を調べた結果は公表されていません</strong>（出典1・2・3）〈未確定2〉。</p></section>
+<section id="s8"><h2>「意図的に悪意のある Drop 実装が要る」という条件は、依存関係では意味が変わる<span class="b slot">評価・解釈</span></h2><p><strong>Rust チームが P-critical ではなく P-high とした理由は、公開の議論から読み取れます</strong>（出典1）。</p>
+<p><strong>lcnr 氏は「このバグは P-high であり、実際に踏んだ人がいたかどうかに関わらず P-critical にはならなかっただろう」（原文英語）、「過去11年のあいだ見つからなかったこの種のバグが、実際にそう簡単に踏めるものであるはずがない」（原文英語）、「この健全性の穴が偶然メモリ安全性の問題を引き起こしてきた可能性は非常に低い」（原文英語）と述べています</strong>（出典1）。<strong>そして「見た目は簡単に引けるように見えるが、これを悪用するには意図的に悪意のある Drop 実装が必要である」（原文英語）としています</strong>（出典1）。<strong>実環境での悪用への言及は公開の議論に見当たりません</strong>（出典1・3）〈未確定4〉。</p>
+<p><strong>ここから先は本記録の評価です。</strong> <strong>「意図的に悪意のある Drop 実装が要る」という条件は、自分が書いたコードだけを動かす前提では強い制約です。</strong> <strong>しかし、その条件が満たされる経路は実際には存在します</strong>（本記録の評価）。</p>
+<p><strong>第一に、依存クレート（ライブラリ）です。</strong> <strong>Rust の開発では、crates.io から多数のクレートを取り込むのが通常の作りです</strong>（本記録の評価）。<strong>取り込んだクレートの Drop 実装を読んで確認する運用は、一般には行われていません。</strong> <strong>「unsafe が無いから安全」という審査基準を使っていた場合、本件はその基準をすり抜けます</strong>（本記録の評価）。</p>
+<p><strong>第二に、外部から受け取ったコードをコンパイル・実行する基盤です。</strong> <strong>プレイグラウンド、課題の自動採点、CI 上での利用者提供コードのビルドなどが該当します</strong>（本記録の評価）。<strong>これらは「悪意のあるコードが前提」の環境であり、unsafe の禁止をサンドボックスの一部として使っている場合、その前提が本件で崩れます</strong>（本記録の評価）。</p>
+<p><strong>第三に、本記録は優先度の判断そのものには異論を置きません</strong>（本記録の評価）。<strong>偶然のメモリ破壊としては確かに踏みにくく、11年見つからなかったことがその裏付けです</strong>（出典1）。<strong>論点は優先度ではなく、「unsafe の有無」を安全性の判定基準として使っている運用の側にあります</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>修正提案は同日に出たが、マージも修正版の時期も決まっていない<span class="b slot">未確定事項</span></h2><p><strong>修正提案は報告と同日に提出されました</strong>（出典1・2。算出は本記録）。<strong>PR #164277「require MIR local types to be well-formed」が2026年10月13日に提出され、<code>compiler/rustc_borrowck/src/type_check/mod.rs</code> で一時変数の型に整合性の義務を課す変更が示されています</strong>（出典2）。<strong>提出者は「これで再び健全になります（原文英語: "sound again :)"）」と書いています</strong>（出典2）。</p>
+<p><strong>しかし本記録の確認時点で、着地していません</strong>（出典2）。<strong>ラベルは T-compiler / T-types / WG-trait-system-refactor / S-waiting-on-review で、担当は lcnr 氏です</strong>（出典2）。<strong>承認レビューは付いていません</strong>（出典2）。</p>
+<p><strong>残っている論点が2つあります</strong>（出典2）。<strong>①レビュアの dingxiangfei2009 氏が「型変換やユーザの型注釈も整合性検査すべきではないか」（原文英語）と問うていますが、回答は示されていません</strong>（出典2）〈未確定6〉。<strong>②提出者自身が、高階生存期間の既存試験がコンパイルエラーになることに気づいて「これは期待された挙動ですか」（原文英語）と質問していますが、回答は示されていません</strong>（出典2）〈未確定5〉。</p>
+<p><strong>②は利用者に直接関わります</strong>（本記録の評価）。<strong>これまで通っていたコードが修正後に落ちる可能性があるということであり、修正版へ上げる際の作業量に跳ね返ります。</strong></p>
+<p><strong>修正版の番号も公開時期も公表されていません</strong>（出典1・2・3）〈未確定3〉。<strong>既存の安定版へ遡って修正されるかも示されていません</strong>（本記録の留保）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**rustc（Rust コンパイラ）の型・生存期間検査**（出典1）。 **具体的には、構造体の生存期間制約（型引数への `T: &#x27;static` 等）が、 共変（covariant）なフィールドへの代入で回り込める**（出典1）。 **修正提案が触っているのは `compiler/rustc_borrowck/src/type_check/mod.rs`（MIR 借用検査の型チェック）で、 種別 `LocalKind::Temp` のローカル変数の型に 整合性（WellFormed）の義務が課されていなかった**（出典2）。 **影響するのは nightly および安定版であり、 報告されている再現版は変種ごとに 1.4 以来／1.18.0 以来／少なくとも 1.85.0 以来と異なる**（出典1） 〈未確定1〉。 **成立には Drop 実装が要る（A-destructors ラベル）**（出典1）。</td></tr><tr><th>finding_name</th><td>**Issue #164250「struct&#x27;s lifetime requirements can be bypassed via covariant field assignment」（原文英語: 構造体の生存期間要件が 共変なフィールド代入で回り込める）**（出典1）。 **当初の題は「struct&#x27;s `T: &#x27;static` bound bypassed via covariant field assignment」で、lcnr 氏が改題した**（出典1）。 **Rust チームのラベルは C-bug / I-unsound / P-high / A-borrow-checker / A-destructors / A-lifetimes / A-variance / T-types**（出典1）。 **CVE 番号は確認できなかった**〈齟齬3〉。</td></tr><tr><th>exploit_status</th><td>**実環境での悪用の報告は確認できていない**（出典1・3）〈未確定4〉。 **一方、再現コードは公開されており、 少なくとも4名が異なる変種を投稿している**（出典1）。 **lcnr 氏は「見た目は簡単に引けるように見えるが、 これを悪用するには意図的に悪意のある Drop 実装が必要である」 （原文英語）と述べている**（出典1）。 **また「この健全性の穴が偶然メモリ安全性の問題を引き起こしてきた 可能性は非常に低い」（原文英語）としている**（出典1） ——**ただしこれは調査結果ではなく見立てである**（本記録の評価）〈齟齬4〉。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月14日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>**修正版は存在しない**（出典1・2）。 **修正提案 PR #164277「require MIR local types to be well-formed」が 2026年10月13日に提出されたが、 本記録の確認時点で open・S-waiting-on-review であり、 承認レビューは付いていない**（出典2）。 **修正版の番号・公開時期は公表されていない**〈未確定3〉。 **既存の安定版への遡及（backport）の有無も示されていない**（本記録の留保）。 **なお修正後に、高階生存期間を使う既存コードが コンパイルエラーになる可能性が提案の中で未回答のまま指摘されている**（出典2） 〈未確定5〉。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月14日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月14日（本記録の確認時点）　<b>詳細:</b> **公開の議論の中に、実際に攻撃へ使われた事例への言及は無い**（出典1・3）。 **本記録でも悪用を示す資料は確認できなかった**〈未確定4〉。 **lcnr 氏の「偶然メモリ安全性の問題を引き起こしてきた可能性は 非常に低い」（原文英語）という発言は、 偶発的な事故についての見立てであり、 意図的な悪用の有無を述べたものではない**（出典1。整理は本記録）。　<b>ログの有無:</b> **侵害を判定するための指標（IoC・ログの見方）は公表されていない** （出典1・2）。 **本記録の評価として、本件は実行時にログを残す類の事象ではない** ——**コンパイルは成功し、エラーも警告も出ない**（出典1）。 **公表されている検出手段は AddressSanitizer によるメモリ検査のみであり、 これは事後のログ調査ではなく試験時の手段である**（出典1。評価は本記録）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2015年10月（Rust 1.4.0 公開）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Rust 1.4.0 が公開される**（出典3）。 **後に maxdexh 氏が、この版でも再現コードが セグメンテーション違反を起こす／解放済みメモリを表示すると報告した （原文英語: &quot;segfaults/prints freed memory since 1.4&quot;）**（出典1）。 **これが「約11年」の起点である**（出典1・3。算出は本記録）。</td></tr><tr><td class="sm nowrap tw">2017年（Rust 1.18.0 以降）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**theemathas 氏の再現コードは「1.18.0（2017年）以来ずっと コンパイルできている」（原文英語: &quot;has been compiling ever since 1.18.0 (2017)&quot;）**（出典1）。 **変種ごとに成立する最古の版が異なる**（出典1。整理は本記録）。</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**jsnell 氏が rust-lang/rust に Issue #164250 を開設する**（出典1）。 **当初の題は「struct&#x27;s `T: &#x27;static` bound bypassed via covariant field assignment」で、後に lcnr 氏が 「struct&#x27;s lifetime requirements can be bypassed via covariant field assignment」へ改題した**（出典1）。 **報告には、コンパイルが通り実行時に有効範囲を抜けた スタック上の文字列を表示する再現コードと、 AddressSanitizer が stack-use-after-scope を報告することが示されている**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月13日ごろ（ラベル付与の正確な時刻は確認できていない）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Rust チームが Issue に C-bug / I-unsound / P-high / A-borrow-checker / A-destructors / A-lifetimes / A-variance / T-types を 付与する**（出典1）。 **rustbot が一度 P-critical を付けたが、表示されているのは P-high である**（出典1）。 **regression-from-stable-to-stable が付与された後、lcnr 氏が削除した**（出典1）。 **lcnr 氏は「このバグは P-high であり、実際に踏んだ人がいたかどうかに 関わらず P-critical にはならなかっただろう」（原文英語: &quot;This bug is a `P-high` issue and would have been `P-critical` regardless of whether people encountered it in the wild.&quot;）と説明している**（出典1）。 **ラベルが付いた正確な時刻は本記録では確認できていない**〈齟齬1〉。</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Li-Zheng-Rong 氏が修正提案 PR #164277 「require MIR local types to be well-formed」を提出する**（出典2）。 **変更箇所は `compiler/rustc_borrowck/src/type_check/mod.rs` で、 種別が `LocalKind::Temp` のローカル変数について、 その型に整合性（WellFormed）の義務を課す**（出典2）。 **maxdexh 氏の求めに応じて試験 `tests/ui/borrowck/local-type-wf-array-unification.rs` が追加された**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日 12:22 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**台湾の iThome Security が本件を報じる**（出典3）。 **「Rust型別檢查漏洞藏近11年」（Rust の型検査の不備が11年近く潜んでいた）と題し、 Nightly 開発版と少なくとも安定版 1.85.0 まで遡れること、 2015年10月公開の 1.4.0 でも通ること、 Rust チームが P-critical ではなく P-high としたこと、 MIR 段階に検査を加える修正提案が審査中であることを伝えた**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の確認。** **Issue #164250 は T-types の unsound issues プロジェクトで open / unblocked の状態にある**（出典1）。 **PR #164277 は open・S-waiting-on-review であり、 承認レビューは付いていない**（出典2）。 **修正版の番号・公開時期は公表されていない**（出典1・2）〈未確定3〉。 **なお Issue のスレッドは、スパム対策としてモデレータ（apiraino 氏）に よって collaborator のみ書き込み可に制限されている**（出典1）。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録は Issue #164250 のページから、 付与されているラベルの一覧と rustbot が一度 P-critical を 付けた経緯までは確認できた**（出典1）。 **しかし各ラベルがいつ付いたかは確認できなかった。** **timeline の T3 は「2026年10月13日ごろ」として記録し、 value には Issue 開設日と同じ 2026-10-13 を置いている**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**出典1 の maxdexh 氏の報告は「1.4 以来」（原文英語）であり、 版番号のみを示している**（出典1）。 **「2015年10月公開」という情報は出典3（報道）にのみ記載がある**（出典3）。 **本記録は Rust の公式リリース履歴を直接確認していない**（本記録の明示）。 **「約11年」という期間は、lcnr 氏自身が 「過去11年のあいだ見つからなかった」（原文英語）と述べていることで 一次資料側からも裏付けられている**（出典1）。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本件に CVE 番号が割り当てられているかは、 出典1・2 からは確認できなかった**（出典1・2）。 **出典3（報道）も CVE 番号に触れていない**（出典3）。 **Rust チームのラベルは I-unsound（健全性の問題）であり、 脆弱性勧告（RUSTSEC 等）の発行も確認できていない**（本記録の明示）。 **links.cves は空にしてある。**</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**lcnr 氏は「この健全性の穴が偶然メモリ安全性の問題を 引き起こしてきた可能性は非常に低い」（原文英語）と述べている**（出典1）。 **しかし crates.io のクレートを走査した等の 調査結果は示されていない**（出典1・2）〈未確定2〉。 **本記録はこれを見立てとして扱い、調査結果としては扱わない**（本記録の方針）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典1 が述べているのは「悪用には意図的に悪意のある Drop 実装が 必要である」（原文英語）までである**（出典1）。 **「ではその実装はどこから来るのか」を ①依存クレート ②外部提供コードをコンパイルする基盤 の2つに 整理したのは本記録の評価である**（本記録の明示）。 **出典1・2・3 はこの整理を示していない。**</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**本件が unsafe を使わないコードで成立することは 出典1・3 から確認できる事実である**（出典1・3）。 **しかし「だから unsafe を基準にした審査手順を見直すべきだ」という 結論は本記録の評価である**（本記録の明示）。 **出典1・2・3 は利用者側の対策に言及していない。**</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**Issue の開設と PR の提出がいずれも2026年10月13日であることは 出典1・2 から確認できる**（出典1・2）。 **「ただし未マージであり着地していない」という整理は 本記録の評価である**（本記録の明示）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>意図的に悪意のある Drop 実装を含む安全な Rust コード（unsafe 無し）→ rustc の生存期間検査を共変なフィールド代入で回り込む（MIR 借用検査で 一時変数の型に整合性検査が無かった）→ コンパイル成功（エラー・警告なし）→ Drop 実装が制約違反の参照を外部（スレッド等）へ退避 → 有効範囲を抜けたスタックメモリの読み出し（stack-use-after-scope）／ 検知は AddressSanitizer のみ ／ 修正提案 PR #164277 はレビュー待ちで 修正版の時期は未公表（Issue #164250・I-unsound・P-high・約11年潜伏）</div><div class=svgwrap><svg viewBox="0 0 1406 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,111.0 C193.0,111.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C397.0,60.0 397.0,66.0 424,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,66.0 424,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,66.0 C499.0,66.0 499.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C1111.0,162.0 1111.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,74.0 C907.0,74.0 907.0,66.0 424,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,162.0 C907.0,162.0 907.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪意のある Drop 実</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">装を書く側（unsafe</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> は使わない）</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">原文英語 &quot;to exp</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">loit this yo</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">依存クレートとして取り込</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">まれる経路（本記録の評価</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">出典1・2・3 はこの経</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">路に言及していない（本記</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部提供コードをコンパイ</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル・実行する基盤（本記録</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の評価）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">unsafe の禁止を隔</text><text x="295.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">離手段に使っている場合に</text><rect x="424" y="22.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="44.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rustc の生存期間検</text><text x="499.0" y="58.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">査（共変なフィールド代入</text><text x="499.0" y="72.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で回り込める）</text><text x="499.0" y="85.0" text-anchor="middle" fill="#f48fb1" font-size="10">Issue #16425</text><text x="499.0" y="97.0" text-anchor="middle" fill="#f48fb1" font-size="10">0 の題名——&quot;stru</text><rect x="424" y="124.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MIR 借用検査（一時変</text><text x="499.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">数 LocalKind:</text><text x="499.0" y="174.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">:Temp の型に整合…</text><text x="499.0" y="187.0" text-anchor="middle" fill="#f48fb1" font-size="10">PR</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コンパイル成功（エラー・</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">警告なし／安定版 1.4</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 以降で再現）</text><text x="703.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">1.4 以来／1.18.</text><text x="703.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">0 以来／少なくとも 1</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Drop 実装が制約違反</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の参照を外部（スレッド等</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）へ退避</text><text x="907.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">theemathas 氏</text><text x="907.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">の変種は &amp;&#x27;stati</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">有効範囲を抜けたスタック</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メモリの読み出し（sta</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ck-use-afte…</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">原報告は上書きされたメモ</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">リの内容を表示。maxd</text><rect x="1036" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AddressSanit</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">izer（唯一公表されて</text><text x="1111.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いる検知手段）</text><text x="1111.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">報告者が実際にこの方法で</text><text x="1111.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">確認している（出典1）</text><rect x="1240" y="30.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Rust Project</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（I-unsound /</text><text x="1315.0" y="80.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> P-high を付与…</text><text x="1315.0" y="93.0" text-anchor="middle" fill="#80cbc4" font-size="10">rustbot が一度 </text><text x="1315.0" y="105.0" text-anchor="middle" fill="#80cbc4" font-size="10">P-critical を</text><rect x="1240" y="132.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PR</text><text x="1315.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">S-waiting-on</text><text x="1315.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">-review。検査範囲</text></svg></div><div class=fn>rust-lang/rust Issue #164250（出典1）と PR #164277（出典2）にもとづく。 **これは報告された再現コードの経路であり、実環境での攻撃の観測ではない** （出典1。明示は本記録）〈未確定4〉。 **破線で示した「依存クレート経由の取り込み」「外部提供コードのコンパイル基盤」は 本記録の評価である**——**出典1 が述べているのは 「悪用には意図的に悪意のある Drop 実装が必要である」（原文英語）までで、 その実現経路の整理は示されていない**（本記録の明示）。 **AddressSanitizer による検知は、報告者が実際に用いた方法である**（出典1）。 **修正提案は MIR 借用検査の段階で一時変数の型に 整合性（WellFormed）の義務を課すものだが、 本記録の確認時点で未マージである**（出典2）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**検知の機会について、公表資料に記載は無い**（出典1・2）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価として、ここが本来の検知点である。** **修正提案は MIR 借用検査の段階で一時変数の型に 整合性検査を課すことでこの段階を止める**（出典2）。 **検査が無かったこと自体は出典2 の変更内容から確認できる。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価として、実行時に Drop の中で参照が 退避されることを一般の運用で見分ける手立ては無い。** **公表資料に検知手段の記載は無い**（出典1・2）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**AddressSanitizer のようなメモリ検査ツールを 当てていれば検出できる**（出典1。評価は本記録）。 **報告者が実際にこの方法で確認している**（出典1）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**本件では公開で進める判断が妥当である。** **理由は悪用条件にある**——**「意図的に悪意のある Drop 実装」が 必要であり、再現コードの公開が攻撃の敷居を下げる度合いが小さい** （出典1。評価は本記録）。 **一方で、公開によって得られたものは明確である** ——**4名が別の変種を持ち寄り、 成立する最古の版が 1.85.0 から 1.4 まで遡った**（出典1）。 **非公開で進めれば、この範囲は分からなかった**（本記録の評価）。 **ただし本記録は、修正版の見通しが どこにも示されていない点を不足と見る**（出典1・2）〈未確定3〉。 **利用者が「待つ」以外の判断をするための材料が無い。**</td></tr><tr><td></td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価**——**優先度の判断そのものには異論を置かない。** **偶発的に踏むものとしては確かに踏みにくく、 11年見つからなかったことがその裏付けになっている**（出典1）。 **判断理由を公開の場で説明したことも、 利用者が自分で評価できる材料になっている**（出典1。評価は本記録）。 **partial とした理由は2点ある**（本記録の評価）。 **①「偶然メモリ安全性の問題を引き起こしてきた可能性は非常に低い」 という見立てが、既存コードを調べた結果としては示されていない** （出典1）〈未確定2〉。 **②「意図的に悪意のある Drop 実装が必要」という条件は、 依存クレートや利用者提供コードをコンパイルする基盤では 意味が変わるが、その区別が公開の議論に見当たらない** （出典1。この指摘は本記録の評価）。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「メモリ安全な言語を採用した」ことを、保証ではなく確率の改善として扱う**</div><div class=lw>**Rust の所有権・借用検査はコンパイル時にメモリ安全性を 保証する設計である**（出典3）。 **本件は、その保証を実装している側（コンパイラ）に 約11年のあいだ穴があったという報告である**（出典1）。 **unsafe を書いていないコードが、 有効範囲を抜けたスタックメモリを読み出した**（出典1・3）。 **言語の設計と、その設計を実現する実装は別物である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①メモリ安全な言語への移行を進めている場合、 その効果を「メモリ安全性の問題が無くなる」ではなく 「大幅に減る」として経営報告に書く。** **②移行を理由に、メモリ破壊系の脆弱性に対する 検知・対応の備えを撤去していないかを確認する。** **③コンパイラ・ランタイム自体を、 脆弱性情報を追う対象の資産として登録する ——本件は「使っているライブラリ」ではなく「使っている道具」の問題である。**</div></li><li><div class=lp>**サプライチェーン審査の基準に「unsafe の有無」を使っていないかを点検する**</div><div class=lw>**本件の悪用条件は、lcnr 氏によれば 「意図的に悪意のある Drop 実装」である**（出典1）。 **unsafe ブロックは不要である**（出典1・3）。 **「unsafe が無いから安全」という審査基準を使っていた場合、 本件はその基準をすり抜ける**（本記録の評価）。 **Rust の開発では多数の依存クレートを取り込むのが通常であり、 その Drop 実装まで読む運用は一般に行われていない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①Rust を使う開発について、依存クレートの審査基準を文書で確認する。** **②基準が「unsafe の有無」中心になっている場合、 供給元の信頼性（維持者・更新履歴・取り込み経路）を 基準に加える。** **③依存クレートの一覧（Cargo.lock）が 資産管理の対象になっているかを確認する。**</div></li><li><div class=lp>**unsafe の禁止をサンドボックスの代わりに使っている基盤を洗い出す**</div><div class=lw>**外部から受け取ったコードをコンパイル・実行する基盤 （プレイグラウンド、課題の自動採点、利用者提供コードのビルド等）では、 「悪意のあるコードが前提」である**（本記録の評価）。 **本件は、unsafe を使わないコードでメモリ安全性を 破れることを示した**（出典1）。 **unsafe の禁止を隔離手段の一部として使っていた場合、 その前提が崩れる**（本記録の評価）。 **なお出典1・2・3 はこの用途に言及していない**（本記録の明示）。</div><div class=la><b>取るべき行動</b> **①外部提供コードをコンパイル・実行する基盤の一覧を作る。** **②各基盤について、隔離が何によって成立しているかを書き出す （言語機構／プロセス分離／権限制限／ネットワーク制限）。** **③言語機構だけに依存している基盤があれば、 実行時の隔離を追加する計画を立てる。**</div></li><li><div class=lp>**「修正版が無い」状態での意思決定の型を、あらかじめ決めておく**</div><div class=lw>**本記録の確認時点で、適用できる修正版は存在せず、 修正版の番号・公開時期も公表されていない**（出典1・2）〈未確定3〉。 **修正提案 PR #164277 はレビュー待ちで、 承認も付いていない**（出典2）。 **さらに修正後に既存コードがコンパイルできなくなる可能性が 提案の中で未回答のまま指摘されている**（出典2）〈未確定5〉。 **「パッチを当てる」が選択肢にない期間が存在する**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①修正版が存在しない脆弱性について、 「待つ」「回避する」「使用を止める」のどれを選ぶかの 判断基準を事前に決める（悪用条件の厳しさ・自組織の該当性で分ける）。** **②判断に要る材料（悪用条件・自組織の該当性・観測の有無）を 誰が集めるかを決める。** **③本件については「悪用条件が厳しく、 実環境での悪用の報告が無い」ことを根拠に通常運用を続ける判断が 成り立つ——ただしその根拠を記録に残し、 修正版が出たら更新する。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**自組織の Rust コードで、Drop 実装を持つ型と生存期間制約の組み合わせを把握する**</div><div class=lw>**本件の成立には Drop 実装が要る**（出典1）。 **theemathas 氏の変種は Drop の中で `&amp;&#x27;static String` 型のフィールドへ非 `&#x27;static` の参照を代入し、 スレッドへ脱出させている**（出典1）。 **lcnr 氏も `&#x27;static` を使わない変種を示しており、 いずれも Drop に依存する**（出典1）。 **A-destructors ラベルが付与されている**（出典1）。</div><div class=la><b>取るべき行動</b> **①自組織のコードで、手書きの `Drop` 実装を持つ型を列挙する。** **②そのうち、参照（特に生存期間制約の付いたフィールド）を 保持している型を抽出する。** **③Drop の中で参照を外部（スレッド・グローバル・別の構造体）へ 渡している箇所があれば、意図した設計かを確認する ——本件とは別に、設計として危うい形である。**</div></li><li><div class=lp>**メモリ検査ツール（AddressSanitizer 等）を試験工程に用意する**</div><div class=lw>**報告者は AddressSanitizer によって stack-use-after-scope を確認している**（出典1）。 **コンパイラの検査が通ってしまう以上、 ビルド時には手がかりが残らない**（本記録の評価）。 **また解放済みメモリの読み出しは必ずクラッシュするとは限らず、 黙って誤った値を返す形になりうる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①Rust のコードについて、 `-Zsanitizer=address` 等を使った試験の実行手段を用意する （nightly が要る点を含めて手順化する）。** **②本番ビルドには使わない前提で、 CI の夜間ジョブ等に組み込む。** **③試験が実際にその経路を通さなければ検出できないため、 Drop が走る経路を踏む試験を用意する。**</div></li><li><div class=lp>**使用中の Rust 版と、影響範囲の公表状況を突き合わせる**</div><div class=lw>**報告されている再現版は、変種ごとに 1.4 以来／1.18.0 以来／少なくとも 1.85.0 以来とばらついている**（出典1）。 **「この版から入った」という特定は公表されていない**（出典1）〈未確定1〉。 **したがって現時点では、公表資料から 「自分の使っている版は該当しない」と言える状態ではない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①使用中の Rust のツールチェイン版を、 プロジェクトごとに書き出す（`rust-toolchain.toml` の有無を含む）。** **②Issue #164250 と PR #164277 を購読し、 修正版が示された時点で該当性を判定できる状態にしておく。** **③「安定版だから安全」という整理をしない ——本件は安定版で再現している。**</div></li><li><div class=lp>**修正後にコンパイルが通らなくなる可能性を、移行計画に織り込む**</div><div class=lw>**PR #164277 の提出者自身が、高階生存期間の既存試験が コンパイルエラーになることに気づき 「これは期待された挙動ですか」（原文英語）と質問しているが、 回答は示されていない**（出典2）〈未確定5〉。 **健全性の穴を閉じる修正は、 これまで通っていたコードを落としうる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①Rust 版の更新を、機能追加ではなく 「ビルドが落ちる可能性のある変更」として扱う手順にする。** **②nightly でのビルド確認を定期的に回す経路を用意し、 修正がマージされた時点で自組織のコードが通るかを早期に見る。** **③高階生存期間（`for&lt;&#x27;a&gt;` 等）を使っている箇所を 把握しておく——影響が出るならここから出る。**</div></li><li><div class=lp>**「unsafe を grep して0件なら安全」という確認手順を見直す**</div><div class=lw>**本件は unsafe を1文字も使わないコードで成立する**（出典1・3）。 **Rust の設計上、unsafe を使わないコードは 原則としてこの種の問題を生まないことになっている**（出典3）。 **その前提が、コンパイラの実装の穴によって崩れた**（出典1）。</div><div class=la><b>取るべき行動</b> **①依存関係の審査やコードレビューの手順書に 「unsafe が無いこと」を安全の根拠として書いていないか確認する。** **②書いてある場合、「unsafe の無いコードでも コンパイラの健全性の問題を通じてメモリ安全性が破れうる」 という留保を添える。** **③`#![forbid(unsafe_code)]` を使っている場合、 それが保証するのは「unsafe を書いていないこと」であり 「メモリ安全であること」ではない、と手順書に明記する。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Rust でコンパイルするコードを自組織で開発・運用している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 使用中の Rust 安定版が 1.4 以降である（実質的にすべての利用者）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自組織で内容を読んでいない依存クレートを取り込んでいる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 外部から受け取ったコードをコンパイル・実行する基盤を持っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 依存関係の審査基準やコードレビュー手順に「unsafe の有無」を安全の根拠として書いている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自組織の Rust コードに手書きの Drop 実装があり、その中で参照を外部へ渡している</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月13日（開設） Rust Project（rust-lang/rust GitHub Issues）</span> <a href="https://github.com/rust-lang/rust/issues/164250" target="_blank" rel="noreferrer noopener nofollow">&quot;struct&#x27;s lifetime requirements can be bypassed via covariant field assignment · Issue #164250 · rust-lang/rust&quot;（原文英語）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本件の一次資料。** **group は primary_party とした**——**報告者 jsnell 氏自身は 独立した研究者だが、本ページは Rust Project の公式課題追跡であり、 ラベル付与（I-unsound / P-high）と メンテナ lcnr 氏の優先度判断の説明もここに載っている**（本記録の整理）。 **本記録が確認した内容**——**①題名・開設日（2026年10月13日）・ 報告者（jsnell 氏）と改題（lcnr 氏による） ②再現コードがコンパイルを通り、AddressSanitizer で stack-use-after-scope になること ③影響版の記述（nightly および「少なくとも 1.85.0 まで下った安定版」、 theemathas 氏の 1.18.0 以来、maxdexh 氏の 1.4 以来） ④ラベル（C-bug / I-unsound / P-high / A-borrow-checker / A-destructors / A-lifetimes / A-variance / T-types）と rustbot が一度 P-critical を付けた経緯、 regression-from-stable-to-stable の付与と削除 ⑤Drop 実装への依存 ⑥lcnr 氏の発言4点（P-high の理由・11年の言及・偶発の可能性・ 悪用には意図的な悪意ある Drop が必要） ⑦リンクされた PR #164277 の存在 ⑧スレッドが collaborator のみ書き込み可に制限されていること。** **ラベルが付与された正確な時刻は確認できなかった**〈齟齬1〉。）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月13日（提出） Rust Project（rust-lang/rust GitHub Pull Requests）</span> <a href="https://github.com/rust-lang/rust/pull/164277" target="_blank" rel="noreferrer noopener nofollow">&quot;require MIR local types to be well-formed · Pull Request #164277 · rust-lang/rust&quot;（原文英語）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**修正提案の一次資料。** **本記録が確認した内容**——**①題名・提出者（Li-Zheng-Rong 氏）・ 提出日（2026年10月13日）・`Li-Zheng-Rong:fix-164250` から `rust-lang:main` への提案であること ②状態が open であり、Issue #164250 にリンクしていること ③変更箇所が `compiler/rustc_borrowck/src/type_check/mod.rs` であり、 `LocalKind::Temp` のローカル変数の型に WellFormed 義務を課すこと ④試験 `tests/ui/borrowck/local-type-wf-array-unification.rs` が maxdexh 氏の求めで追加されたこと ⑤ラベル（T-compiler / T-types / WG-trait-system-refactor / S-waiting-on-review）と担当が lcnr 氏であること ⑥dingxiangfei2009 氏の検査範囲に関する質問が未回答であること ⑦提出者自身の高階生存期間の試験に関する質問が未回答であること ⑧承認レビューが付いていないこと。** **修正版の番号・公開時期の記載は無かった**〈未確定3〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月14日 12:22 UTC iThome Security（台湾）</span> <a href="https://www.ithome.com.tw/news/179665" target="_blank" rel="noreferrer noopener nofollow">&quot;Rust型別檢查漏洞藏近11年，違反記憶體安全限制的程式仍可通過編譯&quot; （原文中国語（繁体）: Rust の型検査の不備が11年近く潜んでいた—— メモリ安全の制約に違反するプログラムがなおコンパイルを通る）</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった報道。** **一次資料との照合結果**——**①「Nightly 開発版および少なくとも 安定版 1.85.0 まで遡れる」「2015年10月公開の 1.4.0 でも通る」 「P-critical ではなく P-high」「MIR 段階に検査を加える修正提案が 審査中」はいずれも出典1・2 と一致した。** **②Rust 1.4.0 の公開が2015年10月であるという情報は、 出典1 には版番号（1.4）のみが示されており、 公開年月は本報道にのみ記載がある**（本記録の明示）〈齟齬2〉。 **③本報道は「漏洞」（脆弱性）という語を使っているが、 出典1 のラベルは I-unsound（健全性の問題）であり、 CVE 番号は確認できなかった**（本記録の整理）〈齟齬3〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月14日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月14日収集分の記事 〈output/articles/20261014/0216_ithome-security_rust11.md〉 を起点に、**一次公表の裏取りを行った。**
+
+**裏取りできたもの**——**①rust-lang/rust Issue #164250 の本体を取得し、 題名（および lcnr 氏による改題）・開設日（2026年10月13日）・ 報告者（jsnell 氏）・再現コードがコンパイルを通って実行時に 有効範囲を抜けたスタック上の文字列を表示すること・ AddressSanitizer が stack-use-after-scope を報告すること・ 影響版の記述（nightly および「少なくとも 1.85.0 まで下った安定版」、 theemathas 氏の「1.18.0（2017年）以来」、maxdexh 氏の「1.4 以来」）・ ラベル（C-bug / I-unsound / P-high / A-borrow-checker / A-destructors / A-lifetimes / A-variance / T-types）と rustbot が一度 P-critical を 付けた経緯・regression-from-stable-to-stable の付与と削除・ Drop 実装への依存（theemathas 氏の変種が &amp;&#x27;static String フィールドへ 非 &#x27;static の参照を代入しスレッドへ脱出させること、 lcnr 氏の &#x27;static を使わない変種）・ lcnr 氏の発言4点（P-high の理由／11年の言及／偶発の可能性／ 悪用には意図的な悪意ある Drop 実装が必要）・ スレッドが collaborator のみ書き込み可に制限されていることを確認した。** **②PR #164277 を取得し、題名・提出者（Li-Zheng-Rong 氏）・ 提出日（2026年10月13日）・変更箇所 （compiler/rustc_borrowck/src/type_check/mod.rs で LocalKind::Temp の ローカル変数の型に WellFormed 義務を課す）・ 追加された試験（tests/ui/borrowck/local-type-wf-array-unification.rs）・ ラベル（T-compiler / T-types / WG-trait-system-refactor / S-waiting-on-review）と担当（lcnr 氏）・ dingxiangfei2009 氏の検査範囲に関する質問が未回答であること・ 提出者自身の高階生存期間の試験に関する質問が未回答であること・ 承認レビューが付いていないことを確認した。** **③報道（出典3）の記載——Nightly および少なくとも安定版 1.85.0 まで 遡れる、2015年10月公開の 1.4.0 でも通る、 Rust チームが P-critical ではなく P-high とした、 MIR 段階に検査を加える修正提案が審査中——が いずれも一次資料と一致することを照合した。**
+
+**到達できなかったもの**——**①ラベル付与の正確な時刻**〈齟齬1〉。 **②Rust 1.4.0 の公開年月の一次確認（公式リリース履歴は参照していない。 報道の記載と lcnr 氏の「11年」という発言で整合を確認した）**〈齟齬2〉。 **③CVE 番号・RUSTSEC 勧告の有無**〈齟齬3〉。 **④不備が導入された正確な時点**〈未確定1〉。 **⑤影響する既存コード・クレートの数**〈未確定2〉。 **⑥修正版の番号と公開時期**〈未確定3〉。
+
+**本記録が独自に整理した点**——**①「意図的に悪意のある Drop 実装が要る」 という悪用条件を、①依存クレート経由 ②外部提供コードをコンパイル・ 実行する基盤 の2つの経路に整理したこと**〈齟齬5〉。 **②「unsafe の有無」を安全の根拠に使う審査手順が本件を通すという指摘** 〈齟齬6〉。 **③報告と修正提案が同日（0日）であることが着地の速さを意味しないという読み** 〈齟齬7〉。 **④lcnr 氏の「偶然の可能性は非常に低い」を見立てとして扱い、 調査結果として扱わなかったこと**〈齟齬4〉。 **⑤修正後に既存コードがコンパイルできなくなる可能性を 利用者側の論点として引き出したこと**（出典2 の未回答の質問にもとづく）。 **いずれも〈本記録の評価〉〈本記録の整理〉と明示した。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Rust</span><span class="b tag">rustc</span><span class="b tag">メモリ安全性</span><span class="b tag">ライフタイム</span><span class="b tag">借用検査</span><span class="b tag">Drop</span><span class="b tag">soundness</span><span class="b tag">サプライチェーン</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-14 18:25 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

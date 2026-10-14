@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>HAProxy DPAPI にmTLS起因の認証外れ — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0512</span>HAProxy DPAPI にmTLS起因の認証外れ</h1>
+<header class="site-header">
+  <p class="subtitle">HAProxy の設定管理 API「HAProxy Data Plane API」に、相互TLS（mTLS）を有効にすると HTTP と UNIX ドメインソケットの認証が丸ごと外れる脆弱性（CVE-2026-109575・CWE-306・ CVSSv3.1 9.8・Critical）が2026年10月12日に公表された——Server.ConfigureAPI() が tls_ca と数値の tls_port を検出するとベーシック認証をハンドラ全体で無効化し、 mTLS は HTTPS 経路でしか強制されないため、同時に待ち受けている HTTP と UNIX ソケットが「認証なしで開く」状態になる。未認証の攻撃者が API の管理権限を得て 設定を平文で読み、raw 設定エンドポイントで設定そのものを置き換えられる。 修正は2026年10月9日公開の 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月12日（CVE-2026-109575 の公表）</span>
+  <span>最終更新: 2026年10月14日</span>
+</div>
+
+<div class="lead"><p><strong>認証を強くしたら、認証が外れました。</strong></p>
+<p><strong>2026年10月12日、HAProxy の設定管理 API である「HAProxy Data Plane API」の認証バイパス脆弱性 CVE-2026-109575 が公表されました</strong>（出典1）。<strong>CVSSv3.1 基本値は 9.8（Critical）、CWE-306（重要な機能に対する認証の欠如）、採番は MITRE です</strong>（出典1）。</p>
+<p><strong>本記録が重く見るのは、引き金が「設定の不備」ではなく「相互TLS認証（mTLS）を設定したこと」である点です</strong>（出典1。評価は本記録）。</p>
+<p><strong>CVE の記述によれば、TLS の CA（tls_ca）と数値の TLS ポート（tls_port）が設定されていると、HTTP・HTTPS・UNIX ドメインソケットの待ち受けが共有する1つのハンドラ上で、ベーシック認証が全体的に無効化されます</strong>（出典1）。<strong>ところが mTLS が強制されるのは HTTPS の経路だけです。</strong> <strong>結果として、同時に動いている HTTP と UNIX ソケットの待ち受けが「認証なしで開く（fail open）」状態になります</strong>（出典1）。</p>
+<p><strong>成立すると、未認証の攻撃者が API の管理権限を完全に取得し、設定を平文で読み出し、raw 設定エンドポイントを使って設定そのものを置き換えられます</strong>（出典1）。<strong>HAProxy はロードバランサであり、その設定とは「どの通信をどこへ送るか」そのものです</strong>（本記録の評価）。</p>
+<p><strong>影響範囲は広いです</strong>（出典1）。<strong>コミュニティ版は 2.2.0 から 3.4.3 まで、Enterprise 版も対応する系列が対象です。</strong> <strong>修正版は 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 で、現地時間2026年10月9日に公開されました</strong>（出典1・2・4）。</p>
+<p><strong>本記録が、報道の要約には現れにくい点として記録しておくものが3つあります。</strong></p>
+<ul>
+<li><strong>GitHub のリリースノートには CVE 番号が書かれていない。</strong> <strong>該当の修正は「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」（原文英語。日本語訳: mTLS でない待ち受けにベーシック認証を強制する）という1行で、5つのリリースに同日付で入っている</strong>（出典2）〈齟齬1〉</li>
+<li><strong>HAProxy 公式ドキュメントの変更履歴ページには、本記録の確認時点で修正版の記載が無かった</strong>（出典3）〈齟齬2〉</li>
+<li><strong>CVE レコードの影響範囲に、3.1 系の独立した修正版が無い。</strong> <strong>「3.1-ee 〜 3.2.16-ee1 → 3.2.17-ee1」「3.1.0 〜 3.2.16 → 3.2.17」という記載であり、3.1 系の利用者は 3.2 系へ上がることになる</strong>（出典1。整理は本記録）</li>
+</ul>
+<p><strong>悪用については、CVE レコードに付随する CISA の評価が「Exploitation: none（悪用なし）／Automatable: yes（自動化可能）／Technical Impact: total（技術的影響は全面的）」となっています</strong>（出典1）。<strong>「自動化可能」と評価されている点に注意が要ります</strong>（本記録の評価）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>影響を受ける稼働環境の数・導入規模</span><span class="b rsn">公表されていない</span><div class=sm>**HAProxy Data Plane API の稼働数、 そのうち tls_ca と数値の tls_port を設定している割合は公表されていない** （出典1・2・3）。 **HAProxy 本体は広く使われているが、Data Plane API は 設定を API 経由で管理する場合にのみ動かす構成要素である**（本記録の整理）。</div></li><li><span class=ui>脆弱性が存在した期間（2.2.0 の公開時期）</span><span class="b rsn">公表されていない</span><div class=sm>**影響は 2.2.0 以降とされているが、2.2.0 がいつ公開されたかは CVE レコードに記載が無い**（出典1）。 **そのため、何年にわたって存在した脆弱性かを見積もれない**（本記録の明示）。</div></li><li><span class=ui>発見者・報告経路</span><span class="b rsn">公表されていない</span><div class=sm>**CVE レコードに credits（謝辞）の記載が見当たらない**（出典1。本記録の確認）。 **GitHub のリリースノートも修正の1行だけで、 報告者に触れていない**（出典2）。 **社内発見か外部報告かが分からない**（本記録の明示）。</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**CISA の SSVC 評価は Exploitation: none である**（出典1）。 **これは「観測された悪用が無い」という2026年10月13日時点の評価であり、 「悪用され得ない」という意味ではない**（本記録の整理）。 **同じ評価で Automatable: yes（自動化可能）とされている**（出典1）。</div></li><li><span class=ui>侵害を判定するための指標（IoC・ログの見方）</span><span class="b rsn">公表されていない</span><div class=sm>**CVE レコード・リリースノートのいずれにも、 利用者が「既に認証なしで叩かれていたか」を判定する手がかりは示されていない** （出典1・2）。 **認証を通らずに API が呼ばれる脆弱性では、 認証ログに記録が残らない可能性がある**（本記録の評価）。</div></li><li><span class=ui>3.1 系に独立した修正版があるか</span><span class="b rsn">公表されていない</span><div class=sm>**CVE レコードの affected は「3.1.0 through 3.2.16 → 3.2.17」 （EE は「3.1-ee through 3.2.16-ee1 → 3.2.17-ee1」）と記載されており、 3.1 系の独立した修正版は示されていない**（出典1）。 **3.1 系の保守が終了しているのか、記載の省略なのかは読み取れない** （本記録の明示）。</div></li><li><span class=ui>公式ドキュメントの変更履歴が更新されていない理由</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が2026年10月14日に HAProxy 公式ドキュメントの Data Plane API 変更履歴ページを取得した時点で、 最新の記載は 3.4.3（2026年9月3日）で、 修正版（3.4.4 等）の記載が見当たらなかった**（出典3）〈齟齬2〉。 **反映の遅れなのか、別のページに掲載されているのかは特定できていない** （本記録の明示）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>HAProxy Technologies</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>HAProxy Data Plane API の利用組織（2.2.0〜3.4.3／対応する EE 系列）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>MITRE</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSSv3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>スコア</span></div><div class=fn>**CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H**（出典1）。 **評価主体は MITRE**（出典1・4）。 **ベクトルを読むと、AV:N（ネットワーク）・AC:L（容易）・PR:N（権限不要）・ UI:N（利用者の操作不要）で、機密性・完全性・可用性のすべてが High である** （本記録の整理）。 **ネットワーク越しに未認証で、管理 API を完全に掌握できる形である。**</div></div><div class=fig><div class=fh><span class=fl>影響を受けるコミュニティ版の系列数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>系列</span></div><div class=fn>**CVE レコードの affected（CE）は 2.2.0〜2.9.28／3.0.0〜3.0.24／3.1.0〜3.2.16／3.3.0〜3.3.8／3.4.0〜3.4.3 の 5区間に分かれている**（出典1。計数は本記録）。 **Enterprise 版（EE）も同じ5区間である**（出典1）。 **注意すべきは3番目の区間で、3.1 系と 3.2 系が1区間にまとめられており、 3.1 系の独立した修正版が示されていない**（出典1。整理は本記録）。</div></div><div class=fig><div class=fh><span class=fl>修正版の公開から CVE 公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**2026年10月9日（修正版公開）から10月12日（CVE 公表）まで** （本記録の算出。出典1・2 の日付から）。 **この3日間、修正は公開されていたが CVE 番号は付いておらず、 リリースノートの1行だけが手がかりだった**（出典1・2。整理は本記録）〈齟齬1〉。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**tls_ca と数値の tls_port が設定された HAProxy Data Plane API に対し、 未認証の攻撃者が HTTP または UNIX ドメインソケットの管理エンドポイントへ到達し、 認証を通らずに API の管理権限を得る**（出典1）。 **その後、設定を平文で読み出し、raw 設定エンドポイントで設定を置き換えられる**（出典1）。 **実環境での悪用は観測されていないと CISA が評価している**（出典1）〈未確定4〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者は、HAProxy Data Plane API の HTTP 待ち受けを見つける必要がある** （出典1。整理は本記録）。 **CISA の SSVC 評価は Automatable: yes であり、 偵察から成立までを自動化できるとされている**（出典1）。</div><div class=fn>根拠: CVSS ベクトルの AV:N / AC:L / PR:N / UI:N、 および CISA ADP の Automatable: yes（出典1）。</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**HTTP または UNIX ソケットの管理エンドポイントへアクセスする。** **tls_ca と数値の tls_port が設定されていると、 共有ハンドラ上でベーシック認証が全体的に無効化されているため、 認証を求められない（fail open）**（出典1）。</div><div class=fn>根拠: CVE レコードの説明文——&quot;Basic authentication is globally disabled on a handler shared by HTTP, HTTPS, and UNIX socket listeners. Mutual TLS is enforced only on the HTTPS path, so the other active listeners fail open.&quot; （原文英語。出典1）。</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**API の管理権限で、HAProxy の設定を平文で読み出す （原文英語: &quot;read cleartext configuration&quot;）**（出典1）。</div><div class=fn>根拠: CVE レコードの影響の記載（出典1）。</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**raw 設定エンドポイントを通じて設定そのものを置き換える （原文英語: &quot;replace the configuration through the raw configuration endpoint&quot;）**（出典1）。 **本記録の評価として、ロードバランサの設定の置換は 通信の宛先の書き換えに等しい**（本記録の評価）。 **実際にそうした操作が行われた事例は公表されていない**〈未確定4〉。</div><div class=fn>根拠: CVE レコードの影響の記載、および CVSS の I:H / A:H（出典1）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>修正版の公開（10月9日）から CVE 公表（10月12日）まで</div><div class=mv>**3日（本記録の算出）。** **この間、利用者が本件に気づく手がかりは GitHub のリリースノートの1行だけだった**（出典1・2。整理は本記録）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **修正を先に出せば、素早く追従する利用者を守れる。** **一方、CVE 番号が付くまでの間、 CVE で脆弱性を追う運用の利用者には届かない**（本記録の整理）。 **逆に CVE と同時にすると、修正版の公開が遅れる。**</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **成立条件まで書けば、利用者は自環境が該当するかを自分で判定できる。** **一方、条件が明示されているため、 攻撃者も標的の絞り込みに使える**（本記録の整理）。</div></li></ul></div>
+<section id="s6"><h2>mTLS を設定したことが、HTTP と UNIX ソケットの認証を外す引き金になる<span class="b slot">原因・手口</span></h2><p><strong>HAProxy Data Plane API は、HAProxy の設定を API 経由で管理するためのコンポーネントです</strong>（出典4）。<strong>この API は複数のトランスポートで待ち受けることができます—— HTTP、HTTPS、そして UNIX ドメインソケットです</strong>（出典1）。</p>
+<p><strong>CVE の記述によれば、不備は Server.ConfigureAPI() の認証ロジックにあります</strong> <strong>（原文英語: "authentication logic in Server.ConfigureAPI() improperly drops security controls across multiple transport types"。日本語訳: Server.ConfigureAPI() の認証ロジックが、複数のトランスポート種別をまたいでセキュリティ制御を不適切に落としている）</strong>（出典1）。</p>
+<p><strong>成立の条件と結果を分けて書くと、次のようになります</strong>（出典1。整理は本記録）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前提</td>
+<td>TLS の CA（<code>tls_ca</code>）と数値の TLS ポート（<code>tls_port</code>）が設定されている</td>
+</tr>
+<tr>
+<td>起きること</td>
+<td>HTTP・HTTPS・UNIX ソケットが共有するハンドラ上で、ベーシック認証が全体的に無効化される</td>
+</tr>
+<tr>
+<td>mTLS の効き方</td>
+<td>HTTPS の経路でのみ強制される</td>
+</tr>
+<tr>
+<td>残る穴</td>
+<td>HTTP と UNIX ソケットの待ち受けが「認証なしで開く（fail open）」</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ここが本件の肝です</strong>（本記録の評価）。<strong>mTLS の設定は、認証を弱めるためにやることではありません。</strong> <strong>クライアント証明書による相互認証は、ベーシック認証より強い手段です。</strong> <strong>ところが本件では、それを設定した事実が「ベーシック認証を無効にしてよい」という判断に使われ、しかし mTLS 自体は HTTPS でしか効かない、という組み合わせになっていました</strong>（出典1）。</p>
+<p><strong>強化策を適用した環境ほど穴が開く、という構造です</strong>（本記録の評価）。<strong>「設定を間違えた環境が危ない」のではなく、「設定を進めた環境が危ない」ことになります。</strong></p>
+<p><strong>修正は、リクエストごとに TLS の接続状態を検証するモデルへの変更と記載されています（原文英語: "a per-request TLS connection-state validation model"）</strong>（出典1）。<strong>GitHub 側の表現は「mTLS でない待ち受けにベーシック認証を強制する」です</strong>（出典2）。</p></section>
+<section id="s7"><h2>取れるのは「どの通信をどこへ送るか」そのもの<span class="b slot">被害規模・影響範囲</span></h2><p><strong>CVE の記述によれば、成立した場合に攻撃者ができることは3つです</strong>（出典1）。</p>
+<ul>
+<li><strong>API の管理権限を完全に取得する（原文英語: "gain full API administrative access"）</strong></li>
+<li><strong>設定を平文で読み出す（原文英語: "read cleartext configuration"）</strong></li>
+<li><strong>raw 設定エンドポイントを通じて設定を置き換える（原文英語: "replace the configuration through the raw configuration endpoint"）</strong></li>
+</ul>
+<p><strong>本記録の評価として、3つ目の重さを書いておきます。</strong> <strong>HAProxy はロードバランサ・リバースプロキシであり、その設定は「どのホスト名のどの通信を、どのバックエンドへ送るか」の定義です</strong>（本記録の評価）。<strong>設定を置き換えられるということは、通信の宛先そのものを書き換えられるということです。</strong></p>
+<p><strong>また2つ目——設定の平文読み出し——も軽くありません。</strong> <strong>HAProxy の設定ファイルには、バックエンドの構成、ヘルスチェックの経路、場合によっては TLS の鍵のパスや認証に関わる値が含まれます</strong>（本記録の評価。出典1 は設定の内容に触れていない）。</p>
+<p><strong>CVSS ベクトルが C:H / I:H / A:H、すなわち機密性・完全性・可用性のすべてがHigh になっているのは、この3点に対応しています</strong>（出典1。整理は本記録）。</p>
+<p><strong>ただし、実際にそうした被害が起きたことを示す資料は無く、CISA の評価も Exploitation: none です</strong>（出典1）〈未確定4〉。</p></section>
+<section id="s8"><h2>「自動化可能」という評価が付いている<span class="b slot">評価・解釈</span></h2><p><strong>CVE レコードには CISA の ADP（Vulnrichment）による SSVC 評価が付与されています</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>評価</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Exploitation（悪用の観測）</td>
+<td>none（観測されていない）</td>
+</tr>
+<tr>
+<td>Automatable（自動化可能性）</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Technical Impact（技術的影響）</td>
+<td>total（全面的）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは Automatable: yes です</strong>（本記録の評価）。<strong>SSVC におけるこの項目は、偵察から成立までを自動化できるか、すなわち標的を探して一括で攻撃できるかを示します</strong>（本記録の整理）。<strong>本件は未認証・ネットワーク経由・利用者の操作不要（AV:N / PR:N / UI:N）で、条件に合う待ち受けを見つければそのまま成立します</strong>（出典1）。</p>
+<p><strong>したがって、Exploitation: none（現時点で悪用の観測なし）とAutomatable: yes（自動化可能）の組み合わせは、「今は静かだが、動き出せば速い」という読み方になります</strong>（本記録の評価）。<strong>修正版は10月9日に出ており、CVE 番号が付いたのは10月12日です</strong>（出典1・2）。<strong>本記録の作成時点（10月14日）は、公表から2日目です。</strong></p></section>
+<section id="s9"><h2>修正は先に出ていたが、CVE 番号もドキュメントも追いついていなかった<span class="b slot">未確定事項</span></h2><p><strong>本件では、情報の出所によって見える内容が異なっていました</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>資料</th>
+<th>本記録の確認内容（2026年10月14日）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE レコード（出典1）</td>
+<td>CVE-2026-109575・CVSSv3.1 9.8・CWE-306・影響範囲・修正版・CISA の SSVC 評価。公表は10月12日</td>
+</tr>
+<tr>
+<td>GitHub のリリース一覧（出典2）</td>
+<td>5つのリリース（3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29）がいずれも2026年10月9日付。修正は「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」の1行。<strong>CVE 番号の記載は無い</strong>〈齟齬1〉</td>
+</tr>
+<tr>
+<td>HAProxy 公式ドキュメントの変更履歴（出典3）</td>
+<td>最新は 3.4.3（2026年9月3日）。<strong>修正版の記載が見当たらない</strong>〈齟齬2〉</td>
+</tr>
+</tbody>
+</table>
+<p><strong>実務上の意味は、監視の経路の話になります</strong>（本記録の評価）。<strong>修正版が出た10月9日から CVE が公表された10月12日までの3日間、手がかりは GitHub のリリースノートの1行だけでした</strong>（本記録の算出）。<strong>「BUG/MAJOR」の接頭辞は重大であることを示しますが、CVE 番号で追う運用では引っかかりません</strong>（本記録の評価）。</p>
+<p><strong>また、公式ドキュメントの変更履歴ページを情報源にしていた場合、本記録の確認時点では修正版の存在にも気づけません</strong>（出典3）〈齟齬2〉。<strong>本記録はこのページの更新が遅れた理由を特定していません</strong>〈未確定7〉。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**HAProxy Data Plane API の Server.ConfigureAPI() における認証ロジック**（出典1）。 **HAProxy Data Plane API は、HAProxy の設定を API 経由で管理するための コンポーネントである**（出典4）。 **影響を受けるバージョン（コミュニティ版）**—— **2.2.0〜2.9.28（→2.9.29）／3.0.0〜3.0.24（→3.0.25）／ 3.1.0〜3.2.16（→3.2.17）／3.3.0〜3.3.8（→3.3.9）／3.4.0〜3.4.3（→3.4.4）**（出典1）。 **Enterprise 版（EE）**—— **2.2.0-ee1〜2.9.28-ee1（→2.9.29-ee1）／3.0-ee〜3.0.24-ee1（→3.0.25-ee1）／ 3.1-ee〜3.2.16-ee1（→3.2.17-ee1）／3.3-ee〜3.3.8-ee1（→3.3.9-ee1）／ 3.4-ee〜3.4.3-ee2（→3.4.4-ee1）**（出典1）。 **成立条件は、TLS の CA（tls_ca）と数値の TLS ポート（tls_port）が 設定されていること**（出典1）。</td></tr><tr><th>finding_name</th><td>**CVE-2026-109575**——**CWE-306（重要な機能に対する認証の欠如）。 CVSSv3.1 基本値 9.8・Critical。 ベクトルは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H**（出典1）。 **採番は MITRE。2026年10月12日19:32（UTC）に公表、 10月13日15:59（UTC）に更新**（出典1）。 **CISA ADP（Vulnrichment）の SSVC 評価は Exploitation: none／Automatable: yes／Technical Impact: total**（出典1）。 **国内報道は「認証バイパスの深刻な脆弱性」として扱っている**（出典4）。</td></tr><tr><th>exploit_status</th><td>**実環境での悪用は観測されていないと CISA が評価している （SSVC の Exploitation: none。2026年10月13日時点のレコード更新）**（出典1）。 **同じ評価で Automatable: yes（自動化可能）、 Technical Impact: total（技術的影響は全面的）とされている**（出典1）。 **本記録は「現時点で悪用の観測が無い」という評価を記すにとどめ、 悪用され得ないという意味には取らない**（本記録の留保）。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月14日（本記録の確認時点。CVE レコードの更新は10月13日）</td></tr><tr><th>patch_status</th><td>**提供されている。** **修正版は 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 （Enterprise 版は 3.4.4-ee1 / 3.3.9-ee1 / 3.2.17-ee1 / 3.0.25-ee1 / 2.9.29-ee1）で、 現地時間2026年10月9日に公開された**（出典1・2・4）。 **修正の内容は、リクエスト毎に TLS 接続状態を検証するモデルへの変更 （原文英語: &quot;a per-request TLS connection-state validation model&quot;）**（出典1）。 **GitHub 側の表現は「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」**（出典2）。 **3.1 系の独立した修正版は示されておらず、3.2.17 への更新になる**（出典1）〈未確定6〉。 **開発元が示す回避策は、本記録が取得した資料には見当たらなかった**（出典1・2・3）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月14日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月13日（CVE レコードの更新時点）　<b>詳細:</b> **CISA ADP の SSVC 評価は Exploitation: none である**（出典1）。 **本記録はこれを「観測された悪用が無い」という評価として扱い、 悪用の不存在の証明とは扱わない**（本記録の留保）。 **同じ評価で Automatable: yes とされている点は、 状況が変わる速さに関わる**（本記録の評価）。　<b>ログの有無:</b> **利用者側のログの残存状況は公表されていない**（出典1・2）。 **本脆弱性は認証を通らずに API を呼ばせるため、 認証の失敗ログが残らない可能性がある**（本記録の評価）。 **探すべきは「認証の記録が無いのに行われた設定の読み出し・変更」であり、 その判定方法は公表されていない**〈未確定5〉。 **掌握された場合、Data Plane API 自身の応答も信頼できないため、 前段のネットワーク機器のログが必要になる**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期不明（脆弱性の作り込み。影響は 2.2.0 以降）</td><td class=nowrap></td><td>**HAProxy Data Plane API 2.2.0 以降の Server.ConfigureAPI() に、 認証方式の切り替えに関する不備が作り込まれた**（出典1）。 **2.2.0 の公開時期は CVE レコードに記載が無い**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw">2026年10月9日（現地時間）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正版 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 が公開された**（出典2・4）。 **GitHub のリリースノートには 「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」 （原文英語）の1行が、5つのリリースすべてに同じ日付で入っている**（出典2）。 **この時点で CVE 番号の記載は無い**（出典2）〈齟齬1〉。</td></tr><tr><td class="sm nowrap tw">2026年10月12日19時32分（UTC）</td><td class=nowrap><span class="b kind">公表</span></td><td>**MITRE が CVE-2026-109575 を予約・公表した**（出典1）。 **CVSSv3.1 9.8・CWE-306・影響範囲・修正版が記載されている**（出典1）。 **修正版の公開（10月9日）より3日後である**（本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年10月13日15時59分（UTC）</td><td class=nowrap><span class="b kind">訂正</span></td><td>**CVE レコードが更新された**（出典1）。 **CISA の ADP（Vulnrichment）による SSVC 評価が付与されている （Exploitation: none / Automatable: yes / Technical Impact: total）**（出典1）。 **更新前後で何が変わったかは、本記録では特定できていない**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**国内では Security NEXT が「HAProxy Data Plane API に認証バイパスの 深刻な脆弱性」として報じた**（出典4）。 **CVSS 9.8・Critical、修正版5件と公開日（10月9日）は CVE レコードと一致する**（出典1・4。照合は本記録）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が CVE レコード本体、GitHub のリリース一覧、 HAProxy 公式ドキュメントの変更履歴ページを取得して突き合わせた**（出典1・2・3）。 **公式ドキュメントの変更履歴には、この時点で修正版（3.4.4 等）の記載が 見当たらず、最新は 3.4.3（2026年9月3日）だった**（出典3）〈齟齬2〉。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本記録が2026年10月14日に取得した haproxytech/dataplaneapi のリリース一覧では、 5つのリリース（v3.4.4 / v3.3.9 / v3.2.17 / v3.0.25 / v2.9.29）に 「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」 の1行が同日付（2026年10月9日）で入っているが、 CVE 番号の記載は見当たらなかった**（出典2。本記録の確認）。 **CVE 番号で脆弱性を追う運用では、 修正版が出た10月9日から CVE 公表の10月12日までの3日間、 本件に気づけない**（本記録の評価）。 **「リリースページに無い」という事実のみを記す—— 別の場所に記載がある可能性を否定するものではない**（本記録の留保）。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本記録が2026年10月14日に HAProxy 公式ドキュメントの Data Plane API 変更履歴ページ（コミュニティ版）を取得した時点で、 最新の記載は 3.4.3・3.3.8・3.2.16・3.0.24（いずれも2026年9月3日）であり、 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 の記載は見当たらなかった** （出典3。本記録の確認）。 **CVE-2026-109575 および mTLS に関する記述も見当たらなかった。** **反映の遅れなのか、別ページに掲載されているのかは特定できていない** 〈未確定7〉（本記録の明示）。 **このページを情報源にしていた利用者は、 本記録の確認時点で修正版の存在に気づけない**（本記録の評価）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**CVE レコードの affected には Enterprise 版（EE）と コミュニティ版（CE）の2つのブロックがあるが、 CE 側のパッケージ名も &quot;dataplaneapi-ee&quot; と記載されている** （出典1。本記録の確認）。 **バージョン番号の形（-ee1 の接尾辞が無い）から CE のブロックであることは読めるため、 レコード上の表記の誤りとみられる**（本記録の推測）。 **本記録は、バージョン番号の形を根拠に CE / EE を判別した。**</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本記録が取得した CVE レコードに credits（謝辞）の記載は 見当たらなかった**（出典1。本記録の確認）。 **GitHub のリリースノートも修正の1行だけで、 報告者に触れていない**（出典2）。 **そのため、社内発見か外部報告か、 報告から修正までどれだけ掛かったかを評価する材料が無い** 〈未確定3〉（本記録の明示）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**CVE レコードの記述は &quot;replace the configuration through the raw configuration endpoint&quot; （原文英語。日本語訳: raw 設定エンドポイントを通じて設定を置き換える）までである** （出典1）。 **これを「ロードバランサの設定の置換＝通信の宛先の書き換え」と 読み替えたのは本記録である**（本記録の明示）。 **実際にそうした操作が行われた事例は公表されていない**〈未確定4〉。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**CVE レコードは、tls_ca と数値の tls_port が設定されている場合に ベーシック認証が無効化されると記述している**（出典1）。 **これを「mTLS という強化策の適用が引き金になる構造」と整理したのは 本記録である**（本記録の明示）。 **開発元・MITRE・CISA はそうした評価を述べていない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>未認証の遠隔攻撃者 → HAProxy Data Plane API（tls_ca と数値の tls_port を設定済み） の HTTP 待ち受け／UNIX ドメインソケット → 共有ハンドラでベーシック認証が 全体無効化され、mTLS は HTTPS 経路でのみ強制されるため fail open （CVE-2026-109575・CWE-306・CVSSv3.1 9.8）→ API 管理権限の完全取得 → ①設定の平文読み出し ②raw 設定エンドポイントで設定を置き換え＝ 通信の宛先の書き換え ／ 対策は 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 への更新 （2026年10月9日公開。修正はリクエスト毎の TLS 接続状態検証モデルへの変更）</div><div class=svgwrap><svg viewBox="0 0 1202 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,162.0 C193.0,162.0 193.0,264.0 220,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,162.0 C193.0,162.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,264.0 C397.0,264.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,118.0 832,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,206.0 832,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C805.0,111.0 805.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1111.0,213.0 1111.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の遠隔攻撃者（悪用</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の観測は none・自動</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">化可能は yes）</text><text x="91.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">CISA ADP の S</text><text x="91.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">SVC 評価（Explo</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTPS 待ち受け（m</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TLS が強制される＝こ</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の経路では成立しない）</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">mTLS が効くのは H</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">TTPS 経路のみ（出典</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTP 待ち受け（ベー</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シック認証が無効化され </text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">fail open）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE-2026-109</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">575 / CWE-30</text><rect x="220" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">UNIX ドメインソケッ</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト待ち受け（同じく fa</text><text x="295.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">il open）</text><text x="295.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">同一ホスト上の他プロセス</text><text x="295.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">・他コンテナからの到達は</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">共有ハンドラ（tls_c</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">a ＋ 数値 tls_p</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ort の設定でベーシ…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">Server.Confi</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">gureAPI() の認</text><rect x="628" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">API の管理権限の完全</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">取得</text><text x="703.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">原文英語 &quot;gain f</text><text x="703.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">ull API admi</text><rect x="832" y="81.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HAProxy の設定（</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">平文で読み出し可能）</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">原文英語 &quot;read c</text><text x="907.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">leartext con</text><rect x="832" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">raw 設定エンドポイン</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト経由の設定置換</text><text x="907.0" y="218.0" text-anchor="middle" fill="#64b5f6" font-size="10">通信の宛先の書き換えに等</text><text x="907.0" y="230.0" text-anchor="middle" fill="#64b5f6" font-size="10">しいという読み替えは本記</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HAProxy Tech</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nologies（修正版</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">5系列を2026年10…</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#80cbc4" font-size="10">リリースノートに CVE</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#80cbc4" font-size="10"> 番号の記載は無い（出典</text><rect x="1036" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1111.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MITRE（CVE-20</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26-109575・20</text><text x="1111.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26年10月12日公表…</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#b0bec5" font-size="10">修正版の公開から3日後（</text><text x="1111.0" y="244.0" text-anchor="middle" fill="#b0bec5" font-size="10">本記録の算出）</text></svg></div><div class=fn>CVE-2026-109575 の CVE レコード（出典1）と GitHub のリリース一覧（出典2）にもとづく。 **破線で示した「通信の宛先の書き換え」という読み替えは本記録の評価であり、 CVE レコードの記述は &quot;replace the configuration through the raw configuration endpoint&quot;（原文英語）までである**（本記録の明示）。 **HTTPS 経路には mTLS が効くため、そこからは成立しない**（出典1）。 **実環境での悪用は観測されていないと CISA が評価しているが、 同時に Automatable: yes（自動化可能）とされている**（出典1）。 **侵害を判定する指標は公表されていない**（出典1・2）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵害を判定する指標は公表されていない**（出典1・2）〈未確定5〉。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価**——**5系列を同時に出し、 古い 2.9 系まで修正したのは踏み込んだ対応である**（出典1・2）。 **一方、リリースノートの1行に CVE 番号が無く、 公式ドキュメントの変更履歴も本記録の確認時点で追いついていなかった** （出典2・3）〈齟齬1・2〉。 **修正を出すことと、修正が見つかる状態にすることは別の作業である** （本記録の評価）。 **なお、発見者・報告経路が公表されていないため、 報告から修正までの期間を評価する材料は無い**（本記録の留保）〈未確定3〉。</td></tr><tr><td></td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価**——**成立条件を明記した判断は、 本件では妥当である。** **「mTLS を設定していると危ない」という反直感的な条件は、 書かれなければ利用者が自力で気づけない**（本記録の評価）。 **一方、認証を通らずに API が呼ばれる脆弱性では 認証ログに記録が残らない可能性があり、 侵害判定の指標が無いままでは利用者は更新後の確認ができない**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「強化策を適用した環境ほど穴が開く」型の脆弱性があることを、前提に置く**</div><div class=lw>**本件の成立条件は、設定の不備ではなく mTLS の設定である**（出典1）。 **クライアント証明書による相互認証は、ベーシック認証より強い手段であり、 通常は「やるべきこと」として推奨される**（本記録の評価）。 **その適用が引き金になる構造だった。**</div><div class=la><b>取るべき行動</b> **①「対策を適用済み」の一覧を、そのまま安全の根拠として扱わない方針を明文化する。** **②強化策を適用した構成について、適用後の実際の挙動 （どの経路でどの認証が効いているか）を検証する工程を手順に入れる。** **③製品の脆弱性情報を読むとき、「影響を受ける条件」の欄を バージョンだけでなく設定の組み合わせまで読む運用にする。**</div></li><li><div class=lp>**脆弱性の監視経路を、CVE 番号だけに依存させない**</div><div class=lw>**修正版は2026年10月9日に公開されたが、 CVE-2026-109575 が公表されたのは10月12日である**（出典1・2。算出は本記録）。 **GitHub のリリースノートには CVE 番号の記載が無く、 手がかりは「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」 の1行だけだった**（出典2）〈齟齬1〉。 **公式ドキュメントの変更履歴も、本記録の確認時点で追いついていなかった** （出典3）〈齟齬2〉。</div><div class=la><b>取るべき行動</b> **①自組織が使う OSS・ミドルウェアについて、 脆弱性情報の取り込み元を書き出す（CVE / NVD / ベンダー告知 / リポジトリのリリース通知のどれを見ているか）。** **②重要な構成要素については、リポジトリのリリース通知を購読する。** **③「BUG/MAJOR」「security」等の語を含むリリースノートを 確認対象に入れる運用を決める。**</div></li><li><div class=lp>**設定管理の API を、資産台帳の独立した項目として持つ**</div><div class=lw>**本件の対象は HAProxy 本体ではなく、設定を管理する Data Plane API である** （出典1・4）。 **本体の脆弱性情報を追っていても、管理 API は別の構成要素である** （本記録の整理）。 **掌握されると設定そのものを置き換えられる**（出典1）。</div><div class=la><b>取るべき行動</b> **①資産台帳で、ロードバランサ・リバースプロキシ・ファイアウォール等の 「本体」と「設定管理 API / 管理サーバ」を別の資産として登録する。** **②各管理 API について、到達できる発信元と認証方式を記録する。** **③設定の変更履歴を、管理 API の外側（構成管理リポジトリ等）に 持っているかを確認する——置き換えられたときに比較する基準が必要になる。**</div></li><li><div class=lp>**サポートが続いている系列かどうかを、更新のたびに確認する**</div><div class=lw>**CVE レコードの影響範囲は「3.1.0 〜 3.2.16 → 3.2.17」という記載で、 3.1 系の独立した修正版が示されていない**（出典1）。 **3.1 系の利用者はマイナーバージョンをまたぐ更新になる**（本記録の整理）。 **保守が終了しているのか記載の省略なのかは読み取れない**〈未確定6〉。</div><div class=la><b>取るべき行動</b> **①使用中の OSS の系列ごとに、保守期限を記録する。** **②修正版の案内が「隣の系列へ上げる」形になっている場合、 互換性確認の工数を見込んだうえで期限を決める。** **③保守状況が資料から読めない場合は開発元に確認する（推測で運用しない）。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**tls_ca と tls_port の設定有無を、まず確認する**</div><div class=lw>**本脆弱性は、TLS の CA（tls_ca）と数値の TLS ポート（tls_port）が 設定されているときに成立する**（出典1）。 **設定していなければ、ベーシック認証は無効化されない** （出典1。読み方は本記録）。</div><div class=la><b>取るべき行動</b> **①稼働中の Data Plane API の設定で tls_ca と tls_port を確認する。** **②両方が設定されている場合、HTTP の待ち受けと UNIX ドメインソケットの待ち受けが有効かを確認する。** **③有効なら、実際に認証なしで API を叩けるかを 自組織の管理下で検証する（検証は本番以外で行う）。** **④修正版（3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29）へ更新する。**</div></li><li><div class=lp>**UNIX ドメインソケットの待ち受けを、認証の対象として棚卸しする**</div><div class=lw>**本件では HTTP と UNIX ソケットの両方が fail open する**（出典1）。 **UNIX ソケットは「ホスト内だから安全」と扱われやすいが、 同一ホスト上の他プロセス・他コンテナから到達できる** （本記録の評価。出典1 は到達経路に触れていない）。</div><div class=la><b>取るべき行動</b> **①Data Plane API が UNIX ソケットで待ち受けているパスを確認する。** **②そのソケットのファイル権限と、 同一ホスト上でどのプロセス・利用者が到達できるかを確認する。** **③コンテナで動かしている場合、ソケットがボリュームとして 他のコンテナへ共有されていないかを確認する。**</div></li><li><div class=lp>**設定の正本を、API の外側に持つ**</div><div class=lw>**成立した場合、攻撃者は raw 設定エンドポイントで 設定を置き換えられる**（出典1）。 **本記録の評価として、ロードバランサの設定の置換は 通信の宛先の書き換えに等しい**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①HAProxy の設定を構成管理リポジトリで管理し、 稼働中の設定との差分を定期的に比較する。** **②差分が出たときに通知する仕組みを入れる。** **③比較の実行を Data Plane API 経由だけで行わない （掌握されていれば API の応答も信頼できない）。**</div></li><li><div class=lp>**更新前に、API のアクセスログを退避する**</div><div class=lw>**侵害を判定する指標は公表されていない**（出典1・2）〈未確定5〉。 **認証を通らずに通る脆弱性では、 認証の失敗ログが残らない可能性がある**（本記録の評価）。 **したがって探すのは「認証の記録が無いのに行われた設定の読み出し・変更」になる** （本記録の整理）。</div><div class=la><b>取るべき行動</b> **①更新前に Data Plane API のアクセスログを外部へ退避する。** **②設定の読み出し・変更を行ったエンドポイントの呼び出し記録と、 認証の記録を突き合わせる。** **③Data Plane API 自身のログだけでなく、 前段のネットワーク機器・リバースプロキシのログも確保する。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> HAProxy Data Plane API を 2.2.0〜3.4.3（または対応する Enterprise 版の系列）で稼働させている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Data Plane API に TLS の CA（tls_ca）と数値の TLS ポート（tls_port）を設定している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Data Plane API が HTTP または UNIX ドメインソケットでも待ち受けている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性情報の取り込みが CVE 番号ベースのみで、リポジトリのリリース通知を見ていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> HAProxy の設定の正本を Data Plane API の外側（構成管理リポジトリ等）に持っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> HAProxy Data Plane API を 3.1 系で稼働させている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月9日 HAProxy Technologies（haproxytech/dataplaneapi）</span> <a href="https://github.com/haproxytech/dataplaneapi/releases" target="_blank" rel="noreferrer noopener nofollow">HAProxy Data Plane API リリース一覧（v3.4.4 / v3.3.9 / v3.2.17 / v3.0.25 / v2.9.29）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**一次資料。本記録は2026年10月14日にリリース一覧を取得し、 5つのリリース（v3.4.4 / v3.3.9 / v3.2.17 / v3.0.25 / v2.9.29）が いずれも2026年10月9日付であり、 「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」 （原文英語。日本語訳: mTLS でない待ち受けにベーシック認証を強制する） という修正が全リリースに含まれることを確認した。** **確認できた commit は v3.4.4 が c3ae4e3、v3.3.9 が fba91b9、 v3.2.17 が 53c96d8、v3.0.25 が e596415、v2.9.29 が af517b9。** **リリースノート上に CVE 番号の記載は見当たらなかった**〈齟齬1〉。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月14日（本記録の取得時点） HAProxy Technologies</span> <a href="https://www.haproxy.com/documentation/haproxy-data-plane-api/community/changelog/" target="_blank" rel="noreferrer noopener nofollow">HAProxy Data Plane API 変更履歴（コミュニティ版・公式ドキュメント）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本記録は2026年10月14日にこのページを取得したが、 3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 の記載は見当たらず、 最新は 3.4.3・3.3.8・3.2.16・3.0.24（いずれも2026年9月3日）だった** （本記録の確認）〈齟齬2〉。 **CVE-2026-109575 および mTLS に関する記述も見当たらなかった。** **「このページに存在しない」という事実のみを記す—— 別ページに掲載されている可能性を否定するものではない**（本記録の留保）。）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月12日（公表）／2026年10月13日（更新） MITRE（CVE Program）・CISA ADP（Vulnrichment）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-109575" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-109575 CVE レコード（原文英語）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料。本記録は2026年10月14日に CVE レコード本体を取得し、 ①説明文（Server.ConfigureAPI() の認証ロジックが複数のトランスポート種別を またいでセキュリティ制御を落とす。tls_ca と数値の tls_port の設定時に HTTP・HTTPS・UNIX ソケット共有のハンドラでベーシック認証が無効化され、 mTLS は HTTPS でのみ強制されるため他の待ち受けが fail open する。 未認証の攻撃者が API の管理権限の完全取得・設定の平文読み出し・ raw 設定エンドポイント経由の設定置換に至りうる。 修正はリクエスト毎の TLS 接続状態検証モデルへの変更） ②CVSSv3.1 9.8 / CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H ③CWE-306 ④affected（CE: 2.2.0〜2.9.28→2.9.29、3.0.0〜3.0.24→3.0.25、 3.1.0〜3.2.16→3.2.17、3.3.0〜3.3.8→3.3.9、3.4.0〜3.4.3→3.4.4。 EE も同じ5区間） ⑤CISA ADP の SSVC 評価（Exploitation: none / Automatable: yes / Technical Impact: total） ⑥採番は MITRE、予約・公表は2026-10-12T19:32（UTC）、更新は2026-10-13T15:59（UTC） ——を直接確認した。** **なお CE 側のパッケージ名が &quot;dataplaneapi-ee&quot; と記載されており、 レコード上の表記の誤りとみられる**（本記録の推測）。 **credits（謝辞）の記載は見当たらなかった**（本記録の確認）。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月14日 Security NEXT</span> <a href="https://www.security-next.com/191343" target="_blank" rel="noreferrer noopener nofollow">「HAProxy Data Plane API」に認証バイパスの深刻な脆弱性</a> <span class="b kind">記事</span><span class=sm>（**本DB が2026年10月14日に収集した記事本文 〈output/articles/20261014/0221_security-next_haproxy-data-plane-api.md〉。** **「相互TLS認証（mTLS）を設定した際、HTTP や UNIX ドメインソケット経由の アクセスに必要な認証まで無効になる」 「共通のリクエスト処理において、認証方式を切り替える実装の不備に起因」 「MITRE が CVSSv3.1 基本値 9.8・クリティカルと評価」 「3.4.4 / 3.3.9 / 3.2.17 / 3.0.25 / 2.9.29 を現地時間2026年10月9日にリリース」 という記載は、いずれも CVE レコード（出典1）および GitHub のリリース一覧（出典2）と一致する**（照合は本記録）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月14日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月14日収集分の記事 〈output/articles/20261014/0221_security-next_haproxy-data-plane-api.md〉 を起点に、**一次公表の裏取りを行った。**
+
+**裏取りできたもの**——**①CVE-2026-109575 の CVE レコード本体を取得し、 説明文（Server.ConfigureAPI() の認証ロジックの不備、 tls_ca と数値の tls_port の設定時に共有ハンドラでベーシック認証が無効化され、 mTLS は HTTPS 経路でのみ強制されるため他の待ち受けが fail open する、 API 管理権限の完全取得・設定の平文読み出し・raw 設定エンドポイント経由の 設定置換に至る、修正はリクエスト毎の TLS 接続状態検証モデルへの変更）、 CVSSv3.1 9.8 とベクトル、CWE-306、CE / EE それぞれの影響5区間と修正版、 CISA ADP の SSVC 評価（Exploitation: none / Automatable: yes / Technical Impact: total）、採番が MITRE で公表が2026-10-12、 更新が2026-10-13 であることを確認した。 ②GitHub の haproxytech/dataplaneapi リリース一覧を取得し、 v3.4.4 / v3.3.9 / v3.2.17 / v3.0.25 / v2.9.29 が いずれも2026年10月9日付で、 「BUG/MAJOR: adapters: enforce basic auth on non-mTLS listeners」 を含むこと、各 commit ハッシュを確認した。** **③報道（出典4）の記載——mTLS 設定時に HTTP と UNIX ドメインソケットの 認証が無効になる、MITRE が CVSS 9.8 と評価、5つの修正版を10月9日公開——が いずれも一次資料と一致することを照合した。**
+
+**到達できなかったもの**——**①HAProxy 公式ドキュメントの変更履歴ページに おける修正版の記載**〈齟齬2〉。 **②発見者・報告経路**〈未確定3〉。 **③侵害判定のための指標**〈未確定5〉。 **④3.1 系の保守状況**〈未確定6〉。
+
+**本記録が独自に整理した点**——**①成立条件が「設定の不備」ではなく 「mTLS という強化策の適用」であること〈齟齬6〉 ②修正版の公開（10月9日）と CVE 公表（10月12日）の差が3日であり、 その間の手がかりがリリースノートの1行だけだったこと〈齟齬1〉 ③CVE レコードの影響範囲に 3.1 系の独立した修正版が無いこと ④設定の置換を「通信の宛先の書き換え」と読み替えたこと〈齟齬5〉 ⑤CE 側のパッケージ名の表記誤りとみられる点〈齟齬3〉。** **いずれも〈本記録の評価〉〈本記録の整理〉と明示した。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">HAProxy</span><span class="b tag">HAProxy Data Plane API</span><span class="b tag">CVE-2026-109575</span><span class="b tag">認証バイパス</span><span class="b tag">mTLS</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-14 18:25 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
