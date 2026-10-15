@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Ghostscript に未認証RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0522</span>Ghostscript に未認証RCE</h1>
+<header class="site-header">
+  <p class="subtitle">PDF・PostScript の解釈エンジン Ghostscript に、細工した PDF で ヒープバッファオーバーフローを起こし未認証の遠隔コード実行に至る脆弱性 CVE-2026-39919 が見つかった。JPEG 2000 画像の成分ごとの間引き率を 食い違わせると、詰めて書く前提で確保した行バッファに1列あたり1バイトを 書き込んでしまい、ヒープの管理情報を壊す。発見したのは Wordfence の AI 探索基盤 Argus で、WordPress 7.1 の点検中に見つけた。 WordPress は PDF のサムネイル生成で Imagick → ImageMagick → Ghostscript と 辿るため、PDF をアップロードできるだけで入口になる。 影響は 9.21 から 10.07.1。修正版 10.08.0 は2026年9月8日に出たが、 更新するのは WordPress ではなく OS のパッケージである</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月12日 18:10 UTC（Wordfence の公表）</span>
+  <span>最終更新: 2026年10月15日</span>
+</div>
+
+<div class="lead"><p><strong>PDF・PostScript の解釈エンジン Ghostscript に、細工した PDF でヒープバッファオーバーフローを起こし、未認証の遠隔コード実行に至る脆弱性が見つかりました</strong>（出典1・2）。<strong>CVE 番号は CVE-2026-39919、CVSS v3.1 で 9.8、v4.0 で 9.3（いずれも Critical）です</strong>（出典1・2・3）。</p>
+<p><strong>発見したのは Wordfence の AI 探索基盤 Argus で、WordPress 7.1 の点検中に見つけました</strong>（出典1）。<strong>CVE の謝辞に記されている発見者は Wordfence Argus の Alex Thomas 氏です</strong>（出典3）。</p>
+<p><strong>成立の筋は次のとおりです</strong>（出典3）。<strong>JPEG 2000 画像を含む PDF で、画像の成分ごとの間引き率を食い違わせておきます。</strong> <strong>Ghostscript の JPEG 2000 出力アダプタ（<code>base/sjpx_openjpeg.c</code> の<code>process_one_trunk</code>）は、サブバイト深度の出力を「詰めて書く」前提で行バッファを確保しますが、実際の書き込みは1列あたり丸ごと1バイトを書いてしまいます。</strong> <strong>ヒープの確保器の管理情報が壊れ、コード実行に至りえます。</strong></p>
+<p><strong>本記録が注目するのは、WordPress 経路の入口の低さです</strong>（本記録の評価）。<strong>WordPress は PDF のサムネイルを生成するとき、PHP の Imagick 拡張を通して ImageMagick を呼び、ImageMagick が Ghostscript を起動します</strong>（出典1・2）。<strong>したがって、PDF をアップロードできる立場にあるだけで、この経路に到達します。</strong> <strong>Wordfence は、専用に組んだ WordPress の試験サーバで<code>-dSAFER</code> を有効にした状態のまま、未認証の遠隔コード実行を実証しました</strong>（出典1）。</p>
+<p><strong>一方、Wordfence は「これは WordPress 固有の脆弱性ではない」と強調しています</strong>（出典1。原文英語。本記録の訳）。<strong>文書管理システム・印刷サービス・請求書処理・メールゲートウェイ・変換 API——信頼できない PDF を Ghostscript に渡すものはすべて対象になります</strong>（出典1・2。本記録の訳）。</p>
+<p><strong>影響を受けるのは Ghostscript 9.21 から 10.07.1 です</strong>（出典1・2）。<strong>修正版 10.08.0 は2026年9月8日にリリースされました</strong>（出典1・4）。<strong>ここに運用上の落とし穴があります</strong>（本記録の評価）——<strong>更新するのは WordPress のプラグインではなく、OS のパッケージまたはコンテナイメージです</strong>（出典1・2）。<strong>Wordfence は「更新すべき WordPress プラグインは存在しない」と書いています</strong>（出典1。原文英語。本記録の訳）。</p>
+<p><strong>Wordfence は、実環境での悪用を確認していないとしています</strong>（出典2）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>Artifex 自身による脆弱性の公表文書</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は、Ghostscript 10.08.0 のリリースページ（出典4）を 取得したが、CVE-2026-39919 への言及が無く、 コミットメッセージは「10.08.0 version number」のみだった** （本記録の確認）。 **Ghostscript のバグ追跡システム（bugs.ghostscript.com の Bug 709666）にはアクセス制御が働いており到達できなかった** （本記録の明示）。 **したがって、Artifex 側の記述 （報告の翌日に確認したこと、バックポートの範囲）は Wordfence 側の説明と報道にもとづく**（本記録の留保）。</div></li><li><span class=ui>影響を受けるサイト数・システム数</span><span class="b rsn">公表されていない</span><div class=sm>**Wordfence の記事（出典1）にも報道（出典2）にも、 影響を受けるサイト数・システム数の記述が無い**（本記録の確認）。 **Ghostscript は多くの Linux ディストリビューションに 標準で含まれるため、母数の把握は難しい**（本記録の評価）。 **また、脆弱性が成立するのは 「信頼できない PDF が Ghostscript に到達する経路がある」 場合に限られるため、 インストール数と該当数は一致しない**（本記録の整理）。</div></li><li><span class=ui>ディストリビューションごとのバックポートの状況</span><span class="b rsn">公表されていない</span><div class=sm>**Wordfence は「古い系列へのバックポートも行われたので、 利用者は版の改訂内容を確認すべきだ」としている** （出典2。本記録の訳）。 **ただし、どのディストリビューションのどの版が 修正済みかの一覧は示されていない**（本記録の確認）。 **本記録も網羅的な確認は行っていない**（本記録の留保）。 **読者は自分が使うディストリビューションの セキュリティ勧告を個別に確認する必要がある** （本記録の評価） ——**`gs --version` の出力では判定できない。**</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**Wordfence は、実環境での悪用を確認していないとしている** （出典2）。 **本記録でも悪用を示す資料は確認できなかった**（本記録の明示）。 **CISA KEV への収載も確認できなかった**（本記録の確認）。 **ただし、PoC の実証が10,240回の失敗を含むことから、 無差別の大量悪用には向かない型とみられる** （出典2。評価は本記録） ——**一方、狙った環境に合わせて調整すれば成立する。**</div></li><li><span class=ui>CVSS v3.1 のベクトル文字列</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が確認した資料のうち、 CVSS v3.1 の 9.8 という値を示すのは Wordfence の記事（出典1）と報道（出典2）だが、 いずれもベクトル文字列を示していない**（本記録の確認）。 **GitHub Security Advisory（出典3）に記載があるのは v4.0 のベクトルのみである。** **したがって、どの指標がこの値を構成しているかを v3.1 については検証できない**（本記録の明示）。</div></li><li><span class=ui>PoC の公開状況</span><span class="b rsn">公表されていない</span><div class=sm>**Wordfence は2つの PoC を作成したとしているが**（出典2）、 **公開したかどうかは記されていない**（本記録の確認）。 **本記録も公開された PoC を確認していない**（本記録の留保）。 **Wordfence が PoC の移植性の低さを強調していることから （出典2）、公開を控えている可能性があるが、 これは本記録の推測である**（本記録の明示）。</div></li><li><span class=ui>9.21 より前の版が影響を受けるか</span><span class="b rsn">見解が分かれる</span><div class=sm>**Wordfence は影響範囲を「9.21 から 10.07.1」としている** （出典1・2。本記録の訳） ——**OpenJPEG デコーダが存在する版が対象である**（出典1）。 **一方、GitHub Security Advisory の記述は 「10.08.0 より前のすべての Ghostscript」である** （出典3。本記録の訳）〈齟齬3〉。 **9.21 より前の版が影響を受けるかは、 両者の記述から一意に決まらない**（本記録の明示）。 **本記録は Wordfence の記述（9.21 から）を採った** （本記録の判断） ——**OpenJPEG デコーダの導入時期という技術的な根拠が 添えられているため。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Artifex Software</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Wordfence（Defiant）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>WordPress を運用する組織・サイト運営者</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>信頼できない PDF を Ghostscript で処理する組織（文書管理・印刷・請求書処理・メールゲートウェイ・変換API）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Linux ディストリビューション各社（Debian・Ubuntu・Fedora・Alpine・AlmaLinux 等）</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">間接言及</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>9.8<span class=fu>点（CVSS v3.1 基本値）</span></div><div class=fn>**9.8（Critical）**（出典1・2）。 **Wordfence は「10点満点中 9.8」としている**（出典1。本記録の訳）。 **9.8 は、未認証（PR:N）・利用者操作不要（UI:N）・ ネットワーク経由（AV:N）で機密性・完全性・可用性のいずれも 高い影響という組み合わせで出る値である**（本記録の整理）。 **ベクトル文字列は本記録が確認した資料には無い** （本記録の明示）〈未確定5〉 ——**GitHub Security Advisory（出典3）に記載があるのは v4.0 のベクトルのみである。** **これは被害の規模ではなく評点であるため、 本記録は他の数値と同列に集計しない**（本記録の方針）。</div></div><div class=fig><div class=fh><span class=fl>CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>9.3<span class=fu>点（CVSS v4.0 基本値）</span></div><div class=fn>**9.3（Critical）**（出典1・3）。 **ベクトルは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N`** （出典3）。 **PR:N（権限不要）・UI:N（利用者操作不要）であることが 評点を押し上げている**（本記録の整理） ——**ただし、実際に無認証で到達できるかは PDF をアップロードできるかどうかで決まり、 アプリケーションごとに異なる**（出典2。本記録の訳）。 **これは被害の規模ではなく評点であるため、 本記録は他の数値と同列に集計しない**（本記録の方針）。</div></div><div class=fig><div class=fh><span class=fl>実証で256バイトのバッファへ書き込ませたバイト数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1,024<span class=fu>バイト</span></div><div class=fn>**1,024バイト**（出典2）。 **Wordfence の2つの PoC は、Ghostscript に 256バイトのバッファへ1,024バイトを書き込ませ、 近傍のメモリを壊して未認証の遠隔コード実行に至らせる** （出典2。本記録の訳）。 **4倍の超過である**（本記録の算出）。 **GitHub Security Advisory の記述では、 詰めて書く前提で確保した行バッファに対して 1列あたり丸ごと1バイトを書き込むことが原因である** （出典3。本記録の訳） ——**サブバイト深度（1列が1バイト未満）であれば、 列数ぶんだけ超過が積み上がる**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>試験環境で遠隔コード実行に至らなかった実行回数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>10,240<span class=fu>回</span></div><div class=fn>**10,240回**（出典2）。 **Wordfence は試験環境で Linux パッケージに対して PoC を10,240回実行したが、遠隔コード実行には至らなかった** （出典2。本記録の訳）。 **一方、専用に組んだ試験サーバでは成功した**（出典2）。 **本記録はこの数を重く見る**（本記録の評価） ——**「悪用が難しい」という読み方と 「狙った環境なら成立する」という読み方の両方を支える数字である。** **Wordfence は、PDF のフォント・言語設定・フォント設定・ 中核のシステムライブラリ1つを変更すると成立したが 安定しなかったとしている**（出典2。本記録の訳）。</div></div><div class=fig><div class=fh><span class=fl>脆弱なコードが含まれていた検査環境の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>10<span class=fu>環境</span></div><div class=fn>**10環境**（出典2）。 **Debian・Ubuntu・Fedora・Alpine・AlmaLinux を含む 10のLinux 環境を検査し、すべてに脆弱なコードが 含まれていた**（出典2。本記録の訳）。 **これに加えて、公式の WordPress Docker イメージの スナップショットも脆弱だった**（出典1・2）。 **本記録の整理では、この数は「どこか特定の配布だけの問題ではない」 ことを示すものである**（本記録の整理） ——**上流の Ghostscript のコードに由来するため、 それを取り込んだ配布はすべて該当する。**</div></div><div class=fig><div class=fh><span class=fl>発見から修正版リリースまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>16<span class=fu>日</span></div><div class=fn>**16日**（2026年8月23日の発見から2026年9月8日の 10.08.0 リリースまで。本記録の算出）。 **Wordfence 自身も「16日前に発見・報告した」という 表現を使っている**（出典1。本記録の訳）。 **本記録はこれを速い対応と評価する**（本記録の評価） ——**ヒープの管理情報を壊す型の不具合に対して、 2週間強で修正版が出ている。**</div></div><div class=fig><div class=fh><span class=fl>修正版リリースから公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>34<span class=fu>日</span></div><div class=fn>**34日**（2026年9月8日の 10.08.0 リリースから 2026年10月12日の Wordfence 公表まで。本記録の算出）。 **CVE の公開（2026年9月15日）は修正版リリースから7日後である** （本記録の算出）。 **つまり、CVE が公開されてから詳細の公表までに27日ある** （本記録の算出）。 **本記録はこの間隔を妥当と見る**（本記録の評価） ——**修正版が出てから公表しており、 ディストリビューションがバックポートする時間も取れている。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**以下は、Wordfence が公表した成立の筋道と実証結果である** （出典1・2）。 **実環境での悪用の観測ではない**〈未確定4〉。 **攻撃者は、成分ごとに食い違う間引き率を宣言した JPEG 2000 画像を含む PDF を細工し、 対象のアプリケーションへアップロードする**（出典2・3）。 **アプリケーションがプレビュー・サムネイルの生成のために その PDF を処理すると、Imagick → ImageMagick → Ghostscript と 辿って脆弱なデコード処理に到達する**（出典1・2）。 **詰めて書く前提で確保した行バッファに1列あたり1バイトを 書き込むため、ヒープの確保器の管理情報が壊れ、 コード実行に至りえる**（出典3）。 **Wordfence は専用に組んだ WordPress 試験サーバで、 `-dSAFER` 有効のまま未認証の遠隔コード実行を実証した**（出典1）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者が、成分ごとに食い違う間引き率を宣言した JPEG 2000 画像を含む PDF を細工し、 対象のアプリケーションへアップロードする**（出典2・3）。 **WordPress 環境では、無認証または低権限のアカウント経由で アップロードできることが前提の1つ目になる**（出典2）。</div><div class=fn>根拠: GitHub Security Advisory の記述「PDF には、成分ごとに 食い違う間引き率を宣言した JPEG 2000 画像が含まれる」 （出典3。原文英語。本記録の訳）。 Wordfence が挙げた前提「攻撃者が PDF をアップロードできる （無認証または低権限のアカウント経由）」（出典2。本記録の訳）。</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**アプリケーションがプレビューまたはサムネイルの生成のために その PDF を処理する**（出典2）。 **WordPress では、PHP の Imagick 拡張を通して ImageMagick を呼び、ImageMagick が Ghostscript を起動する** （出典1・2）。 **処理の連鎖が Ghostscript に到達し、 ポリシー設定が PDF の描画を許していることが 前提の2つ目・3つ目になる**（出典2）。</div><div class=fn>根拠: BleepingComputer の記述「PDF のサムネイルを生成するとき、 WordPress は PHP の Imagick 拡張を使って ImageMagick を呼び、 ImageMagick が Ghostscript を起動しうる」 （出典2。原文英語。本記録の訳）。</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**非 samescale のサブバイト深度の出力経路が、 詰めて書く想定で行バッファを確保しながら 1出力列あたり丸ごと1バイトを書き込む**（出典3）。 **ヒープの確保器のチャンク管理情報が壊れる**（出典3）。 **Wordfence の2つの PoC は、 256バイトのバッファへ1,024バイトを書き込ませた**（出典2）。</div><div class=fn>根拠: GitHub Security Advisory の記述「非 samescale の サブバイト深度の出力経路は、詰めて出力する想定で 行バッファを確保するが、1出力列あたり丸ごと1バイトを 書き込む。このオーバーフローは確保器のチャンク管理情報を壊し、 コード実行に至りえる」（出典3。原文英語。本記録の訳）。 BleepingComputer の記述「Ghostscript に256バイトの バッファへ1,024バイトを書き込ませ、近傍のメモリを壊す」 （出典2。原文英語。本記録の訳）。</div></li><li><div class=stg><span class="b stage">4. C2通信</span><span class="b conf">推定</span><span class=srcs></span></div><div>**コード実行に成功した場合、 Ghostscript を起動したプロセスの権限で サーバ上の操作が可能になる**（出典1・2）。 **Wordfence は「サーバの乗っ取り」に至りうるとしている** （出典1・2。本記録の訳）。 **これは成立した場合の想定であり、 実環境での観測ではない**〈未確定4〉。</div><div class=fn>根拠: Wordfence が専用に組んだ WordPress 試験サーバで 未認証の遠隔コード実行を実証したこと（出典1）。 BleepingComputer の題名「Ghostscript の不具合により、 攻撃者は PDF のアップロード経由でサーバを乗っ取れる」 （出典2。本記録の訳）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **修正版が出てから公表することで、 利用者が更新を適用する猶予ができる**（本記録の整理）。 **とくに本件は、更新の主体が ディストリビューションのパッケージ保守者であるため、 バックポートの作業に時間が要る**（出典2。整理は本記録）。 **一方、公表が遅れるほど、 「信頼できない PDF を Ghostscript に渡している」ことに 気づいていない運用者は、点検の機会を失う**（本記録の評価）。</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **「成立しにくい」と書けば、更新の優先度が下がる** （本記録の整理） ——**CVSS 9.8 という評点との落差が、 読者の判断を迷わせる。** **一方、移植性の低さを隠せば、 「すぐに大量悪用が来る」という誤った危機感を生む** （本記録の評価）。 **Wordfence は両方を書いた。**</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **WordPress の利用者にとって、 「管理画面から直せない」という知らせは行動につながりにくい** （本記録の評価） ——**ホスティング事業者への照会という追加の手数が要る。** **一方、これを書かなければ、 プラグインの更新を確認して「対応済み」と誤認する運用者が出る** （本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>詰めて書く前提のバッファに1列1バイトを書き込む——間引き率を食い違わせた JPEG 2000 画像が引き金<span class="b slot">原因・手口</span></h2><p><strong>所在は Ghostscript の JPEG 2000 出力アダプタ、<code>base/sjpx_openjpeg.c</code> の <code>process_one_trunk</code> 関数です</strong>（出典3）。<strong>CWE は CWE-122（ヒープベースのバッファオーバーフロー）です</strong>（出典3）。</p>
+<p><strong>GitHub Security Advisory の記述は次のとおりです</strong>（出典3。原文英語。本記録の訳）。</p>
+<p><strong>「JPEG 2000 出力アダプタ（<code>base/sjpx_openjpeg.c</code>）におけるヒープベースのバッファオーバーフローにより、攻撃者は細工した PDF でメモリを破壊できる。PDF には、成分ごとに食い違う間引き率を宣言したJPEG 2000 画像が含まれる。非 samescale のサブバイト深度の出力経路は、詰めて（packed）出力する想定で行バッファを確保するが、1出力列あたり丸ごと1バイトを書き込む。このオーバーフローは確保器のチャンク管理情報を壊し、コード実行に至りえる。」</strong></p>
+<p><strong>本記録の整理では、ここには2つの前提の食い違いがあります</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>バッファを確保する側は「サブバイト深度なので詰めて書く」と想定している（たとえば1画素1ビットなら8画素で1バイト）</strong></li>
+<li><strong>書き込む側は「1列あたり1バイト」で書いている</strong></li>
+</ul>
+<p><strong>つまり、列数ぶんだけ超過が積み上がります</strong>（本記録の整理）。<strong>Wordfence の実証では、256バイトのバッファに1,024バイトが書き込まれました</strong>（出典2）——<strong>4倍の超過です</strong>（本記録の算出）。</p>
+<p><strong>この食い違いが現れるのは、サブバイト深度で、かつ成分ごとの解像度が揃っていない場合に限られます</strong>（出典3。整理は本記録）。<strong>攻撃者が PDF の中で間引き率を食い違わせるのは、この条件を作るためです。</strong></p>
+<p><strong>壊れるのはヒープの確保器の管理情報です</strong>（出典3）。<strong>BleepingComputer の表現では「近傍のメモリを壊し、未認証の遠隔コード実行に至る」</strong>（出典2。本記録の訳）。</p>
+<p><strong>なお、Ghostscript の役割を確認しておきます</strong>（出典2）。<strong>Ghostscript は PostScript と PDF の解釈エンジンで、PDF を画像として描画し、プレビュー用のサムネイルを生成し、埋め込み画像の圧縮や不要なフォントデータの除去でPDF を最適化します</strong>（出典2）。<strong>つまり、PDF を「読んで何かする」場面で広く使われています</strong>（本記録の整理）。</p></section>
+<section id="s7"><h2>WordPress は PDF のサムネイル生成で Ghostscript を呼ぶ——アップロードできるだけで入口になる<span class="b slot">被害規模・影響範囲</span></h2><p><strong>WordPress 経路の筋は次のとおりです</strong>（出典1・2）。</p>
+<p><strong>WordPress は PDF のサムネイルを生成するとき、PHP の Imagick 拡張を通して ImageMagick を呼び、ImageMagick が Ghostscript を起動します</strong>（出典2）。</p>
+<p><strong>Wordfence は、専用に組んだ WordPress の試験サーバで、<code>-dSAFER</code> を有効にした状態のまま未認証の遠隔コード実行を実証しました</strong>（出典1）。<strong><code>-dSAFER</code> は Ghostscript の安全側の実行モードで、ファイル操作などを制限するものです</strong>（本記録の補足）——<strong>それが有効でも成立した点が、この経路の深刻さを示しています</strong>（本記録の評価）。</p>
+<p><strong>WordPress 環境での成立には4つの前提が要ります</strong>（出典2。本記録の訳）。</p>
+<ol>
+<li><strong>攻撃者が PDF をアップロードできる（無認証または低権限のアカウント経由）</strong></li>
+<li><strong>サイトがその PDF をプレビューまたはサムネイルの生成のために処理する</strong></li>
+<li><strong>処理の連鎖が Ghostscript に到達し、必要なソフトウェアとポリシー設定が PDF の描画を許している</strong></li>
+<li><strong>Ghostscript に未修正の脆弱なデコード処理が含まれている</strong></li>
+</ol>
+<p><strong>Wordfence は「素の WordPress は無認証でのメディアライブラリへのアップロードを許していない」と注記しています</strong>（出典2。本記録の訳）。<strong>本記録はこの注記を重く見ます</strong>（本記録の評価）——<strong>つまり、WordPress 本体の既定設定のままなら1つめの前提が成立しません。</strong> <strong>成立するのは、投稿フォーム・応募フォーム・問い合わせフォームなどのプラグインが PDF の添付を受け付けている場合、あるいは低権限の登録ユーザーを受け入れている場合です</strong>（本記録の整理。出典はこの列挙をしていない）。</p>
+<p><strong>一方、Wordfence は WordPress 固有ではないと強調しています</strong>（出典1・2。本記録の訳）。</p>
+<p><strong>「これは WordPress だけの脆弱性ではない。文書管理システム・印刷サービス・請求書処理・メールゲートウェイ・変換 API はいずれも、信頼できない PDF を Ghostscript へ渡しうる。」</strong></p>
+<p><strong>より一般的には、攻撃者が与えた PDF を影響を受ける Ghostscript のコードで描画するアプリケーションはすべて露出しうるものであり、悪用に認証が要るかどうかはアプリケーションごとに異なります</strong>（出典2。本記録の訳）。</p>
+<p><strong>本記録はこの点を、読者が該当性を判定するうえでの要所と見ます</strong>（本記録の評価）——<strong>「WordPress を使っていないから該当しない」という判定は誤りです。</strong> <strong>判定軸は「信頼できない PDF が Ghostscript に到達する経路があるか」です。</strong></p></section>
+<section id="s8"><h2>10,240回実行しても成立しなかった一方、専用に組んだ試験サーバでは成立した——悪用の難しさの読み方<span class="b slot">評価・解釈</span></h2><p><strong>Wordfence の実証結果には、2つの異なる側面があります</strong>（出典2）。</p>
+<p><strong>一方では、成立しませんでした</strong>（出典2。本記録の訳）。<strong>試験環境で Linux パッケージに対して PoC を10,240回実行しましたが、遠隔コード実行には至りませんでした。</strong> <strong>Debian・Ubuntu・Fedora・Alpine・AlmaLinux を含む10のLinux 環境と、公式の WordPress Docker イメージのスナップショットを検査した結果、すべてに脆弱なコードは含まれていましたが、PoC が引き金を引けるかは環境に依存しました。</strong></p>
+<p><strong>他方では、成立しました</strong>（出典2。本記録の訳）。<strong>専用に組んだ試験サーバでは、遠隔でコードを実行できました。</strong> <strong>PDF のフォント・言語設定・フォント設定、および中核のシステムライブラリ1つを変更すると成立しましたが、安定はしませんでした。</strong></p>
+<p><strong>Wordfence の PoC は、準備した対象のビルドでのみ動作しました</strong>（出典1。本記録の訳）。<strong>同社は、標的を定めた攻撃と、1つのビルドを共有する多数のサーバについてはなお注意を促しています</strong>（出典1。本記録の訳）。</p>
+<p><strong>本記録の読み方はこうです</strong>（本記録の評価）。</p>
+<p><strong>①無差別の大量悪用には向きません。</strong> <strong>10,240回の失敗は、「とりあえず PDF を投げれば落ちる」型ではないことを示しています。</strong></p>
+<p><strong>②標的型では成立します。</strong> <strong>攻撃者が対象環境のビルドを把握できるなら、それに合わせた調整で成立します。</strong> <strong>Wordfence が挙げた「1つのビルドを共有する多数のサーバ」は、共用ホスティングやコンテナイメージの配布を指すものと本記録は読みます</strong>（本記録の整理。出典は具体例を挙げていない）。</p>
+<p><strong>③ヒープの管理情報を壊す型であるため、「成立しなかった」が「安全」を意味しません</strong>（本記録の評価）。<strong>メモリ破壊が起きていること自体は10環境すべてで共通しており（出典2）、成立しなかったのはコード実行への橋渡しの部分です。</strong> <strong>サービスの異常終了は起こりえます。</strong></p>
+<p><strong>Wordfence は、実環境での悪用を確認していないとしています</strong>（出典2）〈未確定4〉。<strong>CISA KEV への収載も、本記録では確認できませんでした</strong>（本記録の確認）。</p></section>
+<section id="s9"><h2>更新するのは WordPress ではなく OS のパッケージで、バージョン番号では該当性を判定できない<span class="b slot">対策・注意喚起</span></h2><p><strong>影響を受けるのは Ghostscript 9.21 から 10.07.1 です</strong>（出典1・2）——<strong>OpenJPEG デコーダが存在する版が対象です</strong>（出典1）。<strong>修正版 10.08.0 は2026年9月8日にリリースされました</strong>（出典1・4）。</p>
+<p><strong>ここで、本記録が最も実務に効くと考える点を示します</strong>（本記録の評価）。</p>
+<p><strong>Wordfence は「更新すべき WordPress プラグインは存在しない」と書いています</strong>（出典1。原文英語。本記録の訳）。<strong>Ghostscript は OS またはコンテナイメージから来るものであり、WordPress の管理画面からは更新できません</strong>（出典1）。</p>
+<p><strong>したがって、やることは次のようになります</strong>（出典1・2）。</p>
+<ul>
+<li><strong>WordPress の管理者は、ホスティング事業者を通してGhostscript が 10.08.0 以降に更新されているかを確認する必要がある</strong>（出典2。本記録の訳）</li>
+<li><strong>Docker を使っているなら、修正済みのベースイメージで再ビルドして再配備する</strong>（出典2。本記録の訳）</li>
+</ul>
+<p><strong>そして、もう1つの落とし穴があります</strong>（出典1・2）。</p>
+<p><strong>Linux ディストリビューションは修正をバックポートしうるため、<code>gs --version</code> の出力よりもパッケージの改訂番号のほうが重要になります</strong>（出典1・2。本記録の訳）。<strong>つまり、<code>gs --version</code> が 10.07.1 と返しても、ディストリビューションが修正をバックポートしていれば修正済みの可能性があります。</strong> <strong>逆に、10.08.0 と返しても別の問題が残る可能性は否定できません。</strong></p>
+<p><strong>本記録の整理では、判定の順序は次のようになります</strong>（本記録の整理）。</p>
+<ol>
+<li><strong>信頼できない PDF が Ghostscript に到達する経路があるかを確認する（これが無ければ該当しない）</strong></li>
+<li><strong>経路があるなら、使っているディストリビューションのセキュリティ勧告で CVE-2026-39919 の修正状況を確認する</strong></li>
+<li><strong>パッケージの改訂番号で判定する（<code>gs --version</code> の出力では判定できない）</strong></li>
+</ol>
+<p><strong>修正版へ更新できない場合の暫定の緩和策として、Wordfence は次を挙げています</strong>（出典1・2。本記録の訳）。</p>
+<ul>
+<li><strong>信頼できない利用者からの PDF の受け入れをやめる／サーバへの PDF のアップロードを遮断する</strong></li>
+<li><strong>ImageMagick のポリシー設定で PDF の読み込み・描画を無効にする</strong></li>
+<li><strong>アップロードを制限する</strong></li>
+</ul>
+<p><strong>Wordfence は「これらはリスクを下げるが、不具合そのものを直すわけではない」と注記しています</strong>（出典1。本記録の訳）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**Ghostscript の JPEG 2000 出力アダプタ （`base/sjpx_openjpeg.c` の `process_one_trunk` 関数）**（出典3）。 **影響を受けるのは Ghostscript 9.21 から 10.07.1**（出典1・2） ——**OpenJPEG デコーダが存在する版が対象である**（出典1）。 **GitHub Security Advisory の記述は 「10.08.0 より前のすべて」で粒度が異なる**〈齟齬3〉。 **修正版は 10.08.0（2026年9月8日リリース）**（出典1・4）。 **修正のコミットは `0a8bf88`（Ken Sharp 氏）**（出典3）。 **到達経路として示されているのは、WordPress の Imagick → ImageMagick → Ghostscript のサムネイル生成経路** （出典1・2）。 **ただし WordPress 固有ではなく、 文書管理システム・印刷サービス・請求書処理・ メールゲートウェイ・変換 API も対象になる** （出典1・2。本記録の訳）。 **判定は `gs --version` ではできない**（出典1・2） ——**ディストリビューションが修正をバックポートしうるため、 パッケージの改訂番号で判定する。**</td></tr><tr><th>finding_name</th><td>**CVE-2026-39919**（出典1・2・3）。 **GitHub Security Advisory の番号は GHSA-v865-hp77-22rm**（出典3）。 **CWE-122（ヒープベースのバッファオーバーフロー）**（出典3）。 **CVSS v3.1 で 9.8（Critical）**（出典1・2） ——**ベクトル文字列は確認した資料に無い**〈未確定5〉。 **CVSS v4.0 で 9.3（Critical）、ベクトルは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N`** （出典3）。 **EPSS は 0.784%（55パーセンタイル）**（出典3）。 **発見者は Wordfence Argus の Alex Thomas 氏**（出典3） ——**Argus は Wordfence の AI 探索基盤で、 WordPress 7.1 の点検中に見つけた**（出典1）。</td></tr><tr><th>exploit_status</th><td>**Wordfence は実環境での悪用を確認していないとしている** （出典2）〈未確定4〉。 **本記録でも悪用を示す資料は確認できなかった**（本記録の明示）。 **CISA KEV への収載も確認できなかった**（本記録の確認）。 **PoC は Wordfence が2つ作成したが、公開状況は不明である** 〈未確定6〉。 **PoC の移植性は低い**（出典1・2） ——**10のLinux 環境に対する10,240回の実行では 遠隔コード実行に至らず、 専用に組んだ試験サーバでのみ成立した**（出典2）。 **PDF のフォント・言語設定・フォント設定・ 中核のシステムライブラリ1つを変更すると成立したが、 安定しなかった**（出典2。本記録の訳）。 **「悪用されていない」とは書かない**（本記録の方針） ——**確認されていないことの確認である。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **Ghostscript を 10.08.0 以降へ更新する （判定はパッケージの改訂番号で行う。`gs --version` ではできない）** （出典1・2）。 **Docker を使っている場合は、修正済みのベースイメージで 再ビルドして再配備する**（出典2。本記録の訳）。　<b>副作用:</b> **更新の主体が OS のパッケージまたはコンテナイメージであるため、 アプリケーションの管理画面からは実施できない** （出典1。整理は本記録）。 **ホスティング事業者に運用を委ねている場合は、 事業者への照会という追加の手数が要る**（出典2。整理は本記録）。 **また、Ghostscript の更新は PDF の描画結果に 差異を生じうるため、印刷・帳票の出力を 業務に使っている場合は検証が要る**（本記録の整理）。</div><div class=sub><b>数え方:</b> **ImageMagick のポリシー設定で PDF の読み込み・描画を無効にする** （出典1・2。本記録の訳）。 **Ghostscript への到達そのものを断つ**（本記録の整理）。　<b>副作用:</b> **PDF のサムネイル・プレビューを使っている業務機能が 動かなくなる**（本記録の整理）。 **WordPress ではメディアライブラリの PDF が アイコン表示になる。** **業務上の必要と比べて判断する必要がある。**</div><div class=sub><b>数え方:</b> **信頼できない利用者からの PDF の受け入れをやめる／ サーバへの PDF のアップロードを遮断する／ アップロードを制限する**（出典1・2。本記録の訳）。　<b>副作用:</b> **応募フォーム・問い合わせフォーム・申込フォームなど、 PDF の受け入れを前提にした業務が止まる**（本記録の整理）。 **代替の受け渡し手段（事業者の提供するファイル共有等）を 用意する必要がある。**</div><div class=sub><b>数え方:</b> **サムネイル生成・PDF 変換の失敗をログに記録し、 同一の利用者・IP からの連続した失敗を警報の条件にする** （本記録の推奨。出典はこの手順を示していない）。　<b>副作用:</b> **正常な失敗（破損ファイル・対応していない形式）も 記録されるため、警報の条件を調整する手間が要る** （本記録の整理）。 **また、これは検知の層であり、 成立そのものを防ぐものではない。**</div><span class="b rsn">stated</span><div class=fn>**1件目から3件目は出典1・2 に記されたものである**（本記録の確認）。 **4件目は本記録の推奨であり、出典にはない**（本記録の明示）。 **Wordfence は暫定の緩和策について 「これらはリスクを下げるが、不具合そのものを直すわけではない」と 注記している**（出典1。本記録の訳）。 **副作用の記述は、いずれも本記録が立てたものである** （本記録の明示） ——**出典は副作用に触れていない。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年8月23日</td><td class=nowrap><span class="b kind">判明</span></td><td>**Wordfence の AI 探索基盤 Argus が、 WordPress 7.1 の点検中に本脆弱性を発見した**（出典1・2）。 **Wordfence は Artifex へ非公開で報告した**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年8月24日（発見の翌日）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Artifex が報告を確認したとされる**（出典2）。 **本記録はこの日付を Wordfence 側の記述として記録する** （本記録の留保） ——**Artifex 自身の公表文書で確認したものではない**〈齟齬1〉。</td></tr><tr><td class="sm nowrap tw">2026年9月8日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Artifex が修正版 Ghostscript 10.08.0 をリリースした** （出典1・4）。 **修正のコミットは `0a8bf88`（Ken Sharp 氏）**（出典3）。 **発見から16日後である**（出典1。日数は本記録の算出）。 **ただし、10.08.0 のリリースページには CVE-2026-39919 への言及が無く、 コミットメッセージは「10.08.0 version number」のみである** （出典4。本記録の確認）〈齟齬1〉。</td></tr><tr><td class="sm nowrap tw">2026年9月15日</td><td class=nowrap><span class="b kind">公表</span></td><td>**CVE-2026-39919 が NVD および GitHub Advisory Database で 公開された**（出典3）。 **CWE-122（ヒープベースのバッファオーバーフロー）、 CVSS v4.0 9.3（Critical）、 所在（`base/sjpx_openjpeg.c` の `process_one_trunk`）、 発見者（Wordfence Argus の Alex Thomas 氏）が記録された** （出典3）。 **修正版リリースから7日後である**（本記録の算出）。</td></tr><tr><td class="sm nowrap tw">2026年10月12日 18:10 UTC</td><td class=nowrap><span class="b kind">公表</span></td><td>**Wordfence が 「Wordfence Argus Discovers Critical Vulnerability in Ghostscript, the Program That Turns Uploaded PDFs into Thumbnails on Your Server」 を公表した**（出典1）。 **影響範囲（9.21〜10.07.1）、WordPress 経路 （Imagick → ImageMagick → Ghostscript）、 `-dSAFER` 有効のまま未認証 RCE を実証したこと、 PoC の移植性が低いこと、 「更新すべき WordPress プラグインは存在しない」こと、 WordPress 固有ではないこと、暫定の緩和策がここで示された**（出典1）。 **修正版リリースから34日後、CVE 公開から27日後である** （本記録の算出）。</td></tr><tr><td class="sm nowrap tw">2026年10月13日 21:33 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**BleepingComputer が報道した**（出典2）。 **Wordfence の2つの PoC が256バイトのバッファへ 1,024バイトを書き込ませること、 試験環境で10,240回実行しても Linux パッケージでは 遠隔コード実行に至らなかったこと、 専用に組んだ試験サーバでは成功したこと、 PDF のフォント・言語設定・フォント設定・ 中核のシステムライブラリ1つを変更すると 成立したが安定しなかったこと、 WordPress 経路の4つの前提、 Artifex が報告の翌日に確認したこと、 実環境での悪用は未確認であることが伝えられた**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、Wordfence の記事（出典1）の内容を 同社の検索フィード経由で確認し、 GitHub Security Advisory GHSA-v865-hp77-22rm（出典3）および Ghostscript 10.08.0 のリリースページ（出典4）の本文を 取得して確認した**（本記録の観測）。 **Wordfence のブログ記事の HTML 本文には到達できなかった** 〈齟齬2〉。 **Artifex 自身の脆弱性公表文書も確認できなかった**〈齟齬1〉。 **CISA KEV への収載は確認できなかった**（本記録の確認）。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本記録は Ghostscript 10.08.0 のリリースページ（出典4）を 取得したが、CVE-2026-39919 への言及が無く、 リリースノートに相当する記述も無かった**（本記録の確認）。 **唯一の説明はコミットメッセージ 「10.08.0 version number」である。** **Ghostscript のバグ追跡システム（Bug 709666）には アクセス制御が働いており到達できなかった**（本記録の明示）。 **したがって、このページは「修正版がこの日に出た」ことの 裏付けにはなるが、「何を修正したか」の裏付けにはならない** （本記録の留保）。 **Artifex 側の記述（報告の翌日に確認したこと、 古い系列へのバックポート）は、 すべて Wordfence 側の説明（出典1）と報道（出典2）にもとづく。** **「公表が存在しない」とは言わない** ——**本記録が到達できなかった、という状態である** （本記録の留保）。</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録は、Wordfence のブログ記事（出典1）の HTML 本文を 取得できなかった**（本記録の明示）。 **代わりに、Wordfence 自身の検索フィード （https://www.wordfence.com/search/ghostscript/feed/rss2/）経由で 記事の内容を確認した**（本記録の整理）。 **フィードから確認できたのは、 影響範囲・CVSS 評点・修正版のリリース日・発見の経緯・ `-dSAFER` 有効での実証・PoC の移植性・ 「更新すべき WordPress プラグインは存在しない」こと・ パッケージの改訂番号の重要性・ 公式 Docker イメージのスナップショットが脆弱だったこと・ WordPress 固有ではないこと・暫定の緩和策である** （本記録の確認）。 **記事の全文を確認したわけではないため、 本記録が引用していない内容が記事にある可能性がある** （本記録の留保） ——**とくに、技術的な詳細（PoC の構成・ ヒープのレイアウトの操作方法）は確認していない。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**Wordfence（出典1・2）は影響範囲を 「9.21 から 10.07.1」とし、 OpenJPEG デコーダが存在する版が対象であるとしている** （本記録の訳）。 **GitHub Security Advisory（出典3）の記述は 「10.08.0 より前のすべての Ghostscript」である** （本記録の訳）。 **9.21 より前の版が影響を受けるかは、 両者の記述から一意に決まらない**〈未確定7〉。 **本記録は Wordfence の記述（9.21 から）を採った** （本記録の判断） ——**OpenJPEG デコーダの導入時期という技術的な根拠が 添えられているため。** **なお、GitHub Security Advisory の 「影響を受けるバージョン」「修正版」の欄はいずれも Unknown（不明）と表示されており、 範囲の記述は本文の説明文に依っている**（本記録の確認）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典が記しているのは、成立の筋道 （アップロード → サムネイル生成 → Ghostscript 到達 → バッファオーバーフロー → コード実行）と実証結果である** （本記録の確認）。 **本記録は、これを4段階（初期侵入・実行・影響・C2通信）に 割り当て、各段階で検知の機会があったかを判定した** （本記録の判断）。 **出典はいずれも検知の機会を論じていない**（本記録の明示）。 **「JPEG 2000 画像を含む PDF 自体が業務上まれである」 「10,240回の失敗の多くはプロセスの異常終了を伴ったと見る」 「サムネイル生成の失敗を記録していれば試行の痕跡として 捉えられた」という評価も本記録のものである。** **とくに2点目は本記録の推測であり、 出典には異常終了に関する記述が無い**（本記録の留保）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**発見（2026年8月23日）から修正版リリース（2026年9月8日）までの 16日、修正版リリースから Wordfence 公表（2026年10月12日）までの 34日は、本記録が日付の差から算出した**（本記録の明示）。 **なお、16日については Wordfence 自身も 「16日前に発見・報告した」という表現を使っている** （出典1。本記録の確認）。 **256バイトに対する1,024バイトという4倍の超過倍率も 本記録が算出した**（本記録の明示） ——**出典2 が示しているのは2つの数値である。** **影響を受けるバージョン数は算出していない** （本記録の整理） ——**9.21 から 10.07.1 の間に何版あるかを 確認していないため。**</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典2 が示しているのは、 10環境すべてに脆弱なコードが含まれていたこと、 10,240回の実行で遠隔コード実行に至らなかったこと、 専用に組んだ試験サーバでは成立したことである** （本記録の確認）。 **「メモリ破壊は10環境すべてで共通しており、 成立しなかったのはコード実行への橋渡しの部分である。 したがってサービスの異常終了は起こりえる」という整理は、 本記録が立てたものである**（本記録の明示）。 **出典はこの区別を明示していない。** **本記録がこの整理を置いたのは、 読者が「10,240回失敗した」という数字を 「安全である」と読み替えるのを避けるためである** （本記録の方針）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>攻撃者が成分ごとの間引き率を食い違わせた JPEG 2000 画像を含む PDF を細工 → アップロード口（無認証または低権限／WordPress では素の設定では許されない）へ投入 → サイトがプレビュー・サムネイル生成のため PDF を処理 → Imagick → ImageMagick → Ghostscript と辿って JPEG 2000 出力アダプタに到達 → 詰めて書く前提で確保した256バイトの行バッファに1,024バイトを書き込み、 ヒープの確保器の管理情報を破壊 → 未認証の遠隔コード実行（`-dSAFER` 有効でも成立／ただし成立は環境依存）</div><div class=svgwrap><svg viewBox="0 0 1202 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C703.0,162.0 703.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（成分ごとの間引き</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">率を食い違わせた JPE</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">G 2000 画像を含…</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">「成分ごとに食い違う間引</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">き率を宣言した JPEG</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PDF のアップロード口</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（素の WordPres</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s は無認証を許さない…</text><text x="295.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">Wordfence が挙</text><text x="295.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">げた前提の1つ目（出典2</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PHP Imagick </text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">拡張 → ImageMa</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gick（PDF の描…</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">前提の2つ目・3つ目（出</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">典2）</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ghostscript </text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9.21〜10.07.1</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> の JPEG 200…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE-2026-399</text><text x="703.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">19・CWE-122・C</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ヒープの確保器のチャンク</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理情報（256バイトの</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バッファへ1,024バ…</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">「確保器のチャンク管理情</text><text x="907.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">報を壊す」（出典3。本記</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の遠隔コード実行（</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-dSAFER 有効でも</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">成立／成立は環境依存）</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">10環境への10,240</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">回の実行では成立せず、専</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WordPress 以外</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の経路（文書管理・印刷サ</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ービス・請求書処理・メ…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">「これは WordPre</text><text x="499.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">ss だけの脆弱性ではな</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 Ghostscr</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ipt 10.08.0（</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026年9月8日／更…</text><text x="703.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">「更新すべき WordP</text><text x="703.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">ress プラグインは存</text></svg></div><div class=fn>Wordfence の公表（2026年10月12日・出典1）、BleepingComputer の報道（出典2）、 GitHub Security Advisory（出典3）にもとづく。 **これは公表された成立の筋道と実証結果であり、実環境での悪用の観測ではない** 〈未確定4〉。 **Wordfence は専用に組んだ WordPress 試験サーバで `-dSAFER` 有効のまま 未認証 RCE を実証したが、10のLinux 環境に対する10,240回の実行では 成立しなかった**（出典1・2） ——**破線で示した「コード実行」は環境依存である**（本記録の整理）。 **メモリ破壊は10環境すべてで共通しており、 成立しなかったのはコード実行への橋渡しの部分である**（本記録の整理） ——**「成立しなかった」は「安全」を意味しない。** **修正版 10.08.0 は2026年9月8日**（出典1・4）。 **更新するのは WordPress ではなく OS のパッケージまたは コンテナイメージであり、`gs --version` では該当性を判定できない** （出典1・2）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の判定である。** **機会があったと判断したのは、 JPEG 2000 画像を含む PDF 自体が業務上まれであるためである** （本記録の評価） ——**請求書・申込書・報告書といった通常の PDF には JPEG 2000 画像はほとんど含まれない。** **「JPEG 2000 画像を含む PDF がアップロードされた」という 事象を記録していれば、異常として切り出せた。** **ただし、そのような検査を行っている現場は少ないと 本記録は見る**（本記録の評価）。 **出典はこの段階の検知について述べていない**（本記録の明示）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の判定である。** **サムネイル生成は正常な処理であり、 この段階で異常として切り出す材料が無い**（本記録の評価）。 **出典はこの段階の検知について述べていない**（本記録の明示）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の判定である。** **機会があったと判断したのは、 Ghostscript プロセスの異常終了が記録として残りうるためである** （本記録の評価） ——**10,240回の実行のうち大半は実行に至らなかった （出典2）が、その多くはプロセスの異常終了を伴ったと 本記録は見る（これは本記録の推測であり、 出典には記述が無い）。** **サムネイル生成の失敗を記録・監視していれば、 試行の痕跡として捉えられた。** **出典はこの段階の検知について述べていない**（本記録の明示）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の判定である。** **機会があったと判断したのは、 Web サーバのプロセスからの想定外の子プロセス起動、 あるいは想定外の外向き通信が ホスト側の監視で捉えられるためである**（本記録の評価）。 **サムネイル生成の経路で Ghostscript が呼ばれるのは正常だが、 そこから先に別のプロセスが生まれるのは正常ではない。** **出典はこの段階の検知について述べていない**（本記録の明示）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**順序も間隔も適切である。** **修正版リリースの7日後に CVE が公開され、 その27日後に詳細が出ている**（本記録の算出）。 **ディストリビューションがバックポートする時間を 取ったうえでの公表とみられる。** **本記録が評価できないのは、 各ディストリビューションが実際にこの期間で バックポートを完了できたかである**〈未確定3〉 ——**修正状況の一覧がどの資料にも無い。**</td></tr><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**両面を書いた判断は適切である。** **10,240回という具体的な数を出したことで、 読者が自分でリスクを読み替えられる**（本記録の評価）。 **本記録が付け加えたい点は1つある** ——**「成立しなかった」が「安全」を意味しないことである。** **メモリ破壊は10環境すべてで共通しており（出典2）、 成立しなかったのはコード実行への橋渡しの部分である** （本記録の整理）。 **サービスの異常終了は起こりえる。** **この区別について、出典は明示していない**（本記録の明示）。</td></tr><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**最も実務に効く記述である。** **「どこを更新するのか」「何で判定するのか」の2点を 明示したことで、誤った対応完了の判断を防いでいる** （本記録の評価）。 **とくに「`gs --version` では判定できない」という指摘は、 自動化された脆弱性スキャンの結果を そのまま信じることの危険を示している**（本記録の評価） ——**出典はこの含意を明示していないが、 本記録はここが実務の要所と見る。**</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「ファイルをアップロードできる」機能を、脆弱性の入口として棚卸しの対象に入れる**</div><div class=lw>**本件の入口は、PDF をアップロードできることである** （出典1・2）。 **応募フォーム・問い合わせフォーム・申込フォーム・ 見積書の提出口——業務上の必要から作られた受け入れ口が そのまま入口になる**（本記録の整理。出典はこの列挙をしていない）。 **WordPress 本体の既定設定では無認証アップロードは 許されていない**（出典2） ——**成立するのは、プラグインや自前の実装で 受け入れ口を作った場合である**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①自組織の外部公開システムで、 ファイルをアップロードできる口を一覧にする （認証の有無・受け付ける形式・アップロード後の処理を含めて） ②各口について「アップロードされたファイルを サーバ側で解析・変換・描画しているか」を確認する ——保存するだけなら本件の経路は成立しない ③解析・変換・描画している口について、 使っているライブラリ（Ghostscript・ImageMagick・ PDF 解析ライブラリ）を特定し、脆弱性管理の対象に加える。**</div></li><li><div class=lp>**OS のパッケージに由来する脆弱性は、アプリケーションの更新管理では捉えられない**</div><div class=lw>**Wordfence は「更新すべき WordPress プラグインは存在しない」と 明記している**（出典1。本記録の訳）。 **Ghostscript は OS またはコンテナイメージから来る**（出典1）。 **したがって、WordPress のプラグイン更新を どれだけ厳密に管理していても、本件は残る**（本記録の評価）。 **ホスティング事業者に運用を委ねている場合は、 自組織では更新できない**（出典2。整理は本記録）。</div><div class=la><b>取るべき行動</b> **①自組織のシステムについて、 「誰が OS のパッケージを更新する責任を持つか」を システムごとに明文化する ——ホスティング事業者・クラウド事業者・自組織のいずれか ②事業者が責任を持つ場合、 脆弱性公表からパッチ適用までの約束（SLA）を契約で確認する ③コンテナを使っている場合、 ベースイメージの更新と再配備の頻度を確認する ——公式イメージのスナップショットが脆弱だった例がある （出典1・2）。**</div></li><li><div class=lp>**CVSS の評点と悪用の難しさを別の軸として読む**</div><div class=lw>**本件は CVSS v3.1 で 9.8、v4.0 で 9.3（いずれも Critical）** （出典1・3）。 **一方、Wordfence の試験では10環境に対して 10,240回実行しても遠隔コード実行に至らなかった**（出典2）。 **専用に組んだ試験サーバでは成立した**（出典2）。 **評点だけを見ると「即座に大量悪用が来る」と読めるが、 実際は標的型に向いた型である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①脆弱性の優先度付けの手順に、 「公表された実証の再現性」を読む工程を入れる ——発見者が移植性について述べていることが多い ②「1つのビルドを共有する多数のサーバ」に 自組織が当たるかを判定する （共用ホスティング・同一コンテナイメージの大量配備） ——Wordfence が注意を促している条件である（出典1） ③標的型のリスクは評点では測れないため、 「自組織が狙われる理由があるか」を別に評価する。**</div></li><li><div class=lp>**自動化された脆弱性スキャンの結果を、そのまま対応完了の根拠にしない**</div><div class=lw>**Wordfence は、ディストリビューションが修正をバックポートしうるため `gs --version` の出力よりパッケージの改訂番号のほうが 重要であるとしている**（出典1・2。本記録の訳）。 **つまり、バージョン番号で判定するスキャンは 誤検知も見逃しも起こしうる**（本記録の評価）。 **各ディストリビューションの修正状況の一覧は どの資料にも無い**〈未確定3〉。</div><div class=la><b>取るべき行動</b> **①脆弱性スキャンの結果のうち、 OS パッケージに関するものは ディストリビューションのセキュリティ勧告と突き合わせる手順にする ②「バージョン番号が修正版より古いが、 ディストリビューションが修正済み」のケースを 例外として記録できる台帳にする ③逆に「バージョン番号は新しいが修正が入っていない」ケースを 想定し、重大な脆弱性については個別に確認する。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**信頼できない PDF が Ghostscript に到達する経路を、連鎖の全体で確認する**</div><div class=lw>**WordPress の経路は Imagick → ImageMagick → Ghostscript である**（出典1・2）。 **呼び出しは3段で、途中の層は PHP の拡張である**（出典2）。 **「Ghostscript を使っている」という自覚が無いまま 到達している構成が多いと本記録は見る**（本記録の評価） ——**ImageMagick で PDF を扱うと Ghostscript が呼ばれる。**</div><div class=la><b>取るべき行動</b> **①`gs` を含むプロセスの起動を記録し、 誰が（どのプロセスが）呼んでいるかを確認する ②ImageMagick を使っている箇所について、 PDF を扱う設定になっているかを確認する ③アプリケーションの依存関係の一覧だけでなく、 実行時のプロセスの親子関係で確認する ——依存関係の宣言には ImageMagick までしか出てこない。**</div></li><li><div class=lp>**ImageMagick のポリシー設定で PDF の読み込み・描画を止める**</div><div class=lw>**Wordfence が挙げた暫定の緩和策の1つである** （出典1・2。本記録の訳）。 **修正版へ更新できない場合に、 Ghostscript への到達そのものを断つ**（出典1・2。整理は本記録）。 **Wordfence は「これらはリスクを下げるが、 不具合そのものを直すわけではない」と注記している** （出典1。本記録の訳）。</div><div class=la><b>取るべき行動</b> **①ImageMagick の `policy.xml` で、 PDF（および PS・EPS）のコーダーの読み込みを無効にする ②無効化したあと、PDF のサムネイルが必要な業務機能が 壊れないかを確認する ——壊れる場合は、業務上の必要とリスクを比べて判断する ③PDF のサムネイルが不要な口については、 修正版へ更新したあとも無効のままにしておく ——攻撃面を恒久的に減らせる。**</div></li><li><div class=lp>**サムネイル生成の失敗を記録・監視する**</div><div class=lw>**本記録の判定では、メモリ破壊の段階に 「機会はあったが検知できなかった」という検知の余地がある** （本記録の判定）。 **Wordfence の試験では10,240回の実行の大半が 遠隔コード実行に至らなかった**（出典2） ——**その多くはプロセスの異常終了を伴ったと本記録は見る （これは本記録の推測であり出典には記述が無い）。** **試行の痕跡は、サムネイル生成の失敗として現れうる** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **①サムネイル生成・PDF 変換の失敗をログに記録する ——成功だけを記録している実装が多い ②同一の利用者・同一の IP からの連続した失敗を 警報の条件にする ③Ghostscript プロセスの異常終了（シグナルによる終了）を ホスト側で記録する。**</div></li><li><div class=lp>**JPEG 2000 画像を含む PDF を、業務上の必要から判定する**</div><div class=lw>**引き金になるのは、成分ごとに食い違う間引き率を宣言した JPEG 2000 画像である**（出典3）。 **本記録の整理では、請求書・申込書・報告書といった 通常の業務 PDF に JPEG 2000 画像が含まれることは ほとんどない**（本記録の評価。出典はこの点を論じていない）。 **したがって、「JPEG 2000 画像を含む PDF」という条件は 異常として切り出せる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①自組織が受け付ける PDF のうち、 JPEG 2000 画像を含むものがどれだけあるかを実測する ——医療画像・地理空間データ・一部のスキャナ出力では 使われることがある ②業務上不要であれば、 アップロード時の検査で JPEG 2000 画像を含む PDF を 拒否する（または隔離して人が確認する） ③必要な業務がある場合は、 その経路だけを分離して処理する。**</div></li><li><div class=lp>**ベースイメージの再ビルドと再配備を、脆弱性対応の手順として用意する**</div><div class=lw>**Wordfence は「Docker を使っているなら、 修正済みのベースイメージで再ビルドして再配備する」と している**（出典2。本記録の訳）。 **公式の WordPress Docker イメージの検査対象スナップショットは 脆弱だった**（出典1・2）。 **コンテナの中の OS パッケージは、 イメージを作り直さなければ更新されない**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①稼働しているコンテナイメージのビルド日時を一覧にする ——古いイメージがそのまま動き続けていることが多い ②ベースイメージの更新を検知して再ビルドを起動する 仕組みを用意する ③再配備の手順を実際に1度通して、所要時間を測る ——脆弱性公表から何日で配備できるかが、 対応の実力そのものである。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 外部から受け取った PDF を、サーバ側で描画・変換・サムネイル生成している（WordPress の Imagick 経路を含む）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> Ghostscript 9.21 以上 10.07.1 以下（またはディストリビューションが修正をバックポートしていないパッケージ）を使っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> OS のパッケージ更新の責任がホスティング事業者・クラウド事業者にあり、自組織では更新できない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> コンテナイメージを使っており、ベースイメージの再ビルドと再配備の手順が整っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> PDF をアップロードできる口が、無認証または低権限のアカウントに開かれている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サムネイル生成・PDF 変換の失敗をログに記録していない、または記録していても監視していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 同一のビルド・同一のコンテナイメージを多数のサーバへ配備している（共用ホスティングを含む）</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年9月8日（10.08.0 のリリース） Artifex Software（ArtifexSoftware/ghostpdl-downloads）</span> <a href="https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/tag/gs10080" target="_blank" rel="noreferrer noopener nofollow">Ghostscript 10.08.0 リリースページ（タグ gs10080）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（原文英語。**保守元によるリリース。** **本記録は2026年10月15日に本文を取得して確認した。** **リリースが9月8日であることを確認した （ページには年の表示が無く、12:29 の時刻とともに 「08 Sep」と出る。年は Wordfence の記述（出典1）と 突き合わせて2026年と判断した）。** **CVE-2026-39919 への言及は無く、 リリースノートに相当する記述も無い**〈齟齬1〉 ——**唯一の説明はコミットメッセージ 「10.08.0 version number」である**（本記録の確認）。 **したがって、このページは「修正版がこの日に出た」ことの 裏付けにはなるが、「何を修正したか」の裏付けにはならない** （本記録の留保）。 **Ghostscript のバグ追跡システム（Bug 709666）には アクセス制御が働いており到達できなかった**（本記録の明示）。））</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年9月15日（NVD および GitHub Advisory Database での公開） GitHub Advisory Database（GHSA-v865-hp77-22rm）</span> <a href="https://github.com/advisories/GHSA-v865-hp77-22rm" target="_blank" rel="noreferrer noopener nofollow">&quot;GHSA-v865-hp77-22rm / CVE-2026-39919: Ghostscript heap-based buffer overflow in the JPEG 2000 output adapter&quot;</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（原文英語。**脆弱性情報。** **本記録は2026年10月15日に本文を取得して確認した。** **CWE-122（ヒープベースのバッファオーバーフロー）、 CVSS v4.0 9.3（Critical）とベクトル `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N`、 EPSS 0.784%（55パーセンタイル）、 所在（`base/sjpx_openjpeg.c` の `process_one_trunk`）、 成分ごとに食い違う間引き率を宣言した JPEG 2000 画像が 引き金になること、 非 samescale のサブバイト深度の出力経路が 詰めて書く想定で行バッファを確保しながら 1出力列あたり丸ごと1バイトを書き込むこと、 確保器のチャンク管理情報が壊れること、 発見者（Wordfence Argus の Alex Thomas 氏）、 修正コミット（`0a8bf88`。コミットは Ken Sharp 氏）、 公開日（2026年9月15日）はここに由来する。** **影響範囲は「10.08.0 より前のすべての Ghostscript」と記され、 Wordfence の「9.21 から 10.07.1」と粒度が異なる**〈齟齬3〉。 **CVSS v3.1 のベクトル文字列は記載が無い**〈未確定5〉。））</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月12日 18:10 UTC Wordfence（Defiant）</span> <a href="https://www.wordfence.com/blog/2026/10/wordfence-argus-discovers-critical-vulnerability-in-ghostscript-the-program-that-turns-uploaded-pdfs-into-thumbnails-on-your-server/" target="_blank" rel="noreferrer noopener nofollow">&quot;Wordfence Argus Discovers Critical Vulnerability in Ghostscript, the Program That Turns Uploaded PDFs into Thumbnails on Your Server&quot;</a> <span class="b kind">ブログ</span><span class=sm>（（原文英語。**発見者による公表。** **本記録は2026年10月15日に、Wordfence 自身の検索フィード （https://www.wordfence.com/search/ghostscript/feed/rss2/）経由で 記事の内容を確認した**〈齟齬2〉 ——**ブログ記事の HTML 本文には到達できなかったため、 記事の全文を確認したわけではない**（本記録の留保）。 **影響範囲（9.21〜10.07.1。OpenJPEG デコーダが存在する版）、 CVSS v3.1 9.8／v4.0 9.3（いずれも Critical）、 修正版 10.08.0 が2026年9月8日に出たこと、 Argus が WordPress 7.1 の点検中に発見して Artifex へ 非公開で報告したこと、 `-dSAFER` を有効にしたまま専用の WordPress 試験サイトで 未認証 RCE を実証したこと、 2つの PoC が準備した対象のビルドでのみ動作し 他の10環境では失敗したこと、 標的型と1ビルド共有の多数サーバへの注意、 「更新すべき WordPress プラグインは存在しない」こと、 パッケージの改訂番号が `gs --version` より重要であること、 公式 WordPress Docker イメージのスナップショットが脆弱だったこと、 WordPress 固有ではないこと、暫定の緩和策3件はここに由来する。**））</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月13日 21:33 UTC BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/ghostscript-flaw-lets-hackers-hijack-servers-via-pdf-uploads/" target="_blank" rel="noreferrer noopener nofollow">&quot;Ghostscript flaw lets hackers hijack servers via PDF uploads&quot;</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**報道。** **2026年8月23日の発見、Argus による発見、 Ghostscript の役割（PDF の画像描画・サムネイル生成・最適化）、 WordPress 経路（Imagick → ImageMagick → Ghostscript）、 JPEG 2000 画像による低ビット深度サンプルと 成分解像度の不整合の誤処理、 256バイトのバッファへ1,024バイトを書き込ませる2つの PoC、 10のLinux 環境と公式 WordPress Docker イメージの検査結果、 試験環境での10,240回の実行と失敗、 専用に組んだ試験サーバでの成功、 フォント・言語設定・フォント設定・中核システムライブラリ1つの 変更で成立したが安定しなかったこと、 WordPress 経路の4つの前提、 素の WordPress は無認証アップロードを許さないこと、 Artifex が2026年9月8日に 10.08.0 で修正したこと、 古い系列へのバックポート、 ホスティング事業者を通した確認・Docker の再ビルド・ PDF アップロードの遮断・ImageMagick での PDF 描画の無効化、 実環境での悪用は未確認であることはここに由来する。** **Artifex が報告の翌日に確認したという記述もここにある** （本記録の確認）。））</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月15日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月14日収集分の記事 〈output/articles/20261014/0063_bleepingcomputer_ghostscript-flaw-lets-hackers-hijack-servers-via-p.md〉 を起点に、**一次公表の裏取りを行った。**
+
+**裏取りできたもの**——**①発見者 Wordfence の公表（出典1）の内容を、 同社自身の検索フィード経由で確認した**〈齟齬2〉。 **記事の題名、影響範囲（9.21〜10.07.1。OpenJPEG デコーダが 存在する版）、CVSS v3.1 9.8／v4.0 9.3、 修正版 10.08.0 が2026年9月8日に出たこと、 Argus が WordPress 7.1 の点検中に発見して Artifex へ 非公開で報告したこと、 `-dSAFER` 有効のまま専用の WordPress 試験サイトで 未認証 RCE を実証したこと、 PoC が準備した対象のビルドでのみ動作したこと、 標的型と1ビルド共有の多数サーバへの注意、 「更新すべき WordPress プラグインは存在しない」こと、 パッケージの改訂番号が `gs --version` より重要であること、 公式 WordPress Docker イメージのスナップショットが 脆弱だったこと、WordPress 固有ではないこと、 暫定の緩和策3件を確認した。** **②GitHub Security Advisory GHSA-v865-hp77-22rm（出典3）の 本文を取得し、CWE-122、CVSS v4.0 のベクトル、EPSS、 所在（`base/sjpx_openjpeg.c` の `process_one_trunk`）、 成分ごとに食い違う間引き率の宣言が引き金になること、 詰めて書く想定で確保した行バッファに1出力列あたり 丸ごと1バイトを書き込むという機構、 確保器のチャンク管理情報が壊れること、 発見者 Alex Thomas 氏、修正コミット `0a8bf88`（Ken Sharp 氏）、 CVE 公開日（2026年9月15日）を確認した。** **③Ghostscript 10.08.0 のリリースページ（出典4）の本文を取得し、 リリースが9月8日であることを確認した。**
+
+**一次公表の裏取りで得られた最大の収穫は、 不具合の機構である**（本記録の整理） ——**報道（出典2）の記述は「低ビット深度サンプルと 成分解像度の不整合の誤処理」までで、 なぜ超過が起きるのかが分からなかった。** **出典3 で「詰めて書く前提のバッファに1列1バイトを書く」という 前提の食い違いまで辿れた。**
+
+**到達できなかったもの**——**①Artifex 自身の脆弱性公表文書** 〈齟齬1・未確定1〉。 **10.08.0 のリリースページには CVE への言及が無く、 コミットメッセージは「10.08.0 version number」のみだった。** **Ghostscript のバグ追跡システム（Bug 709666）には アクセス制御が働いており到達できなかった。** **したがって Artifex 側の記述（報告の翌日に確認したこと、 バックポートの範囲）は Wordfence 側の説明と報道にもとづく。** **②Wordfence のブログ記事の HTML 本文**〈齟齬2〉 ——**検索フィード経由で内容を確認したが、全文ではない。** **技術的な詳細（PoC の構成・ヒープのレイアウトの操作方法）は 確認していない。** **③影響を受けるサイト数・システム数**〈未確定2〉。 **④ディストリビューションごとのバックポートの状況**〈未確定3〉 ——**修正状況の一覧がどの資料にも無い。** **⑤CVSS v3.1 のベクトル文字列**〈未確定5〉。 **⑥PoC の公開状況**〈未確定6〉。 **⑦9.21 より前の版が影響を受けるか**〈未確定7・齟齬3〉 ——**Wordfence は「9.21 から」、GitHub Security Advisory は 「10.08.0 より前のすべて」で粒度が異なる。** **本記録は技術的な根拠（OpenJPEG デコーダの導入時期）が 添えられている Wordfence の記述を採った。** **⑧CISA KEV への収載。**
+
+**本記録が独自に算出・整理した点**——**①日数2件 （発見から修正版まで16日／修正版から公表まで34日。 CVE 公開から公表まで27日） ——うち16日は Wordfence 自身も「16日前」と表現している ②バッファ超過の倍率（256バイトに1,024バイト＝4倍） ③攻撃の4段階（初期侵入・実行・影響・C2通信）への割り当てと、 各段階で検知の機会があったかの判定 （初期侵入・影響・C2通信=機会はあったが検知できなかった、 実行=現実的な検知機会がなかった）——出典は検知機会を論じていない ④「JPEG 2000 画像を含む PDF 自体が業務上まれであるため 異常として切り出せる」という整理 ——出典はこの観点を扱っていない ⑤「成立しなかったことが安全を意味しない」という整理 ——メモリ破壊は10環境すべてで共通しており、 成立しなかったのはコード実行への橋渡しの部分である。 出典はこの区別を明示していない ⑥WordPress 以外の経路を別の組織エントリとして立てたこと ——「WordPress を使っていないから該当しない」という 誤った判定を避けるため ⑦緩和策の4件目（サムネイル生成の失敗の記録・監視）と、 4件すべての副作用の記述 ——出典は副作用に触れていない。** **①②③④⑤⑦はいずれも齟齬または detail の note に記録した。**
+
+**実環境での悪用は確認できなかったため、 悪用の状況は「確認されていない」として記録し、 「悪用されていない」とは書かなかった**（本記録の方針）。 **本件は特定組織の被害事案ではないため、 対応の所要時間の指標は置かず、該当なしとした**（本記録の整理） ——**開示の経過（16日・34日）は算出値として置いた。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Ghostscript</span><span class="b tag">CVE-2026-39919</span><span class="b tag">WordPress</span><span class="b tag">ImageMagick</span><span class="b tag">Imagick</span><span class="b tag">Wordfence Argus</span><span class="b tag">Artifex Software</span><span class="b tag">JPEG 2000</span><span class="b tag">ヒープバッファオーバーフロー</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-15 09:41 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
