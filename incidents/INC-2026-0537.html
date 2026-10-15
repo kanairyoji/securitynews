@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>curl の HTTP/2 アップロードに UAF — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0537</span>curl の HTTP/2 アップロードに UAF</h1>
+<header class="site-header">
+  <p class="subtitle">curl プロジェクトは2026年10月14日、HTTP/2 でのアップロード処理に 解放後利用（use-after-free）の脆弱性 CVE-2026-92392 があるとして curl 8.23.0 を公開した——影響は 8.12.0 から 8.22.0 までで、 悪性サーバが RST_STREAM（HTTP_1_1_REQUIRED / REFUSED_STREAM）を返すことで `struct Curl_easy` の解放後利用を誘発でき、報告者は遠隔コード実行まで実証している。 深刻度は curl 独自の4段階で「High」であり、同プロジェクトが High を付けたのは 2023年10月以来はじめてである。報告者の表記は「Luna with Claude, Anthropic」で、 Anthropic のオープンソース向けスキャナによる発見だった。 実環境での悪用は確認されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月14日（curl 8.23.0 の公開と勧告の同時公開）</span>
+  <span>最終更新: 2026年10月15日</span>
+</div>
+
+<div class="lead"><p><strong>「ほぼすべてのものに入っている」部品の、HTTP/2 の後片付けに穴がありました。</strong></p>
+<p><strong>2026年10月14日、curl プロジェクトは curl 8.23.0 を公開し、同時に CVE-2026-92392「HTTP/2 upload Use-After-Free」の勧告を出しました</strong>（出典1・2）。<strong>影響を受けるのは 8.12.0 から 8.22.0 までで、コマンドライン版の curl とライブラリの libcurl の両方です</strong>（出典1）。<strong>深刻度は curl 独自の4段階評価で「High」です</strong>（出典1）。</p>
+<p><strong>本記録が要点と見たのは、次の3点です。</strong></p>
+<ul>
+<li><strong>これは「落ちるだけ」では終わらない。</strong> <strong>報告者はメモリアドレスを先に漏えいさせて防御機構を無力化し、解放済み領域にサーバ由来の値を置いてコード実行まで実証しています</strong>（出典1・4）。<strong>ただし成立条件は厳しく、攻撃者は対象の curl のビルド・CPU アーキテクチャ・メモリアロケータ・ヒープ配置を知り、2つの転送のタイミングを精密に合わせる必要があります</strong>（出典1・4）。</li>
+<li><strong>発見したのは AI を使ったスキャナである。</strong> <strong>勧告の報告者欄は「Luna with Claude, Anthropic」で、Anthropic のオープンソース向けスキャナによる発見だと開発者の Daniel Stenberg が述べています</strong>（出典1・4）。<strong>報告は2026年9月15日に HackerOne 経由で届き、curl 側は数時間で欠陥を確認しました</strong>（出典1・4）。</li>
+<li><strong>curl がこの修正のためにリリース周期を縮めた。</strong> <strong>通常8週間の周期を6週間に2週間縮めて 8.23.0 を出しています</strong>（出典4）。<strong>High という格付け自体、2023年10月以来はじめてです</strong>（出典4）。</li>
+</ul>
+<p><strong>攻撃は悪性サーバ側から始まります</strong>（出典1・4）。<strong>被害者がそのサーバへ HTTP/2 で約135KB のファイルをアップロードすると、サーバは送信ウィンドウを塞ぎ、応答の一部だけを返したうえで接続は保ったままストリームを切ります</strong>（出典4）。<strong>curl は再試行に入りますが、中断した転送を先に「終了」として扱ってから送り残しを流すため、古い接続がそれを新しい要求と受け取って新しいストリームを開きます</strong>（出典4）。<strong>そのストリームは、もう解放された転送の情報を指し続けます</strong>（出典1・4）。</p>
+<p><strong>実環境での悪用は、本記録の確認時点で報告されていません</strong>（出典1〜4）。<strong>Stenberg は「攻撃が最もありそうな結末は、単にプログラムが止まることだ」と述べています</strong>（原文英語。出典4 による引用）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>影響を受ける機器・製品・ディストリビューションの全体像</span><span class="b rsn">公表されていない</span><div class=sm>**curl の勧告は版の範囲を示すだけで、どの製品に同梱されているかは 列挙していない**（出典1）。 **報道は Debian 12 に該当コードが含まれないことに触れているが**（出典4）、 **他のディストリビューションや組込み機器については何も示されていない** （本記録の明示）。 **利用者は自力で SBOM・パッケージ一覧を当たるほかない**（本記録の評価）。</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は2026年10月15日に出典1〜3 を直接取得したが、 悪用を示す記載は無かった**（出典1〜3）。 **報道も「この欠陥を悪用した攻撃の報告はまだない」としている**（出典4）。 **「悪用が無い」と断定はしない**——**本記録の手段では見つけられなかった、 という事実だけを残す**（本記録の留保）。</div></li><li><span class=ui>報告に AI モデルがどのように使われたか</span><span class="b rsn">公表されていない</span><div class=sm>**勧告の謝辞は「Luna with Claude, Anthropic」とのみ記す**（出典1）。 **Stenberg は Anthropic のオープンソース向けスキャナによる発見だと述べ、 その過程で同社の AI モデルが使われたであろうと「推測」している**（出典4）。 **スキャナの仕組み、人手がどこまで関与したか、 同種の手法で他にどれだけの欠陥が見つかっているかは公表されていない** （本記録の明示）。</div></li><li><span class=ui>他のディストリビューション・ベンダーの対応状況</span><span class="b rsn">公表されていない</span><div class=sm>**本記録の確認時点で、OS ベンダーやクラウド事業者の バックポート状況を示す資料には到達できていない**（本記録の明示）。 **curl は 8.20.2・8.16.2・8.14.3 という保守版での修正を示しているが**（出典1）、 **各ディストリビューションがどの版を採るかは別の判断である**（本記録の整理）。</div></li><li><span class=ui>8.23.0 で同時に修正された他の脆弱性の有無と数</span><span class="b rsn">見解が分かれる</span><div class=sm>**報道は「8.23.0 ではこの欠陥のほかに CVE 23件をあわせて修正し、 いずれも低深刻度だった」としている**（出典4）。 **本記録が curl の変更履歴（出典2）と脆弱性一覧（出典3）を 直接取得して確認したところ、本件以外の CVE 識別子の割り当ては 確認できなかった**（出典2・3）〈齟齬1〉。 **本記録はどちらとも断定しない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>curl プロジェクト（curl / libcurl）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Anthropic（報告者「Luna with Claude, Anthropic」）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>curl / libcurl を同梱・利用する組織および製品（版 8.12.0〜8.22.0）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>報告から勧告公開・修正版公開まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>29<span class=fu>日</span></div><div class=fn>**2026年9月15日から2026年10月14日まで**（本記録の算出。出典1 の日付から）。 **この間に修正・回帰試験・リリースまで到達している**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>脆弱なコードが公開されていた期間</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>20<span class=fu>か月</span></div><div class=fn>**8.12.0（2025年2月）から 8.23.0（2026年10月14日）まで約20か月** （本記録の算出）。 **起点の月は報道による**（出典4）——**curl 側の資料で確認したのは 「8.12.0 以降が影響を受ける」という版の範囲だけである**（出典1。本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>リリース周期の短縮幅</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>2<span class=fu>週</span></div><div class=fn>**通常8週間の周期を6週間に縮めて 8.23.0 を公開した**（出典4）。 **curl 側の資料にこの記述は見当たらなかった**（出典1・2。本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>直近で「High」が付いた勧告からの間隔</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>3<span class=fu>年</span></div><div class=fn>**High は2023年10月以来はじめてである**（出典4）。 **2026年10月までで約3年**（本記録の算出）。 **curl の深刻度は4段階で、最上位は Critical である**（出典1・4）。</div></div><div class=fig><div class=fh><span class=fl>攻撃の引き金になるアップロードの大きさ</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>135<span class=fu>KB</span></div><div class=fn>**被害者が悪性サーバへ約135KB のファイルを HTTP/2 でアップロードする、 という条件が報じられている**（出典4）。 **curl の勧告本文でこの数値は確認できていない**（出典1。本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>実証で攻撃コードに割けた大きさ</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>23<span class=fu>バイト</span></div><div class=fn>**コード実行まで到達するには攻撃コードを約23バイトに収める必要があったと 報じられている**（出典4）。 **成立条件の厳しさを示す数値として記録する**（本記録の整理）。 **curl の勧告本文でこの数値は確認できていない**（出典1。本記録の留保）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**悪性サーバが、被害者側の curl / libcurl による HTTP/2 アップロードに対して RST_STREAM（HTTP_1_1_REQUIRED または REFUSED_STREAM）を返し、 中断後の後片付けの順序の誤りを突いて `struct Curl_easy` の 解放後利用を起こす**（出典1）。 **報告者はここからメモリアドレスの漏えいと遠隔コード実行まで実証した**（出典1・4）。 **実環境での悪用は確認されていない**（出典1〜4）〈未確定2〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">推定</span><span class=srcs></span></div><div>**被害者が悪性サーバへ HTTP/2 で約135KB のファイルをアップロードする**（出典4）。 **攻撃者は被害者に接続させる必要があるため、 自動取得・Webhook・ファイル同期など 「宛先を攻撃者が決められる」経路が前提になる**（本記録の評価）。</div><div class=fn>根拠: 勧告の「アップロードの最中に」という条件（出典1）と、 報道が伝える約135KB という大きさ（出典4）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**サーバが送信ウィンドウを塞ぎ、応答の一部だけを返したうえで 接続は保ったままストリームを切る （RST_STREAM：HTTP_1_1_REQUIRED または REFUSED_STREAM）**（出典1・4）。 **curl は中断した転送を先に「終了」として処理してから 送り残しのアップロードデータを流すため、 古い接続がそれを新しい要求と受け取って新しいストリームを開く**（出典4）。 **そのストリームは元の転送のメモリ位置を保持する**（出典4）。</div><div class=fn>根拠: 「RST_STREAM フレーム（HTTP_1_1_REQUIRED / REFUSED_STREAM）の誤処理により `struct Curl_easy` の解放後利用に至る」（原文英語。出典1）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**再試行が HTTP/1.1 の新しい接続で完了し、 プログラムは元の転送のメモリを解放する。 サーバが保ったままの古い接続から信号を送ると、 curl は解放済みのメモリを参照する（解放後利用）**（出典1・4）。 **報告者はここでメモリアドレスを漏えいさせて アドレス配置のランダム化を無力化し、 解放済み領域にサーバ由来の値を詰め、 curl にその値を辿って実行させることでコード実行を実証した**（出典4）。 **最もありそうな結末はプロセスの停止である**（原文英語。出典4 による Stenberg の発言）。</div><div class=fn>根拠: 勧告の「遠隔コード実行に転じうることが示されたが、 悪性サーバが多くの特定の条件を満たす場合に限られる」（原文英語。出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>報告（2026年9月15日）から勧告・修正版の公開（2026年10月14日）まで</div><div class=mv>**29日（本記録の算出）。** **この間、脆弱性は非公開のまま保たれ、 修正版の公開と同時に勧告が出た**（出典1・2）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **修正と同時に出せば、未修正のまま手口が知られる期間が生じない。** **一方で周期を縮めると、他の修正の検証期間が短くなる**（本記録の整理）。 **逆に通常周期を待てば、公開まで2週間長く脆弱性が残る。**</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> **コミットまで出せば、利用者は自分の版が該当するかを機械的に判定でき、 配布元は正確にバックポートできる。** **一方で差分から攻撃手法を再現する手がかりも増える**（本記録の整理）。</div></li></ul></div>
+<section id="s6"><h2>転送を「終わった」ことにしてから、送り残しを流した——順序が逆だった<span class="b slot">原因・手口</span></h2><p><strong>勧告は、欠陥を次のように説明しています</strong>（出典1）。</p>
+<blockquote>
+<p><strong>アップロードの最中に、サーバから理由コード HTTP_1_1_REQUIRED またはREFUSED_STREAM を伴う HTTP/2 の RST_STREAM フレームが送られてきたとき、curl はこれを誤って扱う。その結果、<code>struct Curl_easy</code> の解放後利用（use-after-free）が起きる</strong>（原文英語。出典1）</p>
+</blockquote>
+<p><strong>報道はこの流れをもう少し細かく伝えています</strong>（出典4）。<strong>①被害者が悪性サーバへ HTTP/2 で約135KB のファイルをアップロードする。②サーバは送信ウィンドウを塞ぎ、応答の一部だけを返し、接続は保ったままストリームを切る。③curl は再試行に入る。④curl は中断した転送を先に「終了」として処理してから、まだ送れていなかったアップロードデータを流す。⑤古い接続はそれを新しい要求と受け取り、新しいストリームを開く。このストリームは元の転送の情報が入っているメモリ位置を覚える。⑥再試行のほうは HTTP/1.1 の新しい接続で完了し、プログラムはそのメモリを解放する。⑦サーバが保ったままの古い接続から信号を送ると、curl は覚えておいた位置を見に行く。そこは解放済みである</strong>（出典4）。</p>
+<p><strong>修正は、順序を直すことでした</strong>（出典4）。<strong><code>lib/multi.c</code> の6行の順序を入れ替え、送り残しのアップロードデータを全部流してから、HTTP/2 層がハンドルの参照を手放すようにしています</strong>（出典4）。</p>
+<p><strong>Stenberg はこれを「C の誤り」とし、メモリ安全な言語であれば避けられたであろうと認めています</strong>（出典1・4）。<strong>同時に、書き直す計画は無いとも述べています</strong>（出典4）。</p></section>
+<section id="s7"><h2>「落ちるだけ」と「コード実行」の両方が本当である——どちらか一方で読むと判断を誤る<span class="b slot">評価・解釈</span></h2><p><strong>本件の報じられ方には、相反して見える2つの軸があります</strong>（本記録の整理）。</p>
+<p><strong>一方で、報告者はコード実行まで実証しています</strong>（出典1・4）。<strong>手順は、まずメモリアドレスを漏えいさせて防御機構（アドレス配置のランダム化）を無力化し、次に解放済みメモリにサーバが送った値を詰め、curl にその値を辿って実行させる、というものです</strong>（出典4）。</p>
+<p><strong>他方で、Stenberg は「攻撃が最もありそうな結末は、単にプログラムが止まることだ」と述べ</strong>（原文英語。出典4）、<strong>curl は深刻度を最上位の Critical ではなく High に留めています</strong>（出典1・4）。</p>
+<p><strong>両立します</strong>（本記録の評価）。<strong>勧告が挙げる成立条件を並べると、次のようになります</strong>（出典1・4）。</p>
+<ul>
+<li><strong>サーバ証明書がクライアント側の検証を通ること</strong>（出典4）</li>
+<li><strong>HTTP/2 を含むビルドで、実際に HTTP/2 接続が張られること</strong>（出典4）</li>
+<li><strong>攻撃者が対象の curl の正確な版・CPU アーキテクチャ・メモリアロケータ・ヒープ配置を知っていること</strong>（出典1・4）</li>
+<li><strong>2つの転送のタイミングを精密に合わせること</strong>（出典1・4）</li>
+<li><strong>攻撃コードを約23バイトに収めること</strong>（出典4）</li>
+</ul>
+<p><strong>1番目は軽く見るべきではありません</strong>（本記録の評価）。<strong>libcurl は、サーバが対応していれば https の宛先で既定で HTTP/2 を使います</strong>（出典4）。<strong>つまり「HTTP/2 を使っているつもりがない」利用者も対象に入ります。</strong></p>
+<p><strong>一方で3番目と4番目は、無差別のばらまきを難しくします</strong>（本記録の評価）。<strong>狙いを定めた相手——版が分かっている機器・自動化された取得処理——に対してのみ現実味を持つ、と読むのが妥当です</strong>（本記録の評価。curl・報道はそう述べていない）。</p></section>
+<section id="s8"><h2>回避策の「HTTP/2 を使わない」は、設定しても保証ではない<span class="b slot">対策・注意喚起</span></h2><p><strong>勧告が挙げる対処は3つです</strong>（出典1）。</p>
+<ul>
+<li><strong>A: curl 8.23.0 へ更新する</strong>（出典1）</li>
+<li><strong>B: 手元の版にパッチを当てる</strong>（出典1）</li>
+<li><strong>C: HTTP/2 を使わない</strong>（出典1）</li>
+</ul>
+<p><strong>古い系列を使い続ける場合、curl は 8.20.2・8.16.2・8.14.3 以降が修正済みであるとしています</strong>（出典1）。</p>
+<p><strong>C については、報道が重要な留保を伝えています</strong>（出典4）。<strong>コマンドラインでは <code>--http1.1</code>、プログラムからは <code>CURLOPT_HTTP_VERSION</code> に<code>CURL_HTTP_VERSION_1_1</code> を指定します。ただし curl は、この設定が「保証」ではなく「要求」であり、別の HTTP 版で張られた既存の接続が再利用されうると述べています</strong>（出典4）。</p>
+<p><strong>したがって、回避策として確実なのは「HTTP/2 対応を外して libcurl をビルドする」ほうです</strong>（出典4）。<strong>これは配布物の作り直しを伴うため、多くの組織にとっては更新のほうが早い</strong>（本記録の評価）。</p>
+<p><strong>実務上もう1つ効くのは、curl がどこに入っているかを知っていることです</strong>（本記録の追加）。<strong>コマンドライン版だけを更新しても、アプリケーションが静的リンクした libcurl、コンテナイメージの基底層、言語ランタイムの同梱物、組込み機器のファームウェアは別に残ります</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>AI が見つけ、AI が邪魔をしている——同じ開発者が両方を語っている<span class="b slot">背景・過去事例</span></h2><p><strong>勧告の謝辞は「Luna with Claude, Anthropic」です</strong>（出典1）。<strong>Stenberg は、報告者が Anthropic の Luna Tong であり、同社のオープンソース向けスキャナで見つけたと説明し、その過程で Anthropic の AI モデルが使われたであろうと推測しています</strong>（出典4）。<strong>報告は2026年9月15日に HackerOne 経由で届き、curl 側は数時間で欠陥を確認しました</strong>（出典1・4）。</p>
+<p><strong>同じ Stenberg が、2025年7月に別のことを述べていました</strong>（出典4）。<strong>その年に curl へ寄せられたセキュリティ報告の約5分の1がAI が作った出鱈目であり、本物は20件に1件の割合だった、というものです</strong>（出典4）。</p>
+<p><strong>本記録はこれを「AI による脆弱性発見の是非」の話とは読みません</strong>（本記録の評価）。<strong>読むべきなのは、受け取る側の負荷配分です。</strong> <strong>①質の低い自動報告が大量に届く一方で、②20か月間だれも見つけなかった深い欠陥が自動解析で見つかる。この両方が同じ窓口に流れ込んでいます</strong>（本記録の整理）。</p>
+<p><strong>自社が OSS を公開している、あるいは脆弱性の受付窓口を持っているなら、届く報告の母数が増えることを前提に、一次選別の手順を先に決めておく必要があります</strong>（本記録の評価）。</p></section>
+<section id="s10"><h2>本記録の限界——報道が伝えた細部のいくつかは、curl の資料で裏が取れていない<span class="b slot">未確定事項</span></h2><p><strong>本記録は2026年10月15日に、curl の勧告（出典1）・8.23.0 の変更履歴（出典2）・脆弱性一覧（出典3）を直接取得しました。</strong> <strong>CVE 番号・CWE・影響する版・修正版・報告日・公開日・報告者・修正担当者・作り込みと修正のコミット・深刻度 High・回避策の3項目は、一次資料で裏が取れています</strong>（出典1）。</p>
+<p><strong>一次資料で確認できなかったものを明示します。</strong></p>
+<ul>
+<li><strong>攻撃の具体的な条件（約135KB のアップロード・約23バイトの攻撃コード・タイミングの合わせ方）</strong>〈齟齬2〉——<strong>報道（出典4）にのみある。</strong></li>
+<li><strong>リリース周期を8週間から6週間へ縮めたこと</strong>〈齟齬2〉——<strong>報道にのみある。</strong></li>
+<li><strong>「High は2023年10月以来はじめて」</strong>〈齟齬2〉——<strong>報道にのみある。</strong></li>
+<li><strong>8.12.0 の公開が2025年2月であること</strong>——<strong>報道にのみある。</strong></li>
+<li><strong>8.23.0 で本件以外に CVE 23件を修正したという記述</strong>〈齟齬1〉—— <strong>変更履歴と脆弱性一覧の双方で確認できなかった。</strong></li>
+</ul>
+<p><strong>出典4 は韓国語の報道であり、The Hacker News の記事を引いています</strong>（出典4）。<strong>本記録は The Hacker News の原文には到達していません</strong>〈齟齬3〉。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**curl（コマンドラインツール）および libcurl（ライブラリ）の HTTP/2 アップロード処理**（出典1）。 **影響を受けるのは 8.12.0 から 8.22.0**（出典1）。 **影響を受けないのは 8.12.0 より前と 8.23.0 以降。 古い系列では 8.20.2（8.20.X 系）・8.16.2（8.16.X 系）・8.14.3（8.14.X 系） 以降が修正済み**（出典1）。 **作り込みのコミットは `cd9107e0128191b7b5396b`**（出典1）。 **HTTP/2 対応を含めてビルドされており、 実際に HTTP/2 接続が張られる場合に限って成立する**（出典4）。</td></tr><tr><th>finding_name</th><td>**CVE-2026-92392**——**「HTTP/2 upload Use-After-Free」**（出典1）。 **CWE-416（解放後利用）。深刻度は curl 独自の4段階評価で High**（出典1）。 **アップロード中にサーバから理由コード HTTP_1_1_REQUIRED または REFUSED_STREAM を伴う RST_STREAM フレームが送られてきたときに curl がこれを誤って扱い、`struct Curl_easy` の解放後利用に至る**（原文英語。出典1）。 **curl が High を付けたのは2023年10月以来はじめてである**（出典4）。</td></tr><tr><th>exploit_status</th><td>**実環境での悪用は確認されていない**（出典4。出典1〜3 には記載が無い）〈齟齬5〉。 **一方、報告者による遠隔コード実行の実証は行われている**（出典1・4）。 **勧告は「遠隔コード実行に転じうることが示されたが、 悪性サーバが多くの特定の条件を満たす場合に限られる。 その条件には、対象の curl のビルドとヒープ配置を正確に知っていること、 2つの転送を精密なタイミングで並行させることが含まれる」と述べている** （原文英語。出典1）。 **Stenberg は「攻撃が最もありそうな結末は、 単にプログラムが止まることだ」としている**（原文英語。出典4）。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月15日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>**提供されている。** **curl 8.23.0（2026年10月14日公開）で修正された**（出典1・2）。 **修正コミットは `8b0744af5b1b631da5b938ca31c`、担当は Stefan Eissing**（出典1）。 **古い系列では 8.20.2・8.16.2・8.14.3 以降が修正済み**（出典1）。 **回避策として、手元の版へのパッチ適用、 および HTTP/2 を使わないことが示されている**（出典1）。 **ただし `--http1.1` / `CURLOPT_HTTP_VERSION` の指定は 「保証ではなく要求」であり、 別の HTTP 版で張られた既存の接続が再利用されうる**（出典4）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月15日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月15日（本記録の確認時点）　<b>詳細:</b> **実環境での悪用を示す資料には到達できていない**（出典1〜4）。 **報道は「この欠陥を悪用した攻撃の報告はまだない」としている**（出典4）。 **本記録は「悪用が無い」とは断定しない**（本記録の留保）。　<b>ログの有無:</b> **被害者側に残る痕跡は公表されていない**（出典1・4）。 **攻撃は悪性サーバ側の振る舞いとして成立し、 IoC（通信先・ファイル名・ログの特徴）は性質上示されていない**（本記録の整理）。 **外形的に観測しうるのは libcurl を使うプロセスの異常終了だけであり、 組込み機器やバッチ処理ではそれすら記録されていないことがある** （本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年2月（curl 8.12.0 の公開）</td><td class=nowrap><span class="b kind">発生</span></td><td>**curl 8.12.0 が公開され、本脆弱性が作り込まれた**（出典1・4）。 **勧告は作り込みのコミットを `cd9107e0128191b7b5396b` と特定している**（出典1）。 **8.12.0 より前の版は影響を受けない**（出典1）。 **公開月は報道による**（出典4。本記録は curl 側の資料で月日までは確認していない）。</td></tr><tr><td class="sm nowrap tw">2026年9月15日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**報告者が HackerOne 経由で curl へ報告した**（出典1・4）。 **curl 側は数時間で欠陥の存在を確認している**（出典4）。 **報告者の表記は「Luna with Claude, Anthropic」**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**curl 8.23.0 が公開され、同日に勧告 CVE-2026-92392 が公表された**（出典1・2）。 **修正コミットは `8b0744af5b1b631da5b938ca31c`、担当は Stefan Eissing**（出典1）。 **古い系列に対しては 8.20.2・8.16.2・8.14.3 以降が修正済みとされている**（出典1）。 **この修正を出すために、リリース周期が8週間から6週間へ2週間縮められた**（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年10月15日（本記録の確認時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が curl の勧告（出典1）・8.23.0 の変更履歴（出典2）・ 脆弱性一覧（出典3）を直接取得して確認した観測。** **実環境での悪用を示す記載は、いずれの資料にも無い**（出典1〜3）。 **8.23.0 の変更履歴には4件の変更と多数の不具合修正が列挙されているが、 CVE 識別子の割り当ては本件以外に記載されていない**（出典2）〈齟齬1〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**出典4 は「curl は 8.23.0 でこの欠陥のほかに CVE 23件をあわせて修正したが、 いずれも低深刻度だった」と述べている**（出典4）。 **本記録が curl の変更履歴（出典2）と脆弱性一覧（出典3）を 2026年10月15日に直接取得して確認したところ、 本件以外の CVE 識別子の割り当ては確認できなかった**（出典2・3）。 **変更履歴には多数の不具合修正が列挙されており、 その件数が CVE 件数として伝わった可能性がある**（本記録の推測）。 **本記録はどちらとも断定せず、未確定事項にも残す。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**約135KB のアップロード、送信ウィンドウの封鎖、 再試行時の後片付けの順序、約23バイトの制約、 `lib/multi.c` の6行の入れ替え、 リリース周期の2週間短縮、 「High は2023年10月以来」、 8.12.0 が2025年2月の公開であること、 Debian 12 に該当コードが含まれないこと—— これらはいずれも出典4（報道）にのみある**（本記録の確認）。 **本記録が取得した curl の勧告（出典1）は、 誤処理するフレームの種類と解放対象の構造体、 成立条件が多いことまでは述べているが、 上記の数値・細部には触れていない。** **「報道が誤っている」とは言わない**——**本記録の手段では 一次資料で裏が取れなかった、という事実だけを残す。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**出典4 は The Hacker News の記事を引いている**（出典4）。 **本記録はその原文を取得していない**（本記録の明示）。 **したがって、出典4 にのみある記述が The Hacker News に由来するのか、出典4 の取材によるのかを 区別できていない。**</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**攻撃は悪性サーバ側から始まるという点は勧告の記述から導かれる**（出典1）。 **しかし「したがって Webhook 配送・取り込み・同期といった 宛先を攻撃者が決められる処理を優先せよ」という絞り込みは 本記録の整理であり、curl プロジェクトはそう述べていない**（本記録の明示）。 **宛先が固定であっても、その相手が侵害されていれば成立する** （本記録の留保）。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**出典1 には、実環境での悪用に関する記述が無い**（本記録の確認）。 **「悪用の報告はまだない」としているのは報道のほうである**（出典4）。 **一般に、勧告に悪用の記載が無いことは 「悪用が無い」ことの証明にはならない**（本記録の整理）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>悪性サーバ（証明書はクライアント検証を通る） ← 被害者側の curl / libcurl 8.12.0〜8.22.0 が HTTP/2 で約135KB をアップロード → サーバが送信ウィンドウを塞ぎ 部分応答だけ返して RST_STREAM（HTTP_1_1_REQUIRED / REFUSED_STREAM）を送るが接続は保つ → curl は転送を先に「終了」扱いにしてから送り残しを流す → 古い接続が新しいストリームを開き 元の転送のメモリ位置を保持 → 再試行は HTTP/1.1 の別接続で完了し `struct Curl_easy` が解放される → 古い接続からの信号で解放済みメモリを参照（CWE-416） → アドレス漏えいで防御機構を無力化し コード実行を実証（約23バイト・実環境の悪用報告は無し） ／ 対策は 8.23.0 への更新・ 保守版 8.20.2 / 8.16.2 / 8.14.3 以降・パッチ適用・HTTP/2 対応を外したビルド</div><div class=svgwrap><svg viewBox="0 0 1406 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M370,111.0 C193.0,111.0 193.0,111.0 16,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,111.0 C397.0,111.0 397.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,67.0 1036,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,162.0 1036,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,162.0 C1111.0,162.0 1111.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,60.0 C1111.0,60.0 1111.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪性サーバ（証明書はクラ</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イアント側の検証を通る必</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">要がある）</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">実環境での悪用は確認され</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">ていない。実証は報告者に</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部の任意の宛先へ接続す</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る処理（Webhook </text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配送・取り込み・同期／…</text><text x="295.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">勧告はこの前提に触れてい</text><text x="295.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">ない。攻撃面を絞るための</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">curl / libcu</text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rl 8.12.0〜8.</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">22.0（HTTP/2…</text><text x="499.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">libcurl は ht</text><text x="499.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">tps の宛先でサーバが</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">RST_STREAM（H</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TTP_1_1_REQU</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IRED / REFU…</text><text x="703.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">プロトコル上は正当なフレ</text><text x="703.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">ームであり、異常として検</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">後片付けの順序の誤り →</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> `struct Cur</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">l_easy` の解放…</text><text x="907.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正は lib/mult</text><text x="907.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">i.c の6行の順序入れ</text><rect x="1036" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アドレス漏えい → 解放</text><text x="1111.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">済み領域へ値を詰める →</text><text x="1111.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> コード実行（実証）</text><text x="1111.0" y="86.0" text-anchor="middle" fill="#64b5f6" font-size="10">版・CPU・アロケータ・</text><text x="1111.0" y="98.0" text-anchor="middle" fill="#64b5f6" font-size="10">ヒープ配置の把握と約23</text><rect x="1036" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プロセスの停止（最もあり</text><text x="1111.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">そうな結末。原文英語）</text><text x="1111.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">Stenberg の発言</text><text x="1111.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">（出典4）。組込み・バッ</text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">curl 8.23.0 </text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／ 保守版 8.20.2</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・8.16.2・8.1…</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026年10月14日公</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#80cbc4" font-size="10">開。リリース周期を8週間</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">報告者「Luna wit</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">h Claude, An</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">thropic」（20…</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#80cbc4" font-size="10">Anthropic のオ</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#80cbc4" font-size="10">ープンソース向けスキャナ</text></svg></div><div class=fn>curl の勧告（出典1）と報道（出典4）にもとづく。 **攻撃の起点は被害者側ではなくサーバ側である**——**被害者が悪性サーバへ アップロードしない限り成立しない**（出典1・4。整理は本記録）。 **約135KB・約23バイト・後片付けの順序の細部は報道にのみある記述であり、 curl の勧告本文では確認できていない**〈齟齬2〉。 **実環境での悪用は確認されていない**〈未確定2〉。 **破線で示すべき箇所——「宛先を攻撃者が決められる経路」の存在は 本記録の評価であり、勧告の記述ではない。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1・4）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（出典1・4）。 **IoC は性質上存在しない**——**攻撃は悪性サーバ側の振る舞いであり、 被害者側に残る痕跡は示されていない**（本記録の整理）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**報告から29日で修正版同時公開に到達しており、 利用者が「知らされたのに直せない」期間を作っていない。** **周期短縮という副作用を伴う判断を、 その理由とともに公にしている点も含めて機能したと見る**（出典4）。 **ただし周期短縮が他の修正の品質にどう影響したかを測る材料は無い** （本記録の留保）。</td></tr><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価**——**オープンソースでは差分が公開される以上、 作り込みと修正のコミットを隠しても意味が薄い。** **むしろ明示したほうが、 同梱している側のバックポート判断を速める**（本記録の評価）。 **成立条件の厳しさまで勧告が自ら書いている点は、 利用者が優先度を決める材料になっている**（出典1）。</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「どこに curl が入っているか」を答えられないなら、本件は未対応のままである**</div><div class=lw>**curl / libcurl は OS・言語ランタイム・コンテナ基底層・ 組込み機器に同梱されるため、 コマンドライン版を更新しても残りが残る**（本記録の評価）。 **勧告は版の範囲を示すだけで、どの製品に入っているかは列挙しない**（出典1）。</div><div class=la><b>取るべき行動</b> **①SBOM または依存関係の一覧から、curl / libcurl の版を全件抽出する。** **②自社が配布している製品・コンテナイメージ・ファームウェアに 静的リンクされた libcurl が無いかを確認する。** **③抽出できなかった領域（調達した装置・SaaS の裏側）を一覧にし、 ベンダーへの照会先を決める。**</div></li><li><div class=lp>**「最もありそうな結末はクラッシュ」という開発者の言葉を、優先度の根拠に使わない**</div><div class=lw>**Stenberg は最もありそうな結末をプロセス停止としている**（出典4）。 **一方で報告者はコード実行まで実証している**（出典1・4）。 **成立条件は厳しいが、版が既知で自動化された取得処理には現実味がある** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **①外部の任意の宛先へ接続する処理（Webhook・URL 取得・ファイル同期）を 洗い出し、そこで使われる curl を最優先で更新する。** **②宛先を攻撃者が指定できる機能がある場合、 接続先の許可リスト化を併せて検討する。** **③「クラッシュで済む」想定の機器について、 停止したときの業務影響を見積もる（可用性の観点でも損害が出る）。**</div></li><li><div class=lp>**AI による脆弱性発見が増える前提で、自社の受付窓口の一次選別を設計する**</div><div class=lw>**本件は Anthropic のオープンソース向けスキャナが見つけ、 20か月間だれも見つけなかった欠陥に到達した**（出典1・4）。 **同じ開発者が2025年7月に、 報告の約5分の1が AI 由来の出鱈目で本物は20件に1件だったとも述べている**（出典4）。 **母数が増える一方で、質の高い報告も混ざる**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①脆弱性受付窓口（公開している場合）の一次選別の基準と担当を明文化する。** **②再現手順・影響の記述が無い報告の扱いを決め、 自動で返す定型応答を用意する。** **③自社製品に同種の自動解析をかけることを、 外部から報告される前の選択肢として検討する。**</div></li><li><div class=lp>**部品のリリース周期が縮んだことを、自社の取り込み周期の前提にする**</div><div class=lw>**curl は本件のために周期を8週間から6週間へ縮めた**（出典4）。 **上流が早く出しても、取り込む側が四半期ごとなら その差がそのまま露出期間になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①主要な OSS 部品について、上流のリリース周期と 自社の取り込み周期の差を測る。** **②差が大きい部品について、緊急時だけ割り込める経路 （検証の短縮版・承認の省略条件）を事前に決める。** **③その経路を年に1回は実際に通して、動くことを確かめる。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**`--http1.1` を付けても塞がらない場合がある——回避策 C は保証ではない**</div><div class=lw>**curl 自身が「これは保証ではなく要求であり、 別の HTTP 版で張られた既存の接続が再利用されうる」と述べている**（出典4）。 **libcurl はサーバが対応していれば https の宛先で既定で HTTP/2 を使う**（出典4）。</div><div class=la><b>取るべき行動</b> **①回避策を採るなら、HTTP/2 対応を外してビルドしたものに差し替える。** **②設定だけで済ませる場合は、接続の再利用（connection reuse）を 無効にできるかを併せて確認する。** **③本番で実際に張られているプロトコル版を測る （`curl -v` の ALPN 交渉結果、または接続ログ）。**</div></li><li><div class=lp>**影響判定は「8.12.0〜8.22.0」だけでは足りない。保守版の番号を見る**</div><div class=lw>**勧告は 8.20.2・8.16.2・8.14.3 以降の保守版も修正済みとしている**（出典1）。 **版番号を単純な大小比較で判定すると、 修正済みの保守版を「脆弱」と誤判定する**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①判定ロジックを、系列ごとの下限値を持つ形にする （8.14.X なら 8.14.3 以降、8.16.X なら 8.16.2 以降、 8.20.X なら 8.20.2 以降）。** **②ディストリビューションが配るパッケージは 上流の版番号のままバックポートされることがあるため、 版番号だけでなく配布元の告知を確認する。** **③判定結果を一覧にして、残っているものの所在を明示する。**</div></li><li><div class=lp>**外部の任意の宛先へ curl で接続する処理を特定し、そこから直す**</div><div class=lw>**攻撃は悪性サーバ側から始まる**（出典1・4）。 **つまり「どこへ繋ぐかを攻撃者が決められる」処理だけが 実際の攻撃面である**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①URL を外部入力から受け取って取得する処理 （Webhook 配送・画像の取り込み・RSS/フィード取得・ プレビュー生成・SSRF 対策済みのプロキシ）を列挙する。** **②それらが使う curl / libcurl の版を確認し、最優先で更新する。** **③更新までの間、宛先の許可リストと HTTP/2 を使わないビルドへの差し替えを検討する。**</div></li><li><div class=lp>**クラッシュを監視対象に入れる——組込み・バッチの libcurl は黙って落ちる**</div><div class=lw>**成立しても外形的にはプロセスの停止にしか見えない**（出典4。整理は本記録）。 **組込み機器やバッチ処理では、 クラッシュ自体が記録されないことがある**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①libcurl を使うプロセスの異常終了（コアダンプ・再起動回数）を 記録・集計する仕組みがあるかを確認する。** **②無ければ、少なくとも外部接続を伴うバッチの終了コードを記録する。** **③更新後も同じ監視を残す （本件に限らず、解放後利用の兆候はクラッシュとして現れる）。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> curl 8.12.0〜8.22.0（保守版の 8.20.2 / 8.16.2 / 8.14.3 より前）の curl または libcurl が稼働している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> libcurl が HTTP/2 対応を含めてビルドされており、接続先が HTTP/2 に対応している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 外部から指定された URL へ接続・アップロードする処理がある（Webhook 配送・取り込み・同期）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自社製品・コンテナイメージ・ファームウェアに libcurl を同梱または静的リンクして配布している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の影響判定を版番号の単純な大小比較で行っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> OSS 部品の取り込み周期が上流のリリース周期より長い（四半期ごと等）</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月14日 curl プロジェクト</span> <a href="https://curl.se/docs/CVE-2026-92392.html" target="_blank" rel="noreferrer noopener nofollow">curl security advisory: CVE-2026-92392 — HTTP/2 upload Use-After-Free</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料。本記録は2026年10月15日に本文を取得した。** **確認できたもの**——**CVE-2026-92392 / CWE-416 / 深刻度 High / 影響 8.12.0〜8.22.0（curl 本体と libcurl）/ 非影響 8.12.0 未満および 8.23.0 以降（保守版は 8.20.2・8.16.2・8.14.3 以降）/ 作り込みコミット `cd9107e0128191b7b5396b` / 修正コミット `8b0744af5b1b631da5b938ca31c` / 報告日2026年9月15日・公開日2026年10月14日 / 報告者「Luna with Claude, Anthropic」/ 修正担当 Stefan Eissing / RST_STREAM（HTTP_1_1_REQUIRED / REFUSED_STREAM）の誤処理による `struct Curl_easy` の解放後利用 / 遠隔コード実行へ転じうるが成立条件が多いこと / 回避策 A・B・C。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月14日 curl プロジェクト</span> <a href="https://curl.se/ch/8.23.0.html" target="_blank" rel="noreferrer noopener nofollow">curl 8.23.0 の変更履歴（changes）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本記録は2026年10月15日に取得した。** **リリース日が2026年10月14日であること、 変更4件と多数の不具合修正が列挙されていることを確認した。** **本件以外の CVE 識別子の割り当ては記載を確認できなかった**〈齟齬1〉。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月15日（本記録の取得時点） curl プロジェクト</span> <a href="https://curl.se/docs/vulnerabilities.html" target="_blank" rel="noreferrer noopener nofollow">curl vulnerabilities（脆弱性一覧表）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録は2026年10月15日に取得した。** **8.23.0 の列は 0 であり、8.23.0 に影響する既知の脆弱性は 掲載されていない**（本記録の確認）。 **この表は「どの版が影響を受けるか」を示すもので、 「どの版で修正されたか」は示さない**（本記録の整理）。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月15日 보안뉴스（boannews・韓国）</span> <a href="https://www.boannews.com/news/articleView.html?idxno=146400" target="_blank" rel="noreferrer noopener nofollow">클로드가 취약점 제보자... curl, HTTP/2 업로드 결함 패치</a> <span class="b kind">記事</span><span class=sm>（**報道。The Hacker News の記事を引いている**（本記録の確認）。 **本記録がこの出典だけに依拠している事項**—— **攻撃の段取り（約135KB のアップロード・送信ウィンドウの封鎖・ ストリーム切断・再試行時の後片付けの順序）、 修正が `lib/multi.c` の6行の入れ替えであること、 約23バイトの制約、`--http1.1` と `CURLOPT_HTTP_VERSION` の留保、 リリース周期の2週間短縮、High が2023年10月以来であること、 Debian 12 に該当コードが含まれないこと、 8.12.0 が2025年2月の公開であること、 Stenberg の発言（「最もありそうな結末はプログラムが止まること」・ メモリ安全な言語なら避けられた・書き直す計画は無い・ 2025年の AI による出鱈目報告の割合）。** **本記録は The Hacker News の原文には到達していない**〈齟齬3〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月15日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年10月15日収集分の記事 〈output/articles/20261015/0217_boannews_curl-http2.md〉を起点に、 **一次公表の裏取りを行った。**
+
+**裏取りできたもの**——**curl の勧告 https://curl.se/docs/CVE-2026-92392.html を直接取得し、 CVE 番号・CWE-416・深刻度 High・影響する版（8.12.0〜8.22.0）・ 非影響の版と保守版の修正番号（8.20.2 / 8.16.2 / 8.14.3）・ 作り込みコミットと修正コミット・報告日（2026年9月15日）・ 公開日（2026年10月14日）・報告者「Luna with Claude, Anthropic」・ 修正担当 Stefan Eissing・ RST_STREAM（HTTP_1_1_REQUIRED / REFUSED_STREAM）の誤処理による `struct Curl_easy` の解放後利用・ 遠隔コード実行に転じうるが成立条件が多いこと・ 回避策3項目——を確認した。 あわせて 8.23.0 の変更履歴（出典2）と脆弱性一覧（出典3）も取得した。**
+
+**裏が取れなかったもの**——**報道（出典4）にのみある細部。 約135KB のアップロード、約23バイトの制約、 `lib/multi.c` の6行の入れ替え、リリース周期の2週間短縮、 「High は2023年10月以来」、8.12.0 が2025年2月の公開であること、 Debian 12 の非該当**〈齟齬2〉。 **とりわけ「8.23.0 で本件のほかに CVE 23件を修正した」という記述は、 変更履歴・脆弱性一覧のいずれでも確認できなかった**〈齟齬1〉—— **多数の不具合修正の件数が CVE 件数として伝わった可能性がある （本記録の推測）。** **報道が引く The Hacker News の原文には到達していない**〈齟齬3〉。
+
+**本記録が独自に整理した点**—— **①「クラッシュで済む」と「コード実行が実証された」が 両立することを成立条件の列挙で示したこと。 ②攻撃が悪性サーバ側から始まる以上、 実際の攻撃面は「宛先を攻撃者が決められる処理」に絞られること**〈齟齬4〉。 **③影響判定を版番号の単純比較で行うと 保守版（8.20.2 / 8.16.2 / 8.14.3）を誤判定すること。 ④回避策 C（HTTP/2 を使わない）が設定では保証されないこと。 ⑤AI スキャナによる発見と、同じ開発者が述べた 「AI 由来の出鱈目報告」の両方を、 受付窓口の負荷配分の問題として読んだこと。** **いずれも〈本記録の評価〉〈本記録の整理〉と明示した。**
+
+**japan_relevance は overseas-watch とした**—— **curl は日本の組織も例外なく利用するが、 日本への波及を示す具体の観測は何も公表されていないためである**（本記録の方針）。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">curl</span><span class="b tag">libcurl</span><span class="b tag">CVE-2026-92392</span><span class="b tag">解放後利用</span><span class="b tag">CWE-416</span><span class="b tag">HTTP/2</span><span class="b tag">RST_STREAM</span><span class="b tag">Daniel Stenberg</span><span class="b tag">Stefan Eissing</span><span class="b tag">Anthropic</span><span class="b tag">Claude</span><span class="b tag">AIによる脆弱性発見</span><span class="b tag">HackerOne</span><span class="b tag">OSS供給網</span><span class="b tag">SBOM</span><span class="b tag">メモリ安全</span><span class="b tag">悪用報告なし</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-15 17:30 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
