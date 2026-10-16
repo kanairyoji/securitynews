@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>TLS 13 実装で名前制約が食い違う — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0544</span>TLS 13 実装で名前制約が食い違う</h1>
+<header class="site-header">
+  <p class="subtitle">13 の TLS ライブラリと BoringSSL で X.509 の名前制約の扱いが食い違う—— 中間CAを封じ込めるはずの仕組みが、検証側によって効かなくなる（JVNVU#95474776／JVNVU#95613365）</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月14日（CERT/CC の公開日）</span>
+  <span>最終更新: 2026年10月16日（本記録の確認時点）</span>
+</div>
+
+<div class="lead"><p><strong>中間CAが発行できる名前の範囲を縛る仕組みが、検証するライブラリによって効き方が違います。</strong></p>
+<p><strong>2026年10月14日、CERT/CC は2つの脆弱性ノートを公開しました</strong>（出典3・4）。<strong>VU#948176「Multiple TLS Libraries can Bypass Delegation Enforcement」（複数の TLS ライブラリで委任の強制を回避できる／原文英語）は13 のライブラリ個別の記録を束ねたもので、VU#410595「Google BoringSSL Name Constraints Bypass in SAN Validation Logic」（BoringSSL の SAN 検証ロジックにおける名前制約の回避／原文英語）はBoringSSL に絞った5件の記録です</strong>（出典3・4）。<strong>翌2026年10月15日、JPCERT/CC がそれぞれ JVNVU#95474776・JVNVU#95613365 として国内向けに公表しました</strong>（出典1・2）。</p>
+<p><strong>本記録が要点と見たのは、次の3点です。</strong></p>
+<ul>
+<li><strong>これは1つのバグではなく、「同じ証明書を実装ごとに違って読む」という状態である。</strong> <strong>CERT/CC は X.509 の名前制約が「下位の CA を許された名前空間の内側に留めるためのもの」（原文英語）だとしたうえで、実装ごとに適用が一貫しておらず、あるライブラリが受け入れる名前を別のライブラリは拒否する、と述べています</strong>（出典3）。</li>
+<li><strong>CERT/CC 自身が「検証器の不一致だけでは悪用ではない」と書いている。</strong> <strong>「これらの記録が問題になるのは、攻撃者が選んだ証明書フィールドに対して信頼された署名を得られ、影響を受ける検証経路に到達でき、かつアプリケーションが受け入れた識別名を認可に使っている場合に限られる」「検証器の不一致それ自体は悪用ではない」（いずれも原文英語）と明記されています</strong>（出典3）。<strong>読む側が真っ先に確かめるべきは、評点ではなく自分の前提条件です</strong>（本記録の評価）。</li>
+<li><strong>修正の進み方はライブラリごとにばらばらで、「修正済み」から「却下」まで並んでいる。</strong> <strong>GnuTLS は CVE-2026-3833 を 3.8.13 で修正、pyca/cryptography は CVE-2026-34073 を46.0.6 で修正、wolfSSL は CVE-2026-3547 を 5.9.0 で修正しています</strong>（出典3・5・6）。<strong>一方で Apple Security.framework の3件は2026年3月16日に提出されたまま triage のまま、Mbed TLS は非クリティカルな名前制約を強制しない挙動を「機能要望」として扱い、BoringSSL の1件は2026年2月28日に「セキュリティの閾値に達しない」として却下されています</strong>（出典3・4）。</li>
+</ul>
+<p><strong>本記録は2026年10月16日に CERT/CC の2つのノート（出典3・4）を直接取得して裏を取りました。</strong> <strong>GnuTLS の修正（GNUTLS-SA-2026-04-29-5・出典5）とpyca/cryptography の勧告（GHSA-m959-cc7f-wv43・出典6）も開発者側の資料として確認しています。</strong> <strong>ただし JVN 側の2件は本文を持たず、CERT/CC のノートを参照するだけの体裁です</strong>（出典1・2）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>脆弱な版の範囲（どのバージョンから影響を受けるか）</span><span class="b rsn">公表されていない</span><div class=sm>CERT/CC は「脆弱な版の範囲を列挙していない」。 示されているのは修正済み・解消済みの版だけである（出典3。本記録の確認）。 BoringSSL については影響を受ける版の記載自体がない（出典4）。</div></li><li><span class=ui>名前制約の照合がいつから分かれていたか</span><span class="b rsn">公表されていない</span><div class=sm>各実装への作り込みの時期は示されていない（出典3・4）。</div></li><li><span class=ui>悪用の観測</span><span class="b rsn">公表されていない</span><div class=sm>いずれのノートにも悪用の観測の記載がない（出典3・4。本記録の確認）。 CERT/CC はむしろ「検証器の不一致それ自体は悪用ではない」（原文英語）と 述べている（出典3）。</div></li><li><span class=ui>影響を受ける下流製品（Chrome・Android 等）の範囲</span><span class="b rsn">公表されていない</span><div class=sm>VU#410595 は「BoringSSL が存在することだけで、Chrome・Android その他の製品が 影響を受けることを意味しない」（原文英語）と明記しており、 下流製品の影響範囲は示していない（出典4）。</div></li><li><span class=ui>triage 中・調整中の各報告がいつ結論に至るか</span><span class="b rsn">調査中</span><div class=sm>Apple（3件・2026年3月16日提出）・Go（2件）・s2n-tls・NSS・LibreSSL・ AWS-LC の Unicode CN の件は、公表時点で triage または調整中である（出典3）。</div></li><li><span class=ui>JVN が独自に付した評価・国内製品への影響</span><span class="b rsn">公表されていない</span><div class=sm>JVNVU#95474776・JVNVU#95613365 はいずれも本文を持たず、 「CERT/CCのアドバイザリを参照してください」とするだけである（出典1・2）。 国内のベンダー情報欄も空である（本記録の確認）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>CERT/CC（カーネギーメロン大学ソフトウェア工学研究所）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Oleh Konko 氏</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GnuTLS</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>pyca/cryptography</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>wolfSSL</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>OpenSSL</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Google（BoringSSL）</span><span class="b role">製品・部品の供給元</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Mbed TLS（3.x）</span><span class="b role">製品・部品の供給元</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Apple（Security.framework）／Mozilla（NSS）／LibreSSL／AWS-LC／s2n-tls／Go（crypto/x509）</span><span class="b role">製品・部品の供給元</span><span class="b lc">間接言及</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>VU#948176 が束ねるライブラリ個別記録の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>13<span class=fu>件</span></div><div class=fn>VU#948176.6 と .8〜.19 の13件。CERT/CC は「.7 は存在しない」と明記している（出典3）。 「件」は記録の数であり、影響を受ける製品数でもバグの数でもない（本記録の注記）。</div></div><div class=fig><div class=fh><span class=fl>VU#410595 が扱う BoringSSL の個別記録の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>VU#410595.8〜.12 の5件。内訳は修正済み2件・受理1件・見解相違1件・却下1件（出典4）。</div></div><div class=fig><div class=fh><span class=fl>CERT/CC が CVE を示した記録の数</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>CVE-2026-3833（GnuTLS）・CVE-2026-34073（pyca/cryptography）・ CVE-2026-3547（wolfSSL）の3件（出典3）。 「少なくとも」としたのは、ノートが対象とする記録の多くに CVE が付いていないためである（出典3。読み方は本記録）。</div></div><div class=fig><div class=fh><span class=fl>ベンダーからの声明が得られていないと記載された組織の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>VU#948176 では Amazon・AMD・AWS・Entrust Datacard・OpenBSD の5件について 「ベンダーからの声明を受け取っていない」（原文英語）と記載されている（出典3）。 VU#410595 では Google と Entrust Datacard が同じ扱いである（出典4）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>公表されているのは「照合の仕方がどう分かれているか」と 「どういう条件なら問題になるか」までで、実際の攻撃は観測として示されていない（出典3・4）。 以下は CERT/CC が示す3条件に沿って段階へ割り当てたものである（整理は本記録）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">推定</span><span class=srcs></span></div><div>標的の配備が名前制約を強制しているか、 どの実装のどの検証経路を通っているかを見極める （出典3・4 が示す前提条件の裏返し。整理は本記録。 CERT/CC はこの段階に言及していない）。</div><div class=fn>根拠: 「これらの発見が問題になるのは、影響を受ける経路で名前制約が 強制されている場合に限られる」（出典4。原文英語）。</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>名前制約で本来は許されないはずの名前を含む証明書を、 照合が緩い実装に提示して受け入れさせる （出典3 の「意図した名前空間の外側にある名前を受け入れてしまう場合がある」に基づく）。</div><div class=fn>根拠: GnuTLS では大文字小文字の区別により、 除外されるべきドメイン名が受け入れられうるとされる（出典5）。 pyca/cryptography では要求されたピア名に対する照合が欠けていた（出典3・6）。</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">推定</span><span class=srcs></span></div><div>受け入れられた識別名を認可の判断に使っている場合、 本来の名前空間の外側にある主体として扱われる （出典3 の3条件の3つめ。実際の悪用は観測として示されていない〈未確定3〉）。</div><div class=fn>根拠: 「アプリケーションが受け入れた識別名を認可に使っている場合に限られる」 （出典3。原文英語）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>BoringSSL への通知から公表まで</div><div class=mv>2026年8月21日の Google への通知（T6）から2026年10月14日の公表（T9）まで約54日 （出典4。日数は本記録の算出）。</div></div><div class=met><div class=ml>Apple への提出から公表まで</div><div class=mv>2026年3月16日の提出（T3）から2026年10月14日の公表（T9）まで約212日。 公表時点でも triage のままである（出典3。日数は本記録の算出）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui></div><div class=fn><b>トレードオフ:</b> 全実装の修正を待てば公表は無期限に延びる。 一方、公表により未修正の実装の存在が広く知られる（本記録の評価）。 CERT/CC は影響の3条件と「検証器の不一致だけでは悪用ではない」を 同じノートに置くことで、過剰反応と無視の両方を抑えようとしている （出典3。読み方は本記録）。</div></li><li><div class=ui></div><div class=fn><b>トレードオフ:</b> 誤った版の範囲を出さないという意味では安全側だが、 読者が自社の版を照合できない（本記録の評価）。 BoringSSL については影響を受ける版の記載自体がない（出典4）。</div></li></ul></div>
+<section id="s6"><h2>問題は1つのバグではなく、同じ証明書を実装ごとに違って読むという状態である<span class="b slot">原因・手口</span></h2><p><strong>X.509 の名前制約（Name Constraints）は、中間CA が発行できる名前の範囲を縛るための拡張です</strong>（出典3）。<strong>CERT/CC の表現では「名前制約は下位の CA を許された名前空間の内側に留めるためのものである」（原文英語）となっています</strong>（出典3）。</p>
+<p><strong>VU#948176 が報告しているのは、この照合の仕方が実装ごとに分かれていることです</strong>（出典3）。<strong>内訳は大きく5つに分けられています</strong>（出典3。整理は本記録）。</p>
+<ul>
+<li><strong>DNS 名の大文字小文字とワイルドカード。</strong> <strong>GnuTLS は一部の名前の比較を大文字小文字を区別して行っていました（CVE-2026-3833）</strong>（出典3・5）。<strong>pyca/cryptography は証明書の SAN に対しては制約を照合していたものの、要求されたピア名に対しては照合していませんでした（CVE-2026-34073）</strong>（出典3・6）。<strong>同種のワイルドカード・大文字小文字の差異は Go・LibreSSL・wolfSSL についても報告されています</strong>（出典3）。</li>
+<li><strong>IP アドレス。</strong> <strong>一部の実装は、IPv4 と IPv4 射影 IPv6 の表現を制約の照合時に別のものとして扱います</strong>（出典3）。</li>
+<li><strong>URI。</strong> <strong>URI の SAN からどのホストを取り出すかが実装ごとに違います。関連する報告は OpenSSL・Apple・NSS・wolfSSL（CVE-2026-3547）に及びます</strong>（出典3）。</li>
+<li><strong>Common Name へのフォールバック。</strong> <strong>AWS-LC と s2n-tls は、リーフ証明書に SAN が無くワイルドカードの CN を使っている場合に、DNS 制約の適用が一貫しないと報告されています</strong>（出典3）。</li>
+<li><strong>非クリティカルな制約。</strong> <strong>報告された Mbed TLS の構成では、非クリティカルな名前制約が強制されません</strong>（出典3）。<strong>ベンダーは対応の追加を機能要望として扱い、報告者の懸念は disputed（見解が分かれている）とされています</strong>（出典3）。</li>
+</ul>
+<p><strong>BoringSSL を扱う VU#410595 は、これを5件に絞って並べています</strong>（出典4）。<strong>記録 .8（修正済み）はワイルドカード DNS 名が、明示的に除外されたホストを含むものとして扱われうる問題、.12（修正済み）は末尾ドットの DNS 名が旧い検証経路で常に正規化されていなかった問題です</strong>（出典4）。<strong>.9（受理）は「@」の前にコロンを含む URI で誤ったホストが URI 制約と照合されうる問題、.10 は rfc822Name の照合における最初の「@」でのドメイン抽出に関するものでdisputed、.11 は末尾ドットの rfc822Name で却下です</strong>（出典4）。<strong>.8・.9・.10・.12 は旧い crypto/x509 経路、.11 は新しい pki 経路に関わります</strong>（出典4）。</p>
+<p><strong>本記録が注意を促したいのは、ここに単一の「修正すべき版」が無いことです</strong>（本記録の評価）。<strong>読者が確かめるべきは「どの CVE か」ではなく「自社の配備がどの実装のどの検証経路を通っているか」になります</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>CERT/CC 自身が「検証器の不一致だけでは悪用ではない」と書いている<span class="b slot">評価・解釈</span></h2><p><strong>CERT/CC は影響の条件を明示しています</strong>（出典3）。</p>
+<blockquote>
+<p><strong>これらの記録が問題になるのは、攻撃者が選んだ証明書フィールドに対して信頼された署名を得られ、影響を受ける検証経路に到達でき、かつアプリケーションが受け入れた識別名を認可に使っている場合に限られる</strong>（出典3。原文英語）</p>
+<p><strong>検証器の不一致それ自体は悪用ではない</strong>（出典3。原文英語）</p>
+</blockquote>
+<p><strong>効果は配備ごとに異なり、意図した名前空間の外側にある名前を受け入れてしまう場合がある、という記述です</strong>（出典3）。<strong>BoringSSL のノートも同趣旨で、「これらの発見が問題になるのは、影響を受ける経路で名前制約が強制されている場合に限られる」（原文英語）としています</strong>（出典4）。</p>
+<p><strong>本記録はこの但し書きを、評点の代わりに読むことを勧めます</strong>（本記録の評価）。<strong>両ノートに CVSS 評点は示されていません</strong>（出典3・4。本記録の確認）。<strong>代わりに置かれているのが上の3条件です</strong>（出典3）。<strong>したがって自組織での判定は、次の順で行うのが筋になります</strong>（本記録の評価）。</p>
+<ol>
+<li><strong>自社の PKI で、名前制約を付けた中間CA を実際に発行しているか</strong>（本記録の評価）。</li>
+<li><strong>その制約を強制する側（検証する側）が、どの実装のどの経路を通っているか</strong>（本記録の評価）。</li>
+<li><strong>検証を通った識別名を、認可の判断（誰として扱うか）に使っているか</strong>（本記録の評価）。</li>
+</ol>
+<p><strong>3つめが「いいえ」であれば、不一致があっても認可の破れには至りません</strong>（本記録の評価。出典3 の条件の裏返し）。<strong>逆に、mTLS でクライアント証明書の SAN を使って「どのテナントか」「どのサービスか」を決めている構成は、3条件すべてに当たりうる形です</strong>（本記録の評価。出典3・4 はこの例を挙げていない）。</p>
+<p><strong>CERT/CC は緩和についても期待値を下げています</strong>（出典3・4）。<strong>「2つめの検証器を置くことが助けになるのは、同じ入力を使い、かつ安全側に閉じる（fail closed）場合に限られる」（原文英語）としています</strong>（出典3・4）。<strong>実装の差異そのものが問題なのだから、実装を増やしても差異は減らない——という読み方になります</strong>（本記録の整理）。</p></section>
+<section id="s8"><h2>修正の進み方は実装ごとにばらばらで、「修正済み」から「却下」まで並んでいる<span class="b slot">対策・注意喚起</span></h2><p><strong>CERT/CC が示す解消済みの版は次のとおりです</strong>（出典3）。</p>
+<ul>
+<li><strong>GnuTLS — 3.8.13 で修正（CVE-2026-3833）</strong>（出典3・5）</li>
+<li><strong>pyca/cryptography — 46.0.6 で修正（CVE-2026-34073）</strong>（出典3・6）</li>
+<li><strong>wolfSSL — 5.9.0 で修正（CVE-2026-3547）。ワイルドカードの件は PR #9991</strong>（出典3）</li>
+<li><strong>OpenSSL — PR #30319 がマージされ、2026年9月10日時点で当時サポートされていた全バージョンに入っている</strong>（出典3）</li>
+<li><strong>AWS-LC — ワイルドカード CN の件は修正済み（版の記載なし）</strong>（出典3）</li>
+</ul>
+<p><strong>一方、結論が出ていない／出ない形になっているものがあります</strong>（出典3・4）。</p>
+<ul>
+<li><strong>Apple Security.framework — 3件が2026年3月16日に提出されたまま triage</strong>（出典3）</li>
+<li><strong>Go crypto/x509 — 2件が triage。IPv4 射影 IPv6 の件は「セキュリティの基準を満たさない」として受理されなかった</strong>（出典3）</li>
+<li><strong>Mozilla NSS — IP アドレスの件が調整中</strong>（出典3）</li>
+<li><strong>LibreSSL — ワイルドカードの件が調整中</strong>（出典3）</li>
+<li><strong>s2n-tls — triage</strong>（出典3）</li>
+<li><strong>Mbed TLS — 非クリティカルな名前制約を強制しない挙動は機能要望として扱われ、拡張をクリティカルに設定すればそうした連鎖が安全側に閉じる、という整理</strong>（出典3）</li>
+<li><strong>BoringSSL — .8 と .12 はコミット 5774eca（2026年3月4日）で修正、.9 は受理されて調整中、.10 は disputed、.11 は2026年2月28日に却下</strong>（出典4）</li>
+</ul>
+<p><strong>運用者向けの推奨として CERT/CC が挙げているのは次の点です</strong>（出典3・4）。<strong>自分たちが実際に動かしているライブラリが名前制約をどう扱うかを確かめること、リーフ証明書は明示的な SAN に留めること、「発行方針を第一の管理手段として扱う」（原文英語）こと、そしてベンダーの修正が出たら適用することです</strong>（出典3）。<strong>「更新が広く行き渡るまでは影響が続く」（原文英語）とも書かれています</strong>（出典3）。</p>
+<p><strong>本記録は、ここに1つ注意を足します</strong>（本記録の評価）。<strong>「発行方針を第一の管理手段とする」とは、検証側の修正を待つのではなく、そもそも攻撃者が選んだフィールドに署名を得られない体制を作れ、という意味に読めます</strong>（出典3 の記述に対する本記録の解釈）。<strong>自社 CA の発行手続き・審査・鍵の保護が、ライブラリの更新よりも先に来る項目になります</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>JVN の2件は本文を持たず、CERT/CC のノートへの転送として公表されている<span class="b slot">未確定事項</span></h2><p><strong>JPCERT/CC が2026年10月15日に出した2件は、いずれも短いものです</strong>（出典1・2）。</p>
+<p><strong>JVNVU#95474776「複数のTLSライブラリにおける名前制約回避の問題」の本文は「CERT/CCから本件に関するアドバイザリが公表されました。CERT/CCのアドバイザリを参照してください」と、参照先として Vulnerability Note VU#948176 を挙げるだけです</strong>（出典1）。<strong>JVNVU#95613365「Google BoringSSL証明書検証における複数の名前制約回避の脆弱性」も同じ体裁で、参照先は VU#410595 です</strong>（出典2）。</p>
+<p><strong>したがって、国内の読者が得られる情報は CERT/CC のノートと同じ範囲に限られます</strong>（本記録の整理）。<strong>国内製品への影響、国内ベンダーの対応状況、JVN としての評点はいずれも示されていません</strong>〈未確定6〉。</p>
+<p><strong>公表されていないことを並べておきます</strong>（出典3・4。整理は本記録）。<strong>脆弱な版の範囲〈未確定1〉、作り込みの時期〈未確定2〉、悪用の観測〈未確定3〉、下流製品の影響範囲〈未確定4〉、triage 中の各報告の結論〈未確定5〉です。</strong></p>
+<p><strong>なお CERT/CC は VU#948176 の中で、ベンダー一覧の表が全件「Unknown」と表示されており「解決策」節のより具体的な状況と食い違っていることを自ら注記し、現状は「解決策」節を見るよう指示しています</strong>〈齟齬1〉（出典3）。<strong>一次資料のなかに食い違いがあることを一次資料が認めている形です</strong>（本記録の整理）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>X.509 の名前制約（Name Constraints）を照合する TLS ライブラリの検証経路。 VU#948176 は GnuTLS・pyca/cryptography・wolfSSL・OpenSSL・Go crypto/x509・ Apple Security.framework・Mozilla NSS・LibreSSL・AWS-LC・s2n-tls・Mbed TLS 3.x 等を 13 の個別記録として扱い、VU#410595 は BoringSSL を5件として扱う（出典3・4）。 脆弱な版の範囲は示されていない〈未確定1〉。</td></tr><tr><th>finding_name</th><td>CERT/CC VU#948176「Multiple TLS Libraries can Bypass Delegation Enforcement」 および VU#410595「Google BoringSSL Name Constraints Bypass in SAN Validation Logic」。 国内では JVNVU#95474776・JVNVU#95613365（出典1・2・3・4）。 CVE が示されているのは CVE-2026-3833（GnuTLS）・CVE-2026-34073（pyca/cryptography）・ CVE-2026-3547（wolfSSL）の3件である（出典3）。</td></tr><tr><th>exploit_status</th><td>悪用の観測は公表されていない。CERT/CC は 「検証器の不一致それ自体は悪用ではない」（原文英語）と述べ、 影響が出る条件を3つ挙げている（出典3）。 本記録も悪用を示す公開情報を確認していない〈未確定3〉。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月16日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>実装ごとに異なる。修正済みは GnuTLS 3.8.13・pyca/cryptography 46.0.6・ wolfSSL 5.9.0・OpenSSL（PR #30319 を含む版）・AWS-LC（ワイルドカード CN の件）・ BoringSSL のコミット 5774eca（.8 と .12）（出典3・4）。 Apple・Go・NSS・LibreSSL・s2n-tls は triage または調整中、 Mbed TLS は機能要望として扱われ、BoringSSL の .11 は却下されている（出典3・4）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月16日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月16日（本記録の確認時点）　<b>詳細:</b> 悪用・被害の発生を示す公表はない（出典3・4。本記録の確認）。 CERT/CC は効果が配備ごとに異なるとしており、 「無かった」ことが確認されたわけでもない。　<b>ログの有無:</b> 本件は証明書検証が成功してしまう類の問題であり、 アプリケーション側のログには「正しい証明書で接続された」記録しか残らないと 考えられる（本記録の評価）。 CERT/CC は検知の手段に言及していない（出典3・4）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期不明（各実装への作り込み）</td><td class=nowrap><span class="b kind">発生</span></td><td>各 TLS ライブラリが、X.509 の名前制約（Name Constraints）の照合を それぞれ異なる解釈で実装している状態となる。 いつから存在したかは示されていない〈未確定2〉。</td></tr><tr><td class="sm nowrap tw">2026年2月28日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>BoringSSL チームが rfc822Name の末尾ドットの扱いに関する報告（VU#410595.11）を 「セキュリティの閾値を下回る」として却下する（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年3月4日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>BoringSSL のコミット 5774eca が、ワイルドカード DNS 名の件（.8）と 末尾ドット DNS 名の正規化の件（.12）を修正する（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年3月16日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>Apple Security.framework に関する3件が提出される。 2026年10月の公表時点でも triage のままである（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年3月27日</td><td class=nowrap><span class="b kind">公表</span></td><td>pyca/cryptography が GHSA-m959-cc7f-wv43（CVE-2026-34073）を公開する。 深刻度は Low（出典6）。</td></tr><tr><td class="sm nowrap tw">2026年4月29日</td><td class=nowrap><span class="b kind">公表</span></td><td>GnuTLS が GNUTLS-SA-2026-04-29-5（CVE-2026-3833）を公開する。 名前制約処理でのドメイン名比較が大文字小文字を区別しており、 RFC 5280 7.2 節から逸脱していたとする。修正は 3.8.13（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年8月21日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>CERT/CC が BoringSSL の件について Google へ通知する。 公表時点までにベンダーからの声明は得られていない（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年9月2日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>CERT/CC が Entrust Datacard へ通知する。 こちらもベンダーからの声明は得られていない（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年9月10日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>OpenSSL の PR #30319 が、当時公式にサポートされていた全バージョンに 入っている状態になる（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">公表</span></td><td>CERT/CC が VU#948176（13 のライブラリ個別記録）と VU#410595（BoringSSL の5件）を公開する（出典3・4）。</td></tr><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">公表</span></td><td>JPCERT/CC が JVNVU#95474776・JVNVU#95613365 として国内向けに公表する。 いずれも本文を持たず CERT/CC のノートを参照する体裁である（出典1・2）。 同日、VU#948176 の文書改訂2（2026年10月15日 12:25 UTC）が記録されている（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月16日（本記録の確認時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録が CERT/CC の2つのノート（出典3・4）、 GnuTLS の勧告（出典5）、pyca/cryptography の勧告（出典6）を 直接取得して内容を確認する。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が改訂された</span><div class=sm>本記録が参照したのは改訂2の内容である（出典3）。 初版との差分は公表されていないため、 初版の記述に基づく他の報道・記録と食い違う可能性がある（本記録の指摘）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>ベンダー一覧の表は全件を「Unknown」と表示しているが、 「解決策」節には修正済みの版が具体的に書かれている。 CERT/CC 自身がこの食い違いを注記し、 現状は「解決策」節を見るよう指示している（出典3）。 本記録は「解決策」節の記述を採った。</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>出典6 については GitHub Advisory Database の一覧ページ上の記載 （GHSA 番号・深刻度 Low・パッケージ名・報告者）までを確認した。 修正版 46.0.6 は CERT/CC のノート（出典3）から取っている。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>VU#948176 は「脆弱な版の範囲を列挙していない」。 VU#410595 は BoringSSL の影響を受ける版を示していない（出典3・4）。 利用側が「自分の版は対象か」を判定する材料が欠けている〈未確定1〉。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>CERT/CC は影響の条件を抽象的に述べるだけで、 具体的な配備例を挙げていない（出典3・4）。 applicability と lessons に挙げた具体例は本記録が補ったものである。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>JVNVU#95474776・JVNVU#95613365 はいずれも本文を持たず、 CERT/CC のノートを参照するだけである（出典1・2）。 国内の読者が追加で得られる情報はない〈未確定6〉。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>名前制約は「発行側の宣言」でしかなく、効くかどうかは検証側が決める</div><div class=svgwrap><svg viewBox="0 0 1610 300" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,150.0 C193.0,150.0 193.0,150.0 220,150.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,150.0 C397.0,150.0 397.0,150.0 424,150.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,150.0 C499.0,150.0 499.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,189.0 C703.0,189.0 703.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,150.0 C703.0,150.0 703.0,48.0 832,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,150.0 C703.0,150.0 703.0,138.0 832,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,150.0 C703.0,150.0 703.0,240.0 832,240.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,138.0 832,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,240.0 832,240.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,138.0 C1009.0,138.0 1009.0,150.0 1036,150.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,150.0 C1213.0,150.0 1213.0,150.0 1240,150.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,99.0 C1213.0,99.0 1213.0,138.0 832,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,201.0 C1519.0,201.0 1519.0,99.0 1444,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="127.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルートCA（信頼の起点）</text><rect x="220" y="125.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">中間CA（名前制約で範囲</text><text x="295.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を縛られた委任先）</text><rect x="424" y="118.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">名前制約（Name Co</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nstraints・RF</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C 5280 7.2）</text><rect x="628" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リーフ証明書（SAN の</text><text x="703.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> DNS／IP／URI／</text><text x="703.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rfc822Name・…</text><rect x="628" y="157.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="179.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（選んだフィールド</text><text x="703.0" y="193.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に信頼された署名を得る／</text><text x="703.0" y="207.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">出典3 の条件1）</text><rect x="832" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正済みの実装（GnuT</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LS 3.8.13／py</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ca 46.0.6／w…</text><rect x="832" y="94.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未決着の実装（Apple</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・Go・NSS・Libr</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">eSSL・s2n-tl…</text><text x="907.0" y="157.0" text-anchor="middle" fill="#f48fb1" font-size="10">triage・調整中・d</text><text x="907.0" y="169.0" text-anchor="middle" fill="#f48fb1" font-size="10">isputed・却下が混</text><rect x="832" y="196.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BoringSSL（cr</text><text x="907.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ypto/x509 経路</text><text x="907.0" y="246.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">と pki 経路で挙動…</text><text x="907.0" y="259.0" text-anchor="middle" fill="#f48fb1" font-size="10">.8/.12 は 577</text><text x="907.0" y="271.0" text-anchor="middle" fill="#f48fb1" font-size="10">4eca で修正、.11</text><rect x="1036" y="118.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アプリケーション（受け入</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れた識別名を認可に使う／</text><text x="1111.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">出典3 の条件3）</text><rect x="1240" y="118.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">名前空間の外側の主体とし</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">て扱われうる範囲（条件付</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">き・破線）</text><rect x="1444" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1519.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CERT/CC（VU#9</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">48176・VU#410</text><text x="1519.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">595）</text><text x="1519.0" y="118.0" text-anchor="middle" fill="#b0bec5" font-size="10">2026年10月14日公</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#b0bec5" font-size="10">開（出典3・4）</text><rect x="1444" y="157.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1519.0" y="179.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JPCERT/CC（JV</text><text x="1519.0" y="193.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NVU#95474776</text><text x="1519.0" y="207.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・JVNVU#9561…</text><text x="1519.0" y="220.0" text-anchor="middle" fill="#b0bec5" font-size="10">2026年10月15日・</text><text x="1519.0" y="232.0" text-anchor="middle" fill="#b0bec5" font-size="10">本文は参照のみ（出典1・</text></svg></div><div class=fn>VU#948176・VU#410595 が示す構図を、発行側と検証側に分けて並べた図である（出典3・4）。 破線は CERT/CC が条件付きとしている段階を示す。 実際の悪用は観測として公表されていない〈未確定3〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>CERT/CC は検知の機会に言及していない（出典3・4）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>CERT/CC は検知の機会に言及していない（出典3・4）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>CERT/CC は検知の機会に言及していない（出典3・4）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td></td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価。根拠は、未修正の実装を名指しで列挙しつつ 悪用の前提条件を明示している点である（出典3・4）。</td></tr><tr><td></td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>本記録の評価。読者（利用側）が最初に必要とするのは 「自分の版が対象か」であり、その情報が欠けている〈未確定1〉。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「どの CVE を塞ぐか」では管理できない事案がある。本件は実装間の解釈の差異である。</div><div class=lw>CERT/CC が CVE を示したのは3件だけで、 13 のライブラリ個別記録の多くに CVE は付いていない（出典3）。 CVE 一覧で管理していると、本件は「3件の Low／Moderate」に見える（本記録の評価）。</div><div class=la><b>取るべき行動</b> 脆弱性管理の台帳に「CVE が付かない勧告」を登録できる欄を用意する。 CERT/CC の VU 番号・JVNVU 番号で追えるようにし、 四半期ごとに未決着の調整案件（triage 中のもの）を棚卸しする。</div></li><li><div class=lp>検証側の修正を待つより、発行側の方針で縛るほうが早く効く。</div><div class=lw>CERT/CC は推奨の中で「発行方針を第一の管理手段として扱う」（原文英語）としている（出典3）。 また「更新が広く行き渡るまでは影響が続く」とも書いている（出典3）。 実装の修正は Apple のように7か月以上動かないことがある（出典3）。</div><div class=la><b>取るべき行動</b> 自社 CA から中間CA を発行している場合、 名前制約に頼った封じ込めを「唯一の壁」にしていないか確認する。 発行の審査・承認・鍵の保護を見直し、 外部へ委任している中間CA があればその棚卸しを行う。</div></li><li><div class=lp>mTLS の識別名を認可に使っている構成は、本件の3条件に当たりうる。</div><div class=lw>CERT/CC は影響が出る条件の3つめに 「アプリケーションが受け入れた識別名を認可に使っている」ことを挙げている（出典3）。 逆にそうでなければ、不一致があっても認可の破れには至らない（本記録の評価）。</div><div class=la><b>取るべき行動</b> クライアント証明書の SAN／CN をテナント識別や権限判定に使っている箇所を アーキテクチャ図の上で特定する。 特定できた箇所については、証明書以外の要素と組み合わせる改修を計画に載せる。</div></li><li><div class=lp>「検証器を二重にする」は、本件では期待どおりに効かない。</div><div class=lw>CERT/CC は両ノートで 「2つめの検証器を置くことが助けになるのは、同じ入力を使い、 かつ安全側に閉じる場合に限られる」（原文英語）と述べている（出典3・4）。 実装の差異そのものが問題なので、実装を足せば差異も増える（本記録の整理）。</div><div class=la><b>取るべき行動</b> 多層防御の設計を見直すとき、「別実装を足す」案を採る前に 「同じ入力を見ているか」「不一致のときに閉じるか」を条件として明記する。 条件を満たさない二重化は、安心の材料にしない。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>名前制約の照合は、SAN だけでなく「要求したピア名」に対しても行う必要がある。</div><div class=lw>pyca/cryptography は証明書の SAN に対しては制約を照合していたが、 要求されたピア名に対しては照合していなかった（CVE-2026-34073）（出典3・6）。</div><div class=la><b>取るべき行動</b> 自前で証明書検証の層を書いている場合、 制約の照合対象が「証明書に書かれた名前」だけになっていないか確認する。 接続先として要求した名前も照合対象に含める。</div></li><li><div class=lp>ドメイン名の比較は大文字小文字を区別しない。末尾ドットは正規化する。</div><div class=lw>GnuTLS は一部の比較を大文字小文字を区別して行っており、 RFC 5280 7.2 節から逸脱していた（CVE-2026-3833）（出典3・5）。 BoringSSL では末尾ドットの DNS 名が旧い検証経路で 常に正規化されていなかった（VU#410595.12）（出典4）。</div><div class=la><b>取るべき行動</b> 名前の照合を自分で書いている箇所について、 大文字小文字・末尾ドット・ワイルドカード・IPv4 射影 IPv6 の 4つを入力に含む試験を追加する。 通る／落ちるの期待値は RFC 5280 7.2 節に照らして決める。</div></li><li><div class=lp>SAN を持たないリーフの CN にフォールバックする経路は、制約の適用が崩れやすい。</div><div class=lw>AWS-LC と s2n-tls は、リーフ証明書に SAN が無くワイルドカードの CN を 使っている場合に DNS 制約の適用が一貫しないと報告されている（出典3）。</div><div class=la><b>取るべき行動</b> 自社が発行する証明書はすべて明示的な SAN を持たせ、 CN だけの証明書を発行・受け入れしない方針にする。 受け入れ側でも SAN が無い証明書を拒否する設定を既定にする。</div></li><li><div class=lp>使っているライブラリと「検証経路」を特定しておく。同じライブラリでも経路で挙動が違う。</div><div class=lw>BoringSSL では、.8・.9・.10・.12 が旧い crypto/x509 経路、 .11 が新しい pki 経路に関わるとされている（出典4）。 「BoringSSL を使っている」だけでは影響の有無が決まらない（本記録の整理）。</div><div class=la><b>取るべき行動</b> SBOM で TLS ライブラリを洗い出したうえで、 どの検証 API を呼んでいるかまで記録する。 間接依存の奥にある場合は、依存グラフを辿って呼び出し元を特定する。</div></li><li><div class=lp>非クリティカルな拡張を強制しない実装があることを前提に、拡張の critical 指定を決める。</div><div class=lw>報告された Mbed TLS の構成では非クリティカルな名前制約が強制されず、 CERT/CC は拡張をクリティカルに設定すればそうした連鎖が 安全側に閉じる（fail closed）と整理している（出典3）。</div><div class=la><b>取るべき行動</b> 自社 CA が名前制約を付けるとき、拡張を critical として発行するか決める。 critical にすると理解しない検証器は接続を落とすため、 影響範囲の確認とあわせて判断する。</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 自社 PKI で中間CA を発行し、名前制約（Name Constraints）で発行できる名前の範囲を縛っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> TLS クライアント証明書の SAN や CN を、テナント識別・権限判定などの認可に使っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 製品・サービスが OpenSSL／GnuTLS／wolfSSL／pyca cryptography／Go crypto-x509／NSS／LibreSSL／AWS-LC／s2n-tls／Mbed TLS／BoringSSL のいずれかに依存している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 同じ証明書を複数の実装で検証する構成（ゲートウェイとアプリ、プロキシと背後のサービス等）になっている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 依存ライブラリの版を把握できておらず、修正版（GnuTLS 3.8.13・pyca cryptography 46.0.6・wolfSSL 5.9.0 等）への更新状況が分からない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 外部の組織へ中間CA を委任している、または他社の CA を信頼ストアに入れている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年4月29日（GNUTLS-SA-2026-04-29-5） GnuTLS</span> <a href="https://www.gnutls.org/security-new.html" target="_blank" rel="noreferrer noopener nofollow">GnuTLS Security Advisories（GNUTLS-SA-2026-04-29-5 / CVE-2026-3833）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（英語）開発者自身の勧告。本記録の作成者が2026年10月16日に取得して確認した。 「名前制約処理におけるドメイン名の比較が大文字小文字を区別していた」とし、 RFC 5280 7.2 節からの逸脱であること、 除外の名前制約において拒否されるべきドメイン名が受け入れられうること、 深刻度は Moderate、修正は 3.8.13 以降であることを示す。）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年3月27日 pyca/cryptography（GitHub Advisory Database）</span> <a href="https://github.com/advisories/GHSA-m959-cc7f-wv43" target="_blank" rel="noreferrer noopener nofollow">GHSA-m959-cc7f-wv43: cryptography has incomplete DNS name constraint enforcement on peer names</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（英語）CVE-2026-34073 に対応する開発者側の勧告。 深刻度は Low、対象パッケージは pip の cryptography、 報告者として 1seal と woodruffw が記載されている。 本記録は一覧ページ上の記載までを確認しており、 影響を受ける版の範囲は勧告本文で確認していない〈齟齬3〉。）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月15日（公開日・最終更新日） JPCERT/CC（JVN）</span> <a href="https://jvn.jp/vu/JVNVU95474776/" target="_blank" rel="noreferrer noopener nofollow">JVNVU#95474776 複数のTLSライブラリにおける名前制約回避の問題</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（国内向けの公表。本文は持たず、CERT/CC の VU#948176 を参照する体裁である（出典1）。）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月15日（公開日・最終更新日） JPCERT/CC（JVN）</span> <a href="https://jvn.jp/vu/JVNVU95613365/" target="_blank" rel="noreferrer noopener nofollow">JVNVU#95613365 Google BoringSSL証明書検証における複数の名前制約回避の脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（国内向けの公表。本文は持たず、CERT/CC の VU#410595 を参照する体裁である（出典2）。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月14日公開・2026年10月15日 12:25 UTC 改訂（文書改訂2） CERT/CC（カーネギーメロン大学ソフトウェア工学研究所）</span> <a href="https://www.kb.cert.org/vuls/id/948176" target="_blank" rel="noreferrer noopener nofollow">VU#948176: Multiple TLS Libraries can Bypass Delegation Enforcement</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（英語）本件の原典。本記録の作成者が2026年10月16日に取得して確認した。 13 のライブラリ個別記録（.6 と .8〜.19）、照合の差異の分類、 影響の3条件、ベンダー別の状況、推奨事項を示す。 ベンダー一覧の表と「解決策」節の記述が食い違うことを自ら注記している〈齟齬1〉。）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月14日公開（文書改訂2・同日更新） CERT/CC（カーネギーメロン大学ソフトウェア工学研究所）</span> <a href="https://www.kb.cert.org/vuls/id/410595" target="_blank" rel="noreferrer noopener nofollow">VU#410595: Google BoringSSL Name Constraints Bypass in SAN Validation Logic</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（英語）BoringSSL に絞った5件（.8〜.12）の記録。 本記録の作成者が2026年10月16日に取得して確認した。 コミット 5774eca（2026年3月4日）での修正、2026年2月28日の却下、 Google・Entrust Datacard から声明が得られていないことを示す。 「CERT/CC は BoringSSL の修正を調整していない」と明記している。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[7]</span> <span class=sm>2026年10月15日 JPCERT/CC（JVN 新着情報として収集）</span> <a href="https://jvn.jp/vu/JVNVU95474776/" target="_blank" rel="noreferrer noopener nofollow">複数のTLSライブラリにおける名前制約回避の問題／Google BoringSSL証明書検証における複数の名前制約回避の脆弱性</a> <span class="b kind">記事</span><span class=sm>（本記録の起点となった収集記事（output/articles/20261015/）。 内容は出典1・2 と同一である。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月16日</span> <span class="b rev">新規作成</span> JVNVU#95474776・JVNVU#95613365（出典1・2）を起点に、 CERT/CC の VU#948176・VU#410595（出典3・4）、 GnuTLS の勧告（出典5）、pyca/cryptography の勧告（出典6）を 取得して作成した。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">名前制約</span><span class="b tag">Name Constraints</span><span class="b tag">X.509</span><span class="b tag">RFC 5280</span><span class="b tag">TLS</span><span class="b tag">証明書検証</span><span class="b tag">BoringSSL</span><span class="b tag">GnuTLS</span><span class="b tag">OpenSSL</span><span class="b tag">wolfSSL</span><span class="b tag">pyca/cryptography</span><span class="b tag">Mbed TLS</span><span class="b tag">NSS</span><span class="b tag">LibreSSL</span><span class="b tag">AWS-LC</span><span class="b tag">s2n-tls</span><span class="b tag">CVE-2026-3833</span><span class="b tag">CVE-2026-34073</span><span class="b tag">CVE-2026-3547</span><span class="b tag">VU#948176</span><span class="b tag">VU#410595</span><span class="b tag">JVNVU#95474776</span><span class="b tag">JVNVU#95613365</span><span class="b tag">CERT/CC</span><span class="b tag">JPCERT/CC</span><span class="b tag">mTLS</span><span class="b tag">PKI</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-16 09:02 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
