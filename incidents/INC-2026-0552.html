@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>生豆本舗が SQLi 攻撃で応答不能に — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0552</span>生豆本舗が SQLi 攻撃で応答不能に</h1>
+<header class="site-header">
+  <p class="subtitle">コロンビア珈琲が運営する通販サイト「極上珈琲 生豆本舗」が、外部の自動攻撃ツールによる SQL インジェクションの試行を約1万件受け、商品検索に送り込まれた特殊な文字列でデータベースに極端に重い処理が発生してサイト全体が応答不能になった——2026年9月26日23時頃から翌27日13時15分頃までの障害。攻撃はいずれもシステムにより拒否または無効化され、顧客情報や注文情報の取得に至った形跡は確認されていない。対策としてデータベース側に60秒の処理時間上限を設け、Web サーバ側で攻撃文字列を遮断するようにした</p>
+  <div><span class="b type">システム障害</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">容量・リソース枯渇</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月28日</span>
+  <span>最終更新: 2026年10月16日</span>
+</div>
+
+<div class="lead"><p><strong>コロンビア珈琲株式会社</strong>（兵庫県尼崎市）は <strong>2026年9月28日</strong>、同社が運営するコーヒー生豆・焙煎豆の通販サイト<strong>「極上珈琲 生豆本舗」</strong>で発生した<strong>サイト障害</strong>について公表しました。</p>
+<p>経過は同社の公表によれば次のとおりです。<strong>2026年9月25日</strong>から、<strong>外部の自動攻撃ツールによる不正アクセスの試行（SQL インジェクション）が集中的</strong>に行われ、件数は<strong>約1万件</strong>、<strong>国内の100以上の回線を経由</strong>していました。<strong>9月26日22時50分頃</strong>には、攻撃の一環として<strong>商品検索に特殊な文字列</strong>が送り込まれ、<strong>データベースで極端に重い処理が発生</strong>しました。これが他の処理を長時間待たせることとなり、<strong>サイト全体が応答できない状態</strong>になっています。</p>
+<p>障害が続いたのは <strong>9月26日23時頃から9月27日13時15分頃</strong>までで、この間「極上珈琲 生豆本舗」が正常に表示されませんでした。</p>
+<p>同社がアクセス記録を調査した結果、<strong>攻撃はいずれもシステムにより拒否または無効化</strong>されており、<strong>顧客情報や注文情報などのデータ取得に至った形跡は確認されていない</strong>としています。</p>
+<p>対策として実施されたのは次の2つです。</p>
+<ol>
+<li><strong>データベース側</strong> — サイトからの処理に<strong>上限時間（60秒）</strong>を設け、異常に重い処理は自動的に打ち切る</li>
+<li><strong>Web サーバ側</strong> — 不正アクセスで使われる文字列を含むリクエストを、<strong>データベースに届く前に遮断</strong>する</li>
+</ol>
+<p>本記録が注目するのは3点です。<strong>①データは抜かれていないのに、サービスは14時間止まったこと</strong>、<strong>②止めたのは「侵入」ではなく「重いクエリ1本」だったこと</strong>、<strong>③対策の第一がタイムアウトの設定であり、それまで上限が無かったと読めること</strong>。<strong>SQL インジェクションを「漏えいの手口」としてのみ構えていると、この止まり方は想定から落ちます。</strong>なお、本記録の作成者は<strong>同社による公表文そのものを発見できませんでした</strong>（後述）。事実関係は ScanNetSecurity の報道に依拠し、評価・示唆は本記録の判断として分けて書きます。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>同社による公表文の所在</span><span class="b rsn">探索したが未発見</span><div class=sm>ScanNetSecurity は同社が2026年9月28日に発表したと報じているが、 本記録の作成者は同日に www.namamame.jp のお知らせ一覧（news_manager_all_news・ 2026年2月以降の全件）と直近の個別お知らせページを確認したうえで、 当該の公表を発見できなかった。一覧の該当時期には商品入荷の告知があるのみである。 掲載後に削除された、一覧に載らない場所に掲出された、 あるいはメール等で通知された可能性のいずれも排除できない</div></li><li><span class=ui>商品検索に送り込まれた「特殊な文字列」の内容と、SQL インジェクションの成否の関係</span><span class="b rsn">公表されていない</span><div class=sm>同社は攻撃がいずれも拒否または無効化されたとする一方、 商品検索に送り込まれた文字列がデータベースで極端に重い処理を引き起こしたとしている。 注入自体は無効化されながら、クエリとしては実行され重くなったのか、 検索の処理そのものが重くなったのかは示されていない。 本記録はこの区別を推定しない</div></li><li><span class=ui>攻撃者と、使用された自動攻撃ツールの特定</span><span class="b rsn">公表されていない</span><div class=sm>「外部の自動攻撃ツール」とのみ記載されており、ツール名・攻撃者・動機は示されていない。 特定の標的を狙ったものか、無差別の走査の一部かも分からない</div></li><li><span class=ui>「国内の100以上の回線」の性質</span><span class="b rsn">公表されていない</span><div class=sm>踏み台とされた第三者の回線なのか、攻撃者が用意した回線なのかは示されていない。 前者であれば、国内に侵害された機器が相当数あることを意味する</div></li><li><span class=ui>障害の覚知から復旧までに同社が行った操作</span><span class="b rsn">公表されていない</span><div class=sm>障害をいつ覚知したか、復旧のために何を行ったか（再起動・遮断・問い合わせ）は 示されていない。23時頃の発生から13時15分頃の復旧まで約14時間を要した理由も不明である</div></li><li><span class=ui>障害期間中の注文・決済への影響と、利用者への補償</span><span class="b rsn">公表されていない</span><div class=sm>通販サイトが約14時間応答しなかったが、処理中だった注文の扱い、 機会損失、利用者への案内や補償については言及が無い</div></li><li><span class=ui>使用している EC システムの名称とバージョン</span><span class="b rsn">公表されていない</span><div class=sm>同社の公表にも報道にも記載が無い。 本記録の作成者が観測した URL の形から推定した事項は齟齬の欄に記した</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>コロンビア珈琲株式会社</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>通販サイト「極上珈琲 生豆本舗」（www.namamame.jp）の運営主体。 兵庫県尼崎市でコーヒー生豆・焙煎豆の計量販売を行う。2026年9月28日に障害について公表したと報じられている</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>SQL インジェクションの試行件数</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>10,000<span class=fu>件</span></div><div class=fn>2026年9月25日から集中的に行われた試行の件数として同社が示した「約1万件」。 いずれもシステムにより拒否または無効化されたとされ、成立した注入の件数ではない</div></div><div class=fig><div class=fh><span class=fl>試行が経由した国内の回線の数</span><span class="b conf">最少</span><span class="b org">公表値</span></div><div class=fv>100<span class=fu>回線</span></div><div class=fn>同社が示した「国内の100以上の回線を経由」という記述にもとづく最小値。 これらが踏み台とされた回線なのか、攻撃者が契約した正規の回線なのかは公表されていない。 送信元 IP の数ではなく「回線」という単位で示されている点に注意</div></div><div class=fig><div class=fh><span class=fl>サイトが正常に表示されなかった時間</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>855<span class=fu>分</span></div><div class=fn>2026年9月26日23時頃から9月27日13時15分頃まで。約14時間15分。 いずれも「頃」で示されているため概数である。本記録の作成者が算出した</div></div><div class=fig><div class=fh><span class=fl>対策として設けられたデータベース処理の上限時間</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>60<span class=fu>秒</span></div><div class=fn>障害後に同社がデータベース側に設定した上限時間。 これを超える処理は自動的に打ち切られる。 事案の発生時点でこの上限が無かったことは、同社が対策として挙げていることから読めるが、 同社がそう明言したわけではない（本記録の注記）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>外部の自動攻撃ツールが、2026年9月25日から「極上珈琲 生豆本舗」に対して SQL インジェクションの試行を約1万件、国内の100以上の回線を経由して集中的に行った。 試行はいずれもシステムにより拒否または無効化されたが、 9月26日22時50分頃に商品検索へ送り込まれた特殊な文字列がデータベースで 極端に重い処理を引き起こし、他の処理を待たせてサイト全体を応答不能にした。 データの取得には至っていない</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>外部の自動攻撃ツールが、国内の100以上の回線を経由して当該サイトへ SQL インジェクションの試行を集中的に行った。件数は約1万件</div><div class=fn>根拠: 同社の説明（ScanNetSecurity の報道による）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>2026年9月26日22時50分頃、攻撃の一環として商品検索に特殊な文字列が送り込まれ、 データベースで極端に重い処理が発生した。 注入としては拒否または無効化されたが、処理の負荷は発生した</div><div class=fn>根拠: 同社の説明。ただし「無効化された」ことと「重い処理が発生した」ことの関係は 説明されていない</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>重い処理が他の処理を長時間待たせ、2026年9月26日23時頃から9月27日13時15分頃まで サイト全体が応答できない状態になった。 顧客情報・注文情報の取得には至っていない</div><div class=fn>根拠: 同社の説明</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>初期侵入 / 永続化 / 権限昇格 / 検知回避 / 認証情報アクセス / 内部探索 / 横展開 / 収集 / C2通信 / 持ち出し</span><div class=sm>侵害が成立していないため、これらの段階は発生していないと同社は説明している。 本記録もそれを前提とするが、同社の調査範囲（ログの保存期間・解析期間）は 公表されていないため、確からしさは外部から評価できない</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>攻撃の開始から障害の発生まで</div><div class=mv>2026年9月25日の試行開始から、9月26日22時50分頃に重い処理が発生するまで およそ1日半。同社が試行そのものを検知していたかは公表されていない</div></div><div class=met><div class=ml>障害の発生から復旧まで</div><div class=mv>2026年9月26日23時頃から9月27日13時15分頃まで約14時間15分。 覚知の時刻と復旧のために行った操作は公表されていない</div></div><div class=met><div class=ml>障害の発生から公表まで</div><div class=mv>2026年9月26日23時頃の発生から2026年9月28日の公表まで約2日。 障害の原因を攻撃まで遡って示している</div></div><div class=met><div class=ml>障害の発生から再発防止策の実施まで</div><div class=mv>公表（2026年9月28日）の時点で、データベース側の上限時間と Web サーバ側の遮断がいずれも「実施している」と記されている。 実施日は示されていない</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>障害の事実だけでなく、攻撃の件数（約1万件）、経由した回線の数（国内100以上）、 引き金となった時刻（9月26日22時50分頃）、および実施した対策2点を具体的に公表した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 攻撃の詳細を示せば他の攻撃者に手がかりを与えうる。 一方、示さなければ利用者も同業も何が起きたか分からない</div></li><li><div class=ui>再発防止として、入口の遮断より先にデータベース側の処理時間の上限（60秒）を挙げた</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 上限時間は未知の重い処理にも効くが、正当な重い処理も打ち切る。 60秒という値は、EC サイトの利用者が待てる時間としては長い</div></li></ul></div>
+<section id="s6"><h2>約1万件の SQL インジェクション試行の中の1本が、商品検索を通じてサイト全体を止めた<span class="b slot">概観</span><span class=srcs>出典 [2]</span></h2><p>同社の公表（ScanNetSecurity の報道による）によれば、経過は次のとおりである。</p>
+<ul>
+<li><strong>2026年9月25日</strong>から、<strong>外部の自動攻撃ツールによる不正アクセスの試行（SQL インジェクション）が集中的</strong>に行われた。件数は<strong>約1万件</strong>、<strong>国内の100以上の回線を経由</strong>していた</li>
+<li><strong>9月26日22時50分頃</strong>、攻撃の一環として<strong>商品検索に特殊な文字列</strong>が送り込まれ、<strong>データベースで極端に重い処理</strong>が発生した</li>
+<li>これが<strong>他の処理を長時間待たせる</strong>こととなり、<strong>サイト全体が応答できない状態</strong>になった</li>
+<li>障害は <strong>9月26日23時頃から9月27日13時15分頃</strong>まで続いた（約14時間15分）</li>
+</ul>
+<p>注目すべきは、<strong>サイトを止めたのが侵入でも大量のトラフィックでもなかった</strong>点である。止めたのは、商品検索の窓口から入った<strong>1本の重い問い合わせ</strong>である。</p></section>
+<section id="s7"><h2>アクセス記録の調査では、攻撃はいずれも拒否または無効化されデータ取得の形跡は無かった<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [2]</span></h2><p>同社がアクセス記録を調査した結果として示したのは次のとおりである。</p>
+<ul>
+<li>攻撃は<strong>いずれもシステムにより拒否または無効化</strong>されていた</li>
+<li><strong>顧客情報や注文情報などのデータ取得に至った形跡は確認されていない</strong></li>
+</ul>
+<p>つまり、SQL インジェクションとしては<strong>成立していない</strong>という説明である。にもかかわらずサービスは約14時間止まった。<strong>「漏えいは無かった」と「被害は無かった」は別である</strong>（本記録の評価）。</p>
+<p>なお、同社は障害期間中の注文・決済への影響、利用者への案内や補償については触れていない。</p></section>
+<section id="s8"><h2>対策はデータベース側のタイムアウトと、Web サーバ側での事前遮断の2段である<span class="b slot">再発防止</span><span class=srcs>出典 [2]</span></h2><p>同社が実施したとする対策は次の2つである。</p>
+<p><strong>1. データベース側</strong></p>
+<blockquote>
+<p>サイトからの処理に上限時間（60秒）を設け、異常に重い処理は自動的に打ち切り。</p>
+</blockquote>
+<p><strong>2. Web サーバ側</strong></p>
+<blockquote>
+<p>不正アクセスで使われる文字列を含むリクエストを、データベースに届く前に遮断。</p>
+</blockquote>
+<p>この2つは<strong>役割が違う</strong>。1つ目は「重い処理が来てもサイト全体は巻き込まれない」ための被害の封じ込めであり、2つ目は「そもそも届かせない」ための入口の遮断である。順番としては1つ目が先に書かれており、<strong>サービスを落とさないことを優先した</strong>構成と読める。</p>
+<p>一方、<strong>1つ目を「対策」として挙げているということは、事案の発生時点で処理時間の上限が設定されていなかった</strong>と読める。同社がそう明言したわけではないが、この読みが成り立つ（本記録の評価）。</p></section>
+<section id="s9"><h2>文字列の中身も、攻撃元の性質も、復旧までの14時間に何をしたかも公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [2]</span></h2><p>2026年10月16日時点で、公表されていないのは次の点である。</p>
+<ul>
+<li><strong>同社による公表文そのものの所在</strong>（本記録の作成者は発見できなかった。後述）</li>
+<li>商品検索に送り込まれた<strong>「特殊な文字列」の内容</strong>と、「無効化された」ことと「重い処理が発生した」ことの関係</li>
+<li><strong>攻撃者</strong>と、使用された<strong>自動攻撃ツール</strong>の特定</li>
+<li><strong>「国内の100以上の回線」の性質</strong>（踏み台か、攻撃者が用意した回線か）</li>
+<li><strong>障害の覚知から復旧までに同社が行った操作</strong>（約14時間を要した理由）</li>
+<li>障害期間中の<strong>注文・決済への影響と補償</strong></li>
+<li>使用している <strong>EC システムの名称とバージョン</strong></li>
+</ul>
+<p>このうち2点目は、読者が自社の点検に使ううえで効く情報である。注入が無効化されながら処理が重くなったのであれば、<strong>「WAF や無害化を入れていても、検索の重さは止まらない」</strong>という教訓になる。文字列が示されていないため、本記録はこの区別を推定しない。</p></section>
+<section id="s10"><h2>入力の無害化は「漏れない」ことを保証するが、「落ちない」ことは保証しない（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p><strong>第一に、これは SQL インジェクション対策が効いたうえで起きた障害である。</strong>同社の説明では、攻撃はいずれも拒否または無効化され、データ取得の形跡は無い。対策は機能した。それでもサイトは約14時間止まった。<strong>注入を無害化する仕組みは、クエリが重くなることまでは止めない。</strong>エスケープもプレースホルダも WAF も、「危険な意味を持たせない」ための道具であって、「安いコストで終わらせる」ための道具ではない。日本の事業者の多くは SQL インジェクションを<strong>漏えいの手口</strong>として構えているが、本件が示すのは<strong>可用性の手口</strong>としての顔である。</p>
+<p><strong>第二に、止まったのは検索が「重い処理」を許す窓口だったからである。</strong>商品検索は、EC サイトで最も自由入力を受け付ける場所であり、かつ<strong>全件走査になりやすい</strong>機能である。インデックスが効かない条件、ワイルドカードの前方一致、複数カラムへの LIKE——どれも1本で数分かかりうる。そこへ自動攻撃ツールが毎秒何本も投げれば、<strong>接続が埋まり、商品ページも決済も巻き込まれる</strong>。攻撃者が狙ってやったのか、偶然の副作用なのかは分からないが、<strong>結果は DoS と同じ</strong>である。</p>
+<p><strong>第三に、対策の順序が実務的である。</strong> 同社は入口の遮断より先に、データベース側の処理時間の上限（60秒）を挙げている。これは正しい優先順位である。入口の遮断は<strong>知っている文字列</strong>しか止められないが、上限時間は<strong>まだ知らない重い処理</strong>にも効く。前者は攻撃の種類に依存し、後者は依存しない。読者が自社で1つだけやるなら、<strong>上限時間の設定が先</strong>である。ただし60秒という値は、EC サイトの利用者が待てる時間としては長い。利用者から見れば60秒待たされた時点でサイトは「止まっている」。本来は<strong>接続数の上限・1 IP あたりの要求速度の制限</strong>と組み合わせる必要がある（本記録の評価）。</p>
+<p><strong>第四に、日本の読者にとっての含意は「検索窓の負荷試験」である。</strong>脆弱性診断は「注入が通るか」を見るが、<strong>「重くできるか」は見ないことが多い</strong>。本件は、診断で指摘されない種類の弱点でサービスが止まった事例である。自社の検索機能に対し、<strong>最悪の入力（長い文字列・先頭ワイルドカード・複数条件の組み合わせ）を投げたときの実行時間</strong>を測っておくと、どこに上限を置くべきかが決まる。</p>
+<p><strong>第五に、「国内の100以上の回線」という記述が重い。</strong>これが踏み台にされた第三者の回線であれば、<strong>国内に侵害された機器が相当数あり、それが別の国内サイトへの攻撃に使われている</strong>ことになる。送信元が国内であるため、国別の遮断は効かない。同社がこの点を調べて記載したこと自体は価値があるが、性質（踏み台か否か）が示されていないため、読者は対策に繋げられない。</p>
+<p><strong>第六に、記録として残っていないことの問題。</strong>本記録の作成者は、同社サイトのお知らせ一覧を全件たどっても2026年9月28日の公表を見つけられなかった。報道には残り、当事者のサイトには残っていない。<strong>公表は出した時点ではなく、後から探せる状態になって初めて機能する</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>コロンビア珈琲株式会社が運営する通販サイト「極上珈琲 生豆本舗」（www.namamame.jp）。 サイト全体が応答できない状態になった</td></tr><tr><th>malfunction</th><td>2026年9月26日23時頃から9月27日13時15分頃まで、サイトが正常に表示されなかった。 商品検索に送り込まれた特殊な文字列によりデータベースで極端に重い処理が発生し、 他の処理を長時間待たせたことで、サイト全体が応答できない状態になった。 特定のページではなくサイト全体が対象である</td></tr><tr><th>cause_statement</th><td>「9月25日から外部の自動攻撃ツールによる不正アクセスの試行（SQL インジェクション）が 集中的に行われており、件数は約1万件、国内の100以上の回線を経由していた。 9月26日午後10時50分頃には、攻撃の一環として商品検索に特殊な文字列が送り込まれ、 データベースで極端に重い処理が発生したことで、他の処理を長時間待たせることとなり、 サイト全体が応答できない状態となった」（同社の説明。ScanNetSecurity の報道による）。 攻撃はいずれもシステムにより拒否または無効化されたとされ、 SQL インジェクションの成立による侵害は確認されていない</td></tr><tr><th>復旧状況</th><td>2026年9月27日13時15分頃に障害は解消した。 覚知の時刻、復旧のために行った操作、約14時間を要した理由はいずれも公表されていない。 本記録の作成者が2026年10月16日に確認した時点で、サイトは正常に稼働していた</td></tr><tr><th>運用への影響</th><td><div class=sub><b>item:</b> 「極上珈琲 生豆本舗」が約14時間15分にわたり正常に表示されなかった（9月26日23時頃〜9月27日13時15分頃）</div><div class=sub><b>item:</b> 商品検索を含むサイト全体が応答できない状態になった</div><div class=sub><b>item:</b> 障害期間中の注文・決済への影響は公表されていない</div><div class=sub><b>item:</b> 顧客情報・注文情報などのデータ取得に至った形跡は確認されていない</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年9月28日　<b>補足:</b> 同社がアクセス記録を調査した結果、攻撃はいずれもシステムにより拒否または無効化されており、 顧客情報や注文情報などのデータ取得に至った形跡は確認されていない</td></tr><tr><th>ログの有無</th><td>同社は「アクセス記録を調査した結果」として結論を示しており、 アクセスログが保全され解析されたことが分かる。 ただしログの保存期間、解析した期間、データベース側のクエリログの有無は公表されていない</td></tr><tr><th>通知</th><td><b>手法:</b> 同社による公表（2026年9月28日。ScanNetSecurity の報道による）。 本記録の作成者は同社サイト上で当該の公表を発見できなかった　<b>範囲:</b> 一般公表とみられる。個別の通知対象は公表されていない　<b>完了日時:</b> 2026年9月28日</td></tr><tr><th>再発防止策</th><td><ul class=cl><li>データベース側 — サイトからの処理に上限時間（60秒）を設け、異常に重い処理は自動的に打ち切る</li><li>Web サーバ側 — 不正アクセスで使われる文字列を含むリクエストを、データベースに届く前に遮断する</li></ul><span class="b rsn">stated</span><div class=fn>2つは役割が異なる。上限時間は未知の重い処理にも効くが、 文字列による遮断は既知のパターンにしか効かない。 接続数の上限や1送信元あたりの要求速度の制限については言及が無い（本記録の評価）</div></td></tr><tr><th>criminal</th><td><span class="b rsn">公表されていない</span><div class=fn>警察への相談・被害届の有無は公表されていない</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">発生</span></td><td>外部の自動攻撃ツールによる不正アクセスの試行（SQL インジェクション）が集中的に行われ始めた。 件数は約1万件、国内の100以上の回線を経由していた</td></tr><tr><td class="sm nowrap tw">2026年9月26日 22時50分頃</td><td class=nowrap><span class="b kind">発生</span></td><td>攻撃の一環として商品検索に特殊な文字列が送り込まれ、 データベースで極端に重い処理が発生した</td></tr><tr><td class="sm nowrap tw">2026年9月26日 23時頃</td><td class=nowrap><span class="b kind">発生</span></td><td>重い処理が他の処理を長時間待たせることとなり、サイト全体が応答できない状態になった。 「極上珈琲 生豆本舗」が正常に表示されない障害の開始</td></tr><tr><td class="sm nowrap tw">2026年9月27日 13時15分頃</td><td class=nowrap><span class="b kind">復旧</span></td><td>障害が解消した。サイトが正常に表示されない状態の終了</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">公表</span></td><td>同社が障害について公表した。攻撃の経緯、アクセス記録の調査結果 （攻撃はいずれも拒否または無効化され、データ取得に至った形跡は未確認）、 データベース側とWeb サーバ側の2つの対策を示した</td></tr><tr><td class="sm nowrap tw">2026年10月16日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>ScanNetSecurity が同社の公表を報じた</td></tr><tr><td class="sm nowrap tw">2026年10月16日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が www.namamame.jp のお知らせ一覧（全件表示）と直近の個別お知らせを 確認したが、2026年9月28日付の当該公表を発見できなかった。 一覧の該当時期には9月12日と10月3日の商品入荷の告知があるのみである</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>同社による公表文そのものを確認できていないこと</span><div class=sm>ScanNetSecurity は「コロンビア珈琲株式会社は9月28日、同社が運営する 『極上珈琲 生豆本舗』での障害について発表した」と報じているが、 本記録の作成者は2026年10月16日に www.namamame.jp のお知らせ一覧 （news_manager_all_news・2026年2月以降の全件）と直近の個別お知らせページを 確認したうえで、当該の公表を発見できなかった。 一覧の該当時期には2026年9月12日と10月3日の商品入荷の告知があるのみである。 したがって本記録の事実関係はすべて ScanNetSecurity の報道に拠っており、 一次資料による裏取りはできていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>「無効化された」ことと「重い処理が発生した」ことの関係</span><div class=sm>同社は攻撃がいずれもシステムにより拒否または無効化されたとする一方、 商品検索に送り込まれた文字列がデータベースで極端に重い処理を引き起こしたとしている。 注入としては無害化されながらクエリは実行されたのか、 検索処理そのものが重くなったのかは説明されていない。 読者が自社の点検に使ううえで最も重要な部分が欠けている</div></li><li><span class="b dk">本記録による推定</span><span class=ui>使用している EC システムの推定</span><div class=sm>本記録の作成者は、www.namamame.jp の URL が `index.php?main_page=...` の形式であることを2026年10月16日に観測した。 これはオープンソースの EC パッケージ Zen Cart に特徴的な形式である。 ただし同社も報道も使用システムを明らかにしておらず、 本件の障害が当該パッケージに起因するという根拠も無い。 本記録はこれを観測事実としてのみ記し、原因とは結びつけない</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「回線」という単位</span><div class=sm>同社は「国内の100以上の回線を経由していた」としているが、 これが送信元 IP アドレスの数なのか、契約回線の数なのか、 ISP 単位の数なのかは示されていない。 踏み台とされた第三者の回線か、攻撃者が用意した回線かも区別されていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>対策の実施時期</span><div class=sm>2つの対策は「実施している」と現在形で記されているが、 いつ実施したか（障害中か、復旧後か、公表前か）は示されていない。 そのため「検知から対策まで」の所要を算出できない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>無効化された攻撃が、検索窓を通ってデータベースの待ち行列でサイト全体を止めた経路</div><div class=svgwrap><svg viewBox="0 0 998 234" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,85.0 C91.0,85.0 91.0,156.0 16,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,156.0 C193.0,156.0 193.0,85.0 220,85.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,85.0 C295.0,85.0 295.0,147.0 220,147.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,147.0 C397.0,147.0 397.0,41.0 424,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,41.0 C499.0,41.0 499.0,109.0 424,109.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,41.0 C499.0,41.0 499.0,185.0 424,185.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,185.0 C601.0,185.0 601.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,109.0 C601.0,109.0 601.0,124.0 628,124.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,48.0 C703.0,48.0 703.0,193.0 628,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,85.0 C703.0,85.0 703.0,185.0 424,185.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,156.0 C601.0,156.0 601.0,85.0 220,85.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="53.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部の自動攻撃ツール（攻</text><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">撃者・ツール名とも非公表</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><rect x="16" y="131.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">国内の100以上の回線（</text><text x="91.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">踏み台か否かは非公表）</text><rect x="220" y="62.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web サーバ</text><rect x="220" y="122.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">商品検索機能（自由入力の</text><text x="295.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">窓口）</text><rect x="424" y="18.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="40.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">データベース</text><rect x="424" y="78.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="100.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SQL インジェクション</text><text x="499.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の試行 約1万件</text><text x="499.0" y="127.0" text-anchor="middle" fill="#ffcc80" font-size="10">いずれも拒否または無効化</text><rect x="424" y="154.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">極端に重い処理（他の処理</text><text x="499.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を長時間待たせた）</text><text x="499.0" y="203.0" text-anchor="middle" fill="#ffcc80" font-size="10">9/26 22:50 頃</text><rect x="628" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サイト全体が応答不能（9</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/26 23:00 頃〜</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9/27 13:15 …</text><rect x="628" y="94.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客情報・注文情報</text><text x="703.0" y="129.0" text-anchor="middle" fill="#ffcc80" font-size="10">取得に至った形跡は確認さ</text><text x="703.0" y="141.0" text-anchor="middle" fill="#ffcc80" font-size="10">れていない</text><rect x="628" y="168.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「極上珈琲 生豆本舗」の</text><text x="703.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者</text><rect x="832" y="53.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策1: データベース側</text><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の処理時間の上限（60秒</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><rect x="832" y="131.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策2: Web サーバ</text><text x="907.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">側で攻撃文字列を事前遮断</text></svg></div><div class=fn>layer 0 は攻撃者と、経由した国内100以上の回線。layer 1 は通ってきた入口（Web サーバと商品検索）。 layer 2 はデータベースで、ここで「注入としては無効化されたが、処理としては重かった」という 分岐が起きている。layer 3 は結果——サイト全体の応答不能と、到達されなかった顧客情報。 layer 4 は障害後に追加された2つの歯止め。 点線で示すべきは、無害化の仕組みが layer 2 の左側（注入）だけを止め、 右側（負荷）を素通りさせたという構造である。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>9月25日から試行が始まり、障害が起きたのは翌26日の22時50分頃である。 約1万件という規模の異常な要求が1日以上続いており、 要求速度の監視があれば障害の前に気づけた可能性が高い（本記録の評価）。 同社が試行の最中に気づいていたかは公表されていない</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>1送信元あたりの要求速度に上限を設け、超過したら遮断して通知する</div><div class=ctl><span class="b eff">検知できた</span>サイト全体の要求数と、検索機能への要求数を分けて監視し、 平常の分布から外れたら通知する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>実行時間の長いクエリを検知する仕組みがあれば、この時点で分かる。 同社が対策として上限時間を新設していることから、 事案の時点では長時間クエリの検知も打ち切りも無かったと読める（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>データベース側に処理時間の上限を設け、超過した処理を自動で打ち切る</div><div class=ctl><span class="b eff">侵入を防げた</span>Web サーバ側で、攻撃に使われる文字列を含む要求をデータベースへ届く前に遮断する</div><div class=ctl><span class="b eff">影響を限定できた</span>検索機能に対し、入力長・ワイルドカードの位置・条件数の制限を設ける</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>サイトの応答不能として顕在化している。 覚知の時刻は公表されていないため、外形監視があったかは分からない</div></td><td><div class=ctl><span class="b eff">検知できた</span>外形監視でサイトの応答時間と可用性を常時測り、閾値を超えたら通知する</div><div class=ctl><span class="b eff">影響を限定できた</span>データベースの接続数に上限を設け、特定の機能が全接続を占有しないようにする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>障害の事実だけでなく、攻撃の件数（約1万件）、経由した回線の数（国内100以上）、 引き金となった時刻（9月26日22時50分頃）、および実施した対策2点を具体的に公表した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。この規模の事業者の障害告知としては具体性が高い。 とくに対策を「データベース側」「Web サーバ側」と層に分けて書いており、 読者が自社に移し替えられる形になっている。 一方、攻撃に使われた文字列の性質（なぜ無効化されたのに重かったのか）が 示されていないため、最も実用的な部分が欠けている</td></tr><tr><td>再発防止として、入口の遮断より先にデータベース側の処理時間の上限（60秒）を挙げた</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。上限時間を先に置いた判断は、 攻撃の種類に依存しない分だけ筋が良い。 ただし60秒では利用者から見たサイトは既に「止まっている」状態であり、 接続数の上限や1送信元あたりの要求速度の制限と組み合わせる必要がある。 これらへの言及は無い</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>SQL インジェクション対策は「漏れない」ことを保証するが、「落ちない」ことは保証しない</div><div class=lw>本件では攻撃がいずれも拒否または無効化され、データ取得の形跡も無かった。 それでもサイトは約14時間15分止まった</div><div class=la><b>取るべき行動</b> 自社の公開サービスについて、情報漏えいのリスク評価とは別に 「可用性のリスク評価」を行う。攻撃の試行が成立しなくてもサービスが止まる経路 （重い検索・重い集計・大きいファイルの生成）を洗い出し、 それぞれに上限を設けているかを確認する</div></li><li><div class=lp>「攻撃を防いだ」で終わらせず、「なぜ止まったのか」を説明に含める</div><div class=lw>同社の公表は、攻撃が無効化されたことと重い処理が発生したことを並べているが、 両者の関係を説明していない。読者が最も学べる部分が欠けている</div><div class=la><b>取るべき行動</b> 障害の公表文に「防げたこと」と「防げなかったこと」を別の見出しで書く様式にする。 攻撃を受けた事案では、攻撃の成否と障害の発生を分けて記述する</div></li><li><div class=lp>公表は、後から探せる状態になって初めて機能する</div><div class=lw>本記録の作成者は、同社サイトのお知らせ一覧を全件たどっても 2026年9月28日の当該公表を発見できなかった。報道にのみ残っている状態である</div><div class=la><b>取るべき行動</b> 障害・インシデントの公表を、商品告知とは別の固定の場所（「お知らせ」ではなく 「重要なお知らせ」等）に掲出し、一覧から恒久的に辿れるようにする。 掲出期間を決める場合は、その方針を明示する</div></li><li><div class=lp>小規模な EC ほど、1つの機能の停止が売上の全停止に直結する</div><div class=lw>本件はサイトの一部ではなく全体が応答できない状態になり、 深夜から翌日の昼過ぎまで約14時間続いた</div><div class=la><b>取るべき行動</b> 自社 EC の停止1時間あたりの機会損失を概算し、 許容できる停止時間を経営として決める。 その時間内に復旧できる体制（覚知の手段・連絡先・夜間の対応）があるかを確認する</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>データベースの処理時間に上限を設ける。これが攻撃の種類に依存しない唯一の対策である</div><div class=lw>同社は対策の第一にデータベース側の上限時間（60秒）を挙げている。 入口の遮断は既知の文字列にしか効かないが、上限時間は未知の重い処理にも効く</div><div class=la><b>取るべき行動</b> データベースの文の実行時間に上限を設定する （PostgreSQL・MySQL とも、文単位の実行時間上限を設定する機能がある）。 値は平常時のクエリ実行時間の分布を測ってから決める。 アプリケーション側の接続にも同じ上限を入れ、二重にする</div></li><li><div class=lp>検索窓に「最悪の入力」を投げて、実行時間を測っておく</div><div class=lw>脆弱性診断は注入が通るかを見るが、処理を重くできるかは見ないことが多い。 本件は診断で指摘されない種類の弱点でサービスが止まった</div><div class=la><b>取るべき行動</b> 自社の検索機能に対し、長い文字列・先頭ワイルドカード・複数条件の組み合わせ・ ヒット件数が極端に多い語を投げ、実行時間を測る。 最悪値が許容時間を超える条件を特定し、入力長や条件数の制限を設ける</div></li><li><div class=lp>1送信元あたりの要求速度に上限を設ける。国内からの攻撃には国別遮断が効かない</div><div class=lw>試行は約1万件、国内の100以上の回線を経由していた。 送信元が国内であるため、国・地域による遮断では止まらない</div><div class=la><b>取るべき行動</b> Web サーバまたはその前段で、1送信元あたりの要求速度に上限を設ける。 検索など負荷の高いエンドポイントには、より厳しい上限を個別に設定する。 閾値は平常時の実測から決め、正当な利用を阻害しない水準にする</div></li><li><div class=lp>データベースの接続数に上限を設け、1つの機能が全接続を占有しないようにする</div><div class=lw>本件では重い処理が「他の処理を長時間待たせる」ことでサイト全体が応答不能になった。 重いクエリが接続を抱えたまま解放しなかった構図である</div><div class=la><b>取るべき行動</b> 接続プールの上限を設定し、検索など重い処理の同時実行数を別枠で制限する。 上限に達したときに全体を止めず、その機能だけを縮退させる設計にする</div></li><li><div class=lp>外形監視でサイトの応答を常時測り、夜間でも通知が届くようにする</div><div class=lw>障害は深夜23時頃に始まり、復旧は翌日13時15分頃だった。 覚知の時刻は公表されていないが、約14時間という長さは 夜間の覚知が遅れた可能性を示唆する（本記録の評価）</div><div class=la><b>取るべき行動</b> 外部からの定期的な応答確認（トップページと検索結果ページの両方）を設定し、 連続で失敗したら夜間でも担当者へ通知する。 通知の到達を月1回のテストで確認する</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> データベースの文の実行時間に上限を設定しておらず、 1本の重いクエリが接続を抱え続けられる構成である</td><td class=sm>本件では商品検索の1本の重い処理が他の処理を待たせ、サイト全体を約14時間止めた。 同社が対策の第一に上限時間の新設を挙げている</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自由入力を受け付ける検索機能があり、入力長・ワイルドカードの位置・条件数に制限が無い</td><td class=sm>商品検索は EC で最も自由入力を受ける窓口であり、全件走査になりやすい。 本件の引き金はここに送り込まれた文字列だった</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 1送信元あたりの要求速度に上限を設けておらず、国内からの大量の試行を遮断できない</td><td class=sm>本件の試行は約1万件・国内の100以上の回線経由であり、 国や地域による遮断では止まらない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 公開サイトの応答を外部から常時監視しておらず、夜間の障害に気づく手段が無い</td><td class=sm>障害は深夜23時頃に始まり、翌日13時15分頃まで続いた</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 「攻撃の試行が続いている」ことを検知する仕組みが無く、障害が起きてから気づく体制である</td><td class=sm>本件では9月25日から試行が始まり、障害の発生は翌26日22時50分頃である。 1日以上の猶予があった</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 障害・インシデントの公表を、商品告知と同じ「お知らせ」欄に混ぜて掲出しており、 後から辿れる保証が無い</td><td class=sm>本記録の作成者は、同社サイトのお知らせ一覧から当該の公表を発見できなかった</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月28日 コロンビア珈琲株式会社（極上珈琲 生豆本舗）</span> <a href="https://www.namamame.jp/index.php?main_page=news_manager_all_news" target="_blank" rel="noreferrer noopener nofollow">「極上珈琲 生豆本舗」での障害に関する公表（2026年9月28日・本記録の作成者は未発見）</a> <span class="b kind">お知らせ・告知ページ</span><span class="b dead">現在参照不可</span><span class=sm>（(一次資料。ScanNetSecurity は同社が2026年9月28日に発表したと報じているが、 本記録の作成者は2026年10月16日に同サイトのお知らせ一覧〈全件表示。URL はこれを指す〉と 直近の個別お知らせページを確認したうえで、当該の公表を発見できなかった。 掲載後に削除された、一覧に載らない場所に掲出された、 あるいは別の手段で通知された可能性のいずれも排除できない。 availability は「現時点で参照できない」という意味で dead としている。 同一の確認作業で、サイトの URL が index.php?main_page=... 形式であることを観測した 〈discrepancies の authored_inference 参照〉)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月16日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/10/16/56476.html" target="_blank" rel="noreferrer noopener nofollow">「極上珈琲 生豆本舗」に SQL インジェクション攻撃、サイトが正常に表示されない障害が発生</a> <span class="b kind">記事</span><span class=sm>（(本記録の事実関係はすべてこの報道に拠る。障害の期間〈2026年9月26日23時頃〜 9月27日13時15分頃〉、攻撃の開始〈9月25日〉、件数〈約1万件〉、 経由した回線〈国内100以上〉、引き金の時刻〈9月26日22時50分頃〉と内容 〈商品検索に特殊な文字列・データベースで極端に重い処理〉、 アクセス記録の調査結果〈いずれも拒否または無効化・データ取得の形跡は未確認〉、 対策2点〈データベース側の上限時間60秒・Web サーバ側での事前遮断〉の出典。 本文は保存分〈output/articles/20261016/0037_scannetsecurity.md〉で確認した。 一次資料による裏取りはできていない〈discrepancies 参照〉)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月16日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月16日の日次ニュース（ScanNetSecurity）を起点とした。 一次公表の裏取りを試み、www.namamame.jp のお知らせ一覧（全件表示・2026年2月以降）と 直近の個別お知らせページを確認したが、2026年9月28日付の当該公表を発見できなかった。 そのため事実関係はすべて報道に拠っており、その旨を discrepancies に self_unverified として明示し、references の一次資料は availability: dead としている。 同一の確認作業で、サイトの URL 形式（index.php?main_page=...）を観測し、 authored_inference として記録したが、障害の原因とは結びつけていない。 type は事象として outage、secondary_types に threat-campaign を置いた （攻撃の試行そのものは成立しておらず unauthorized-access ではない）。 続報の予告が無いため status は new とする</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">コロンビア珈琲</span><span class="b tag">極上珈琲 生豆本舗</span><span class="b tag">namamame.jp</span><span class="b tag">兵庫県</span><span class="b tag">尼崎市</span><span class="b tag">EC</span><span class="b tag">通販サイト</span><span class="b tag">SQLインジェクション</span><span class="b tag">自動攻撃ツール</span><span class="b tag">サービス停止</span><span class="b tag">可用性</span><span class="b tag">重いクエリ</span><span class="b tag">タイムアウト</span><span class="b tag">実行時間の上限</span><span class="b tag">レート制限</span><span class="b tag">商品検索</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-16 14:52 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
