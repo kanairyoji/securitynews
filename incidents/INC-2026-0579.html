@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Next.js に未認証 RCE 2件 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0579</span>Next.js に未認証 RCE 2件</h1>
+<header class="site-header">
+  <p class="subtitle">Next.js が定例外のセキュリティ更新で未認証リモートコード実行2件を修正—— 画像最適化 API の SVG 経路（CVE-2026-96889・CVSS v4.0 9.5・Next.js 10.0.0〜15.5.27 と 16.0.0〜16.4.0）と `use cache` が型付き配列を返す経路（GHSA-673q-mjm6-r5xr・同 9.5）。3件はいずれも上流依存（librsvg・React）に由来し、 2件は9月のリリースから上流調整の遅れで延期されていた</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月14日</span>
+  <span>最終更新: 2026年10月18日</span>
+</div>
+
+<div class="lead"><p><strong>フレームワークのパッチ適用が、依存ライブラリの解決結果の確認とセットになった事例です。</strong></p>
+<p><strong>2026年10月14日、Next.js 開発チームは定例外（out-of-band）のセキュリティ更新v16.4.1（Active LTS）と v15.5.28（Maintenance LTS）を公開し、重大（Critical）2件・高（High）1件の脆弱性を修正しました</strong>（出典1）。<strong>重大2件はいずれも未認証でのリモートコード実行（RCE）で、CVSS v4.0 基本値は 9.5 です</strong>（出典2・3）。</p>
+<p><strong>本記録が要点と見たのは、次の3点です。</strong></p>
+<ul>
+<li><strong>影響する版の下限が古い。</strong> <strong>CVE-2026-96889（画像最適化 API の SVG 経路）の対象はNext.js 10.0.0〜15.5.27 および 16.0.0〜16.4.0 で、2020年の世代まで遡ります</strong>（出典2）。一方で成立条件は限定的で、<strong>glibc ベースの Linux 上で動いている場合</strong>とされています（出典1・2）。さらに Next.js は<strong>既定では画像最適化 API で SVG を最適化しません</strong>——公式ドキュメントは「既定では Next.js は SVG 画像を最適化しない」と明記し、有効化には <code>dangerouslyAllowSVG</code> の設定が必要です（出典9）。</li>
+<li><strong>Next.js を上げるだけでは終わらない可能性がある。</strong> 勧告は回避策として<strong>「Next.js が使う sharp の版が 0.35.5 以降であることを確かめる」</strong>ことを挙げ、修正版への更新は「パッケージマネージャが修正済みの sharp を自動的に供給することを保証する」と書いています（出典1・2）。つまり<strong>実際に解決された sharp の版を見る</strong>という手順が、勧告自身によって示されています（本記録の整理）。</li>
+<li><strong><code>use cache</code> の RCE には回避策が無い。</strong> GHSA-673q-mjm6-r5xr は「影響を受けるアプリケーションに既知の回避策は無い。<strong>同種の関数が無いアプリケーションでも直ちに更新すべきだ</strong>」としています（原文英語・出典3）。対象は Next.js 16.0.0〜16.4.0 で、修正は 16.4.1 のみです（出典3）。</li>
+</ul>
+<p><strong>この更新は10月8日に予告されていました。</strong> 開発チームは「来週水曜、2026年10月14日に定例外のセキュリティ更新を公開する予定である。上流依存の3件——重大2件と高1件——に対処する。<strong>うち2件は上流との調整のため9月のセキュリティリリースから延期されたものである</strong>」と事前に告知しています（原文英語・出典4）。実際、9月30日の 15.5.27 / 16.3.8 のリリース記事にも「重大1件と高1件の修正が上流依存の遅れにより延期された」と記されていました（出典5）。<strong>悪用の観測については、3件の勧告・2本のリリース記事のいずれも言及していません</strong>〈未確定1〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>悪用が観測されたかどうか</span><span class="b rsn">公表されていない</span><div class=sm>勧告3件・リリース記事2本のいずれも、野外での悪用について言及していない。 「悪用は確認されていない」という否定形の記述も無いため、 観測したが無かったのか、そもそも観測の結果を示していないのかも区別できない（本記録の確認）</div></li><li><span class=ui>SVG 経路の下層ライブラリの名称と、該当する上流の CVE 番号</span><span class="b rsn">公表されていない</span><div class=sm>Next.js の勧告は「画像最適化に使われる上流ライブラリ」と書くのみで、librsvg を名指ししていない。 sharp の v0.35.5 のリリースノートにも librsvg や CVE 番号の記載は無い。 librsvg と結び付けているのは報道である〈齟齬2〉</div></li><li><span class=ui>9月のリリースから延期された2件が、3件のうちどれだったか</span><span class="b rsn">公表されていない</span><div class=sm>9月30日の記事は「重大1件と高1件」、10月8日の予告は「2件」と述べるが、 どの勧告に対応するかは示されていない。「重大1件＋高1件」という内訳から、 重大2件のうち1件と High の DoS が延期分だと推測できるが、確定はできない（本記録の整理）</div></li><li><span class=ui>報告から修正公開までの日数と、協調開示の経過</span><span class="b rsn">公表されていない</span><div class=sm>勧告は報告者（randomguy6407・rafabd1・evolutionstorm）を Finder として挙げるのみで、 報告日・上流調整の具体的な経緯・HackerOne 上の報告 ID を示していない</div></li><li><span class=ui>国内向けの脆弱性情報（JVN 等）の公表と、日本国内の影響インスタンス数</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録の作成者は JVN 等の国内公表を確認していない。 影響を受ける公開インスタンスの実数も、Vercel・React のいずれも示していない</div></li><li><span class=ui>実証コード（PoC）の公開・流通の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>勧告はいずれも技術的詳細を伏せており、実証コードへの言及も無い。 本記録の作成者は公開 PoC を確認していない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Vercel（Next.js 開発元）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>React（Meta・上流）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>sharp / librsvg（上流画像処理）</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Next.js を運用する Web サイト事業者</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>randomguy6407 ／ rafabd1 ／ evolutionstorm</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-96889（画像最適化 API の SVG 経路）の CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.5<span class=fu>点</span></div><div class=fn>ベクタは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H。 PR:N・UI:N（権限も利用者操作も不要）、AT:P（攻撃前提条件あり）、 後続システムへの影響も機密性・完全性・可用性すべて High。 nature は語彙上の便宜的な割り当て（被害額・件数の類ではない）</div></div><div class=fig><div class=fh><span class=fl>GHSA-673q-mjm6-r5xr（`use cache` が型付き配列を返す経路）の CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.5<span class=fu>点</span></div><div class=fn>ベクタは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:N。 SVG 経路との違いは末尾の SA（後続システムの可用性）のみ。CVE 番号は付与されていない</div></div><div class=fig><div class=fh><span class=fl>GHSA-p3m5-59mp-jv5r（Server Actions の DoS）の CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.2<span class=fu>点</span></div><div class=fn>ベクタは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N。 影響は可用性のみ。CVE 番号は付与されていない</div></div><div class=fig><div class=fh><span class=fl>2026年10月14日の定例外更新で公開された Next.js 勧告の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>重大（Critical）2件・高（High）1件。10月8日の予告と内訳が一致している</div></div><div class=fig><div class=fh><span class=fl>9月のセキュリティリリースから上流調整のため延期された修正の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>10月8日の予告に「うち2件は上流との調整のため9月のリリースから延期された」とあり、 9月30日のリリース記事にも「重大1件と高1件の修正が上流依存の遅れにより延期された」と記されている。 どの2件かは明示されていない〈未確定3〉</div></div><div class=fig><div class=fh><span class=fl>9月のリリース（9月30日）から定例外更新（10月14日）までの間隔</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>本記録の作成者が T2 と T4 の日付差から算出した。 延期された2件が未修正のまま公開されていた期間の目安であり、 脆弱性が存在していた期間そのものではない</div></div><div class=fig><div class=fh><span class=fl>予告（10月8日）から更新公開（10月14日）までの間隔</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>6<span class=fu>日</span></div><div class=fn>本記録の作成者が T3 と T4 の日付差から算出した</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>以下は CVE-2026-96889（画像最適化 API の SVG 経路）について、公表された勧告の記述から 成立経路を整理したものである。実際の悪用は観測が公表されていない（〈未確定1〉）ため、想定経路である。 未認証の攻撃者が画像最適化 API に細工した SVG を処理させ、 下層ライブラリのメモリ関連の欠陥を踏ませることで、サーバー側でコードを実行する。 勧告が示す前提は「glibc ベースの Linux 上で動作していること」であり、 加えて Next.js は既定では画像最適化 API で SVG を扱わない（`dangerouslyAllowSVG` が必要）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">推定</span><span class=srcs>[2] [9]</span></div><div>攻撃者は、対象サイトが Next.js の画像最適化 API を公開しているか、 SVG を最適化対象にしているかを外部から調べる。認証は不要で、 攻撃元の制約も公表されていない（CVSS ベクタ AV:N）</div><div class=fn>根拠: GHSA-2464-fhr4-w9xw の CVSS ベクタ（AV:N/PR:N/UI:N）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2] [9]</span></div><div>攻撃者は細工した SVG を画像最適化 API に処理させる。 勧告は成立条件として glibc ベースの Linux 上での動作を挙げている。 要求の具体的な形は公開されていない</div><div class=fn>根拠: GHSA-2464-fhr4-w9xw および2026年10月14日付リリース記事の記述</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>下層の画像処理ライブラリでメモリ関連の欠陥が踏まれ、サーバー側で任意のコードが実行されうる。 勧告の影響欄は「リモートコード実行に至りうる（can lead to possible remote code execution）」とする</div><div class=fn>根拠: GHSA-2464-fhr4-w9xw の Impact 記述、CVSS v4.0 9.5（VC:H/VI:H/VA:H）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>CVSS v4.0 のベクタは、脆弱なシステム（VC:H/VI:H/VA:H）と後続システム（SC:H/SI:H/SA:H）の いずれについても機密性・完全性・可用性すべてに High の影響を示している。 実際の被害事例は公表されていない</div><div class=fn>根拠: GHSA-2464-fhr4-w9xw の CVSS ベクタ</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>2</span></div><ul><li><span class=ui>永続化 / 横展開 / 持ち出し</span><div class=sm>実際の悪用が公表されていないため、永続化・横展開・持ち出しの実態は存在しない（または不明）。 上に書いた経路は勧告の記述から本記録の作成者が整理した想定である</div></li><li><span class=ui>`use cache` の RCE（GHSA-673q-mjm6-r5xr）と Server Actions の DoS（GHSA-p3m5-59mp-jv5r）の経路</span><div class=sm>この2件については、勧告が成立条件（`use cache` が複数の型付き配列を返す／Server Action が1つ以上存在する）を 示すのみで、要求の形も内部の欠陥も公開していない。段階に分解できる材料が無い</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>9月のリリース（延期の公表）から定例外更新の公開まで</div><div class=mv>重大2件を含む修正が揃わないまま公開され続けた期間</div></div><div class=met><div class=ml>定例外更新の予告から実際の公開まで</div><div class=mv>当局報告ではなく「事前の告知から実施まで」の間隔として置く。 利用者が作業枠を確保できた時間であり、同時に未修正であることが公知だった期間でもある</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>9月30日のリリースでは2件（重大1件・高1件）の修正を見送り、上流依存の遅れによる延期であることを記事に明記した。 さらに10月8日に「10月14日に定例外の更新を出す」と予告したうえで、14日に3件の勧告を公開した</div><div class=fn><b>トレードオフ:</b> 延期と予定を公にすれば、利用者は「9月のリリースで最新になった」と誤認せず、 定例外の更新を緊急対応として扱える。 一方で「重大な未修正の脆弱性が存在する」という事実が、修正の6日前から公知になる</div></li><li><div class=ui>3件の勧告は、成立条件・影響版・修正版・回避策の有無までを示す一方、 要求の形・内部の欠陥・実証コードは公開しなかった。CWE の割り当ても行っていない</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 防御側は「自社が対象か」「何を当てるか」を判断できる一方、 自社環境で悪用可能性を検証することはできない。CWE が無いため、 脆弱性管理ツール側での類型化や過去の類似欠陥との突き合わせも効かない</div></li></ul></div>
+<section id="s6"><h2>3件すべてが「上流依存の脆弱性」として公表され、2件は React の勧告と対になっている<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3] [6] [7] [10]</span></h2><p>公開された情報から、起きていることは次のとおりである。</p>
+<ul>
+<li>Next.js は2026年10月14日に定例外のセキュリティ更新 <strong>v16.4.1</strong>（Active LTS）と<strong>v15.5.28</strong>（Maintenance LTS）を公開した</li>
+<li>リリース記事の題は <strong>「Next.js Security Update for Upstream Vulnerabilities」</strong>（上流脆弱性に対する Next.js のセキュリティ更新／原文英語）であり、3件すべてを上流依存の問題として位置づけている</li>
+<li><strong>CVE-2026-96889 / GHSA-2464-fhr4-w9xw</strong>（Critical・CVSS v4.0 <strong>9.5</strong>）——「画像最適化に使われる上流ライブラリのメモリ関連の脆弱性が、glibc ベースの Linux 上で Next.js が動作している場合にリモートコード実行に至りうる」（原文英語）</li>
+<li><strong>GHSA-673q-mjm6-r5xr</strong>（Critical・同 <strong>9.5</strong>・CVE 番号なし）—— App Router ＋ Cache Components を使うアプリケーションで、<code>use cache</code> 関数が<strong>複数の型付き配列</strong>を返す場合に未認証のリモートコード実行に至りうる。上流勧告は React の <strong>GHSA-xqc2-xf4c-x3h3</strong></li>
+<li><strong>GHSA-p3m5-59mp-jv5r</strong>（High・同 <strong>8.2</strong>・CVE 番号なし）—— App Router で Server Action を1つ以上使うアプリケーションに細工した要求を送るとCPU を過剰に消費し、同一プロセス内の後続要求の処理が止まる。上流勧告は React の <strong>GHSA-h3gv-c5rc-p453</strong></li>
+</ul>
+<p>上流側の対応も同じ10月14日に出ている。React の2件の勧告は<code>react-server-dom-webpack</code> / <code>react-server-dom-parcel</code> / <code>react-server-dom-turbopack</code> を対象とし、19.0.0〜19.0.8・19.1.0〜19.1.9・19.2.0〜19.2.8・19.3.0 が影響を受け、19.0.9 / 19.1.10 / 19.2.9 / 19.3.1 で修正されたとしている。React 側の RCE 勧告は成立条件を<strong>「応答が複数の型付き配列と攻撃者が制御する値を運ぶ、きわめて稀な場合」</strong>（原文英語）と説明しており、Next.js 側の記述よりも踏み込んでいる。</p>
+<p>SVG 経路については、Next.js の勧告はライブラリ名を書いていない。名指ししているのは報道で、<strong>sharp がその下層で SVG を処理する librsvg にメモリ安全性の問題があった</strong>と説明している。ただし勧告が回避策として <strong>sharp 0.35.5 以降</strong>を指示していることから、sharp が経路に入っていること自体は一次資料から読み取れる。</p></section>
+<section id="s7"><h2>影響する版の下限は 10.0.0（2020年の世代）まで遡る——ただし成立条件は限定的である<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2] [3] [9]</span></h2><p>3件の対象範囲は次のとおりである。</p>
+<table>
+<thead>
+<tr>
+<th>勧告</th>
+<th>深刻度 / CVSS v4.0</th>
+<th>影響する Next.js の版</th>
+<th>修正版</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE-2026-96889（SVG）</td>
+<td>Critical / 9.5</td>
+<td><strong>10.0.0〜15.5.27</strong> および 16.0.0〜16.4.0</td>
+<td>15.5.28 / 16.4.1</td>
+</tr>
+<tr>
+<td>GHSA-673q-mjm6-r5xr（<code>use cache</code>）</td>
+<td>Critical / 9.5</td>
+<td>16.0.0〜16.4.0</td>
+<td><strong>16.4.1 のみ</strong></td>
+</tr>
+<tr>
+<td>GHSA-p3m5-59mp-jv5r（DoS）</td>
+<td>High / 8.2</td>
+<td><strong>13.0.0〜15.5.27</strong> および 16.0.0〜16.4.0</td>
+<td>15.5.28 / 16.4.1</td>
+</tr>
+</tbody>
+</table>
+<p>SVG 経路の下限が 10.0.0 である点は、長期運用のサイトにとって重い。一方で、成立するには条件が重なる必要がある。</p>
+<ul>
+<li><strong>glibc ベースの Linux</strong> 上で動作していること（勧告の明示）</li>
+<li>画像最適化 API が <strong>SVG を処理する構成</strong>になっていること。Next.js の公式ドキュメントは「<strong>既定では Next.js は SVG 画像を最適化しない</strong>」と述べ、理由として「SVG はベクタ形式で無劣化に拡大縮小できる」「SVG は HTML/CSS と同等の機能を多く持ち、適切な CSP ヘッダが無いと脆弱性につながりうる」の2点を挙げている。有効化には <code>dangerouslyAllowSVG: true</code> の設定が必要で、ドキュメントはSVG が <code>src</code> に来る場合は <code>unoptimized</code> prop の使用を推奨している（<code>.svg</code> で終わる場合は自動適用）</li>
+</ul>
+<p>つまり<strong>「対象の版である」ことと「悪用できる状態である」ことは別</strong>であり、自社の構成では <code>dangerouslyAllowSVG</code> の有無と実行基盤の libc が判定の分かれ目になる（本記録の整理）。</p>
+<p><code>use cache</code> の RCE は 16.x 限定だが、<strong>回避策が無い</strong>。勧告は「影響を受けるアプリケーションに既知の回避策は無い。同種の関数が無いアプリケーションでも直ちに更新すべきだ」（原文英語）と書いている。DoS は Pages Router のみ、または Server Actions を使っていないアプリケーションには影響しない。</p></section>
+<section id="s8"><h2>勧告が「sharp の解決結果を確かめよ」と書いている——Next.js を上げただけで終わらせない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3] [8]</span></h2><p>SVG 経路の回避策として、勧告は次の2つを並べている（原文英語）。</p>
+<ol>
+<li><strong>Next.js が使う sharp の版が 0.35.5 以降であることを確かめる。</strong> 新規インストールでは既に修正版が入る</li>
+<li><strong>Next.js を修正版へ更新する。</strong> そうすればパッケージマネージャが修正済みの sharp を自動的に供給する</li>
+</ol>
+<p>ここからは本記録の評価である。<strong>この2つが並記されていること自体が運用上の情報である。</strong> Next.js の更新で sharp が自動的に上がるのであれば、1番目は不要なはずである。それでも「確かめる」が先に書かれているのは、<strong>依存の解決結果が環境によって変わりうる</strong>ことを前提にしているからだと読める。npm / pnpm / yarn のロックファイルが既に古い sharp を固定している場合、<code>next</code> のバージョンだけを上げても sharp の解決が動かないことがある。sharp 0.35.5 のリリース自体は Next.js の修正より早く、9月27日付で公開されている。</p>
+<p>したがって確認すべきは「<code>next</code> のバージョン」ではなく「<strong>実際に解決された sharp のバージョン</strong>」である。これはフレームワーク単体の版数管理では捉えられない層にあたる。</p>
+<p>一方、<code>use cache</code> の RCE と Server Actions の DoS には<strong>回避策が存在しない</strong>。この2件については「更新する」以外の選択肢が公表されていない。</p></section>
+<section id="s9"><h2>「上流調整のため9月から延期」を2度にわたって明示したことは、評価に値する——ただし14日の空白は残った<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [4] [5]</span></h2><p>この更新の公表の仕方には、他のベンダーではあまり見ない要素が2つある。</p>
+<p><strong>第一に、延期の事実と理由を自ら2度書いている。</strong> 9月30日のリリース記事は冒頭で「重大1件と高1件の修正が上流依存の遅れにより延期された」と述べ、10月8日の予告は「うち2件は上流との調整のため9月のセキュリティリリースから延期されたものである」（原文英語）と繰り返している。修正が揃っていないことを伏せずに書いた形である。</p>
+<p><strong>第二に、公開の6日前に予告を出している。</strong> 予告は「10月14日に公開予定」「上流依存の3件（重大2件・高1件）」「公開と同時に影響・影響版・更新手順を含む完全な勧告を出す」「利用可能になり次第、修正版へ更新せよ」とだけ述べ、技術的な詳細には触れていない。</p>
+<p>ここからは本記録の評価である。<strong>予告は利用者に「作業枠を押さえる時間」を与える一方、攻撃者には「何かが来る」という合図にもなる。</strong>本件では、重大2件が未修正のまま 9月30日から10月14日の<strong>14日間</strong>公開され続け、そのうち最後の6日間は「重大な未修正の脆弱性がある」という事実が公知になっていた。それでも本記録はこの運用を妥当と見る。理由は、延期の事実を伏せた場合、利用者は「9月のリリースを当てたから最新である」と誤認し、10月14日の更新を<strong>定例外の緊急対応として扱う根拠を持てない</strong>からである。</p>
+<p>ただし、この判断が妥当だったかを事後に検証する材料は無い。<strong>悪用の観測について、勧告もリリース記事も一切触れていない</strong>〈未確定1〉。「悪用は確認されていない」という記述すら無いため、14日の空白に何が起きたかは本記録からは言えない。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>Next.js（npm パッケージ `next`）の3つの機能。 ①画像最適化 API（`next/image`）で SVG を扱う経路、 ②App Router ＋ Cache Components の `use cache` 関数、 ③App Router の Server Actions（出典1・2・3）。 ②と③の実体は上流の React Server Components 関連パッケージ （react-server-dom-webpack / react-server-dom-parcel / react-server-dom-turbopack）にある（出典1・6・7）。</td></tr><tr><th>finding_name</th><td>Next.js「Next.js Security Update for Upstream Vulnerabilities」（上流脆弱性に対する Next.js のセキュリティ更新／原文英語）。 勧告は GHSA-2464-fhr4-w9xw（CVE-2026-96889）・GHSA-673q-mjm6-r5xr・GHSA-p3m5-59mp-jv5r の3件（出典1・2・3）。</td></tr><tr><th>直接原因</th><td>CVE-2026-96889 は、画像最適化に使われる上流ライブラリのメモリ関連の脆弱性である。 勧告は「glibc ベースの Linux 上で Next.js が動作している場合にリモートコード実行に至りうる」とし、 回避策として sharp 0.35.5 以降の使用を挙げる（出典1・2）。 報道は、sharp がその下層で SVG を処理する librsvg にメモリ安全性の問題があったと説明している（出典10）〈齟齬2〉。 `use cache` の RCE は、`use cache` 関数が複数の型付き配列（typed array）を返す場合に成立する。 上流の React 勧告は「応答が複数の型付き配列と攻撃者が制御する値を運ぶ、きわめて稀な場合にのみ生じる」としている（原文英語・出典1・3・6）。 Server Actions の DoS は、細工した要求が過剰な CPU 消費を引き起こし、同一プロセス内の後続要求の処理を止めるものである（出典1・3）。</td></tr><tr><th>CVE番号</th><td>CVE-2026-96889</td></tr><tr><th>cve_related</th><td><div class=sub><b>id:</b> CVE-2026-94483　<b>補足:</b> 9月のリリースで修正された画像最適化の SSRF（High）。同じ画像最適化 API の先行脆弱性</div></td></tr><tr><th>cvss</th><td><b>base_score:</b> 9.5　<b>vector:</b> CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H　<b>severity:</b> Critical　<b>authentication_required:</b> いいえ　<b>source:</b> Next.js の脆弱性勧告（GitHub 上の GHSA-2464-fhr4-w9xw）　<b>補足:</b> 勧告に CWE の記載は無い。 `use cache` の RCE も 9.5（SA:N）、Server Actions の DoS は 8.2 である（出典3）</td></tr><tr><th>affected_versions</th><td><ul class=cl><li>CVE-2026-96889（SVG 経路）: Next.js 10.0.0〜15.5.27 および 16.0.0〜16.4.0（勧告の 16.x 表記は `&gt; 16.0.0 &lt;= 16.4.0`）</li><li>GHSA-673q-mjm6-r5xr（`use cache`）: Next.js 16.0.0〜16.4.0</li><li>GHSA-p3m5-59mp-jv5r（Server Actions の DoS）: Next.js 13.0.0〜15.5.27 および 16.0.0〜16.4.0</li><li>上流 React: react-server-dom-webpack / -parcel / -turbopack の 19.0.0〜19.0.8・19.1.0〜19.1.9・19.2.0〜19.2.8・19.3.0</li></ul><span class="b rsn">stated</span></td></tr><tr><th>exploit_conditions</th><td><ul class=cl><li>SVG 経路: glibc ベースの Linux 上で動作しており、かつ画像最適化 API で SVG を扱う構成（既定では SVG は最適化されず、`dangerouslyAllowSVG` の設定が必要・出典9）</li><li>`use cache`: App Router ＋ Cache Components を使い、`use cache` 関数が複数の型付き配列を返す（ただし勧告は該当関数が無いアプリケーションでも直ちに更新せよとしている）</li><li>Server Actions の DoS: App Router で Server Action を1つ以上使っている（Pages Router のみ・Server Actions 未使用のアプリケーションは影響なし）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>patch_status</th><td>修正済み。Next.js は v15.5.28（Maintenance LTS）と v16.4.1（Active LTS）で3件すべてに対処した。 ただし `use cache` の RCE は 16.x のみの問題であり、修正は 16.4.1（出典1・2・3）。 上流 React は 19.0.9 / 19.1.10 / 19.2.9 / 19.3.1（出典6・7）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月18日（本記録の確認時点）</td></tr><tr><th>exploit_status</th><td>悪用の観測について、勧告3件・リリース記事2本のいずれも言及していない（出典1・2・3・4・5。本記録の確認）。 「悪用は確認されていない」という記述も無いため、観測の有無そのものが公表されていない〈未確定1〉。 実証コードの公開も本記録の作成者は確認していない。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月18日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月18日（本記録の確認時点）　<b>詳細:</b> 悪用・被害の発生を示す公表はない（出典1・2・3・4・5・10・11。本記録の確認）。 ただし「観測していない」という明示的な記述も無く、 報告者が HackerOne 経由のバグバウンティで報告した協調開示として処理されている点のみが読み取れる（出典1）。　<b>ログの有無:</b> いずれの勧告も、悪用を事後に検出するための痕跡（ログ・検知指標）を示していない（出典2・3）。 画像最適化 API の呼び出しはアクセスログに残るが、SVG への要求と悪用の区別は URL だけでは付かない（本記録の評価）。 `use cache` の RCE と Server Actions の DoS はいずれも正規の要求経路の上で起きるため、 要求の記録があっても切り分けが必要になる（本記録の評価）。</td></tr><tr><th>再発防止策</th><td><ul class=cl><li>Next.js を 15.5.28 または 16.4.1 以降へ更新する</li><li>実際に解決された sharp の版が 0.35.5 以降であることを確認する（勧告が回避策として示す手順）</li><li>React Server Components 関連パッケージを 19.0.9 / 19.1.10 / 19.2.9 / 19.3.1 以降へ更新する</li><li>画像最適化 API で SVG を扱う必要が無ければ `dangerouslyAllowSVG` を有効化しない</li></ul><span class="b rsn">stated</span></td></tr><tr><th>利用者への行動案内</th><td><ul class=cl><li>直ちに修正版へ更新する（`npm install next@15.5.28` または `npm install next@16.4.1`）</li><li>`use cache` の該当関数が無いアプリケーションでも更新する（勧告の明示的な指示）</li><li>更新できない間は sharp の版を 0.35.5 以降に上げる（SVG 経路の回避策。他の2件には回避策が無い）</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">9月27日（年の表記はリリースページ上で省略されている）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>画像処理ライブラリ sharp の v0.35.5 が公開された。 リリースノートに librsvg への言及や CVE 番号の記載は無い〈齟齬2〉</td></tr><tr><td class="sm nowrap tw">2026年9月30日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Next.js が9月のセキュリティリリース（v16.3.8・v15.5.27）を公開。 記事冒頭で「重大1件と高1件の修正が上流依存の遅れにより延期された」と明記した</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Next.js が定例外の更新を予告。「10月14日に公開予定」「上流依存の脆弱性3件（重大2件・高1件）に対処する」 「うち2件は上流との調整のため9月のリリースから延期された」「公開と同時に完全な勧告を出す」と告知した</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">公表</span></td><td>Next.js が v16.4.1（Active LTS）と v15.5.28（Maintenance LTS）を公開し、勧告3件を同時に出した。 GHSA-2464-fhr4-w9xw（CVE-2026-96889・Critical・CVSS v4.0 9.5）、 GHSA-673q-mjm6-r5xr（Critical・同 9.5・CVE 番号なし）、 GHSA-p3m5-59mp-jv5r（High・同 8.2・CVE 番号なし）</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>上流の React が GHSA-xqc2-xf4c-x3h3（React Server Components の未認証 RCE・Critical・CVSS v4.0 9.5）と GHSA-h3gv-c5rc-p453（Server Functions の DoS・High・同 8.2）を公開。 いずれも react-server-dom-webpack / -parcel / -turbopack が対象で、 19.0.9 / 19.1.10 / 19.2.9 / 19.3.1 で修正された</td></tr><tr><td class="sm nowrap tw">2026年10月15日 18:15 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>iThome（台湾）が「Next.js緊急修補兩項重大RCE漏洞，SVG影像處理與快取功能受影響」として報じた。 sharp の下層の librsvg にメモリ安全性の問題があったこと、 Next.js が既定では画像最適化 API で SVG を扱わないことを伝えている</td></tr><tr><td class="sm nowrap tw">2026年10月16日 15:43 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>iThome の資安日報が、同日の脆弱性トピックの1つとして本件を再掲した</td></tr><tr><td class="sm nowrap tw">2026年10月18日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が、Next.js の10月14日付リリース記事・10月8日付予告・9月30日付リリース記事、 GitHub 上の勧告3件、React の勧告2件、sharp のリリースページ、 Next.js 公式ドキュメントの `dangerouslyAllowSVG` の記述を取得し、 CVSS 値とベクタ・影響版・修正版・回避策の有無・謝辞・既定で SVG を最適化しないことを確認した</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>React の DoS 勧告の内部で、影響版の記載が2か所で食い違っている</span><div class=sm>GHSA-h3gv-c5rc-p453 の影響版一覧は 19.0.0〜19.0.8・19.1.0〜19.1.9・19.2.0〜19.2.8・19.3.0 を挙げるが、 同じ勧告の Impact 欄はより狭い範囲（19.0.7・19.1.8・19.2.7 まで）を示している。 勧告はこの差の理由を説明していない。本記録は影響版一覧の側を広い範囲として採り、 修正版（19.0.9 / 19.1.10 / 19.2.9 / 19.3.1）へ上げることを前提に整理した</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>SVG 経路の下層ライブラリを librsvg と特定しているのは報道のみである</span><div class=sm>Next.js の勧告とリリース記事は「画像最適化に使われる上流ライブラリのメモリ関連の脆弱性」と書くのみで、 ライブラリ名も上流の CVE 番号も示していない。librsvg を名指しし、 「sharp がその下層で SVG を処理する librsvg にメモリ安全性の問題があった」と説明しているのは iThome の報道である。 sharp が経路に入っていること（回避策が sharp 0.35.5 以降を指す）は一次資料から読み取れるが、 librsvg であることは一次資料で裏が取れていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>sharp 0.35.5 のリリースノートが本件に触れていない</span><div class=sm>sharp のリリースページで v0.35.5 の記載を確認したが、 librsvg への言及も CVE 番号も、セキュリティ修正としての記述も無い。 公開日は「9月27日」と表示されるのみで年の表記が無い。 本記録は Next.js の勧告が 0.35.5 を回避策の境界として示していることから、 この版に該当の修正が含まれると判断した（本記録の整理）</div></li><li><span class="b dk">本記録による推定</span><span class=ui>「Next.js を更新すれば十分か」が勧告から読み取れない</span><div class=sm>勧告は回避策として「sharp の版が 0.35.5 以降であることを確かめる」と 「Next.js を更新すればパッケージマネージャが修正版の sharp を自動的に供給する」を並記する。 本記録は、前者が併記されている事実から「依存の解決結果が環境によって動かない場合がありうる」と推定し、 更新後に解決版を確認する運用を推奨した。 ロックファイルの固定によって古い sharp が残る具体的な条件は、一次資料には書かれていない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の観測について、肯定も否定も書かれていない</span><div class=sm>勧告3件・リリース記事2本のいずれも、野外での悪用に触れていない。 「悪用は確認されていない」という記述すら無いため、 「悪用されていない」と読むことはできない（本記録の整理）</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録の作成者が確認した範囲</span><div class=sm>本記録の作成者は2026年10月18日に、Next.js の10月14日付リリース記事・10月8日付予告・9月30日付リリース記事、 GitHub 上の Next.js 勧告3件、React 勧告2件、sharp のリリースページ、 Next.js 公式ドキュメントの `dangerouslyAllowSVG` の記述を取得し、 CVSS 値とベクタ・影響版・修正版・回避策の有無・謝辞・既定で SVG を最適化しないことを確認した。 CVE-2026-96889 の NVD／CVE.org のレコードは取得を試みたが本文を得られず、確認していない。 JVN 等の国内公表、実証コードの有無、ロックファイル固定時の挙動は検証していない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>CVE-2026-96889（画像最適化 API の SVG 経路）の成立条件と、3件の修正の関係</div><div class=svgwrap><svg viewBox="0 0 794 398" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,199.0 C193.0,199.0 193.0,97.0 220,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,199.0 C193.0,199.0 193.0,192.0 220,192.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,199.0 C193.0,199.0 193.0,294.0 220,294.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,97.0 C397.0,97.0 397.0,53.0 424,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,192.0 C397.0,192.0 397.0,148.0 424,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,294.0 C397.0,294.0 397.0,148.0 424,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,53.0 C499.0,53.0 499.0,250.0 424,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,148.0 C499.0,148.0 499.0,250.0 424,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,148.0 C499.0,148.0 499.0,345.0 424,345.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,250.0 C601.0,250.0 601.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,345.0 C601.0,345.0 601.0,104.0 628,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,104.0 C703.0,104.0 703.0,199.0 628,199.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,104.0 C703.0,104.0 703.0,294.0 628,294.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,199.0 C601.0,199.0 601.0,53.0 424,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,199.0 C601.0,199.0 601.0,148.0 424,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="169.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の攻撃者</text><text x="91.0" y="204.0" text-anchor="middle" fill="#f48fb1" font-size="10">AV:N/PR:N/UI</text><text x="91.0" y="216.0" text-anchor="middle" fill="#f48fb1" font-size="10">:N</text><rect x="220" y="60.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">画像最適化 API（SV</text><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">G を扱う構成のみ）</text><text x="295.0" y="109.0" text-anchor="middle" fill="#f48fb1" font-size="10">既定では SVG は最適</text><text x="295.0" y="121.0" text-anchor="middle" fill="#f48fb1" font-size="10">化しない。dangero</text><rect x="220" y="148.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="170.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">`use cache` </text><text x="295.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">関数（App Route</text><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r ＋ Cache C…</text><text x="295.0" y="211.0" text-anchor="middle" fill="#f48fb1" font-size="10">複数の型付き配列を返す場</text><text x="295.0" y="223.0" text-anchor="middle" fill="#f48fb1" font-size="10">合。回避策なし</text><rect x="220" y="250.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="272.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Server Actio</text><text x="295.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ns（App Route</text><text x="295.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r）</text><text x="295.0" y="313.0" text-anchor="middle" fill="#f48fb1" font-size="10">1つ以上あれば対象。Pa</text><text x="295.0" y="325.0" text-anchor="middle" fill="#f48fb1" font-size="10">ges Router は</text><rect x="424" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sharp ／ 下層の </text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SVG 処理ライブラリ</text><text x="499.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">メモリ関連の欠陥。gli</text><text x="499.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">bc Linux 上で成</text><rect x="424" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">React Server</text><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Components（</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">react-serve…</text><text x="499.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">GHSA-xqc2-xf</text><text x="499.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">4c-x3h3 ／ GH</text><rect x="424" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証リモートコード実行</text><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（CVSS v4.0 9</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.5）</text><text x="499.0" y="269.0" text-anchor="middle" fill="#ffcc80" font-size="10">CVE-2026-968</text><text x="499.0" y="281.0" text-anchor="middle" fill="#ffcc80" font-size="10">89 ／ GHSA-67</text><rect x="424" y="308.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CPU 消費によるサービ</text><text x="499.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ス妨害（同 8.2）</text><text x="499.0" y="357.0" text-anchor="middle" fill="#ffcc80" font-size="10">同一プロセス内の後続要求</text><text x="499.0" y="369.0" text-anchor="middle" fill="#ffcc80" font-size="10">が止まる</text><rect x="628" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Next.js を運用す</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る Web サイト事業者</text><text x="703.0" y="116.0" text-anchor="middle" fill="#80cbc4" font-size="10">影響の有無は版・libc</text><text x="703.0" y="128.0" text-anchor="middle" fill="#80cbc4" font-size="10">・設定で決まる</text><rect x="628" y="155.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Next.js 15.5</text><text x="703.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.28 ／ 16.4.1</text><text x="703.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（2026年10月14…</text><text x="703.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">3件すべてに対処。use</text><text x="703.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10"> cache の RCE</text><rect x="628" y="257.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sharp 0.35.5</text><text x="703.0" y="293.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 以降（回避策）</text><text x="703.0" y="306.0" text-anchor="middle" fill="#f48fb1" font-size="10">9月27日公開。解決され</text><text x="703.0" y="318.0" text-anchor="middle" fill="#f48fb1" font-size="10">た版の確認が必要</text></svg></div><div class=fn>layer 0 は未認証の攻撃者。layer 1 は Next.js の3つの機能面（画像最適化 API・`use cache`・Server Actions）。 layer 2 は上流の部品（sharp／librsvg・React Server Components）と、そこで起きる欠陥。 layer 3 は Next.js を運用する事業者と、10月14日の修正版。 実際の悪用が観測されたかどうかは公表されていない。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>画像最適化 API への要求はアクセスログに残るが、 正規の画像要求と探索の区別は URL だけでは付かない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版（15.5.28 / 16.4.1）へ更新する（根治）</div><div class=ctl><span class="b eff">侵入を防げた</span>画像最適化 API で SVG を扱う必要が無ければ `dangerouslyAllowSVG` を有効にしない</div><div class=ctl><span class="b eff">影響を限定できた</span>画像最適化 API に許可する外部ドメイン（`images.remotePatterns`）を最小限にする</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>悪用の観測が公表されていないため、実環境での検知可否も示されていない。 SVG を含む画像最適化要求を記録していれば事後の絞り込みはできる（本記録の評価）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>画像最適化を CDN／別プロセスへ切り出し、アプリケーション本体と実行文脈を分ける</div><div class=ctl><span class="b eff">侵入を防げた</span>外部由来の画像を最適化対象にせず、`unoptimized` prop で素のまま配信する</div><div class=ctl><span class="b eff">影響を限定できた</span>SVG を許可する場合は `contentSecurityPolicy` と `contentDispositionType: &#x27;attachment&#x27;` を併せて設定する<span class=sm>　公式ドキュメントが推奨する設定。配信時の危険を下げるもので、サーバー側の処理中のメモリ欠陥そのものは防げない（本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>実行は Next.js のサーバープロセス内で起きるため、プロセス起動の監視だけでは見分けにくい。 画像処理の最中にアプリケーションプロセスが異常終了した記録は手がかりになりうる（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>実際に解決された sharp の版が 0.35.5 以降であることを確認する（勧告が示す回避策）</div><div class=ctl><span class="b eff">影響を限定できた</span>アプリケーションを非特権ユーザーで動かし、コード領域とアップロード領域を読み取り専用／実行不可にする</div><div class=ctl><span class="b eff">影響を限定できた</span>送信方向の通信を宛先で絞り、実行後の外部接続を止める</div><div class=ctl><span class="b eff">検知できた</span>Web ルート配下および一時領域のファイル作成・変更を完全性監視で検知する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>悪用が観測されたかどうかが公表されていないため、実被害の記述は存在しない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>アプリケーションサーバーから到達できる内部資源（DB・鍵・メタデータ API）を最小化する</div><div class=ctl><span class="b eff">影響を限定できた</span>侵害が疑われる場合は、プロセスが保持していた資格情報・API キー・署名鍵を入れ替える</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>9月30日のリリースでは2件（重大1件・高1件）の修正を見送り、上流依存の遅れによる延期であることを記事に明記した。 さらに10月8日に「10月14日に定例外の更新を出す」と予告したうえで、14日に3件の勧告を公開した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価である。延期を伏せた場合、利用者は判断の材料そのものを失う。 ただし、この判断の妥当性を事後に検証する材料（悪用観測の有無）は公表されていない〈未確定1〉</td></tr><tr><td>3件の勧告は、成立条件・影響版・修正版・回避策の有無までを示す一方、 要求の形・内部の欠陥・実証コードは公開しなかった。CWE の割り当ても行っていない</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の評価である。更新の判断に必要な情報は揃っているが、 SVG 経路については下層ライブラリ名も上流 CVE 番号も書かれていないため、 sharp 以外の経路で同じライブラリを使っている箇所（画像処理の別系統など）を 棚卸しする手がかりが利用者側に無い</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>フレームワークの版数管理と、その下にある依存の解決結果の管理は別の作業である</div><div class=lw>勧告は回避策として「Next.js が使う sharp の版が 0.35.5 以降であることを確かめる」と 「Next.js を更新すればパッケージマネージャが修正版の sharp を供給する」を並記している。 両方が書かれているのは、依存の解決が環境によって動かないことがあるためと読める</div><div class=la><b>取るべき行動</b> 脆弱性対応の完了判定を「フレームワークのバージョンを上げた」で終わらせず、 「ロックファイル上で該当依存が修正版に解決されていること」を確認項目として手順書に加える。 確認結果の記録（更新後の依存ツリーの出力）を対応記録に残す運用に改める</div></li><li><div class=lp>「延期を公表するベンダー」は、むしろ運用しやすい相手だと評価しておく</div><div class=lw>Next.js は9月30日に「重大1件・高1件の修正を上流の遅れにより延期した」と書き、 10月8日に定例外更新を予告した。延期が伏せられていれば、利用者は 「9月の更新を当てたから最新」と誤認し、10月の更新を緊急扱いする根拠を持てない</div><div class=la><b>取るべき行動</b> 主要な OSS 依存について、セキュリティリリースの告知経路（ブログ・勧告・RSS）を監視対象に登録し、 「次回に延期された」「定例外を予告した」という情報が運用チームへ届く経路を作る。 ベンダー評価の観点に「延期・未修正を明示するか」を加える</div></li><li><div class=lp>CVE 番号が付かない重大脆弱性があることを、脆弱性管理の前提に入れる</div><div class=lw>3件のうち CVE 番号があるのは CVE-2026-96889 のみで、CVSS 9.5 の `use cache` の RCE と 8.2 の DoS には CVE が付与されていない。 上流 React の2件も CVE 番号が無い</div><div class=la><b>取るべき行動</b> 脆弱性管理の取り込み元を CVE / NVD だけに依存させず、 GitHub Security Advisory（GHSA）と主要依存の勧告を一次の取り込み元として追加する。 SLA の判定を CVE の有無ではなく深刻度と公開面で行うよう規程を直す</div></li><li><div class=lp>「対象の版である」ことと「悪用できる状態である」ことを分けて判定する体制にしておく</div><div class=lw>CVE-2026-96889 の対象は Next.js 10.0.0 以降という広い範囲だが、 成立には glibc ベースの Linux と、既定では無効な SVG 最適化の有効化が必要である。 範囲だけで判断すると、該当しない系まで緊急停止の対象になりうる</div><div class=la><b>取るべき行動</b> 緊急パッチの優先順位付けの様式に「版の該当」と「構成・実行環境の該当」の2欄を設け、 後者を答えられる構成情報（実行基盤の libc、フレームワークの設定値）を 平時から資産管理に持たせる</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>更新後に、実際に解決された sharp の版を見る</div><div class=lw>勧告の回避策は sharp 0.35.5 以降を指す。`next` のバージョンを上げても、 ロックファイルが古い sharp を固定していれば解決が動かない可能性がある</div><div class=la><b>取るべき行動</b> 更新後に `npm ls sharp`（pnpm / yarn の相当コマンド）で解決された版を確認し、 0.35.5 未満であればロックファイルを更新して再解決する。 CI に「主要な脆弱性対象依存の解決版を検査する」手順を1つ足す</div></li><li><div class=lp>画像最適化 API で SVG を扱っているかどうかを、設定で確認する</div><div class=lw>Next.js は既定では画像最適化 API で SVG を最適化せず、 有効化には `dangerouslyAllowSVG: true` が必要である。 公式ドキュメントは SVG が `src` に来る場合は `unoptimized` prop の使用を推奨している</div><div class=la><b>取るべき行動</b> `next.config.js` 内の `dangerouslyAllowSVG` を全プロジェクトで grep し、 有効になっている箇所について必要性を再評価する。 必要な場合は `contentSecurityPolicy` と `contentDispositionType: &#x27;attachment&#x27;` を併設する</div></li><li><div class=lp>`use cache` と Server Actions の使用状況を、影響判定の前に洗い出しておく</div><div class=lw>`use cache` の RCE は App Router ＋ Cache Components が前提、 DoS は Server Action が1つ以上あることが前提で、 Pages Router のみ・Server Actions 未使用のアプリケーションは DoS の影響を受けない</div><div class=la><b>取るべき行動</b> リポジトリ横断で `&#x27;use cache&#x27;` ディレクティブと Server Action の定義（`&#x27;use server&#x27;`）を検索し、 App Router / Pages Router の採用状況と併せて一覧にしておく。 次回の勧告が来たときに影響判定を即座に出せる状態にする</div></li><li><div class=lp>上流（React）側のパッケージ版も独立に確認する</div><div class=lw>2件は React Server Components 関連パッケージ （react-server-dom-webpack / -parcel / -turbopack）の欠陥で、 修正版は 19.0.9 / 19.1.10 / 19.2.9 / 19.3.1 である。 Next.js の修正版を入れても、固定している React の版が古ければ残りうる</div><div class=la><b>取るべき行動</b> 更新後に React 関連パッケージの解決版を確認し、該当系統の修正版以降になっているかを確かめる。 React の版を明示的に固定している場合は固定値を見直す</div></li><li><div class=lp>画像処理を本体のプロセスと同じ実行文脈で動かさない</div><div class=lw>本件はネイティブの画像処理ライブラリのメモリ欠陥であり、 実行されるのは Next.js のサーバープロセスの中である。 この種の欠陥は今後も上流で発生しうる</div><div class=la><b>取るべき行動</b> 外部由来の画像の最適化を CDN または独立したワーカー（権限最小・外向き通信を制限）へ切り出す構成を検討する。 切り出せない場合は、アプリケーション実行ユーザーの権限と書き込み可能領域を最小化する</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Next.js 10.0.0〜15.5.27 または 16.0.0〜16.4.0 を本番で動かしている</td><td class=sm>CVE-2026-96889 の対象範囲。Next.js の版だけで一次の該当判定ができる</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> アプリケーションが glibc ベースの Linux（Alpine / musl ではない）上で動いている</td><td class=sm>SVG 経路の RCE は glibc ベースの Linux 上での動作が成立条件として示されている</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> `next.config.js` で `dangerouslyAllowSVG` を有効にしている、または外部由来の SVG を画像最適化 API に通している</td><td class=sm>既定では SVG は最適化されない。この設定の有無が SVG 経路の実際の露出を決める</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> ロックファイル上で sharp や React 関連パッケージの版を固定している</td><td class=sm>フレームワークの更新だけでは依存の解決が動かず、下層の欠陥が残りうる</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> App Router を使い、Cache Components（`use cache`）または Server Actions を利用している</td><td class=sm>`use cache` の RCE と Server Actions の DoS の前提条件。Pages Router のみなら DoS の影響は無い</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性情報の取り込みを CVE / NVD 中心に組んでいる</td><td class=sm>3件のうち2件に CVE 番号が無く、GHSA を見ないと存在に気づけない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 画像最適化 API の要求がアクセスログに残らない、または保持期間が短い</td><td class=sm>事後に「悪用の試行があったか」を絞り込む唯一の手がかりが要求記録である</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月14日 Next.js（Vercel）</span> <a href="https://nextjs.org/blog/nextjs-security-update-october-14-2026" target="_blank" rel="noreferrer noopener nofollow">Next.js Security Update for Upstream Vulnerabilities</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に取得して確認した。 v16.4.1 / v15.5.28 の公開・3件の勧告と深刻度・CVE-2026-96889 の原因〈画像最適化に使われる上流ライブラリの メモリ関連の脆弱性〉と glibc ベース Linux という前提・sharp 0.35.5 以降という回避策・ `use cache` の RCE に回避策が無いこと・Server Actions の DoS の条件・ 上流 React 勧告との対応・HackerOne 経由のバグバウンティへの言及の出典。著者は Josh Story・Karim Rahal・Sebastian Silbermann)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月14日 Next.js（GitHub Security Advisory）</span> <a href="https://github.com/vercel/next.js/security/advisories/GHSA-2464-fhr4-w9xw" target="_blank" rel="noreferrer noopener nofollow">GHSA-2464-fhr4-w9xw: Unauthenticated Remote Code Execution in Image Optimization API when SVG files are used（CVE-2026-96889）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に取得して確認した。 CVE-2026-96889 の割り当て・Critical・CVSS v4.0 9.5 とベクタ 〈CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H〉・ 影響版〈10.0.0〜15.5.27 および 16.0.0〜16.4.0〉・修正版〈15.5.28 / 16.4.1〉・ 回避策〈sharp 0.35.5 以降〉・CWE の記載が無いこと・ 謝辞〈randomguy6407・rafabd1〉・公開者 eps1lon の出典)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月14日 Next.js（GitHub Security Advisory）</span> <a href="https://github.com/vercel/next.js/security/advisories/GHSA-673q-mjm6-r5xr" target="_blank" rel="noreferrer noopener nofollow">GHSA-673q-mjm6-r5xr: Unauthenticated Remote Code Execution in `use cache` functions returning typed arrays ／ GHSA-p3m5-59mp-jv5r: Denial of Service in App Router using Server Actions</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に GHSA-673q-mjm6-r5xr と GHSA-p3m5-59mp-jv5r〈https://github.com/vercel/next.js/security/advisories/GHSA-p3m5-59mp-jv5r〉の 双方を取得して確認した。`use cache` の RCE は Critical・CVSS v4.0 9.5〈…/SC:H/SI:H/SA:N〉・ 影響版 16.0.0〜16.4.0・修正版 16.4.1・CVE 番号なし・回避策なし・ 「同種の関数が無いアプリケーションでも直ちに更新すべき」との指示・謝辞〈evolutionstorm〉。 DoS は High・CVSS v4.0 8.2〈…/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N〉・影響版 13.0.0〜15.5.27 および 16.0.0〜16.4.0・修正版 15.5.28 / 16.4.1・Pages Router と Server Actions 未使用は影響なし・ 「更新以外の回避策は存在しない」との記載の出典)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月8日 Next.js（Vercel）</span> <a href="https://nextjs.org/blog/upcoming-nextjs-security-update-october-2026" target="_blank" rel="noreferrer noopener nofollow">Upcoming Next.js Security Update for Upstream Vulnerabilities</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に取得して確認した。 10月14日に定例外更新を公開する予定であること・上流依存の3件〈重大2件・高1件〉に対処すること・ うち2件が上流との調整のため9月のセキュリティリリースから延期されたこと・ 公開と同時に完全な勧告を出すこと・可能になり次第更新せよとの指示の出典)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年9月30日 Next.js（Vercel）</span> <a href="https://nextjs.org/blog/september-2026-security-release" target="_blank" rel="noreferrer noopener nofollow">September 2026 Security Release</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に取得して確認した。 v16.3.8 / v15.5.27 の公開・「重大1件と高1件の修正が上流依存の遅れにより延期された」との記載・ 9月に修正された7件〈画像最適化の SSRF＝CVE-2026-94483 ほか〉の出典。 本件の前段としての位置づけ)）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年10月14日 React（GitHub Security Advisory）</span> <a href="https://github.com/react/react/security/advisories/GHSA-xqc2-xf4c-x3h3" target="_blank" rel="noreferrer noopener nofollow">GHSA-xqc2-xf4c-x3h3: Unauthenticated Remote Code Execution in React Server Components</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。上流側の当事者による公表。本記録の作成者が2026年10月18日に取得して確認した。 Critical・CVSS v4.0 9.5・CVE 番号なし・対象パッケージ 〈react-server-dom-webpack / -parcel / -turbopack〉・影響版 〈19.0.0〜19.0.8・19.1.0〜19.1.9・19.2.0〜19.2.8・19.3.0〉・修正版〈19.0.9 / 19.1.10 / 19.2.9 / 19.3.1〉・ 「応答が複数の型付き配列と攻撃者が制御する値を運ぶ、きわめて稀な場合にのみ生じる」との記述・ サーバーを使わない場合や RSC 非対応のバンドラでは影響しないこと・謝辞〈evolutionstorm〉の出典)）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年10月14日 React（GitHub Security Advisory）</span> <a href="https://github.com/react/react/security/advisories/GHSA-h3gv-c5rc-p453" target="_blank" rel="noreferrer noopener nofollow">GHSA-h3gv-c5rc-p453: Denial of Service in Server Functions</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料。上流側の当事者による公表。本記録の作成者が2026年10月18日に取得して確認した。 High・CVSS v4.0 8.2・CVE 番号なし・対象パッケージと影響版・修正版・ 「細工した HTTP 要求がメモリ枯渇または過剰な CPU 消費を引き起こす」との記述・ 影響版一覧と Impact 欄の記載が食い違っていること〈齟齬1〉の出典)）</span></li><li><span class=rid>[9]</span> <span class=sm>2026年9月28日（最終更新の表示） Next.js（Vercel）</span> <a href="https://nextjs.org/docs/app/api-reference/components/image" target="_blank" rel="noreferrer noopener nofollow">Next.js ドキュメント「Image Component」（`dangerouslyAllowSVG`）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料。本記録の作成者が2026年10月18日に取得して確認した。 「既定では Next.js は SVG 画像を最適化しない」こと・その理由2点・ 有効化には `dangerouslyAllowSVG: true` が必要なこと・ SVG が `src` に来る場合は `unoptimized` prop を推奨すること〈`.svg` で終わる場合は自動適用〉・ SVG を許可する場合に `contentDispositionType: &#x27;attachment&#x27;` と `contentSecurityPolicy` を併設する例の出典)）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[8]</span> <span class=sm>9月27日（年の表記なし） sharp（lovell/sharp）</span> <a href="https://github.com/lovell/sharp/releases" target="_blank" rel="noreferrer noopener nofollow">sharp Releases（v0.35.5）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(技術的背景。本記録の作成者が2026年10月18日に取得して確認した。 v0.35.5 の公開日が「9月27日」と表示されること、 リリースノートに librsvg への言及・CVE 番号・セキュリティ修正としての記述が無いことの出典〈齟齬3〉)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[10]</span> <span class=sm>2026年10月15日 18:15 UTC iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179723" target="_blank" rel="noreferrer noopener nofollow">Next.js緊急修補兩項重大RCE漏洞，SVG影像處理與快取功能受影響</a> <span class="b kind">記事</span><span class=sm>（(報道。本記録の作成者が2026年10月18日に収集済み本文で確認した。 sharp の下層の librsvg にメモリ安全性の問題があったとする説明〈一次資料では裏が取れていない・齟齬2〉・ Next.js が既定では画像最適化 API で SVG を扱わないこと・ 3件の深刻度と影響版の整理の出典)）</span></li><li><span class=rid>[11]</span> <span class=sm>2026年10月16日 15:43 UTC iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179746" target="_blank" rel="noreferrer noopener nofollow">【資安日報】10月16日，Docker修補Docker Hub重大漏洞</a> <span class="b kind">記事</span><span class=sm>（(報道。本記録の起点となった記事。本記録の作成者が2026年10月18日に収集済み本文で確認した。 同日の脆弱性トピックの1つとして Next.js の2件の重大 RCE を再掲している)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月18日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月16日付 iThome の資安日報（および10月15日付の詳細記事）を起点に、 一次資料である Next.js の10月14日付リリース記事・10月8日付予告・9月30日付リリース記事、 GitHub 上の Next.js 勧告3件（GHSA-2464-fhr4-w9xw ＝ CVE-2026-96889、GHSA-673q-mjm6-r5xr、 GHSA-p3m5-59mp-jv5r）、上流 React の勧告2件、sharp のリリースページ、 Next.js 公式ドキュメントの `dangerouslyAllowSVG` の記述を取得して裏取りした。 CVSS 値とベクタ・影響版・修正版・回避策の有無・謝辞・延期の経緯・ 既定で SVG を最適化しないことはいずれも一次資料で確認した。 下層ライブラリが librsvg であることは報道のみの記述として discrepancies に記した。 悪用の観測は肯定も否定も公表されていない。状況が変われば追記する。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Next.js</span><span class="b tag">CVE-2026-96889</span><span class="b tag">Vercel</span><span class="b tag">React Server Components</span><span class="b tag">sharp</span><span class="b tag">librsvg</span><span class="b tag">画像最適化</span><span class="b tag">未認証RCE</span><span class="b tag">サプライチェーン</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-18 08:29 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
