@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>OpenCode Console で API キー露出 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0591</span>OpenCode Console で API キー露出</h1>
+<header class="site-header">
+  <p class="subtitle">AI コーディングエージェント OpenCode の任意利用のホスティング版「OpenCode Console」で、 2026年10月16日の夜に**廃止作業中だった旧システム**へ不正アクセスがあり、 利用者がワークスペースに保存していた **OpenAI・Anthropic・Google の API キー**が 露出したおそれがあると同社が10月17日に公表した——影響は「Console 利用者の1.4%」とされ、 対象者にはメールで通知済み、メールが届かなかった利用者は対象外と説明された。 同社は本件を「大規模な蒸留（distillation）攻撃に関連するもの」と位置づけ、 OpenAI・Anthropic・Google と対応を進めているとした一方、 **「インシデントは進行中であり、これ以上の詳細は共有できない」として技術的な説明をしていない。** 一部の利用者は盗まれた鍵で従量課金の請求が発生したと申告しているが、 **同社はこれを確認していない。** なお**本記録の作成者は opencode.ai 上に本件の告知ページを発見できず、 公式の X 投稿も取得できなかった**（引用は複数の二次情報が同一文面で伝えているもの）</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">更改・移行の失敗</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月17日</span>
+  <span>最終更新: 2026年10月19日</span>
+</div>
+
+<div class="lead"><p><strong>OpenCode</strong> は AI コーディングエージェントで、<strong>OpenCode Console</strong> はその任意利用のホスティング版です。The Hacker News の報道によれば、Console ではワークスペースごとに自前の<strong>OpenAI・Anthropic・Google の API キー</strong>を保存し、<strong>Console がそのキーを使ってプロバイダを呼び出す</strong>ことで、チームのメンバーが個別にキーを持たずにモデルを使えるようになっています。</p>
+<p>2026年10月17日、同社は<strong>10月16日の夜</strong>に第三者が<strong>廃止作業中だった旧システム</strong>へ不正アクセスし、利用者がワークスペースに保存していたプロバイダの API キーが露出したおそれがあると公表しました。影響は「<strong>OpenCode Console 利用者の1.4%</strong>」とされ、対象者には同日朝にメールで通知済み、<strong>メールが届かなかった利用者は対象外</strong>と説明されています。</p>
+<p>同社は本件を「<strong>大規模な蒸留（distillation）攻撃に関連するもの</strong>」と位置づけ、OpenAI・Anthropic・Google の3社と対応を進めているとした一方、「<strong>インシデントは進行中であり、現時点でこれ以上の詳細は共有できない</strong>」として侵入経路・侵害期間・キーの保存形式を説明していません（いずれも原文英語）。</p>
+<p>本件の要点は、漏えいした情報が<strong>データではなく「計算資源へのアクセス権」</strong>であることです。従量課金のモデル API キーが盗まれると、二次被害は後日の名簿悪用ではなく<strong>その日の請求書</strong>として現れます。実際、複数の利用者が数百〜1,700ドル規模の不正請求を申告していますが、<strong>同社はこれを確認していません。</strong></p>
+<p>なお、本記録には裏取りの限界があります。<strong>本記録の作成者は opencode.ai 上に本件の告知ページを発見できず、公式の X 投稿も取得できませんでした。</strong> 引用として示す文面は、複数の二次情報が同一の文言で伝えているものです。事実と評価は分けて記述します。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（7件）">公表・報道からわかったこと（7件）</a></li><li><a href="#s13" title="事案の詳細">事案の詳細</a></li><li><a href="#s14" title="経過">経過</a></li><li><a href="#s15" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s16" title="波及の構造">波及の構造</a></li><li><a href="#s17" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s18" title="対応の評価">対応の評価</a></li><li><a href="#s19" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s20" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s21" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s22" title="出典">出典</a></li><li><a href="#s23" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s24" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>9</span></div><ul><li><span class=ui>OpenCode Console 利用者の総数と、影響を受けたアカウント・鍵の実数</span><span class="b rsn">公表されていない</span><div class=sm>公表されているのは「Console 利用者の1.4%」という**割合だけ**である。 母数が示されていないため、**影響が数十アカウントなのか数千アカウントなのか判断できない。** 露出した鍵の本数、プロバイダ別の内訳も示されていない。 **「1.4%」は小さく見える表現だが、実数を伴わない割合は規模を伝えない**（本記録の評価）</div></li><li><span class=ui>「廃止作業中だった旧システム」の正体と、そこへ到達された経路</span><span class="b rsn">意図的に非開示</span><div class=sm>同社は「インシデントは進行中であり、現時点でこれ以上の詳細は共有できない」として 技術的な説明を控えている（原文英語）。 **そのシステムが何であり（認証基盤・管理コンソール・旧 API・バックアップ）、 なぜ本番の鍵に到達できる状態で残っていたのか、 どのように侵入されたのか（認証情報の窃取・脆弱性・公開状態の設定）はいずれも示されていない。** 理由が説明された非開示であるため reason を withheld とした</div></li><li><span class=ui>侵害期間と、鍵が実際に読み出されたかの確認状況</span><span class="b rsn">公表されていない</span><div class=sm>公表は「露出したおそれがある（may have been exposed）」という表現にとどまり（原文英語）、 **鍵が実際に読み出されたことが記録から確認できたのかは示されていない。** 侵入の開始時刻・継続時間・アクセスログの保全状況も公表されていない。 一方で利用者側では不正請求の申告が出ており、 **少なくとも一部の鍵は実際に使われたとみられるが、同社の確認は公表されていない**</div></li><li><span class=ui>Console における API キーの保存形式（暗号化・鍵管理サービスの利用・分離の有無）</span><span class="b rsn">公表されていない</span><div class=sm>Console は利用者の鍵を使ってプロバイダを呼び出すため、 **鍵は復元可能な形で保持されている必要がある**（本記録の読み取り）。 しかし暗号化の有無・鍵管理の方式・旧システムから本番の鍵に到達できた理由は いずれも公表されていない。**預けた利用者には、保存形式を知る手段が無い**</div></li><li><span class=ui>「大規模な蒸留攻撃」という位置づけの根拠</span><span class="b rsn">公表されていない</span><div class=sm>同社は本件を「大規模な蒸留（distillation）攻撃に関連するもの」と説明している（原文英語）。 蒸留とは、あるモデルの応答を使って別のモデルを学習させる手法である。 **この位置づけは「盗んだ鍵で他社モデルを大量に呼び出し、学習データを作る」という動機を示すが、 そう判断した根拠（呼び出しパターン・プロバイダからの情報）は示されていない。** 動機の主張であり、確認された事実として扱うべきではない（本記録の整理）</div></li><li><span class=ui>不正請求を受けた利用者への補償・返金の扱い</span><span class="b rsn">公表されていない</span><div class=sm>利用者は数百〜1,700ドル規模の不正請求を申告しているが、 **OpenCode・OpenAI・Anthropic・Google のいずれも、 返金・補償の方針を公表していない。** 従量課金の請求は盗まれた鍵の「正当な利用」として記録されるため、 誰が負担するのかは契約と各社の運用に委ねられる</div></li><li><span class=ui>プロバイダ3社が取った措置（鍵の一括失効・不正利用の検知・通知）</span><span class="b rsn">公表されていない</span><div class=sm>同社は OpenAI・Anthropic・Google と対応を進めているとするが、 **3社が露出した鍵を一括で失効させたのか、利用者に個別に通知したのかは公表されていない。** 3社側からの公表も本記録では確認していない</div></li><li><span class=ui>事後報告（ポストモーテム）の公表予定</span><span class="b rsn">公表されていない</span><div class=sm>同社は「インシデントは進行中」としており、技術的な事後報告の公表予定は示されていない。 **本記録の作成者が2026年10月19日に opencode.ai のトップ・/blog・/changelog と GitHub の advisory 一覧を確認した時点で、本件の告知ページは存在しなかった**</div></li><li><span class=ui>OpenCode の CLI・デスクトップ版の利用者への影響</span><span class="b rsn">検証できない</span><div class=sm>公表は「OpenCode Console 利用者」を対象としており、Console は任意利用のホスティング版である。 **CLI・デスクトップ版のみを使い、鍵を手元に置いている利用者が対象外かどうかは、 公表文から直接は読み取れない。** 「CLI とデスクトップ版は影響なし」という記述はコメント欄に見られるが、 同社の説明としては確認できていない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>OpenCode（OpenCode Console の提供者）</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年10月17日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>AI コーディングエージェント OpenCode および任意利用のホスティング版 OpenCode Console の提供者。 侵害された「廃止作業中の旧システム」の保有者であり、本件公表の主体。 **運営法人の名称は本記録では確認していない**（GitHub 上の公開リポジトリは anomalyco/opencode）</p><p class=org-p><span class=org-l>影響</span>廃止作業中だった旧システムへの不正アクセスにより、 Console 利用者がワークスペースに保存していたプロバイダ API キーが露出したおそれがある。 対象者へのメール通知と鍵の失効・再発行の呼びかけを行い、プロバイダ3社と対応を進めている</p></div></div><div class=org><div class=org-h><span class=org-n>OpenCode Console の利用者（対象は利用者の1.4%）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Console のワークスペースに外部プロバイダの API キーを保存していた利用者。 **母数（Console 利用者の総数）が公表されていないため、1.4% の実数は算出できない**</p><p class=org-p><span class=org-l>影響</span>保存していた OpenAI・Anthropic・Google の API キーが露出したおそれがある。 各プロバイダのダッシュボードでの鍵の失効・再発行、依存アプリの更新、 利用状況の確認を求められた。一部の利用者は盗まれた鍵による従量課金の請求を申告している</p></div></div><div class=org><div class=org-h><span class=org-n>OpenAI</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Console に保存されていた API キーの発行元の1社。 同社は OpenCode が対応を進めている相手として挙げられている。 **OpenAI 自身のシステムが侵害されたわけではない**（侵害されたのは利用者の鍵を預かっていた OpenCode 側）</p></div></div><div class=org><div class=org-h><span class=org-n>Anthropic</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Console に保存されていた API キーの発行元の1社。 OpenCode が対応を進めている相手として挙げられている。 **Anthropic 自身のシステムが侵害されたわけではない**</p></div></div><div class=org><div class=org-h><span class=org-n>Google</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Console に保存されていた API キーの発行元の1社。 **ただし Google が対象に含まれるかは情報源によって記述が揺れている** （公式の文面が例示するのは OpenAI と Anthropic で、Google を含めるのは報道側の記述）</p></div></div><div class=org><div class=org-h><span class=org-n>（不正アクセスを行った第三者・実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>廃止作業中の旧システムへ侵入したとされる第三者。 同社は本件を「大規模な蒸留攻撃に関連するもの」と位置づけているが、 **帰属・侵入経路・動機の根拠はいずれも示されていない**</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>影響を受けた OpenCode Console 利用者の割合</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1.4<span class=fu>%</span></div><div class=fn>公式投稿が示した値。**母数（OpenCode Console 利用者の総数）が公表されていないため、 実数のアカウント数・鍵の本数は算出できない。** 同社は対象者全員にメールで通知したとしており、 「メールが届かなかった方は対象ではない」と説明しているため、 通知対象＝影響対象として扱える。 なお、この値は Console 利用者に対する割合で、OpenCode 全体の利用者に対する割合ではない</div></div><div class=fig><div class=fh><span class=fl>利用者が自己申告した不正請求額の最大値</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>1,700<span class=fu>ドル USD</span></div><div class=fn>**同社が確認した値ではなく、利用者が SNS で自己申告した額である。** 報じられているのは、ある利用者が OpenAI で281ドル・Anthropic で168ドル、 別の利用者が1,700ドル、さらに別の利用者が700ドル超。 **盗まれた鍵が実際に使われたことを示す唯一の手がかりだが、 同社・プロバイダ3社のいずれも確認を公表していない。** 従量課金の請求という形で現れるため、**二次被害が即日・金銭で出る**点が 通常の個人情報漏えいと異なる</div></div><div class=fig><div class=fh><span class=fl>侵入（10月16日夜）から公表（10月17日）まで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>日（未満）</span></div><div class=fn>公式投稿が侵入を「昨夜」と表現し、同日に公表しているため、 **侵入から公表までは1日未満である。** 時刻が公表されていないため正確な時間差は算出できない。 対象者へのメール通知も同じ日の朝とされている（通知日には情報源間の揺れがある）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>第三者が2026年10月16日の夜、OpenCode の**廃止作業中だった旧システム**に不正アクセスし、 OpenCode Console の利用者がワークスペースに保存していた外部 AI プロバイダの API キーが 露出したおそれがある。同社は10月17日にこれを特定し、同日公表して対象者（利用者の1.4%）に メールで通知、各プロバイダでの鍵の失効と再発行を求めた。 **侵入経路・侵害期間・キーの保存形式・実際に読み出されたかはいずれも公表されておらず、 「インシデントは進行中であり、これ以上の詳細は共有できない」と説明されている。** 本ブロックは公表された事実と、鍵を預ける構造から言える検知・対策の論点に限って記述する。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[2] [3]</span></div><div>第三者が廃止作業中だった旧システムへ不正アクセスした。 **公式の表現は「昨夜（last night）」で、10月17日の投稿からの逆算で10月16日夜となる**（原文英語）。 開始時刻・侵入手口は公表されていない</div><div class=fn>根拠: OpenCode の公式投稿および対象者向け通知 （「廃止作業中だった旧システムへの不正アクセスを特定した」・原文英語）。 **本記録の作成者は公式投稿を取得できておらず、複数の二次情報が伝える同一文面に依拠している**</div></li><li><div class=stg><span class="b stage">2. 認証情報アクセス</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2]</span></div><div>利用者が Console のワークスペースに保存していた外部プロバイダの API キーが露出したおそれがある。 **Console は保存された鍵を使ってプロバイダを代理で呼び出す作りのため、 鍵は復元可能な形で保持されている必要がある**（本記録の読み取り）。 保存形式・実際に読み出されたかは公表されていない</div><div class=fn>根拠: 対象者向け通知（「ワークスペースに保存されたサードパーティのプロバイダ鍵（例: OpenAI、Anthropic）が 露出したおそれがあります」・原文英語）、および The Hacker News による Console の仕組みの説明</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[2] [3]</span></div><div>露出した鍵が使われ、鍵の持ち主の従量課金として請求が発生したとする申告が複数ある （OpenAI 281ドル／Anthropic 168ドル、1,700ドル、700ドル超）。 **いずれも利用者の自己申告で、同社・プロバイダのいずれも確認を公表していない。** 同社は本件を「大規模な蒸留攻撃に関連するもの」と位置づけており、 盗んだ鍵でモデルを大量に呼び出し学習データを集める動機を示唆しているが、 **その根拠は示されていない**</div><div class=fn>根拠: 利用者の SNS 投稿を報じた二次情報、および OpenCode の公式投稿の 「大規模な蒸留攻撃」という位置づけ（原文英語）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>侵入（10月16日夜）の特定から公表まで</div><div class=mv>2026年10月17日に特定し、同日に公式 X で公表した</div></div><div class=met><div class=ml>特定から対象者への個別通知まで</div><div class=mv>同社の説明では10月17日朝に対象者全員へメール通知 （**10月18日朝とする報道もあり、情報源間に揺れがある**）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>特定した当日（2026年10月17日）に公式 X で公表し、対象者へのメール通知も同日に行った</div><div class=fn><b>トレードオフ:</b> 同日公表の代わりに、**書けることが「何が漏れたおそれがあるか」と 「何をすべきか」だけになった。** 侵入経路・侵害期間・保存形式・ 実際に読み出されたかはいずれも空欄で、 利用者は「自分の鍵が本当に使われたのか」を同社の情報からは判断できない</div></li><li><div class=ui>対象者全員にメールで個別通知し、**「メールが届かなかった方は対象ではない」**と明示した</div><div class=fn><b>トレードオフ:</b> 「届かなければ対象外」と言い切ることで利用者の問い合わせを減らせる代わりに、 **メールが届かなかったこと自体を利用者は確認できない** （迷惑メール判定・退職者のアドレス・転送の失敗）。 また対象者の実数を公表しない選択と組み合わせると、 **外部からは通知が本当に全員に届いたのかを検証する手段が無い**</div></li><li><div class=ui>影響割合（1.4%）と露出したおそれのある情報の種類は示したが、 **実数・侵入経路・侵害期間・キーの保存形式は「インシデントは進行中」として非開示とした**</div><div class=fn><b>トレードオフ:</b> 進行中の調査を守る代わりに、**利用者は「鍵を失効させる」以外の判断ができない。** とくに保存形式が示されないため、 **「暗号化されていたので読まれていないかもしれない」のか 「平文で持っていたので確実に読まれた」のかが分からない。** 同種のサービスを使う他の組織も、自社の預け先を点検する手がかりを得られない</div></li><li><div class=ui>鍵の失効・再発行を**利用者自身に各プロバイダのダッシュボードで実行してもらう**形を選んだ</div><div class=fn><b>トレードオフ:</b> **同社は利用者の鍵を失効させる権限を持たない**ため、 自動で無効化することはできない。 その結果、**失効するまでの時間は利用者の対応速度に依存し、 気づかない利用者の鍵は有効なまま残る。** 通知メールを見なかった利用者は、請求が来るまで何も起きない</div></li></ul></div>
+<section id="s6"><h2>廃止作業中だった旧システムが破られ、利用者が預けた AI プロバイダの API キーが露出した<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>公表されている事実は、次のとおりである。</p>
+<ul>
+<li><strong>2026年10月16日の夜</strong>、第三者が OpenCode の<strong>廃止作業中だった旧システム</strong>に不正アクセスした</li>
+<li>同社は<strong>10月17日</strong>にこれを特定し、同日公式 X で公表した</li>
+<li>影響は「<strong>OpenCode Console 利用者の1.4%</strong>」</li>
+<li>露出したおそれがあるのは、<strong>利用者がワークスペースに保存していた外部プロバイダの API キー</strong>（公式の文面が例示するのは OpenAI と Anthropic。報道は Google も挙げている）</li>
+<li>対象者には<strong>同日朝にメールで通知</strong>し、「メールが届かなかった方は対象ではない」と説明した</li>
+<li>対象者には<strong>各プロバイダのダッシュボードでの鍵の失効と再発行</strong>、その鍵を使うアプリの更新、利用状況の確認を求めた</li>
+<li>同社は本件を「<strong>大規模な蒸留（distillation）攻撃に関連するもの</strong>」と位置づけ、OpenAI・Anthropic・Google の3社と対応を進めているとした</li>
+<li>一方で「<strong>インシデントは進行中であり、現時点でこれ以上の詳細は共有できない</strong>」として、侵入経路・侵害期間・キーの保存形式は説明していない</li>
+</ul>
+<p>Console の仕組みについて、The Hacker News は次のように説明している—— Console は OpenCode の<strong>任意利用のホスティング版</strong>で、ワークスペースごとに自前の OpenAI・Anthropic・Google の鍵を保存し、<strong>Console がその鍵を使ってプロバイダを呼び出す</strong>ことで、チームのメンバーが個別に鍵を持たずにモデルを使えるようにする。</p>
+<p><strong>この仕組みが、そのまま被害の形を決めている。</strong>利用者の鍵を1か所に集めて代理で呼び出すサービスは、集めた鍵の束が1回の侵害で全部出る構造を持つ。</p></section>
+<section id="s7"><h2>漏れたのはデータではなく「計算資源へのアクセス権」で、二次被害が請求書として即日現れる<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>通常の個人情報漏えいでは、二次被害はフィッシングやなりすましという形で、数週間から数か月かけて現れる。本件は違う（以下は本記録の評価）。</p>
+<p>従量課金のモデル API キーは、<strong>データではなく計算資源へのアクセス権</strong>である。盗んだ側は鍵を使って即座にモデルを呼び出せ、その呼び出しは<strong>鍵の持ち主の請求として記録される。</strong> つまり二次被害は、後日の名簿悪用ではなく<strong>その月の請求書</strong>として出る。</p>
+<p>実際、報じられている自己申告は次のとおりである（<strong>いずれも同社は確認していない</strong>）。</p>
+<table>
+<thead>
+<tr>
+<th>申告者</th>
+<th>申告額</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Colin Parsons</td>
+<td>OpenAI 281ドル／Anthropic 168ドル</td>
+</tr>
+<tr>
+<td>Francisco Giancarelli</td>
+<td>700ドル超</td>
+</tr>
+<tr>
+<td>Preston Zeller</td>
+<td>1,700ドル</td>
+</tr>
+</tbody>
+</table>
+<p>ここから、実務上の違いが3つ出てくる。</p>
+<p><strong>①検知の手がかりが請求額とレート制限にある。</strong>通常の漏えいでは「漏れたかどうか」を利用者側で確かめる術がないが、API キーの場合は<strong>プロバイダ側の利用履歴</strong>に異常が残る。逆に言えば、利用履歴とコスト上限を見ていない利用者は、請求が来るまで気づけない。</p>
+<p><strong>②「ローテーション」の意味が2つあり、片方は効かない。</strong> Console の画面で鍵を差し替えるのは、<strong>仲介役が持っているコピーを入れ替えるだけ</strong>である。盗まれた鍵は<strong>プロバイダ側で失効させない限り生き続ける。</strong>同社の案内が「各プロバイダのダッシュボードから失効させ、置き換えてください」と<strong>プロバイダ側での操作を指定している</strong>のは、この区別を踏まえたものである。</p>
+<p><strong>③被害の上限を決めるのは、漏えい側ではなく鍵の持ち主である。</strong>プロバイダ側で支出上限（ハードリミット）を設定していれば、盗まれた鍵で積み上がる額はそこで止まる。<strong>預け先の安全性を検証する手段を持たない利用者にとって、上限設定は数少ない自衛手段である。</strong></p></section>
+<section id="s8"><h2>「1.4%」は母数が公表されておらず、規模を伝えていない<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>公表された影響範囲は「OpenCode Console 利用者の1.4%」である。<strong>割合だけで、実数は示されていない。</strong></p>
+<p>母数が分からないと、この数字は規模を伝えない。Console 利用者が1万人なら140アカウント、10万人なら1,400アカウント、1,000人なら14アカウントである。<strong>3桁の幅がある。</strong>露出した鍵の本数（1ワークスペースに複数プロバイダの鍵を置ける）も、プロバイダ別の内訳も示されていない。</p>
+<p><strong>「1.4%」という表現は小さく見える</strong>（本記録の評価）。分母を伴わない割合は、公表する側にとっては正確で、読む側にとっては規模の判断材料にならない。本記録が figures に持てたのも割合だけで、実数は算出できなかった。</p>
+<p>一方で、影響範囲の切り分け方そのものは明快である。同社は<strong>対象者全員にメールで通知した</strong>とし、「<strong>メールが届かなかった方は対象ではない</strong>」と述べた。これは利用者が自分の状態を判断できる形であり、「調査中のため対象者を特定できていません」という段階より一歩進んでいる——ただし<strong>通知日が10月17日か10月18日朝かは情報源によって揺れている。</strong></p>
+<p>なお、この割合は<strong>Console 利用者</strong>に対するものであり、OpenCode 全体の利用者に対するものではない。Console は任意利用のホスティング版なので、母数はさらに小さい。</p></section>
+<section id="s9"><h2>廃止を決めたシステムが、まだ本番の鍵に手が届く場所に残っていた<span class="b slot">原因・手口</span><span class=srcs>出典 [2] [3]</span></h2><p>同社の説明は、通知の一文に集約されている（原文英語）。</p>
+<blockquote>
+<p><strong>廃止作業中だった旧システムへの不正アクセスを特定した</strong>（We identified unauthorized access to a legacy system that we were in the process of decommissioning.）</p>
+</blockquote>
+<p>ここには2つの事実が同時に入っている。</p>
+<p><strong>①そのシステムは廃止が決まっていた。</strong>つまり同社は、それが不要であると判断し、作業に入っていた。リスクを認識していなかったのではなく、<strong>手を付けている最中だった。</strong></p>
+<p><strong>②それでも本番の鍵に到達できる状態だった。</strong>廃止作業中のシステムが侵害されたことで、利用者が保存していたプロバイダ API キーが露出したおそれがある、というのが公表の内容である。<strong>廃止予定であることと、本番データから切り離されていることは別である</strong>（本記録の評価）。</p>
+<p>移行・廃止の作業には、たいてい「まだ使われているかもしれない」という不確かさがある。そのため、<strong>まず接続を切る</strong>（本番データ・認証基盤・ネットワークから切り離す）のではなく、<strong>まず使われないようにする</strong>（新規の導線を消す）順で進みやすい。前者をせずに後者だけ済んだ状態が長く続くと、<strong>「もう使っていないから監視も手当もしていないが、データには手が届く」システム</strong>が残る。</p>
+<p><strong>何がそのシステムであり、どう侵入されたのかは公表されていない。</strong>同社は「インシデントは進行中であり、現時点でこれ以上の詳細は共有できない」としている。理由が説明された非開示であり、沈黙ではない——本記録は未確定事項の理由を <code>withheld</code> とした。</p></section>
+<section id="s10"><h2>「蒸留攻撃」という位置づけは動機の主張であり、根拠は示されていない<span class="b slot">帰属</span><span class=srcs>出典 [2] [3]</span></h2><p>公式投稿は、本件を次のように位置づけている（原文英語）。</p>
+<blockquote>
+<p><strong>大規模な蒸留攻撃に関連するセキュリティ侵害が昨夜あり、OpenCode Console 利用者の1.4%に影響した</strong>（We had a security breach last night related to a large scale distillation attack that impacted 1.4% of OpenCode Console users）</p>
+</blockquote>
+<p>蒸留（distillation）とは、あるモデルの応答を使って別のモデルを学習させる手法である。<strong>この語を使うことで、同社は「鍵が盗まれた目的」まで述べている</strong>——盗んだ鍵で商用モデルを大量に呼び出し、その応答を学習データとして集める、という動機である。</p>
+<p>位置づけとしては筋が通っている。盗まれた鍵が数百〜数千ドル分の呼び出しに使われたという利用者の申告は、鍵の転売や単発の悪用より、<strong>継続的な大量呼び出し</strong>と整合する。そして<strong>計算資源へのアクセス権</strong>という本件の漏えい対象の性質にも合う。</p>
+<p>ただし、<strong>そう判断した根拠は示されていない</strong>（本記録の整理）。呼び出しのパターン、プロバイダから得た情報、攻撃者の属性——いずれも公表されていない。帰属も示されていない。<strong>本記録はこれを「同社による動機の主張」として扱い、確認された事実とはしない。</strong></p>
+<p>なお、この語の選択には副作用もある。「蒸留攻撃」と呼ぶと、問題がモデル業界の競争の話に見えてしまうが、<strong>利用者から見れば起きたことは単純で、預けた鍵が漏れ、自分の請求で誰かがモデルを使った</strong>ということである。</p></section>
+<section id="s11"><h2>一次公表が自社サイトに無く、確認できるのは SNS 投稿と通知メールだけだった<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>本記録には裏取りの限界がある。記録しておく。</p>
+<p><strong>本記録の作成者は2026年10月19日に、次を確認した。</strong></p>
+<ul>
+<li><strong>opencode.ai のトップページ</strong>——本件の告知は無い（プライバシー方針の一般的な記述のみ）</li>
+<li><strong>opencode.ai/blog</strong>——HTTP 404</li>
+<li><strong>opencode.ai/changelog</strong>——2026年10月分にセキュリティインシデントの記載は無い（10月8日・10月12日のセキュリティ強化のリリースノートはあるが、本件とは別）</li>
+<li><strong>GitHub 上の advisory 一覧</strong>——2026年9月24日と1月12日の計3件のみで、本件に当たるものは無い</li>
+<li><strong>公式 X 投稿</strong>（status/2111519637049319818）——<strong>HTTP 402 で取得できなかった</strong></li>
+</ul>
+<p>つまり、<strong>同社の公表は SNS 投稿と対象者向けメールのみで、自社サイトに恒久的な告知ページが置かれていない</strong>（本記録の確認範囲において）。本記録が引用している文面は、<strong>複数の二次情報が同一の文言で伝えているもの</strong>であり、本記録の作成者が一次資料として取得したものではない。</p>
+<p>これは記録の品質に関わる問題である（本記録の評価）。SNS 投稿は、アカウントの状態・プラットフォームの方針・ログイン要件によって<strong>第三者から参照できなくなる。</strong> 実際、本記録は取得できていない。セキュリティインシデントの公表は、<strong>後から誰でも参照できる場所に、日付と更新履歴を伴って置かれる必要がある。</strong>本件はそうなっていない。</p>
+<p>あわせて、情報源間の揺れも記録しておく。通知メールの送信日（10月17日か10月18日朝か）、対象プロバイダに Google を含むか（公式の例示は OpenAI と Anthropic）、「Console Lite の認証基盤」「9月下旬からの侵入」「自動ローテーション」といった1媒体のみが伝える記述——いずれも齟齬として残した。</p></section>
+<section id="s12"><h2>AI エージェントのホスティング版に鍵を預ける構造が、そのまま被害の形になっている<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>本件を日本の読者の実務に引き直すと、問題は OpenCode 固有ではない（以下は本記録の評価）。</p>
+<p>AI コーディングエージェントやエージェント基盤を<strong>チームで使う</strong>とき、各メンバーが自分でモデルプロバイダの鍵を持つ形は管理しにくい。そこで多くのサービスが「組織の鍵を1か所に預け、サービスが代理で呼び出す」形を提供する。<strong>利便性の源泉は、鍵の集約である。</strong></p>
+<p>この形には、避けられない性質が3つある。</p>
+<p><strong>①鍵は復元可能な形で保持されている。</strong>代理で呼び出すには、サービスが鍵の平文を得られなければならない。ハッシュ化して持つことはできない。暗号化していても、呼び出しの瞬間には復号される。<strong>「ハッシュ化しているので安全です」という説明が成り立たない種類の秘密である。</strong></p>
+<p><strong>②預けた側の対抗手段は失効しかない。</strong>パスワードと違って、利用者は預け先の保存方式を検証できない。漏れた後にできるのは、プロバイダ側で鍵を失効させることだけである。</p>
+<p><strong>③被害は従量課金の請求として即日出る。</strong>だからこそ、プロバイダ側の支出上限が実質的な被害上限になる。</p>
+<p>これを踏まえると、<strong>自組織で AI エージェント基盤を導入するときの確認事項は、「どのモデルが使えるか」ではなく「鍵をどこに置くか」になる</strong>。鍵を預ける形を選ぶなら、①預け先専用の鍵を発行して用途を分離する②プロバイダ側で支出上限とレート制限を設定する③利用履歴を自社でも監視する④失効と再発行の手順を所有者が自分で実行できる状態にしておくの4点が、預け先の安全性に依存しない自衛になる。</p>
+<p>なお、OpenCode のような OSS 由来のツールには、<strong>手元で鍵を持つ CLI 版と、鍵を預けるホスティング版が併存する</strong>ことが多い。本件の対象は後者である。<strong>「同じツールを使っている」ことと「同じリスクを負っている」ことは別</strong>であり、自組織がどちらの形で使っているかを把握しているかが、最初の分かれ目になる。</p></section>
+<div class="blk " id="s13"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>OpenCode Console（AI コーディングエージェント OpenCode の任意利用のホスティング版）。 侵害されたのは Console に関連する「廃止作業中だった旧システム」で、 その正体は公表されていない</td></tr><tr><th>直接原因</th><td>第三者が廃止作業中だった旧システムに不正アクセスし、 Console の利用者がワークスペースに保存していた外部プロバイダの API キーが露出したおそれがある。 旧システムへの到達経路・キーの保存形式・実際に読み出されたかはいずれも公表されていない</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>利用者が OpenCode Console のワークスペースに保存していた外部 AI プロバイダの API キー（OpenAI・Anthropic。報道は Google も挙げる）</li></ul><span class="b rsn">stated</span><div class=fn>公表の文面は「ワークスペースに保存されたサードパーティのプロバイダ鍵（例: OpenAI、Anthropic）が 露出したおそれがあります（Third party provider keys (eg OpenAI, Anthropic) saved in your workspace may have been exposed.）」である（原文英語）。 **「例（eg）」という書き方のため、列挙が網羅的かは分からない。** Google を含めるのは報道側の記述で、公式の例示には含まれていない。 **コード・コンテキストデータの露出についての言及は無い** （同社は平時の説明として「OpenCode は利用者のコードやコンテキストデータを保存しない」としている）</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> suspected　<b>時点:</b> 2026年10月19日　<b>補足:</b> **複数の利用者が、盗まれた鍵による従量課金の不正請求を SNS で申告している** （OpenAI 281ドル／Anthropic 168ドル、1,700ドル、700ドル超）。 **同社・プロバイダ3社のいずれも、不正利用の有無を公表していない。** 公表の表現は「露出したおそれがある」にとどまる。 本記録は利用者の申告を根拠に suspected とし、確認されたものとしては扱わない</td></tr><tr><th>ログの有無</th><td>**アクセスログの保全状況は公表されていない。** 侵入を「10月16日の夜」として日単位で示し、翌日に影響範囲を 「利用者の1.4%」として切り分けて対象者全員に通知できていることから、 どのワークスペースの鍵が到達可能だったかは特定できたとみられる（本記録の読み取り）。 **ただし鍵が実際に読み出されたかの確認結果は公表されておらず、 公表の表現は「露出したおそれがある」にとどまる**</td></tr><tr><th>通知</th><td><b>手法:</b> 公式 X アカウントでの公表（2026年10月17日）、および対象者全員への個別メール通知。 「メールが届かなかった方は対象ではない」と明示した。 **自社サイト（opencode.ai）には本件の告知ページを確認できていない**　<b>範囲:</b> OpenCode Console 利用者の1.4%（実数は公表されていない）。 同社は対象者全員への通知を完了したとしている　<b>完了日時:</b> 2026年10月17日（同社の説明。10月18日朝とする報道もある）</td></tr><tr><th>利用者への行動案内</th><td><ul class=cl><li>該当する API キーを、各プロバイダのダッシュボードから失効させて再発行する</li><li>その鍵を使っているアプリケーションを新しい鍵に更新する</li><li>各プロバイダの利用状況・請求を確認し、想定外の利用がないか調べる</li></ul><span class="b rsn">stated</span><div class=fn>**案内が「各プロバイダのダッシュボードから」とプロバイダ側での操作を指定している点が重要である。** Console 側で鍵を差し替えても、仲介役が持つコピーが入れ替わるだけで、 盗まれた鍵はプロバイダ側で失効させない限り有効なままである（本記録の整理）。 なお、**通知メール内のリンクを使わず各プロバイダのダッシュボードへ直接アクセスする** という注意は報道側が補足したもので、同社の案内に含まれるかは確認できていない</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月16日の夜</td><td class=nowrap><span class="b kind">発生</span></td><td>第三者が OpenCode の**廃止作業中だった旧システム**に不正アクセスした。 公式の投稿は「昨夜（last night）」と表現しており（原文英語）、 10月17日の投稿からの逆算で10月16日夜となる。**開始時刻・継続時間は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月17日</td><td class=nowrap><span class="b kind">判明</span></td><td>同社が不正アクセスを特定した。 通知の文面は「廃止作業中だった旧システムへの不正アクセスを特定した （We identified unauthorized access to a legacy system that we were in the process of decommissioning）」と記している（原文英語）。 **特定の端緒（自社の検知かプロバイダからの連絡か利用者の申告か）は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月17日</td><td class=nowrap><span class="b kind">公表</span></td><td>同社が公式 X アカウントで公表した。 「大規模な蒸留攻撃に関連するセキュリティ侵害が昨夜あり、 OpenCode Console 利用者の1.4%に影響した （We had a security breach last night related to a large scale distillation attack that impacted 1.4% of OpenCode Console users）」（原文英語）。 あわせて「インシデントは進行中であり、現時点でこれ以上の詳細は共有できない」と述べた</td></tr><tr><td class="sm nowrap tw">2026年10月17日（朝）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>同社が対象者全員にメールで通知した（「今朝メールで全員に通知した ——We have notified them all this morning via email」・原文英語）。 あわせて「メールが届かなかった方は対象ではない （If you did not get an email you were not impacted）」と説明した。 **通知日については10月18日朝とする報道もあり、情報源によって揺れている**</td></tr><tr><td class="sm nowrap tw">2026年10月17日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>対象者への通知で、**各プロバイダのダッシュボードを通じた鍵の失効と再発行**、 その鍵を使っているアプリケーションの更新、利用状況の確認を求めた （「該当する鍵を関係するプロバイダのダッシュボードから失効させ、置き換えてください ——Please revoke and replace those keys through the relevant provider&#x27;s dashboard」・原文英語）</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（10月17日以降）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>同社が OpenAI・Anthropic・Google の3社と是正に向けた対応を進めていると説明した。 **具体的な連携内容（鍵の一括失効・不正利用の検知・返金の扱い）は公表されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月17日以降</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>複数の利用者が、盗まれた鍵による従量課金の不正請求を SNS で申告した （OpenAI で281ドル・Anthropic で168ドル、別の利用者で1,700ドル、さらに別の利用者で700ドル超）。 **いずれも利用者の自己申告であり、同社は確認していない**</td></tr><tr><td class="sm nowrap tw">2026年10月19日 06:07（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Hacker News が本件を報じた。 Console の仕組み——ワークスペースが自前の OpenAI・Anthropic・Google の鍵を保存し、 **Console がその鍵を使ってプロバイダを呼び出すことで、 メンバーが個別に鍵を持たずにモデルを使える**——を説明した</td></tr><tr><td class="sm nowrap tw">2026年10月19日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が一次公表の裏取りを試みた。 **opencode.ai のトップページ・/blog（404）・/changelog（2026年10月分に本件の記載なし）を確認し、 本件の告知ページを発見できなかった。** GitHub 上の advisory 一覧にも 2026年10月の本件に当たるものは無かった（掲載は2026年9月24日と1月12日の計3件）。 **公式の X 投稿（status/2111519637049319818）は HTTP 402 で取得できなかった**</td></tr></tbody></table></div></div>
+<div id="s15"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>9</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>一次公表を本記録の作成者が取得できていないこと</span><div class=sm>**本記録が引用として示している文面は、本記録の作成者が一次資料として取得したものではない。** 公式 X 投稿（status/2111519637049319818）は **HTTP 402 で取得できなかった。** 引用文面は、複数の独立した二次情報が**同一の文言**で伝えているもの （「We had a security breach last night related to a large scale distillation attack that impacted 1.4% of OpenCode Console users」 「We identified unauthorized access to a legacy system that we were in the process of decommissioning.」 「Third party provider keys (eg OpenAI, Anthropic) saved in your workspace may have been exposed.」 「Please revoke and replace those keys through the relevant provider&#x27;s dashboard」 「We have notified them all this morning via email.」 「If you did not get an email you were not impacted」 「the incident is ongoing so we cannot share more details at this point」）に依拠している。 **複数源が同一文面で一致していることは一次資料の確認に代わらない。** 本記録は attack.chain の各段階の confidence を reported とした</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>opencode.ai に本件の告知ページが見当たらないこと</span><div class=sm>**本記録の作成者が2026年10月19日に確認した範囲では、 opencode.ai 上に本件の恒久的な告知ページが存在しない。** トップページには本件の記載が無く（プライバシー方針の一般的な説明のみ）、 **/blog は HTTP 404**、**/changelog の2026年10月分には本件の記載が無い** （10月8日・10月12日のセキュリティ強化のリリースノートはあるが本件とは別）。 GitHub 上の advisory 一覧にも本件に当たるものは無く、 掲載は2026年9月24日と1月12日の計3件のみだった。 **同社の公表は SNS 投稿と対象者向けメールに留まっているとみられる** （本記録の確認範囲における判断）</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>対象者へのメール通知の日付</span><div class=sm>**公式投稿の文面は「今朝メールで全員に通知した」であり、 投稿が10月17日であるため同日朝となる**（原文英語）。 一方、**通知メールの送信を10月18日朝とする報道もある。** 本記録は timeline T4 を10月17日とし、揺れを note に残した。 **恒久的な告知ページがあればこの揺れは生じなかった**（本記録の評価）</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>対象プロバイダに Google を含むか</span><div class=sm>**公式の文面が例示するのは「OpenAI、Anthropic」の2社である** （「Third party provider keys (eg OpenAI, Anthropic)」・原文英語）。 一方、The Hacker News は「OpenAI, Anthropic, and Google の API キー」を見出しに掲げ、 Console がワークスペースごとに OpenAI・Anthropic・Google の鍵を保存すると説明している。 **公式の文面は「例（eg）」という書き方であり、列挙が網羅的かは分からない。** 本記録は Google の関与を「関係があるとみられる」止まりで扱う</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>利用者が申告した不正請求額</span><div class=sm>報じられている金額（OpenAI 281ドル／Anthropic 168ドル、700ドル超、1,700ドル）は **いずれも利用者が SNS で自己申告したものであり、 OpenCode・OpenAI・Anthropic・Google のいずれも確認を公表していない。** 本記録はこの金額を「報道が示した値」として扱い、 不正利用の状態は「疑われる」止まりとした。 **金額の合計は算出しない**——申告の全数が分からないため</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>「Console Lite の認証基盤」「9月下旬からの侵入」等の記述</span><div class=sm>**1媒体のみが、侵害されたのは「Console Lite」という旧認証基盤であり、 侵入は9月下旬に始まり、自動的な鍵のローテーションとクレジット監視が提供された、と伝えている。** **本記録の作成者はこれを他の情報源で裏取りできなかった。** 同社の公表文面は「廃止作業中だった旧システム」と述べるだけで名称を示しておらず、 侵入時期も「昨夜」である。**本記録はこれらを採らない**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>CLI・デスクトップ版の利用者への影響</span><div class=sm>「CLI とデスクトップ版は影響を受けていない」という記述が記事のコメント欄に見られるが、 **同社の説明としては確認できていない。** 公表は「OpenCode Console 利用者」を対象としており、 Console は任意利用のホスティング版であることから、 手元に鍵を置く利用形態は対象外と読めるが、 **これは本記録の読み取りであり公表された事実ではない**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>運営法人の名称</span><div class=sm>本記録は当事者を「OpenCode（OpenCode Console の提供者）」と記載した。 **運営法人の正式名称は本記録では確認していない。** なお GitHub 上の advisory 一覧を確認した際、 公開リポジトリのパスは `anomalyco/opencode` であった。 **これが運営法人を示すものかは確認していないため、orgs の名称には用いていない**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録の作成者が確認した範囲</span><div class=sm>本記録の作成者は2026年10月19日に次を実施した—— ①The Hacker News の記事（出典1）の確認。 **ただし本記録が保有する本文は冒頭のみで、記事本体は HTTP 403 で取得できなかった** （保有部分から、侵入日・侵入先が旧システムであること・ 露出のおそれのある鍵・Console の仕組みを確認した）。 ②公式 X 投稿の取得を試み、**HTTP 402 で失敗。** ③opencode.ai のトップ・/blog・/changelog と GitHub の advisory 一覧を確認し、 **本件の告知ページを発見できなかった。** ④引用文面と1.4%・推奨対応・不正請求の申告を、複数の二次情報から確認した。 **対象者向け通知メールの原文・プロバイダ3社の公表・当局への報告の有無は確認していない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s16"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>廃止作業中の旧システムから、利用者が預けた AI プロバイダ API キーが露出した経路</div><div class=svgwrap><svg viewBox="0 0 794 394" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,197.0 C193.0,197.0 193.0,108.0 220,108.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,108.0 C397.0,108.0 397.0,197.0 424,197.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,191.0 C397.0,191.0 397.0,197.0 424,197.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,197.0 C295.0,197.0 295.0,197.0 16,197.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,197.0 C397.0,197.0 397.0,40.0 628,40.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,197.0 C397.0,197.0 397.0,102.0 628,102.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,40.0 C703.0,40.0 703.0,341.0 628,341.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,102.0 C703.0,102.0 703.0,341.0 628,341.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,341.0 C703.0,341.0 703.0,252.0 628,252.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,280.0 C499.0,280.0 499.0,252.0 628,252.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,252.0 C703.0,252.0 703.0,40.0 628,40.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,252.0 C703.0,252.0 703.0,102.0 628,102.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,280.0 C499.0,280.0 499.0,170.0 628,170.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="166.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="188.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不正アクセスを行った第三</text><text x="91.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者（実体非公表）</text><text x="91.0" y="215.0" text-anchor="middle" fill="#f48fb1" font-size="10">10/16 夜</text><rect x="220" y="77.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="99.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">廃止作業中だった旧システ</text><text x="295.0" y="113.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ム（正体非公表）</text><text x="295.0" y="126.0" text-anchor="middle" fill="#64b5f6" font-size="10">侵入先・10/17 特定</text><rect x="220" y="153.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="175.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenCode Con</text><text x="295.0" y="189.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sole（任意利用のホス</text><text x="295.0" y="203.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティング版）</text><text x="295.0" y="216.0" text-anchor="middle" fill="#64b5f6" font-size="10">鍵を預かり代理で呼び出す</text><rect x="220" y="243.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="265.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenCode（提供者</text><text x="295.0" y="279.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="295.0" y="292.0" text-anchor="middle" fill="#80cbc4" font-size="10">10/17 公表・同日メ</text><text x="295.0" y="304.0" text-anchor="middle" fill="#80cbc4" font-size="10">ール通知</text><rect x="424" y="160.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="182.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者が保存したプロバイ</text><text x="499.0" y="196.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ダ API キー</text><text x="499.0" y="209.0" text-anchor="middle" fill="#ffcc80" font-size="10">対象は Console </text><text x="499.0" y="221.0" text-anchor="middle" fill="#ffcc80" font-size="10">利用者の1.4%（実数非</text><rect x="628" y="16.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenAI</text><text x="703.0" y="51.0" text-anchor="middle" fill="#64b5f6" font-size="10">鍵の発行元・是正で連携</text><rect x="628" y="78.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="100.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Anthropic</text><text x="703.0" y="113.0" text-anchor="middle" fill="#64b5f6" font-size="10">鍵の発行元・是正で連携</text><rect x="628" y="140.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Google</text><text x="703.0" y="175.0" text-anchor="middle" fill="#64b5f6" font-size="10">対象に含むかは情報源で揺</text><text x="703.0" y="187.0" text-anchor="middle" fill="#64b5f6" font-size="10">れ</text><rect x="628" y="214.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="236.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenCode Con</text><text x="703.0" y="250.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sole の利用者（鍵の</text><text x="703.0" y="264.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">持ち主）</text><text x="703.0" y="277.0" text-anchor="middle" fill="#8892b0" font-size="10">失効・再発行を自ら実行</text><rect x="628" y="304.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="326.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">従量課金の不正請求（利用</text><text x="703.0" y="340.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者の自己申告）</text><text x="703.0" y="353.0" text-anchor="middle" fill="#ffcc80" font-size="10">281/168・700超</text><text x="703.0" y="365.0" text-anchor="middle" fill="#ffcc80" font-size="10">・1,700ドル</text></svg></div><div class=fn>layer 0 は不正アクセスを行った第三者。 layer 1 は OpenCode の廃止作業中だった旧システムと、OpenCode Console。 layer 2 は利用者がワークスペースに保存していたプロバイダ API キー。 layer 3 は鍵の発行元であるプロバイダ3社と、鍵の持ち主である利用者。 **Console は預かった鍵を使ってプロバイダを代理で呼び出す作りのため、 鍵は復元可能な形で保持されている必要がある**（本記録の読み取り）。 旧システムへの到達経路・キーの保存形式・実際に読み出されたかは公表されていない。</div></div></div>
+<div class="blk " id="s17"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**特定の端緒が公表されていない**（自社の検知か、プロバイダからの連絡か、 利用者の請求異常の申告か）。 侵入の翌日に影響範囲を切り分けて全対象者へ通知できていることから、 ログは残っていたとみられるが、これは本記録の読み取りである</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>廃止を決めたシステムは、利用者の導線を消す前に **本番データ・認証基盤・ネットワークから切り離す**順で進める （「使われていない」と「到達できない」を別に管理する）</div><div class=ctl><span class="b eff">侵入を防げた</span>廃止予定のシステムも、停止が完了するまでは稼働中と同じ監視・パッチ・ 認証の要件を適用する（廃止予定であることを免除の理由にしない）</div><div class=ctl><span class="b eff">検知できた</span>本番の秘密情報へ到達できる経路を資産として台帳化し、 台帳に無い経路からのアクセスを検知する</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">公表されていない</span><div class=sm>**鍵の読み出しそのものを検知できたかは公表されていない。** 公表の表現は「露出したおそれがある」であり、 読み出しが記録から確認できたとは述べていない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>預け先ごとに**専用の API キー**を発行し、用途・上限・許可モデルを分離する （組織の主鍵を預けない）</div><div class=ctl><span class="b eff">侵入を防げた</span>鍵の保持を仲介役から排し、プロバイダ側が発行する短期トークンや OAuth 連携で委任する（長期有効な鍵を預けない形を選ぶ）</div><div class=ctl><span class="b eff">影響を限定できた</span>預けた鍵の棚卸しを定期的に行い、使っていない連携の鍵を失効させる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**検知したのは鍵の持ち主である。** プロバイダ側の利用履歴と請求に異常が残るため、 利用者が自分で気づける唯一の段階がここだった（本記録の評価）。 逆に、利用履歴と支出上限を見ていない利用者は請求が来るまで気づけない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>プロバイダ側で**支出上限（ハードリミット）とレート制限**を設定する。 これが実質的な被害上限になる</div><div class=ctl><span class="b eff">検知できた</span>プロバイダの利用履歴・請求を自社でも監視し、 平常比の逸脱でアラートを上げる（予算アラートを担当者個人のメールに閉じない）</div><div class=ctl><span class="b eff">影響を限定できた</span>**Console 側での鍵の差し替えではなく、プロバイダ側での失効**を インシデント手順に明記する（仲介役のコピーを替えても盗まれた鍵は生きている）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>特定した当日（2026年10月17日）に公式 X で公表し、対象者へのメール通知も同日に行った</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**盗まれた鍵が従量課金で即座に悪用される種類の秘密であることを踏まえると、 同日公表・同日通知は適切である**（本記録の評価）。 鍵の失効は利用者しか実行できず、1日の遅れがそのまま請求額になる。 詳細を待たずに「失効させてください」を先に出した判断は、 被害の上限を下げる方向に働く</td></tr><tr><td>対象者全員にメールで個別通知し、**「メールが届かなかった方は対象ではない」**と明示した</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**「届かなかった方は対象外」という断言は、利用者が自分の状態を判断できる形であり、 「調査中のため対象者を特定できていません」という段階より一歩進んでいる**（本記録の評価）。 ただし通知日が情報源によって10月17日と10月18日に分かれており、 **同社の説明と報道の間で裏取りが取れていない。** 恒久的な告知ページがあれば、この揺れは生じなかった</td></tr><tr><td>影響割合（1.4%）と露出したおそれのある情報の種類は示したが、 **実数・侵入経路・侵害期間・キーの保存形式は「インシデントは進行中」として非開示とした**</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**割合だけで実数を出さない選択は、規模の判断を不可能にしている**（本記録の評価）。 「1.4%」は母数なしでは3桁の幅を持つ。 進行中の調査を理由に技術的詳細を控えるのは一般的な判断だが、 **影響アカウント数は調査の進行を妨げずに出せる数字である。** あわせて、恒久的な告知ページを置かず SNS 投稿と通知メールに留めた点は、 第三者が後から参照・検証できない形であり、記録として不十分である</td></tr><tr><td>鍵の失効・再発行を**利用者自身に各プロバイダのダッシュボードで実行してもらう**形を選んだ</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**案内がプロバイダ側での操作を指定している点は正しい**（本記録の評価）。 Console 側で鍵を差し替えても、仲介役が持つコピーが入れ替わるだけで、 盗まれた鍵はプロバイダ側で失効させない限り有効なままである。 この区別を利用者に委ねず明示したのは適切である。 **一方で、OpenAI・Anthropic・Google と「対応を進めている」としながら、 露出した鍵の一括失効が行われたかは公表されていない**—— 預け先が鍵の失効をプロバイダと協調して行えれば、 利用者の対応速度に依存しない形が作れたはずである</td></tr></tbody></table></div></div>
+<div id="s19"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>AI エージェント基盤の選定基準に「鍵をどこに置くか」を入れる</div><div class=lw>本件で漏れたのは、利用者が**ホスティング版に預けた**モデルプロバイダの API キーである。 同じツールでも、手元で鍵を持つ CLI 版と鍵を預けるホスティング版ではリスクが違う。 **「同じツールを使っている」ことと「同じリスクを負っている」ことは別である**</div><div class=la><b>取るべき行動</b> 利用中・検討中の AI エージェント基盤を一覧化し、 各々について「モデルプロバイダの鍵を誰が保持するか」を記録する。 預ける形のものには、①預け先専用の鍵を発行して用途を分離する ②プロバイダ側で支出上限を設定する ③失効手順を自社で実行できる状態にしておく を導入の条件にする。**無料・個人利用から始まって部門に広がる類のツールなので、 調達プロセスを通らない導入経路も洗う**</div></li><li><div class=lp>従量課金の鍵の漏えいは、情報漏えいではなく「即日の金銭被害」として備える</div><div class=lw>モデル API キーは**データではなく計算資源へのアクセス権**であり、 盗まれると鍵の持ち主の請求として積み上がる。 本件では数百〜1,700ドル規模の不正請求が利用者から申告されている （同社は確認していない）。 **二次被害が後日の名簿悪用ではなく、その月の請求書として出る**</div><div class=la><b>取るべき行動</b> クラウドとモデルプロバイダの支出上限・予算アラートを、 **個人のメールではなく運用チームの監視に接続する。** 上限値は「業務で使う最大」＋余裕に設定し、無制限にしない。 インシデント対応手順に「従量課金の鍵が漏れた場合」の章を作り、 失効・再発行・請求の異議申し立ての担当と期限を決めておく</div></li><li><div class=lp>廃止を決めたシステムを「廃止済み」として扱わない</div><div class=lw>侵入先は「**廃止作業中だった旧システム**」である。 同社はリスクを認識して作業に入っていたが、 **それでも本番の鍵に到達できる状態で残っていた。** 廃止予定であることと、本番データから切り離されていることは別である</div><div class=la><b>取るべき行動</b> 退役台帳を作り、各システムについて「新規利用の停止」「本番データからの切り離し」 「認証基盤からの切り離し」「削除」を**別々の完了日で管理する。** 2番目が済んでいないシステムは、稼働中と同じ監視・パッチ・認証の対象に残す。 **「廃止予定だから対応を後回しにする」を明示的に禁止する**</div></li><li><div class=lp>公表の場所を「後から誰でも参照できる形」にしておく</div><div class=lw>本記録の作成者は、**opencode.ai 上に本件の告知ページを発見できず、 公式 X 投稿も取得できなかった。** 結果として、本記録が引用できるのは二次情報が伝える文面だけになった。 通知日（10月17日か18日か）のような基本的な事実も、情報源間で揺れている</div><div class=la><b>取るべき行動</b> 自社のインシデント公表は、**日付と更新履歴を伴う恒久的なページ**に置き、 SNS はそこへの誘導に使う運用を決めておく。 ページには時刻（タイムゾーン付き）・対象範囲・推奨対応・次回更新予定を入れる。 **取引先・監査・報道が後から参照するのはこのページであり、 流れていく投稿では記録にならない**</div></li><li><div class=lp>影響範囲を「割合」だけで公表しない</div><div class=lw>本件の公表は「Console 利用者の1.4%」であり、**母数が示されていない。** 母数が1,000人なら14アカウント、10万人なら1,400アカウントで、**3桁の幅がある**。 小さく見える割合は、規模を伝えない</div><div class=la><b>取るべき行動</b> 公表文の雛形に「対象アカウント数（実数）」を必須項目として置く。 調査中で確定しないなら「現時点で確認できた数」と「母数」を併記する。 **割合で出すなら必ず分母を添える**。 影響アカウント数は、技術的詳細と違って調査の進行を妨げずに出せる数字である</div></li></ul></div></div>
+<div id="s20"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>「鍵のローテーション」が2か所あることを手順に書き分ける</div><div class=lw>仲介するサービスの画面で鍵を差し替えても、**サービスが持つコピーが入れ替わるだけ**で、 盗まれた鍵はプロバイダ側で失効させない限り有効なままである。 本件の案内が「各プロバイダのダッシュボードから失効させ、置き換えてください」と **プロバイダ側での操作を指定している**のは、この区別によるものである</div><div class=la><b>取るべき行動</b> 秘密情報の棚卸し表に「発行元」「保持している場所（全部）」の2列を持ち、 漏えい時の手順を**「発行元で失効 → 新規発行 → 保持している全箇所を更新」**の順で書く。 逆順（保持箇所の更新だけ）で終わる手順になっていないかを確認する</div></li><li><div class=lp>預け先ごとに専用の鍵を発行し、用途・上限・許可モデルを分離する</div><div class=lw>本件では、利用者がワークスペースに保存した鍵がそのまま露出した。 **組織の主鍵を預けていれば、1つの預け先の侵害が全用途に及ぶ**</div><div class=la><b>取るべき行動</b> 外部サービスに預ける鍵は、**その預け先専用に発行する**。 プロバイダが対応していれば、呼び出せるモデル・1分あたりの上限・ 1か月あたりの支出上限を鍵ごとに絞る。 **鍵の命名規則に預け先を入れて、どの鍵がどこにあるかを一覧で追えるようにする**</div></li><li><div class=lp>モデル API の利用履歴を自社で監視し、異常を検知できるようにする</div><div class=lw>本件で不正利用に気づいたのは**鍵の持ち主**である—— プロバイダ側の利用履歴と請求に異常が残るためである。 逆に、履歴を見ていない利用者は請求が来るまで気づけない。 **同社は「露出したおそれがある」までしか言っておらず、 実際に使われたかは利用者側でしか分からない状態である**</div><div class=la><b>取るべき行動</b> モデルプロバイダの利用量・コストを日次で取得してダッシュボードに出し、 平常比の逸脱（倍率・絶対額）でアラートを上げる。 **呼び出し元の分布（IP・リージョン・モデル）も見る**—— 蒸留目的の大量呼び出しは、普段使わないモデルや普段と違う時間帯に出る</div></li><li><div class=lp>退役作業は「導線を消す」より先に「到達を切る」順で行う</div><div class=lw>本件の侵入先は廃止作業中の旧システムで、**それが本番の鍵に到達できた。** 退役作業は「まだ使われているかもしれない」という不確かさを抱えるため、 接続を残したまま新規導線だけ消す形になりやすく、 **「使われていないから監視していないが、データには手が届く」状態が長く残る**</div><div class=la><b>取るべき行動</b> 退役手順のテンプレートを、 ①本番データ・秘密情報へのアクセス権を剥奪 → ②認証基盤から切り離し → ③ネットワークから隔離 → ④新規導線を削除 → ⑤データを退避して削除 の順で定義する。各段を完了日で記録し、 **①が済んでいないシステムは稼働中として扱う。** 秘密情報への到達経路の棚卸しに、退役予定のシステムを必ず含める</div></li><li><div class=lp>長期有効な鍵を預ける形を、委任（短期トークン）に置き換える道を探す</div><div class=lw>代理で呼び出すサービスに鍵を預けると、**鍵は復元可能な形で保持される必要がある。** ハッシュ化では持てない種類の秘密であり、 **「安全に保管しています」という説明を利用者側が検証する手段は無い**</div><div class=la><b>取るべき行動</b> 外部サービスとの連携を設計・選定するとき、 長期有効な API キーの受け渡しではなく、 OAuth 連携や短期トークンの発行で委任できるかを先に確認する。 自社がサービスを提供する側なら、 **利用者の長期鍵を預からずに済む認証方式を用意する**</div></li></ul></div></div>
+<div class="blk " id="s21"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> AI コーディングエージェントやエージェント基盤のホスティング版を使い、 モデルプロバイダの API キーをそのサービスに預けている</td><td class=sm>本件で漏れたのはまさにこの形で預けられた鍵である。 **預けた側の対抗手段は「プロバイダ側での失効」しかない**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 外部サービスに預けている鍵が、他の用途でも使っている組織の主鍵である （預け先専用に発行していない）</td><td class=sm>1つの預け先の侵害が、鍵を共有している全用途に及ぶ</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> モデルプロバイダ側で支出上限（ハードリミット）とレート制限を設定していない</td><td class=sm>従量課金の鍵は盗まれた瞬間から請求が積み上がる。 **上限が実質的な被害上限になる**——本件では1,700ドル規模の申告が出ている</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> モデル API の利用量・コストを日次で監視しておらず、予算アラートが担当者個人のメールに閉じている</td><td class=sm>本件で不正利用に気づいたのは鍵の持ち主である。 履歴を見ていなければ、請求書が届くまで分からない</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 廃止を決めたシステムが、本番データや秘密情報へのアクセス権を保ったまま残っている</td><td class=sm>本件の侵入先は「廃止作業中だった旧システム」で、 それが利用者の API キーに到達できた</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 自社のインシデント公表を SNS 投稿で済ませる運用になっており、 日付と更新履歴を伴う恒久的な告知ページを持っていない</td><td class=sm>本件は公式の告知ページが確認できず、 **通知日のような基本的事実すら情報源間で揺れている。** 後から参照できない公表は、記録としても検証材料としても機能しない</td></tr></tbody></table></div></div>
+<div class="blk " id="s22"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月17日 OpenCode（公式 X アカウント）</span> <a href="https://x.com/opencode/status/2111519637049319818" target="_blank" rel="noreferrer noopener nofollow">OpenCode 公式投稿（セキュリティ侵害の公表）</a> <span class="b kind">SNS投稿</span><span class=sm>（(**当事者の公表。ただし本記録の作成者は HTTP 402 で取得できなかった** ——X のログイン要件によるものとみられるため availability を paywalled とした。 引用文面〈「大規模な蒸留攻撃に関連するセキュリティ侵害が昨夜あり、 OpenCode Console 利用者の1.4%に影響した」 「廃止作業中だった旧システムへの不正アクセスを特定した」 「ワークスペースに保存されたサードパーティのプロバイダ鍵（例: OpenAI、Anthropic）が 露出したおそれがある」 「関係するプロバイダのダッシュボードから失効させ、置き換えてください」 「今朝メールで全員に通知した」「メールが届かなかった方は対象ではない」 「インシデントは進行中であり、現時点でこれ以上の詳細は共有できない」〉は、 **複数の独立した二次情報が同一の文言で伝えているものに依拠している**。 **opencode.ai 上に本件の恒久的な告知ページは発見できなかった**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月19日 06:07（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/10/opencode-console-breach-may-have.html" target="_blank" rel="noreferrer noopener nofollow">OpenCode Console Breach May Have Exposed OpenAI, Anthropic, and Google API Keys</a> <span class="b kind">記事</span><span class=sm>（(報道。本記録の起点。侵入が10月16日の夜であること、 侵入先が廃止作業中だった旧システムであること、 露出のおそれのある情報が利用者が OpenCode Console に保存したプロバイダ API キーであること、 **Console の仕組み——ワークスペースが自前の OpenAI・Anthropic・Google の鍵を保存し、 Console がその鍵でプロバイダを呼び出すことでメンバーが個別に鍵を持たずに済む——の出典。** **本記録が保有する本文は冒頭のみで、記事本体は HTTP 403 で取得できなかった**)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月17日以降 二次情報（OfficeChai、Orca Router ほか）</span> <a href="https://officechai.com/ai/opencode-discloses-security-breach-says-attackers-may-have-accessed-users-openai-anthropic-and-google-api-keys/" target="_blank" rel="noreferrer noopener nofollow">OpenCode Console 侵害を伝える二次情報（公式投稿・通知の文面を引用したもの）</a> <span class="b kind">記事</span><span class=sm>（(報道。**公式投稿と対象者向け通知の文面を引用している二次情報。** 本記録はこれらを通じて引用文面を確認した。 Console が利用者のプロバイダ認証情報を保持するホスト型ダッシュボードであること、 推奨対応（失効・再発行、依存アプリの更新、利用状況と請求の確認、 通知メールのリンクを使わずダッシュボードへ直接アクセスする、支出上限の設定）、 **利用者が自己申告した不正請求額〈OpenAI 281ドル／Anthropic 168ドル、700ドル超、1,700ドル〉**、 通知日を10月18日朝とする記述、 および1媒体のみが伝える「Console Lite」「9月下旬からの侵入」等の裏取りできない記述の出典。 **本記録は複数の二次情報を一つのエントリにまとめている** ——いずれも当事者ではなく、同じ一次資料〈公式投稿・通知メール〉を引用した媒体であるため)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s23"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月19日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月19日の The Hacker News 記事を起点にした。 **一次公表の裏取りを試みたが、取得できなかった**—— 公式 X 投稿は HTTP 402、The Hacker News の記事本体は HTTP 403、 **opencode.ai のトップ・/blog（404）・/changelog（10月分に記載なし）および GitHub の advisory 一覧には本件の告知が無かった。** そのため引用文面は、**複数の独立した二次情報が同一の文言で伝えているものに依拠している** （discrepancies に self_unverified / no_official_statement として明示した）。 侵入日〈10月16日の夜〉・侵入先が廃止作業中だった旧システムであること・ 影響割合〈Console 利用者の1.4%〉・露出のおそれのある情報・ 推奨対応〈各プロバイダのダッシュボードでの失効と再発行〉・ 「大規模な蒸留攻撃」という位置づけ・「インシデントは進行中」として詳細を控えていること、 および対象者へのメール通知と「メールが届かなかった方は対象外」との説明を記録した。 **母数が公表されていないため影響アカウントの実数は算出していない。** 利用者が自己申告した不正請求額は media_reported とし、 misuse.status を suspected とした。 通知日（10月17日 / 18日朝）・Google を対象に含むか・ 「Console Lite」等の1媒体のみの記述は齟齬に残した</li></ul></div></div>
+<div class="blk " id="s24"><h3>タグ</h3><span class="b tag">OpenCode</span><span class="b tag">OpenCode Console</span><span class="b tag">AI コーディングエージェント</span><span class="b tag">API キー</span><span class="b tag">OpenAI</span><span class="b tag">Anthropic</span><span class="b tag">Google</span><span class="b tag">蒸留攻撃</span><span class="b tag">従量課金</span><span class="b tag">旧システムの退役</span><span class="b tag">シークレット管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-19 17:32 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
