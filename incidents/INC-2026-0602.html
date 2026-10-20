@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>M365 Copilot の SearchLeak 連鎖 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0602</span>M365 Copilot の SearchLeak 連鎖</h1>
+<header class="site-header">
+  <p class="subtitle">Varonis Threat Labs が Microsoft 365 Copilot Enterprise の 脆弱性の連鎖「SearchLeak」（CVE-2026-42824）を公表した。 **細工したリンクを1回クリックさせるだけで、被害者自身の AI アシスタントが メール・MFA のコード・カレンダー・非公開ファイルを集め、 攻撃者のインフラへ送り出す**という連鎖である。 **3つの弱点を組み合わせている**—— **①検索URLの `q` パラメータが検索語ではなく指示として Copilot に渡る 「パラメータからプロンプトへの注入」（P2P）、 ②AI 応答に含まれる `img` タグが出力のサニタイザより先に ブラウザで描画・要求されるレンダリングの競合、 ③CSP が許可している bing.com の画像検索端点が攻撃者指定のURLを サーバ側で取得する SSRF による CSP バイパス**（Varonis）。 **Microsoft は MSRC の更新ガイドで2026年6月4日に CVE を公開し、 「すでに完全に緩和済みで、サービス利用者に必要な対応は無い」とした** ——**サーバ側の修正であり、利用者がパッチを当てる余地が無い。** **MSRC のデータは `Exploited: No`・`Publicly Disclosed: No`、 CVSS 3.1 の基本スコア 6.5（一時 5.7）、CWE-77 であるのに対し、 深刻度のラベルは Critical である**〈齟齬に記録〉 ——**Varonis も「Microsoft は最大深刻度の critical と評価した」と記述している。** **本記録がこの事案を立てたのは、Cyber Defense Magazine の論説 （2026年10月16日・Kiteworks の最高戦略責任者による寄稿）が 「パッチは建物の壁が無いまま扉を1つ閉めただけだ」として、 AI アシスタントが利用者の権限をそのまま継承する設計そのものを 論点に据えたためである**（本記録の整理）。 **ただし同論説の「検知できない」という主張は、実測ではなく 論説上の主張である**（本記録の明記）</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が止まり調査も完了</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年6月4日（MSRC が CVE を公開）</span>
+  <span>最終更新: 2026年10月20日</span>
+</div>
+
+<div class="lead"><p><strong>権限のある利用者が、権限のある道具に、権限のあるデータを取らせた——それが持ち出しになった事案です。</strong></p>
+<p>Varonis Threat Labs が公表した <strong>SearchLeak（CVE-2026-42824）</strong> は、Microsoft 365 Copilot Enterprise の検索機能を狙う脆弱性の連鎖です。被害者が細工されたリンクを1回クリックすると、<strong>その人の Copilot が、その人の権限で、メール・MFA のコード・会議の詳細・非公開ファイルを集め、外部へ送り出します。</strong></p>
+<p><strong>3つの弱点が重なっています</strong>（Varonis の記述）。</p>
+<ol>
+<li><strong>P2P 注入</strong> — 検索URLの <code>q</code> パラメータが、検索語ではなくCopilot への指示として解釈される</li>
+<li><strong>レンダリングの競合</strong> — AI 応答の <code>img</code> タグが、出力のサニタイザが働く前にブラウザから要求される</li>
+<li><strong>CSP バイパス</strong> — CSP が許可している bing.com の画像検索端点が、攻撃者指定のURLをサーバ側で取得する（SSRF）</li>
+</ol>
+<p><strong>Microsoft は2026年6月4日に CVE を公開し、「すでに完全に緩和済み。サービス利用者に必要な対応は無い」としました</strong>（MSRC）。サーバ側の修正で、利用者が当てるパッチはありません。</p>
+<p><strong>本記録が立てた理由は、修正そのものではありません。</strong> 2026年10月16日の論説（Cyber Defense Magazine・Kiteworks の最高戦略責任者による寄稿）が、<strong>「AI アシスタントは利用者の認証をそのまま受け継ぎ、独立したアクセス統制の層が無い」</strong>という設計を論点に据えたためです。<strong>本記録は、この指摘のうち「設計の記述」は資料で裏が取れる事実、「検知できない」という評価は論説上の主張として、分けて扱います</strong>（本記録の方針）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>Varonis が Microsoft へ報告した日と協調開示の経過</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した Varonis のブログには開示タイムラインの節が無い** （本記録の確認）。 **MSRC にも謝辞の記載が無い。** **したがって「報告から修正まで何日かかったか」は測れない** ——**対応の速さを評価する材料が無い。**</div></li><li><span class=ui>Microsoft が実際に行った修正の内容</span><span class="b rsn">公表されていない</span><div class=sm>**MSRC は「すでに完全に緩和済み。利用者に必要な対応は無い」と 述べるにとどまる**（原文英語）。 **3つの弱点のうちどれを直したのか、 設計（AI の権限継承）に手を入れたのかは分からない**（本記録の確認） ——**論説が「パッチは壁が無い建物の扉を1つ閉めただけだ」と 述べる根拠もここにある**</div></li><li><span class=ui>影響を受けた期間・テナントの範囲・日本の組織への影響</span><span class="b rsn">公表されていない</span><div class=sm>**脆弱性がいつから存在したか、 どのテナント・どの地域が影響を受けうる状態だったかは 公表されていない**（本記録の確認）。 **日本の組織が影響を受けたかどうかも分からない。** **日本との関係を「有名事象として記録」の扱いにしたのは このためである**（本記録の判断） ——**M365 Copilot は日本でも広く使われているが、 「使われている」ことは「影響を受けた」ことの根拠にならない。**</div></li><li><span class=ui>利用者が自社の影響を事後に確認する方法</span><span class="b rsn">公表されていない</span><div class=sm>**MSRC も Varonis も、監査ログで確認する手順や 検知指標を示していない**（本記録の確認）。 **修正前の期間に悪用されたかを、 利用者が自力で確かめる材料は示されていない。**</div></li><li><span class=ui>NVD の評価（スコア・ベクタ・CWE）</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は NVD の当該ページを取得できなかった** （2026年10月20日。トップページが返り、CVE の詳細が得られなかった） 〈齟齬3〉。 **検索結果には NVD が 7.5 と評価し、 利用者の操作を不要（UI:N）としたという記述があったが、 本記録は裏を取れていない** ——**MSRC（6.5・UI:R）と食い違うため、 確認できない値は本文に採らない**（本記録の方針）</div></li><li><span class=ui>Cloud Security Alliance による位置づけ（Copilot に対する3件目の持ち出し連鎖）</span><span class="b rsn">探索したが未発見</span><div class=sm>**検索結果には、Cloud Security Alliance が本件を 「2025年6月の EchoLeak（CVE-2025-32711）、Reprompt に続く 3件目のワンクリック／ゼロクリック持ち出し連鎖」と 位置づけたという記述があったが、 当該ページは取得できなかった（HTTP 404）**（本記録の確認）。 **したがって本記録は、過去の類似事案との件数の比較を採らない。**</div></li><li><span class=ui>「従来の検知手段では捉えられない」という評価の実測根拠</span><span class="b rsn">検証できない</span><div class=sm>**論説（出典3）は SIEM・振る舞い分析・DLP・CASB・ ゼロトラストのいずれも捉えないと述べているが、 実験・実測の記述は無い**（本記録の確認）〈齟齬4〉。 **Microsoft・Varonis も検知可能性について述べていない。** **本記録は、これを論説上の主張として扱い、 事実として記載しない**（本記録の方針）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Microsoft</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Varonis Threat Labs</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Microsoft 365 Copilot Enterprise を利用する組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>連鎖した弱点の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>**Varonis が示した3つである**—— **①`q` パラメータからのプロンプト注入（P2P）、 ②出力サニタイザより先に `img` の要求が飛ぶレンダリングの競合、 ③CSP が許可する bing.com の画像検索端点を使った SSRF。** **論説は「3つの弱点。どれも単独では重大ではない。 組み合わせると、被害者の AI アシスタントが 取得して転送する代理人に変わった」と要約している** （原文英語。本記録の訳。出典3）</div></div><div class=fig><div class=fh><span class=fl>成立に必要な被害者の操作（クリック）の回数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1<span class=fu>回</span></div><div class=fn>**細工した Copilot Search のリンクを1回クリックさせる** （Varonis・出典3）。 **MSRC の CVSS ベクタも `UI:R`（利用者の操作が必要）である。** **「ワンクリック」は無操作（ゼロクリック）ではない** （本記録の明記）——**フィッシングと同じく、 リンクを踏ませる工程が攻撃者に要る**</div></div><div class=fig><div class=fh><span class=fl>野外での悪用として公表されている件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>0<span class=fu>件</span></div><div class=fn>**MSRC は `Exploited: No`・`Publicly Disclosed: No` と記載している** （本記録が API 経由で確認）。 **Varonis も野外での悪用に言及していない。** **「0件」は「公表されていない」ではなく 「悪用は無いと記載されている」である**（本記録の整理） ——**ただし検知の難しさを論じた出典3の主張が正しければ、 悪用の有無を観測で確かめる手段そのものが乏しいことになる** （本記録の留保）</div></div><div class=fig><div class=fh><span class=fl>CVE の公開から Varonis の技術解説までの日数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>11<span class=fu>日</span></div><div class=fn>**2026年6月4日（MSRC の公開）から2026年6月15日 （Varonis のブログの最終更新日）までを本記録が算出した。** **ブログの初回公開日が示されていないため approx とした** （本記録の留保）——**最終更新日は初回公開日と同じとは限らない**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**公表されているのは、①細工した Copilot Search のURLを1回クリックさせる ②`q` パラメータの内容が Copilot への指示として実行される ③Copilot が利用者の権限でメール・カレンダー・ファイルを集める ④AI 応答に埋め込まれた `img` の要求が、サニタイザより先に飛ぶ ⑤送出先が CSP で許可された bing.com の画像検索端点であるため ブラウザの制御を踏まずに外部へ届く、の5段である**（Varonis）。 **実際の被害は公表されていない**——**MSRC は `Exploited: No`。** **本記録は、研究として示された経路と、 論説が加えた評価（検知できない・設計が前提）を分けて記す** （本記録の方針）</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**攻撃者が用意した Copilot Enterprise Search のURLを、 被害者が1回クリックする**（Varonis）。 **URLの `q` パラメータに攻撃者の指示が埋め込まれている**</div><div class=fn>根拠: Varonis Threat Labs のブログ（最終更新 2026年6月15日）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**`q` パラメータの内容が検索語ではなく指示として扱われ、 Copilot が攻撃者の指示に従う** （パラメータからプロンプトへの注入・P2P）。 **さらに AI 応答に含まれる `img` タグが、 出力のサニタイザが働く前にブラウザで描画・要求される （レンダリングの競合状態）**</div><div class=fn>根拠: Varonis Threat Labs のブログ</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**Copilot が利用者の権限で情報を集める。** **Varonis が挙げた取得されうるデータは、 メールの件名と本文、セキュリティコードやワンタイムパスワード・ パスワード再設定リンク、会議の詳細（参加者・議題・メモ・場所・日時）、 Copilot がインデックスした SharePoint・OneDrive の非公開ファイル、 通信のメタデータである** ——**一部は実証で取得された例、一部は潜在的な影響として 挙げられたものである**（本記録の区別）</div><div class=fn>根拠: Varonis Threat Labs のブログ</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**集めた内容が、CSP で許可されている bing.com の画像検索端点を 経由して外部へ送られる（SSRF による CSP バイパス）。** **送出が「信頼された Microsoft のドメイン」への要求として 見えるため、ブラウザ側の制御を踏まない**（Varonis）</div><div class=fn>根拠: Varonis Threat Labs のブログ</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>CVE の公開から研究者の技術解説まで</div><div class=mv>11日（2026年6月4日→2026年6月15日。本記録の算出。ブログの初回公開日が示されていないため幅がありうる）</div></div><div class=met><div class=ml>報告から修正まで</div><div class=mv>算出できない。Varonis の報告日が公表されていない。確認できるのは「CVE 公開時点で緩和済みだった」ことだけである</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Microsoft は、サーバ側の緩和を完了したあとに CVE を公開した** （2026年6月4日。公開時点で「利用者の対応は不要」）。 **MSRC は「透明性を高めるために CVE を公開した」と説明している** （原文英語）</div><div class=fn><b>トレードオフ:</b> **修正後の公開は、悪用の誘発を避ける代わりに、 利用者が修正前の期間について自己点検する機会を失わせる** （本記録の評価）</div></li><li><div class=ui>**MSRC は深刻度のラベルを Critical としつつ、 CVSS 基本スコアを 6.5（通常の区分では Medium 相当）とした** ——**この不一致についての説明は無い**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **ラベルを高く置くことで注意を促せるが、 スコアを使う自動化との整合が崩れる**（本記録の評価）</div></li></ul></div>
+<section id="s6"><h2>単独では重大でない3つの弱点が、1回のクリックで持ち出しの経路になった<span class="b slot">原因・手口</span></h2><p><strong>Varonis Threat Labs が示した連鎖の構造です。</strong></p>
+<ol>
+<li><strong>P2P 注入（パラメータからプロンプトへの注入）</strong> — Copilot Enterprise Search のURLの <code>q</code> パラメータの内容が、検索語ではなく <strong>Copilot が従う指示</strong>として扱われます。</li>
+<li><strong>レンダリングの競合状態</strong> — AI の応答に含まれる <code>img</code> タグが、<strong>出力のサニタイザが働く前に</strong>ブラウザで描画・要求されます。</li>
+<li><strong>Bing SSRF による CSP バイパス</strong> — CSP が許可している <strong>bing.com の画像検索端点</strong>が、攻撃者の指定したURLを<strong>サーバ側で取得</strong>します。</li>
+</ol>
+<p><strong>論説（出典3）はこれを次のように要約しています</strong>（原文英語。本記録の訳）。<strong>「3つの弱点。どれも単独では重大ではない。組み合わせると、被害者の AI アシスタントが、正規の資格情報のもとで、信頼されたインフラを通って、認可されたデータにアクセスする『取得して転送する代理人』に変わった」。</strong></p>
+<p><strong>取得されうるデータとして Varonis が挙げているのは次のとおりです。</strong>メールの件名と本文、メールに含まれうるセキュリティコード・ワンタイムパスワード・パスワード再設定リンク、会議の詳細（参加者・議題・メモ・場所・日時）、Copilot がインデックスした SharePoint・OneDrive の非公開ファイル、通信のメタデータ。<strong>このうち一部は実証で取得された例、一部は潜在的な影響として挙げられたものです</strong>（本記録の区別）。</p>
+<p><strong>なお「ワンクリック」はゼロクリックではありません</strong>（本記録の明記）。MSRC の CVSS ベクタも <code>UI:R</code>（利用者の操作が必要）です。<strong>攻撃者には、リンクを届けて踏ませる工程が残っています。</strong></p></section>
+<section id="s7"><h2>Microsoft は修正を終えてから CVE を出し、利用者の作業は無いとした<span class="b slot">再発防止</span></h2><p><strong>MSRC の更新ガイド（本記録が API 経由で取得）の内容です。</strong></p>
+<ul>
+<li><strong>CVE</strong>: CVE-2026-42824</li>
+<li><strong>タイトル</strong>: M365 Copilot Information Disclosure Vulnerability</li>
+<li><strong>公開日</strong>: 2026年6月4日 07:00（UTC-07:00）。<strong>リビジョンは1のみ</strong></li>
+<li><strong>CVSS 3.1</strong>: 基本 <strong>6.5</strong>／一時 <strong>5.7</strong>（<code>CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N/E:U/RL:O/RC:C</code>）</li>
+<li><strong>深刻度ラベル</strong>: <strong>Critical</strong>〈齟齬1〉</li>
+<li><strong>CWE</strong>: CWE-77</li>
+<li><strong>Exploited</strong>: No／<strong>Publicly Disclosed</strong>: No</li>
+<li><strong>FAQ</strong>: <strong>「Microsoft はすでにこの脆弱性を完全に緩和しており、サービスの利用者に必要な対応は無い。CVE は透明性を高めるために公開した」</strong>（原文英語。本記録の訳）</li>
+</ul>
+<p><strong>利用者が当てるパッチは存在しません。</strong>サービス側の修正なので、気づかないうちに直っています。</p>
+<p><strong>ここに2つの読みどころがあります</strong>（本記録の評価）。</p>
+<p><strong>1つ目。深刻度のラベル（Critical）と基本スコア（6.5）が一致していません。</strong> 6.5 は通常の区分では Medium 相当です。Varonis も「Microsoft は最大深刻度の critical と評価した」と書いており、ラベル側と整合します。<strong>本事案は利用者の作業が不要なので実務上の影響は小さいものの、同じ食い違いが利用者側の対応を要する脆弱性で起きると、スコアで拾う運用とラベルで拾う運用で優先度の結論が逆になります。</strong></p>
+<p><strong>2つ目。公表されたのは「直った」という事実だけです。</strong>影響を受けていた期間、影響を受けうるテナントの範囲、そして<strong>修正前に悪用されたかを利用者が確かめる方法</strong>は、いずれも示されていません〈未確定4〉。<strong>「作業が無い」ことと「影響が無かった」ことは別です</strong>（本記録の明記）。</p></section>
+<section id="s8"><h2>持ち出しが検知に現れないという評価は、論説の主張であって測定ではない<span class="b slot">評価・解釈</span></h2><p><strong>本記録が出典を分けて扱っている箇所です。</strong>見出しを「〜ではない」と断定ではなく評価の形にしたのは、反対の実測も示されていないためです。</p>
+<p><strong>論説（出典3・2026年10月16日・Cyber Defense Magazine）の主張</strong>:</p>
+<ul>
+<li><strong>「検知は何も見なかった。アクセスは認可されていた。要求元は正規だった。送出先は通過中の Microsoft のドメインだった。あらゆる経験則が『これは通常の AI 支援業務だ』と告げた」</strong>（原文英語。本記録の訳）</li>
+<li><strong>SIEM・振る舞い分析</strong> — AI を介した持ち出しは異常として現れない</li>
+<li><strong>DLP・CASB</strong> — 送った量が小さく、宛先が未知の外部ドメインでもない</li>
+<li><strong>ゼロトラスト（ネットワーク層の実装）</strong> — 利用者の身元も端末の状態もセッションも正当だった</li>
+</ul>
+<p><strong>本記録の整理です。</strong> <strong>①「経路の記述」は Varonis の技術解説で裏が取れます</strong> ——送出先が bing.com であること、アクセスが利用者の権限で行われること。<strong>②「検知できない」という評価は、論説の主張です。</strong>実験・実測の記述はなく、Microsoft も Varonis も検知の可否に触れていません〈齟齬4〉。<strong>③寄稿者は AI データガバナンス製品を扱う企業（Kiteworks）の最高戦略責任者です</strong>〈齟齬5〉。提案されている対策（データ層での属性ベースのアクセス制御、AI のアクセスを人と同じ精度で監査する）は、同社の事業領域に沿います。</p>
+<p><strong>では読者は何をすべきか</strong>（本記録の主張）。<strong>主張の真偽を論じるより、自組織で確かめられる形に落とすことです。</strong> <strong>Copilot（あるいは自社が使っている AI 機能）の監査ログを実際に引き、「要求の出所」「参照した範囲」「外部への要求先」が残るかを見てください。</strong>残らないなら、それは主張の当否とは無関係に、自組織の可視性の欠落です。</p></section>
+<section id="s9"><h2>論点の中心は、AI が利用者の権限をそのまま継承する設計にある<span class="b slot">評価・解釈</span></h2><p><strong>ここは論説の記述と本記録の評価が重なる部分です。</strong></p>
+<p><strong>論説の記述</strong>（原文英語。本記録の訳）: <strong>「AI は利用者の権限を継承する。利用者があるメールにアクセスできるなら、AI もそのメールにアクセスでき、要約でき、検索でき——誰かが指示を注入する方法を見つけたなら——持ち出せる。利用者の認証が AI の認証である。利用者が認可されている範囲と、AI がその範囲に対して指示されうることの間に、独立したアクセス統制の層が無い」。</strong> <strong>「これは意図的なアーキテクチャ上の選択だった。導入を容易にし、道具をより高性能にした。そして SearchLeak が企業規模で実証した攻撃面も作った」。</strong></p>
+<p><strong>本記録の評価を3点書きます。</strong></p>
+<p><strong>1. 権限の継承は、脆弱性ではなく前提です。</strong>だから修正（6月4日）では消えません。<strong>閉じたのは注入の入口の1つであり、「注入が成立したら利用者の権限がすべて使われる」という性質はそのまま残っています。</strong></p>
+<p><strong>2. 注入面は、URLパラメータだけではありません。</strong>論説は「AI が要約する文書、埋め込まれた敵対的な内容を含む共有ファイル、連携で取り込むデータ源」を挙げ、<strong>「攻撃者が制御する内容が AI の指示文脈に届く入力経路は、すべて注入面になりうる」</strong>としています。<strong>自社で AI 機能を作る側には、外部由来の文字列が指示文脈に入る経路の一覧が要ります</strong>（本記録の主張）。</p>
+<p><strong>3. 統制の置き場所が変わります。</strong> <strong>検知の層（異常を見つける）では間に合わず、方針の層（そもそも読ませない・渡さない）で決める必要がある</strong>というのが論説の提案です。<strong>本記録はこの方向を妥当と評価しますが、「MFA のコードへの AI の問い合わせを方針で弾く」という説明は、実装の難易度に触れていません</strong>（本記録の留保）。データの分類（どの情報が機微か）が済んでいない組織では、方針の層そのものが動きません。</p></section>
+<section id="s10"><h2>日本の組織への影響は公表されていない——使っていることは影響の根拠にならない<span class="b slot">被害規模・影響範囲</span></h2><p><strong>本記録が日本との関係を「有名事象として記録」の扱いにした理由です。</strong></p>
+<p><strong>公表されていないこと</strong>（本記録の確認）:脆弱性が存在した期間、影響を受けうるテナントの範囲、地域別の内訳、日本の組織が影響を受けたかどうか。</p>
+<p><strong>Microsoft 365 Copilot は日本でも広く導入されていますが、「使っている」ことは「影響を受けた」ことの根拠になりません</strong>（本記録の明記）。MSRC は <code>Exploited: No</code> としており、野外での悪用は公表されていません。</p>
+<p><strong>したがって日本の読者にとっての意味は、被害の有無ではなく「自社の AI 導入が同じ前提の上に立っていないか」の点検です</strong>（本記録の評価）。具体的には次の4つを自社で確かめられます。</p>
+<ul>
+<li><strong>AI が読める範囲</strong>を、利用者の権限とは別に一覧化できるか</li>
+<li><strong>AI の取得・送出</strong>が監査ログにどの粒度で残るか</li>
+<li><strong>MFA のコード・再設定リンク</strong>が、AI が読めるメールに残っていないか</li>
+<li><strong>社外から届いた文書・リンクを AI に読ませる</strong>場面について、規程に記述があるか</li>
+</ul>
+<p><strong>いずれも、本事案の被害の有無とは無関係に答えが出ます</strong>（本記録の主張）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>Microsoft 365 Copilot Enterprise の検索機能（Copilot Enterprise Search）。 サービス側の実装であり、利用者が導入する版の概念が無い（出典1・2）。 連鎖の出口に使われたのは、CSP が許可していた bing.com の画像検索端点である（出典1）。</td></tr><tr><th>finding_name</th><td>SearchLeak（Varonis Threat Labs による命名）。 MSRC のタイトルは「M365 Copilot Information Disclosure Vulnerability」（原文英語・出典2）。</td></tr><tr><th>直接原因</th><td>3段の組み合わせである（出典1）。 ①Copilot Enterprise Search のURLの `q` パラメータの内容が、 検索語ではなく Copilot が従う指示として扱われる（パラメータからプロンプトへの注入）。 ②AI の応答に含まれる `img` タグが、出力のサニタイザが働く前に ブラウザで描画・要求される（レンダリングの競合状態）。 ③CSP で許可されている bing.com の画像検索端点が、 攻撃者が指定したURLをサーバ側で取得する（SSRF）ため、 データの送出先が「信頼されている Microsoft のドメイン」になり、 ブラウザ側の制御を踏まない。 **論説（出典3）はこれに前提条件を1つ加えている**—— **AI が利用者の権限をそのまま継承し、独立したアクセス統制の層が無いため、 注入が成立すれば利用者が読めるものはすべて読める**（原文英語。本記録の訳）。</td></tr><tr><th>CVE番号</th><td>CVE-2026-42824</td></tr><tr><th>cvss</th><td><b>base_score:</b> 6.5　<b>temporal_score:</b> 5.7　<b>vector:</b> CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N/E:U/RL:O/RC:C　<b>severity:</b> Critical　<b>authentication_required:</b> いいえ　<b>source:</b> MSRC 更新ガイド（Microsoft 提供のベクタ）　<b>補足:</b> **深刻度のラベル（Critical）と基本スコア（6.5。通常の区分では Medium 相当）が 一致していない**〈齟齬1〉。 Varonis も「Microsoft は最大深刻度の critical と評価した」と記述している（出典1）。 ベクタは機密性のみ High（C:H / I:N / A:N）で、利用者の操作が必要（UI:R）、 悪用コードの状況は未確認（E:U）、公式修正あり（RL:O）、報告の確度は確認済み（RC:C）。 CWE は CWE-77（コマンドインジェクション）とされている（出典2）。 **検索結果には NVD が 7.5 と評価し利用者操作を不要（UI:N）としたという記述があったが、 本記録は NVD の当該ページを取得できていない**〈齟齬3〉。</td></tr><tr><th>affected_versions</th><td><ul class=cl><li>Microsoft 365 Copilot（MSRC のタグは「M365 Copilot」。個別の版・構成の記載は無い）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>exploit_conditions</th><td><ul class=cl><li>被害者が Microsoft 365 Copilot Enterprise を利用しており、攻撃者が用意した Copilot Search のURLを1回クリックする（UI:R）</li><li>攻撃者側の事前の認証は不要（PR:N）。細工したリンクを届ける手段（メール・チャット・共有文書など）が要る</li><li>持ち出せる範囲は、クリックした利用者が読める範囲（AI が利用者の権限を継承するため・出典3）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>patch_status</th><td>修正済み。MSRC の FAQ は「Microsoft はすでにこの脆弱性を完全に緩和しており、 サービスの利用者に必要な対応は無い。CVE は透明性を高めるために公開した」としている （原文英語・出典2）。サーバ側の修正であり、利用者が当てるパッチは存在しない。 MSRC のリビジョンは1のみで、以後の改訂は無い（本記録の確認）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月20日（本記録の確認時点）</td></tr><tr><th>exploit_status</th><td>MSRC は `Exploited: No`・`Publicly Disclosed: No` と記載している（出典2）。 Varonis も野外での悪用に言及しておらず、研究としての実証である（出典1）。 実証コードの公開は本記録の作成者も確認していない。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月20日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> stated　<b>時点:</b> 2026年10月20日（本記録の確認時点）　<b>詳細:</b> **悪用の有無は公表されている**——**MSRC が `Exploited: No` と明示している** （本記録が API 経由で確認）。 **したがって本事案は「被害が起きた記録」ではなく「起こりうる経路の記録」である** （本記録の整理）。 **ただし出典3は、この種の持ち出しが 「AI が期待どおりに動いている状態と区別できない」ため 異常として現れないと主張している**（原文英語。本記録の訳） ——**この主張が正しければ、`Exploited: No` は 「観測した結果として無い」ではなく 「観測の手段が無いため見えていない」可能性を含む**（本記録の留保）。 **本記録はこの留保を明記するが、 Microsoft が観測方法について述べた公表は無い。**</td></tr><tr><th>ログの有無</th><td>公表されていない</td></tr><tr><th>再発防止策</th><td><ul class=cl><li>サーバ側で修正済みのため、利用者側の作業は不要（MSRC の記述）</li><li>AI アシスタントの取得・送出に関する監査記録を、人の操作と同じ粒度で残す（本記録の評価。公表された対策ではない）</li><li>CSP の許可ドメインに、サーバ側で任意のURLを取得できる端点が含まれていないかを設計時に確認する（本記録の評価）</li><li>ワンタイムパスワード・パスワード再設定リンクをメール本文に置く運用を見直す（本記録の評価。本連鎖で取得対象に挙がっている）</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期は公表されていない（2026年6月4日より前）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**Varonis Threat Labs が連鎖を発見し、Microsoft へ報告した。** **報告日・協調開示の経過は、本記録が取得した資料には 記載が無い**〈未確定1〉。 **本記録は「CVE の公開（6月4日）より前」としか書けない** （本記録の確認）</td></tr><tr><td class="sm nowrap tw">2026年6月4日 07:00（UTC-07:00）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**MSRC が CVE-2026-42824 を公開した** （「M365 Copilot Information Disclosure Vulnerability」）。 **公開時点で「すでに完全に緩和済み。利用者に必要な対応は無い」と 記載されている**（原文英語） ——**サーバ側の修正であり、利用者が当てるパッチは存在しない。** **リビジョンは1のみで、以後の改訂は無い**（本記録の確認）</td></tr><tr><td class="sm nowrap tw">2026年6月15日（ブログの最終更新日）</td><td class=nowrap><span class="b kind">公表</span></td><td>**Varonis Threat Labs が技術解説を公表した**（最終更新日。 初回公開日はページに示されていない）。 **3つの弱点（P2P 注入・レンダリングの競合・Bing SSRF による CSP バイパス）と、取得されうるデータの種類 （メールの件名と本文、セキュリティコードやワンタイムパスワード、 会議の詳細、SharePoint・OneDrive の非公開ファイル、 通信のメタデータ）がここで示された**</td></tr><tr><td class="sm nowrap tw">2026年10月16日 15:00 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Cyber Defense Magazine が論説を掲載した** （Kiteworks 最高戦略責任者 Tim Freestone による寄稿）。 **「インシデントが話の本体ではない。それを可能にした アーキテクチャが本体である」として、 AI アシスタントが利用者の権限をそのまま継承する設計を論点に据えた** （原文英語。本記録の訳）。 **同論説は「Microsoft は6月4日に修正した」と記述しており、 MSRC の CVE 公開日と一致する** ——**一方で「先週 Varonis が公表した」という記述は、 6月15日の公表と合わない**〈齟齬2〉</td></tr><tr><td class="sm nowrap tw">2026年10月20日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**【本記録の観測】一次資料を取得して裏を取った。** **MSRC の更新ガイド（API 経由）で公開日・CVSS・CWE・ `Exploited: No`・緩和済みの記述を確認し、 Varonis のブログで3つの弱点と取得されうるデータの種類を確認した** （出典1・2）。 **NVD の当該ページは取得できなかった**〈齟齬3〉 ——**検索結果には NVD が 7.5 と評価したという記述があったが、 本記録は裏を取れていない。** **Cloud Security Alliance が本件を「2025年6月以降 Copilot に対する3件目のワンクリック／ゼロクリック持ち出し連鎖」と 位置づけたという記述も、当該ページを取得できず確認できていない**</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**MSRC の更新ガイドは、CVSS 3.1 基本スコア 6.5・一時スコア 5.7 （ベクタ CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N/E:U/RL:O/RC:C） を示しながら、深刻度のラベルを Critical としている** （本記録が API 経由で確認）。 **6.5 は通常の区分では Medium 相当である。** **Varonis も「Microsoft は最大深刻度の critical と評価した」と 記述しており、ラベル側と整合する**（出典1）。 **本記録はどちらかを正とせず、両方を記載した**（本記録の判断） ——**スコアで優先度を機械的に決める運用と、 ラベルで決める運用で結論が逆になる。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><div class=sm>**出典3（2026年10月16日掲載）は 「Varonis Threat Labs disclosed CVE-2026-42824 last week」 （Varonis Threat Labs は先週 CVE-2026-42824 を公表した）と 記述している**（原文英語）。 **しかし MSRC の CVE 公開は2026年6月4日、 Varonis のブログの最終更新は2026年6月15日である** （本記録が一次資料で確認）。 **「先週」は4か月のずれであり、本記録は採らない。** **一方、同論説の「Microsoft は6月4日に修正した」という記述は MSRC の公開日と一致する**（本記録の確認） ——**日付の記述が内部で食い違っている。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録は NVD の CVE 詳細ページ（トップページが返った）と Cloud Security Alliance の研究ノート（HTTP 404）の いずれも取得できなかった**（本記録の明記）。 **検索結果の要約には「NVD は 7.5・UI:N」 「CSA は Copilot に対する3件目の連鎖と位置づけ」という記述が あったが、原文を確認できていないため本文に採らない** ——**検索結果の要約を一次資料の代わりにしない**（本DBの方針）</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**「この攻撃は検知できない」という評価は出典3の主張である** （本記録の整理）。 **MSRC の記述は緩和済みであることと利用者の対応が不要であること、 Varonis の記述は3つの弱点と取得されうるデータの種類にとどまり、 どちらも検知の可否・検知指標に触れていない**（本記録の確認）。 **本記録は攻撃の解剖で「現実的な検知機会がなかった」と 記した段があるが、 その根拠は論説の主張と本記録の評価であり、 当事者の公表ではない**（本記録の明記）</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**出典3の寄稿者は Kiteworks の最高戦略責任者 Tim Freestone であり、 記事末尾の著者紹介は「AI ガバナンス・データセキュリティ・ 規制対応の交差点を扱う」と記述している**（原文英語）。 **提案されている対策（データ層での属性ベースのアクセス制御・ AI のアクセスを人と同じ精度で監査する）は、 同社の事業領域に沿っている**（本記録の指摘）。 **本記録は、論点そのものは妥当と評価しつつ、 対策の必要性の主張と測られた事実を分けて記載した** ——**この区別を齟齬として残すのは、 読者が後から出所を辿れるようにするためである**（本記録の判断）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>検索URLのパラメータが指示として実行され、 利用者の権限を継承した Copilot が集めた内容が、 CSP で許可された Microsoft 自身のドメインを通って外へ出る—— 3つの単独では重大でない弱点が1本の経路になった</div><div class=svgwrap><svg viewBox="0 0 1814 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,117.0 C193.0,117.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C703.0,60.0 703.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,111.0 C1417.0,111.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,206.0 C907.0,206.0 907.0,162.0 1648,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,162.0 C1213.0,162.0 1213.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1111.0,213.0 1111.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,213.0 C1315.0,213.0 1315.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,264.0 C703.0,264.0 703.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,213.0 C907.0,213.0 907.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,213.0 C1519.0,213.0 1519.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="80.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（事前の認証は不要</text><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・PR:N）</text><text x="91.0" y="129.0" text-anchor="middle" fill="#f48fb1" font-size="10">細工した Copilot</text><text x="91.0" y="141.0" text-anchor="middle" fill="#f48fb1" font-size="10"> Search のURL</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工したリンク（`q` </text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パラメータに指示を埋め込</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">む）</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">宛先は正規の Micro</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">soft のドメイン。見</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害者（Copilot </text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Enterprise の</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者。クリック1回・…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#8892b0" font-size="10">操作としては通常の検索の</text><text x="499.0" y="193.0" text-anchor="middle" fill="#8892b0" font-size="10">表示にしか見えない</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱点①: `q` が検索</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">語ではなく指示として実行</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">される（P2P 注入）</text><text x="703.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">MSRC の CWE は</text><text x="703.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10"> CWE-77</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">M365 Copilot</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Enterprise（</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者の権限をそのまま…</text><text x="703.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">論説は「利用者の認証が </text><text x="703.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">AI の認証である」と述</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メール本文と件名／MFA</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> のコード・再設定リンク</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／会議の詳細／Shar…</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">一部は実証で取得された例</text><text x="907.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">、一部は潜在的な影響（V</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱点②: `img` の</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">要求が出力サニタイザより</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">先に飛ぶ（レンダリング…</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">サニタイズがあっても順序</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">が逆なら送出は起きる</text><rect x="1240" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱点③: CSP 許可済</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">みの bing.com </text><text x="1315.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">画像検索端点がサーバ側…</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">送出が「信頼された Mi</text><text x="1315.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">crosoft ドメイン</text><rect x="1444" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者のインフラへ到達（</text><text x="1519.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部宛先・転送量の検知に</text><text x="1519.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">現れにくい）</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">論説の主張。実測された検</text><text x="1519.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">知率は示されていない</text><rect x="1648" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1723.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Microsoft: 2</text><text x="1723.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">026/6/4 CVE-</text><text x="1723.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026-42824 …</text><text x="1723.0" y="181.0" text-anchor="middle" fill="#b0bec5" font-size="10">基本 6.5／一時 5.</text><text x="1723.0" y="193.0" text-anchor="middle" fill="#b0bec5" font-size="10">7、ラベルは Criti</text><rect x="16" y="168.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Varonis Thre</text><text x="91.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">at Labs: 発見・</text><text x="91.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">命名・2026/6/1…</text><text x="91.0" y="231.0" text-anchor="middle" fill="#80cbc4" font-size="10">報告日は公表されていない</text><rect x="1036" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策①: 出力のサニタイ</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ズを描画より先に完了させ</text><text x="1111.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">本記録の評価。Micro</text><text x="1111.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">soft の修正内容は非</text><rect x="1240" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策②: CSP 許可先</text><text x="1315.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に SSRF 可能な端点</text><text x="1315.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">が無いか点検する</text><text x="1315.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">本記録の評価。自社サービ</text><text x="1315.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">スにも同じ点検が要る</text><rect x="628" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策③: AI を独立し</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">た主体として扱うアクセス</text><text x="703.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">統制（属性ベース）</text><text x="703.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">論説の中心的な提案。寄稿</text><text x="703.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">者は AI データガバナ</text><rect x="832" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策④: MFA コード</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・再設定リンクをメール本</text><text x="907.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">文に残さない</text><text x="907.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">本記録の評価。AI が読</text><text x="907.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">める場所に認証要素を置か</text><rect x="1444" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策⑤: AI の取得・</text><text x="1519.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">送出を人の操作と同じ粒度</text><text x="1519.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で監査ログに残す</text><text x="1519.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">本記録の評価。検知指標は</text><text x="1519.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">公表されていない</text></svg></div><div class=fn>Varonis Threat Labs のブログ（最終更新 2026年6月15日）、 MSRC 更新ガイドの CVE-2026-42824（2026年6月4日公開・本記録が API 経由で取得）、 および Cyber Defense Magazine の論説（2026年10月16日）にもとづく。 **実線は公表資料で確認できる経路、 点線は本記録の評価にもとづく対策である。** **野外での悪用は公表されていない（MSRC は `Exploited: No`）。** **Microsoft の修正内容は公表されていない。** **「検知できない」という評価は論説の主張であり、 Microsoft・Varonis の記述ではない。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**リンクを踏ませる工程は、フィッシング対策と同じ場所で 止められる余地がある**（本記録の評価） ——**ただし宛先は正規の Microsoft のドメインであり、 URLの見た目で怪しいと判断できない。** **公表資料にはこの段の検知についての記述が無い**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）。 **利用者から見れば通常の検索結果の表示である**（本記録の評価）</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**この段のアクセスは、利用者本人の権限で行われる正規のアクセスである** （本記録の評価）。 **論説は「アクセスは認可されていた。要求元は正規だった。 あらゆる経験則が『これは通常の AI 支援業務だ』と告げた」と 述べている**（原文英語。本記録の訳。出典3） ——**ただしこれは論説の主張であり、 Microsoft や Varonis が検知可能性について述べた記述は無い** 〈齟齬4〉</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**宛先が正規ドメインであるため、 未知の外部ドメインを見る検知には現れない**（本記録の評価）。 **論説は、送った量が小さいため 転送量の閾値にも触れないと述べている**（出典3） ——**本記録はこれを論説の主張として扱う。** **実測された検知率のような材料は示されていない**</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Microsoft は、サーバ側の緩和を完了したあとに CVE を公開した** （2026年6月4日。公開時点で「利用者の対応は不要」）。 **MSRC は「透明性を高めるために CVE を公開した」と説明している** （原文英語）</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**MSRC は深刻度のラベルを Critical としつつ、 CVSS 基本スコアを 6.5（通常の区分では Medium 相当）とした** ——**この不一致についての説明は無い**</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**AI アシスタントの「権限の継承」を、 導入の前提ではなく統制の対象として扱う**</div><div class=lw>**本連鎖で持ち出せた範囲は、 クリックした利用者が読める範囲そのものである**（Varonis）。 **論説は「利用者の認証が AI の認証である。 利用者が認可されている範囲と、AI がその範囲に対して 指示されうることの間に、独立したアクセス統制の層が無い」と 述べている**（原文英語。本記録の訳。出典3）。 **これは不具合ではなく、導入を容易にするための選択だったとされている。**</div><div class=la><b>取るべき行動</b> **①AI アシスタントが読める範囲を、利用者の権限とは別に 一覧化する**（メール・カレンダー・ファイル共有・社内検索・ 連携先のデータ源）。 **②そのうち「AI に読ませる必要が無いもの」を決め、 除外の設定が可能かを製品ごとに確認する。** **③できない場合は、その範囲が注入の射程であることを リスク登録に残す**——**「製品の仕様だから」で終わらせない。**</div></li><li><div class=lp>**サービス側の脆弱性は「作業が無い」ことと 「影響が無かった」ことを分けて記録する**</div><div class=lw>**MSRC は「すでに完全に緩和済み。利用者に必要な対応は無い」と 記述している**（出典2）。 **しかし影響を受けた期間・テナントの範囲・ 悪用の確認方法はいずれも示されていない**（本記録の確認）。 **利用者は自社が影響を受けたかを自力で確かめられない。**</div><div class=la><b>取るべき行動</b> **①クラウドサービスの CVE を受け取ったとき、 「作業の有無」と「自社の影響の有無」を別の欄で記録する。** **②提供者に対し、影響期間と監査ログでの確認方法を 問い合わせる窓口・手順を決めておく** （契約・サポート経路のどちらで聞くか）。 **③回答が得られない場合の扱い（不明として残す）を あらかじめ決める**——**空欄にすると「問題なし」と読まれる。**</div></li><li><div class=lp>**「検知できない」という主張の出所を確かめる習慣を持つ**</div><div class=lw>**本事案を論じた記事（出典3）は、 SIEM・振る舞い分析・DLP・CASB・ゼロトラストのいずれも この攻撃を捉えないと述べている。** **一方、寄稿者は AI データガバナンス製品を扱う企業の 最高戦略責任者であり、主張は自社の事業領域に沿っている** 〈齟齬5〉。 **Microsoft や Varonis が検知可能性について述べた記述は無い** （本記録の確認）。</div><div class=la><b>取るべき行動</b> **①ベンダー寄稿を読むときは、 「測られた事実」と「製品の必要性の主張」を線で分ける。** **②自社環境で確かめられる形に落とす** ——**例: Copilot の検索・取得の監査ログが どの粒度で残るかを実際に引いてみる。** **③残らないことが分かったら、それをリスクとして記録する** （主張の真偽ではなく、自社の可視性の有無が判断材料である）。</div></li><li><div class=lp>**AI の利用規程に「外部から届いたリンク・文書を AI に渡す」 場面の指示を入れる**</div><div class=lw>**本連鎖の起点は、被害者が踏む1つのリンクである**（Varonis）。 **論説は、同じ原理が AI に要約させる文書や 連携で取り込むデータ源にも当てはまると述べている**（出典3）。 **従来のフィッシング教育は「資格情報を入れない」が中心で、 「AI に読ませない」は含まれていない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①社外から届いた文書・リンクを AI に要約させる行為について、 社内規程の記述を確認する（多くの組織では空白である）。** **②注意喚起の文面を、 「正規ドメインのリンクでも、AI への指示が埋め込まれていることがある」 という形に更新する。** **③事故時の申告経路（AI に変な動きがあったときに誰に言うか）を 決めておく。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**自社サービスの CSP 許可ドメインに、 サーバ側で任意のURLを取得できる端点が無いか点検する**</div><div class=lw>**本連鎖の出口は、CSP が許可していた bing.com の画像検索端点である** （Varonis）。 **許可ドメイン側に SSRF 可能な端点があると、 CSP は持ち出しを止められない**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①CSP の `img-src`・`connect-src`・`frame-src` の許可先を列挙する。** **②各許可先に、URLを引数に取る端点（画像プロキシ・ プレビュー生成・OG 画像取得など）が無いかを確認する。** **③自社が許可先を提供している側なら、 そうした端点を別ドメインへ分離する。**</div></li><li><div class=lp>**出力のサニタイズが「描画より先に」効いているかを実機で確かめる**</div><div class=lw>**本連鎖の②は、AI 応答の `img` タグが 出力サニタイザの前にブラウザから要求されるレンダリングの競合である** （Varonis）。 **サニタイズの実装があっても、順序が逆なら送出は起きる。**</div><div class=la><b>取るべき行動</b> **①ストリーミング表示を行う AI 機能について、 部分応答が DOM に入る時点とサニタイズの時点の順序を確認する。** **②`img`・`link`・`iframe`・CSS の `url()` など、 属性だけで外部要求が飛ぶ要素を一覧にして試験項目にする。** **③試験は「文字が消えるか」ではなく 「要求が飛ぶか」をネットワーク側で見る。**</div></li><li><div class=lp>**AI の取得・送出を、人の操作と同じ粒度で監査ログに残す**</div><div class=lw>**本事案のアクセスは、利用者本人の権限による正規のアクセスとして 記録される**（本記録の評価）。 **MSRC も Varonis も検知指標を示していない**（本記録の確認）。 **ログの粒度が「利用者が検索した」までだと、 「誰の指示で何を取り、どこへ出したか」が残らない。**</div><div class=la><b>取るべき行動</b> **①AI 機能の監査ログに、 要求の出所（利用者の操作かURLのパラメータか）、 参照したデータの範囲、外部への要求先が残るかを確認する。** **②残らない項目を洗い出し、 製品の設定で増やせるか・提供者に要求するかを決める。** **③自前で AI 機能を作る側なら、 この3項目を最初から記録する設計にする。**</div></li><li><div class=lp>**入力の経路を「指示の文脈に届くか」で分類する**</div><div class=lw>**本連鎖の起点はURLパラメータという素朴な入口だった**（出典3）。 **論説は「攻撃者が制御する内容が AI の指示文脈に届く 入力経路は、すべて注入面になりうる」と述べている** （原文英語。本記録の訳）。</div><div class=la><b>取るべき行動</b> **①自社の AI 機能について、 外部由来の文字列が指示文脈に入る経路を列挙する** （URLパラメータ・要約対象の文書・取り込んだメール・ 連携先の API 応答・検索結果）。 **②経路ごとに、指示として解釈されないための処理 （データとしての囲い込み・権限の分離）を決める。** **③「信頼できる社内文書」も、 外部から来た内容を含みうることを前提にする。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> AI アシスタントが利用者の権限をそのまま継承する構成で導入されており、AI 固有のアクセス方針（読める範囲・用途の制限）を持っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社サービス・社内アプリで CSP を使っており、許可ドメインの側にサーバ側でURLを取得する端点が含まれているかを確認していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> AI 機能の監査ログに「要求の出所・参照した範囲・外部への要求先」が残らず、残るかどうかを実際に引いて確かめていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> ワンタイムパスワード・パスワード再設定リンク・一時的な認証コードがメール本文に残る運用で、かつ AI アシスタントがそのメールを読める</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> クラウドサービスの CVE を「利用者の作業の有無」だけで処理し、自社が影響を受けた期間・範囲を記録していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> AI の利用規程に「社外から届いた文書・リンクを AI に読ませる」場面の指示が無い</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年6月4日 07:00（UTC-07:00） Microsoft Security Response Center（MSRC）</span> <a href="https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-42824" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-42824 — M365 Copilot Information Disclosure Vulnerability（更新ガイド）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**提供者の一次公表。** **本記録は2026年10月20日に更新ガイドの API （https://api.msrc.microsoft.com/sug/v2.0/en-US/vulnerability/CVE-2026-42824） から内容を取得した**——**更新ガイドの画面は JavaScript で描画されるため、 クローラでは本文が得られない**（本記録の注記）。 **公開日（2026年6月4日・リビジョン1のみ）、CVSS 3.1 基本 6.5／一時 5.7、 ベクタ、深刻度ラベル Critical、CWE-77、 `Exploited: No`・`Publicly Disclosed: No`、 および FAQ の「すでに完全に緩和済み。サービス利用者に必要な対応は無い。 CVE は透明性のために公開した」の出所である**（原文英語）。 **謝辞の記載は無い**）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年6月15日（ページ上の最終更新日。初回公開日は示されていない） Varonis Threat Labs</span> <a href="https://www.varonis.com/blog/searchleak" target="_blank" rel="noreferrer noopener nofollow">SearchLeak（Microsoft 365 Copilot Enterprise Search の脆弱性連鎖の技術解説）</a> <span class="b kind">ブログ</span><span class=sm>（**発見者による技術解説。本記録が2026年10月20日に取得して確認した。** **3つの弱点（`q` パラメータからのプロンプト注入、 出力サニタイザより先に `img` の要求が飛ぶレンダリングの競合、 CSP が許可する bing.com の画像検索端点を使った SSRF）、 および取得されうるデータの種類（メールの件名と本文、 セキュリティコード・ワンタイムパスワード・パスワード再設定リンク、 会議の詳細、SharePoint・OneDrive の非公開ファイル、 通信のメタデータ）の出所である。** **「Microsoft remediated the vulnerability under CVE-2026-42824 and gave it a max severity rating of critical.」の出所でもある** （原文英語）。 **開示タイムライン（報告日・修正日）の節は無い**〈未確定1〉）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月16日 15:00 UTC Cyber Defense Magazine（寄稿: Tim Freestone・Kiteworks 最高戦略責任者）</span> <a href="https://www.cyberdefensemagazine.com/the-attack-you-cant-detect-ai-assistants-as-exfiltration-infrastructure/" target="_blank" rel="noreferrer noopener nofollow">The Attack You Can&#x27;t Detect: AI Assistants As Exfiltration Infrastructure</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点の記事** 〈output/articles/20261019/0176_cyber-defense-magazine_the-attack-you-cant-detect-ai-assistants-as-exfilt.md〉。 **論説（オピニオン）であり、取材記事ではない**（本記録の明記）。 **「3つの弱点。どれも単独では重大ではない」の要約、 AI が利用者の権限をそのまま継承する設計についての記述 （「利用者の認証が AI の認証である」「意図的なアーキテクチャ上の 選択だった」）、注入面が他の入力経路にも及ぶという指摘、 および SIEM・DLP・CASB・ゼロトラストが捉えないという評価の出所である** （いずれも原文英語）。 **「Microsoft は6月4日に修正した」は MSRC の公開日と一致するが、 「先週 Varonis が公表した」は6月15日の公表と合わない**〈齟齬2〉。 **寄稿者は AI データガバナンス製品を扱う企業の役員であり、 提案される対策は同社の事業領域に沿っている**〈齟齬5〉）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月20日</span> <span class="b rev">新規作成</span> 2026年10月19日収集分の1記事 〈output/articles/20261019/0176_cyber-defense-magazine_the-attack-you-cant-detect-ai-assistants-as-exfilt.md〉を 起点に新規作成した。 **起点が論説（オピニオン）であるため、裏取りを2方向で行った** ——**①発見者 Varonis Threat Labs の技術解説を取得し、 3つの弱点と取得されうるデータの種類を確認した。 ②MSRC の更新ガイドを API 経由で取得し、 CVE の公開日（2026年6月4日）・CVSS（基本 6.5／一時 5.7）・ ベクタ・CWE-77・`Exploited: No`・ 「完全に緩和済み・利用者の対応は不要」を確認した**（出典1・2）。
+**本記録の中心は2つである**（本記録の評価）。 **①単独では重大でない3つの弱点（パラメータからの指示注入・ サニタイズより先に飛ぶ描画要求・CSP 許可ドメインの SSRF）が 1本の経路になり、送出先が Microsoft 自身のドメインになった。** **②修正で閉じたのは入口の1つで、 「AI が利用者の権限をそのまま継承する」という前提は残っている。**
+**事実と評価の分離をこの記録では特に強く行った。** **論説の中心的な主張「この攻撃は検知できない」には 実験・実測の記述が無く、Microsoft も Varonis も 検知可能性に触れていない**〈齟齬4〉 ——**本記録は attack.chain の `detection_opportunity` に `none_realistic` を使った段があるが、 その根拠が論説の主張と本記録の評価であることを note に明記した。** **また寄稿者が AI データガバナンス製品を扱う企業の 最高戦略責任者であることを `authored_inference` の齟齬として残した** ——**提案の妥当性は認めつつ、出所を読者が辿れるようにするため。**
+**齟齬は5件立てた。** **①MSRC のデータ内で深刻度ラベル（Critical）と 基本スコア（6.5＝通常の区分では Medium 相当）が一致しない** ——**どちらかを正とせず両方を記載した。** **②論説の「先週 Varonis が公表した」は4か月のずれであり採らない （同じ記事の「6月4日に修正」は MSRC と一致する）。** **③NVD の CVE 詳細ページと Cloud Security Alliance の研究ノートは 取得できなかった（前者はトップページが返り、後者は404）** ——**検索結果の要約には「NVD は 7.5・UI:N」「CSA は3件目と位置づけ」と あったが、原文を確認できていないため本文に採らない。** **④当事者は検知可能性について沈黙している。** **⑤論説の提案には寄稿者の事業上の立場がある。**
+**数値は4件に絞った**——**弱点3件・クリック1回・ 公表されている悪用0件・CVE 公開から技術解説まで11日。** **CVSS は figures に置かず `detail.cvss` に入れた** ——**スコアは被害の量ではないため、 人数や金額と同じ表に並べない**（本記録の方針）。
+**japan_relevance は overseas-watch とした** ——**影響を受けた期間・テナントの範囲・地域の内訳が いずれも公表されておらず、 日本の組織が影響を受けたという記述も無い。** **「M365 Copilot が日本で広く使われている」ことは 影響の根拠にならない**（本記録の明記） ——**代わりに、自社で確かめられる4つの点検を節に立てた。**
+**status は settled**——**MSRC のリビジョンは1のみで改訂が無く、 修正はサーバ側で完了しており、 本事案そのものに続報が続いていない。** **ただし同種の連鎖が他の企業向け AI 基盤で見つかる可能性は 論説が指摘しており、その場合は別の記録として立てる**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Microsoft 365 Copilot</span><span class="b tag">SearchLeak</span><span class="b tag">CVE-2026-42824</span><span class="b tag">プロンプトインジェクション</span><span class="b tag">SSRF</span><span class="b tag">CSP</span><span class="b tag">生成AI</span><span class="b tag">データ持ち出し</span><span class="b tag">Varonis</span><span class="b tag">MSRC</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-20 09:18 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

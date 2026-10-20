@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>DKIMリプレイでDMARC突破 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0599</span>DKIMリプレイでDMARC突破</h1>
+<header class="site-header">
+  <p class="subtitle">2026年10月中旬から、正規の企業を装うフィッシングメールが送信ドメイン認証（DMARC）を 突破して届く事象が国内で相次ぎ観測された——受信画面には**公式アカウントマークや BIMI によるブランドロゴまで表示**されており、 NTTドコモは一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起して **該当企業の公式アカウント表示を一時停止**した。 日本プルーフポイントは2026年10月18日のブログで、関連する手法を「DKIM リプレイ攻撃」として 「**DKIM の暗号技術自体を破るわけではなく、正規に署名されたメールを再利用して 送信ドメイン認証を通過させる手法**」と解説した。 第三者の公開分析では、**DKIM-Signature の `h=` タグで署名対象が From ヘッダーだけに 限定されていた**点が指摘されており、署名対象外の Subject や Content-Type を 改変できた可能性がある。**DMARC のポリシーを reject にしていても完全には防げない。**</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">詐欺の手口</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設定不備</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月18日</span>
+  <span>最終更新: 2026年10月19日</span>
+</div>
+
+<div class="lead"><p>2026年10月中旬頃から、送信ドメイン認証の1つである <strong>DMARC</strong>（Domain-based Message Authentication, Reporting &amp; Conformance）を<strong>突破して</strong>正規の企業を装うフィッシングメールが相次いで観測されました。ZDNET Japan が2026年10月19日に報じ、日本プルーフポイントが同年10月18日のブログで手口と対策を解説しています。</p>
+<p>観測された事象の異様な点は、<strong>フィッシングメールにもかかわらず、企業の公式アカウントマークや BIMI（Brand Indicators for Message Identification）によるブランドロゴが受信者側で表示されてしまう</strong>ことです。日本プルーフポイントのブログによれば、<strong>NTTドコモは一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起し、該当企業の公式アカウント表示を一時停止</strong>しています。</p>
+<p>関連する手法は「<strong>DKIM リプレイ攻撃</strong>」と呼ばれます。日本プルーフポイントはこれを「<strong>DKIM の暗号技術自体を破るわけではなく、正規に署名されたメールを再利用して送信ドメイン認証を通過させる手法</strong>」と説明しています。</p>
+<p>要点は、<strong>DKIM が何を検証していないか</strong>です。DKIM で検証されるのはメールに付与された電子署名の正当性であり、<strong>そのメールを送信したサーバーが正規かどうかは確認しません</strong>。攻撃者が正規の DKIM 署名が付与されたメールを入手し、署名の対象を改ざんせずに別のメールサーバーから第三者へ送信すれば、受信側の DKIM 認証は成功しえます。さらに DKIM の署名ドメインと From アドレスのドメインが一致していればDMARC のアライメント条件も満たされ、<strong>DMARC の認証も成功します</strong>。</p>
+<p>第三者の公開分析では、<strong>DKIM-Signature ヘッダー内の <code>h=</code> タグで署名対象が From ヘッダーだけに限定されていた</strong>点が注目されています。署名対象が From のみで Subject（件名）や Content-Type（本文の形式）が含まれていない場合、攻撃者は署名を維持したままこれらのヘッダーを変更できる可能性があります。Content-Type が対象外であれば、<strong>本文自体を変更しなくても MIME の構造定義を変えられ</strong>、メールアプリでの本文の解釈や表示に影響を与えうるとされます。<strong>ただし日本プルーフポイントは、この改変手法が公開分析に基づくもので「関係企業による最終的な原因調査結果ではない」と明記しています。</strong></p>
+<p>防御側にとっての含意は明確です。日本プルーフポイントは<strong>DMARC のポリシーを「reject」に設定していてもDKIM リプレイ攻撃を完全には防げない</strong>と指摘しています。DMARC は SPF か DKIM のいずれかが成功しアライメントも満たせば成功になり、「reject」は<strong>認証に失敗したメールを拒否するポリシー</strong>であって、認証に成功したメールの安全性を保証するものではありません。BIMI も同様で、<strong>送信者が正規であることを視覚的に示す仕組みであって、メールの内容の安全性までを保証するものではありません</strong>。</p>
+<p>本記録は、特定の被害組織の事案ではなく<strong>手口と観測された事象</strong>として記録します。DKIM 署名を悪用された企業の名称・問題メールの総数・被害人数は公表されていません。事実（観測と公表された解説）と評価（本記録の判断）は分けて記述します。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>DKIM 署名を悪用された企業の名称・社数・業種</span><span class="b rsn">公表されていない</span><div class=sm>日本プルーフポイントのブログは「一部企業」とするのみで、 **企業名・社数・業種を示していない。** ZDNET Japan の記事も企業名に触れていない。 **そのため「自社が該当するか」を外部から判断する材料は無く、 各社が自前で DKIM の署名対象を点検するしかない**（本記録の評価）</div></li><li><span class=ui>署名対象が From のみに限定されていたという指摘の確定度</span><span class="b rsn">調査したが確定せず</span><div class=sm>日本プルーフポイントは**第三者の公開情報をもとに**この点を紹介し、 **「関係企業による最終的な原因調査結果ではない」と明記している。** したがって「`h=` が From のみだった」ことは **指摘されている可能性であって、確定した原因ではない。** 本記録はこれを根拠として扱う際に必ずこの留保を併記する</div></li><li><span class=ui>攻撃者が正規の DKIM 署名付きメールを入手した経路</span><span class="b rsn">公表されていない</span><div class=sm>「攻撃者が正規の DKIM 署名が付与されたメールを入手し」という記述までが示されており、 **入手の手段は公表されていない。** 自ら登録・資料請求して受け取った、漏えいしたメールデータから取得した、 第三者から得た、などが考えられるが**いずれも本記録の推測である。** **この段階の経路が分からないため、入手を防ぐ対策は設計できない**</div></li><li><span class=ui>フィッシングメールの文面・誘導先と、実害の有無</span><span class="b rsn">公表されていない</span><div class=sm>観測されたのは「正規の企業を装うフィッシングメール」という性質までで、 **文面・誘導先の URL・求められた情報・実際の被害（認証情報の入力・金銭の詐取）は いずれも公表されていない。** 問題メールの総数・被害人数も示されていない。 **本記録はフィッシングの後段を推測で補わない**</div></li><li><span class=ui>NTTドコモ自身の注意喚起の内容・日付・URL</span><span class="b rsn">探索したが未発見</span><div class=sm>**NTTドコモが注意喚起を行い該当企業の公式アカウント表示を一時停止したという事実は、 日本プルーフポイントのブログの記述による。** 本記録の作成者はドコモの迷惑メール対策・メールセキュリティのページを探索したが、 **2026年10月の当該告知を発見できなかった。** 告知の日付・対象企業・停止の範囲・復旧の条件はいずれも確認できていない</div></li><li><span class=ui>公式アカウント表示の一時停止がいつ解除されるか（解除の条件）</span><span class="b rsn">公表されていない</span><div class=sm>「問題が解消するまで該当企業の公式アカウント表示を一時停止する」という方針までが 伝えられているが、**解消の判定基準・解除の手続き・解除済みかどうかは公表されていない。** **BIMI・公式アカウントマークを導入している企業にとっては、 「設定の不備が見つかると表示が止まる」という運用上のリスクが 本件で初めて具体化した**（本記録の評価）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>日本プルーフポイント株式会社</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>メールセキュリティ事業者。2026年10月18日のブログ 「DMARCを通過するフィッシングメールの落とし穴：DKIM リプレイ攻撃の仕組みと企業が取るべき対策」で 手口と4つの対策を解説した。本記録の一次資料の提供者</p></div></div><div class=org><div class=org-h><span class=org-n>株式会社NTTドコモ</span><span class="b role">プラットフォーム事業者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>ドコモメールの提供者であり、受信側で**公式アカウントマーク**を表示する仕組みの運営者。 日本プルーフポイントのブログによれば、**一部企業の送信ドメイン認証設定に 脆弱性がある可能性を注意喚起し、該当企業の公式アカウント表示を一時停止**した。 **本記録の作成者はドコモ自身の告知を探索したが発見できていない**（齟齬に記録）</p><p class=org-p><span class=org-l>影響</span>自社の公式アカウントマークが、フィッシングメールに対して表示される事象が発生した。 対応として該当企業の公式アカウント表示を一時停止した</p></div></div><div class=org><div class=org-h><span class=org-n>正規の DKIM 署名を悪用された企業（名称・社数は非公表）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>正規に DKIM 署名したメールが攻撃者に入手され、署名を保ったまま再送された企業。 **装われた側でもある。** NTTドコモが公式アカウント表示を一時停止した対象。 **名称・社数・業種はいずれも公表されていない**</p><p class=org-p><span class=org-l>影響</span>自社ドメインを From に持つフィッシングメールが、 **DMARC の認証に成功した状態で**受信者に届いた。 公式アカウントマークと BIMI のブランドロゴが表示されたため、 **自社のブランドが信頼の印として詐欺に使われた。** ドコモ側では公式アカウント表示が一時停止された</p></div></div><div class=org><div class=org-h><span class=org-n>フィッシングメールの受信者</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>正規企業を装うフィッシングメールを受け取った利用者。 **受信画面には公式アカウントマークや BIMI のブランドロゴが表示されていた**</p><p class=org-p><span class=org-l>影響</span>「送信ドメイン認証を通っている」「公式マークが出ている」という 本来は信頼の根拠になる表示が、フィッシングメールに付いた状態で届いた。 **被害人数・実害は公表されていない**</p></div></div><div class=org><div class=org-h><span class=org-n>（DKIM リプレイを行った攻撃者・実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>正規の DKIM 署名付きメールを入手し、署名を維持したまま別のメールサーバーから 第三者へ再送したとみられる主体。**帰属・手口の詳細・入手経路は公表されていない**</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>悪用されたメールで DKIM の署名対象になっていたヘッダーの数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>1<span class=fu>ヘッダー</span></div><div class=fn>**From ヘッダーのみ。** 日本プルーフポイントは 「第三者の公開情報をもとに」として、 **DKIM 署名の対象となるメールヘッダーが From だけに限定されていた点が 注目される**と述べている。 DKIM の標準仕様 RFC 6376 が必須としているのは From への署名であり、 **1ヘッダーのみという構成は仕様違反ではない。** ただし Subject・Content-Type 等が対象外になるため、 署名を維持したままこれらを改変できる余地が生じる。 **この値は第三者の公開分析に基づくもので、 日本プルーフポイントは「関係企業による最終的な原因調査結果ではない」と明記している**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>攻撃者は**正規の DKIM 署名が付与されたメールを入手**し、 署名の対象を改ざんしないまま、**別のメールサーバーから第三者へ送信**する。 DKIM が検証するのは署名の正当性だけで**送信サーバーの正当性は見ない**ため、 受信側の DKIM 認証は成功しうる。 さらに DKIM の署名ドメインと From アドレスのドメインが一致していれば DMARC のアライメント条件も満たされ、**DMARC の認証も成功する**。 第三者の公開分析では、`h=` タグで**署名対象が From だけに限定**されていたため、 署名を維持したまま Subject や Content-Type を改変できた可能性が指摘されている。 結果として、**フィッシングメールに公式アカウントマークと BIMI のブランドロゴが付いた状態で** 受信者に届いた。**DKIM の暗号技術そのものは破られていない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>攻撃者が**正規の DKIM 署名が付与されたメールを入手**する。 **入手の手段は公表されていない。** 自ら受信する（登録・資料請求・問い合わせ）、 漏えいしたメールデータから取る、第三者経由で得るなどが考えられるが、 いずれも本記録の推測であり公表された事実ではない</div><div class=fn>根拠: 日本プルーフポイントのブログ（「攻撃者が正規の DKIM 署名が付与されたメールを入手し」）および ZDNET Japan の記事</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">推定</span><span class=srcs>[1] [2]</span></div><div>攻撃者が、**DKIM 署名を維持したまま署名対象外のヘッダーを改変**する。 第三者の公開分析では、`h=` タグで署名対象が **From のみ**に限定されていた点が 指摘されている。Subject（件名）や Content-Type（本文の形式）が署名対象外であれば、 これらを変更しても署名検証は成功する。 **Content-Type を変えれば、本文自体を変更しなくても MIME の構造定義を変えられ**、 メールアプリでの本文の解釈や表示に影響を与えうる。 **ただし DKIM は通常本文のハッシュも検証するため、 本文を自由に書き換えられるわけではない**（日本プルーフポイントの注記）</div><div class=fn>根拠: 日本プルーフポイントのブログ（`h=` タグによる署名対象の指定、 Subject・Content-Type が対象外の場合の改変可能性、 MIME 構造の変更による表示への影響、本文ハッシュは検証される旨の注記）および ZDNET Japan の記事</div></li><li><div class=stg><span class="b stage">3. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>攻撃者が、署名を維持したメールを**別のメールサーバーから第三者へ送信**する。 DKIM が検証するのは署名の正当性だけで**送信サーバーの正当性は見ない**ため、 受信側の DKIM 認証は成功しうる。 さらに DKIM の署名ドメインと From アドレスのドメインが一致し DMARC のアライメント条件を満たせば、**DMARC の認証も成功する**。 **DMARC のポリシーを「reject」にしていても、 認証に成功しているため拒否されない**</div><div class=fn>根拠: 日本プルーフポイントのブログ（DKIM が送信サーバーの正当性を検証しないこと、 アライメント条件の成立、「DMARC のポリシーを『reject』に設定していても DKIM リプレイ攻撃を完全には防げない」という指摘）および ZDNET Japan の記事</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>送信ドメイン認証に成功した結果、受信者側で **企業の公式アカウントマークや BIMI によるブランドロゴが表示された**。 本来は「正規の送信者である」ことを視覚的に示す仕組みが、 **フィッシングメールに信頼の印を与える形になった**。 NTTドコモは一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起し、 **該当企業の公式アカウント表示を一時停止**した</div><div class=fn>根拠: 日本プルーフポイントのブログ（BIMI の目的と今回の事象による限界の露呈、 NTTドコモの注意喚起と公式アカウント表示の一時停止）および ZDNET Japan の記事（「企業の公式アカウントマークや BIMI によるブランドロゴが 受信者側で表示されてしまうもの」、 「送信ドメイン認証だけでなく、認証結果に基づいたブランド表示の運用についても、 重要な課題を示した」）</div></li></ol></div>
+<section id="s5"><h2>DMARC を通過したフィッシングメールに、公式アカウントマークと BIMI のロゴが表示された<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>ZDNET Japan の報道と日本プルーフポイントのブログによれば、起きていることは次のとおりである。</p>
+<ul>
+<li><strong>2026年10月中旬頃から</strong>、DMARC を突破して正規の企業を装うフィッシングメールが相次いで観測されている</li>
+<li>観測された事象は、<strong>フィッシングメールにもかかわらず、企業の公式アカウントマークや BIMI によるブランドロゴが受信者側で表示されてしまう</strong>もの</li>
+<li><strong>NTTドコモ</strong>は一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起し、<strong>該当企業の公式アカウント表示を一時停止</strong>した</li>
+<li>関連する手法は「<strong>DKIM リプレイ攻撃</strong>」と呼ばれ、日本プルーフポイントは「<strong>DKIM の暗号技術自体を破るわけではなく、正規に署名されたメールを再利用して送信ドメイン認証を通過させる手法</strong>」と解説している</li>
+<li>第三者の公開分析では、<strong>DKIM 署名の対象が From ヘッダーだけに限定</strong>されていた点が注目されている</li>
+<li>日本プルーフポイントは<strong>DMARC のポリシーを「reject」にしていても完全には防げない</strong>と指摘している</li>
+<li><strong>装われた企業名・問題メールの総数・被害人数はいずれも公表されていない</strong></li>
+</ul>
+<p>日本プルーフポイントは、この改変手法が<strong>第三者の公開分析に基づくもので「関係企業による最終的な原因調査結果ではない」</strong>と明記している。本記録もこれを確定した原因としては扱わない。</p></section>
+<section id="s6"><h2>DKIM は「署名が正しいか」を見て「誰が送ったか」を見ない——そこを突いている<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>企業や組織が送るメールが正しいものかを確認する技術には、主に <strong>DMARC・SPF・DKIM</strong> の3つがある。</p>
+<ul>
+<li><strong>SPF</strong> は、送信元の IP アドレスが送信に使用されたドメインから許可されているかを確認する</li>
+<li><strong>DKIM</strong> は、送信側がメールに電子署名を付与し、受信側がその署名を検証する</li>
+<li><strong>DMARC</strong> は、SPF や DKIM の結果に加え、利用者に表示される From アドレスのドメインとの整合性（アライメント）を確認する。また、認証に失敗したメールの扱いを指定する仕組みでもある</li>
+</ul>
+<p>日本プルーフポイントが強調するのは、<strong>DKIM が検証していないもの</strong>である。</p>
+<blockquote>
+<p>DKIM で検証されるのは、メールに付与された電子署名の正当性になり、<strong>メールを送信したサーバーが正規かどうかは確認しない</strong></p>
+</blockquote>
+<p>したがって、攻撃者が正規の DKIM 署名が付与されたメールを入手し、署名の対象を改ざんすることなく<strong>別のメールサーバーから</strong>第三者に送信すれば、受信側の DKIM 認証は成功しえる。さらに DKIM の署名ドメインと From アドレスのドメインが一致していれば、<strong>DMARC のアライメント条件も満たされ、DMARC の認証も成功する</strong>。</p>
+<p>ここに <code>h=</code> タグの話が加わる。DKIM では、電子署名の対象とするヘッダーを DKIM-Signature ヘッダー内の <code>h=</code> タグで指定する。第三者の公開分析が指摘したのは、<strong>署名対象が From ヘッダーのみに限定されていた</strong>点である。署名対象に Subject（件名）や Content-Type（本文の形式）が含まれていない場合、攻撃者は DKIM 署名を維持したままこれらのヘッダーを変更できる可能性がある。</p>
+<p>とくに Content-Type が対象外の場合、<strong>メール本文自体を変更しなくても MIME の構造を定義する情報を変更でき</strong>、メールアプリでの本文の解釈や表示に影響を与えることが可能になりうる。</p>
+<p>ただし日本プルーフポイントは2つの留保を置いている。</p>
+<ol>
+<li><strong>DKIM は通常本文のハッシュも検証する</strong>ため、本文を自由に書き換えられるわけではない</li>
+<li>これらの改変手法は<strong>公開分析に基づくもので、関係企業による最終的な原因調査結果ではない</strong></li>
+</ol>
+<p><strong>1ヘッダーのみの署名は仕様違反ではない。</strong> RFC 6376 が必須としているのは From への署名であり、From だけに署名する構成は規格に適合している。だからこそ「設定の不備」として自動で検出されにくい（本記録の評価）。</p></section>
+<section id="s7"><h2>「reject にしてあるから大丈夫」は成り立たない——拒否されるのは認証に失敗したメールだけである<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>DMARC には、認証に失敗したメールの取り扱いについて「そのまま＝<strong>none</strong>」「隔離＝<strong>quarantine</strong>」「拒否＝<strong>reject</strong>」のポリシーがある。多くの組織が目指す到達点は <code>p=reject</code> である。</p>
+<p>日本プルーフポイントは、<strong>DMARC のポリシーを「reject」に設定していてもDKIM リプレイ攻撃を完全には防げない</strong>と指摘している。理由は単純である。</p>
+<ul>
+<li>DMARC は、<strong>SPF か DKIM のいずれかが認証に成功しアライメントも満たせば成功</strong>になる</li>
+<li>正規の DKIM 署名が再利用されると、DKIM とアライメントの条件が満たされ、DMARC は成功する</li>
+<li><strong><code>p=reject</code> は「認証に失敗したメール」を拒否するポリシー</strong>であって、認証に成功したメールの安全性を保証するものではない</li>
+</ul>
+<p>日本プルーフポイントは、この点について「<strong>DMARC の暗号技術が突破されたのではなく、送信ドメイン認証の仕組みと実際のメールの安全性を判断することが別のものである</strong>ことを示している」と述べている。</p>
+<p><strong>ここが本件の核心である</strong>（本記録の評価）。送信ドメイン認証は「<strong>このドメインから送られたと主張してよいか</strong>」を判定する仕組みであり、「<strong>このメールの内容が安全か</strong>」は判定していない。2つは別の問いである。</p>
+<p>しかし運用の現場では、しばしば1つに扱われてきた。「DMARC を reject にしました」が、そのまま「自社を装うメールは届かなくなりました」と報告されることがある。<strong>本件はその等号が成り立たないことを、実際の事象として示している。</strong></p>
+<p>同じことが BIMI にも当てはまる。BIMI の仕組みは本来、メールが正規の送信者のものであることを受信者が視覚的に分かりやすく識別できることを目的にしている。日本プルーフポイントは、今回の事象によって<strong>こうした仕組みがメールの内容自体の安全性までを保証するものではない点が露呈した</strong>とし、「<strong>送信ドメイン認証だけでなく、認証結果に基づいたブランド表示の運用についても、重要な課題を示した</strong>」と指摘している。</p></section>
+<section id="s8"><h2>送信側で観測できるのは DMARC レポートの「認証に成功した送信元」だけである<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2]</span></h2><p>防御の設計上、重要なのは<strong>どの段階が観測可能か</strong>である（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>段階</th>
+<th>送信側で観測できるか</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>攻撃者が正規の署名付きメールを入手する</td>
+<td><strong>できない</strong>（正常な資料請求・登録と区別がつかない）</td>
+</tr>
+<tr>
+<td>署名対象外のヘッダーを改変する</td>
+<td><strong>できない</strong>（攻撃者の手元の作業）</td>
+</tr>
+<tr>
+<td>別のサーバーから再送する</td>
+<td><strong>DMARC レポートに現れる</strong></td>
+</tr>
+<tr>
+<td>ロゴ付きで受信者に届く</td>
+<td><strong>受信者または受信側事業者からの報告でしか届かない</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>送信側に観測点があるのは3段目だけである。</strong>日本プルーフポイントが DMARC レポートの監視を推奨するのは、ここが唯一の窓だからである。</p>
+<blockquote>
+<p>例えば、自社のメール配信サービスからしか送信されないはずのメールが突然無関係な IP アドレスから大量に送信されているなど、<strong>DMARC 認証に成功しているメールがどの IP アドレスやメール送信基盤から送られているのかも確認する</strong></p>
+</blockquote>
+<p><strong>「認証に成功しているメールを見る」という点が、通常の運用と逆である</strong>（本記録の評価）。DMARC レポートは通常、認証の失敗を減らすために——自社の設定漏れを見つけるために——読まれる。本件で要るのは、<strong>成功しているメールの送信元の分布</strong>を見ることである。</p>
+<p>ただし日本プルーフポイント自身が留保を置いている。<strong>正規の転送でも同様の結果が出る</strong>ため、送信ログと組み合わせて判断する必要がある。メーリングリスト・自動転送・携帯キャリアへの転送はいずれも「自社の送信基盤でない IP からの認証成功」として現れる。</p>
+<p>4つの対策は、この構造の違う場所に効く（本記録の整理）。</p>
+<ul>
+<li><strong>署名対象の適切な設定</strong>と<strong>外部配信サービスの点検</strong>——改変の余地を潰す（予防）</li>
+<li><strong>DMARC レポートの監視</strong>——再送を見つける（検知）</li>
+<li><strong>鍵のローテーションと <code>x=</code> タグによる有効期間の制限</strong>——悪用できる窓を狭める（限定）</li>
+</ul>
+<p>そして日本プルーフポイントは最後の項目について「<strong>ただし、完全には防げないため</strong>、署名設定の見直しや送信経路の管理、異常な送信状況の監視を組み合わせることが肝心となる」と明記している。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>scheme_summary</th><td>「送信ドメイン認証を通ったメールは正規である」という前提を逆手に取る。 攻撃者は正規に DKIM 署名されたメールを1通入手し、 署名対象外のヘッダー（件名・本文形式）を変えて別のサーバーから再送する。 **DKIM・DMARC の認証は成功し、BIMI のロゴと公式アカウントマークまで表示される。** 受信者から見れば、認証も表示もすべて「本物」の印が付いたメールが届く</td></tr><tr><th>lure</th><td>**具体的な文面・誘導先は公表されていない。** 観測されたのは「正規の企業を装うフィッシングメール」であり、 装われた企業名も公表されていない</td></tr><tr><th>channel</th><td>電子メール。攻撃者が管理する別のメールサーバーから送信される</td></tr><tr><th>impersonated_brand</th><td>**名称は公表されていない。** NTTドコモが公式アカウント表示を一時停止した 「一部企業」が装われた側である</td></tr><tr><th>targets</th><td>フィッシングメールの受信者。**人数・範囲は公表されていない。** 観測は国内（日本）で、受信側事業者として NTTドコモが挙げられている</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年10月19日　<b>補足:</b> **フィッシングメールとして実際に送信され、受信者に届いている。** 受信画面に公式アカウントマークと BIMI のブランドロゴが表示される事象として観測され、 NTTドコモが注意喚起と公式アカウント表示の一時停止を行った。 **ただし誘導先で何が行われたか、実害が生じたかは公表されていない**</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **DKIM の署名対象を適切に設定する。** RFC 6376 が必須とする From だけでなく、 必要に応じて Subject・To・Date・Message-ID・Content-Type も署名対象に含める。 必要ならオーバーサイニングも検討する（日本プルーフポイントの推奨）　<b>副作用:</b> **本記録の評価による。** 署名対象を広げると、 **正規の転送経路でメールが改変されたときに DKIM 検証が失敗しやすくなる。** メーリングリストは件名に `[list]` のような接頭辞を付け、 本文にフッターを足すことがあり、Subject を署名対象にすると これらを通ったメールが認証に失敗する。 自社の正規メールが届かなくなる方向の副作用であるため、 **メーリングリストや転送を多用する業務（業界団体・学会・社内 ML）では ARC の対応状況とあわせて影響を確認する必要がある**</div><div class=sub><b>数え方:</b> **外部のメール配信サービスの DKIM 設定を確認する。** マーケティングメール・フォームの自動返信など、 外部サービスが自社ドメインで署名している経路の署名対象と鍵の管理状況を点検する。 第三者が任意のアドレスへ署名付きメールを送らせられないかも確認する（日本プルーフポイントの推奨）　<b>副作用:</b> **本記録の評価による。** 署名対象は配信サービス側の実装に依存するため、 **自社では変更できない場合がある。** 変更できなければ「設定の不備を知った状態で使い続ける」か 「サービスを乗り換える」かの選択になり、移行には契約・配信実績・ 到達率の再構築という費用がかかる。 また棚卸しの前段として「自社ドメインで署名している外部サービスの一覧」を 作る作業が必要で、マーケティング部門・事業部門が個別に契約している分は把握に時間を要する</div><div class=sub><b>数え方:</b> **DMARC レポートを継続的に監視する。** 認証成功率だけでなく、認証に成功しているメールの送信元 IP・送信基盤を見る。 集計レポートと自社の送信ログを組み合わせて判断する（日本プルーフポイントの推奨）　<b>副作用:</b> **本記録の評価による。** DMARC の集計レポートは XML で、 送信先ごとに日次で届くため、**人が目で見る運用は現実的でない。** 可視化のツールまたはサービスの導入費用と、 レポートを読む担当者の確保が要る。 さらに**正規の転送でも「無関係な IP からの認証成功」として現れる**ため、 送信ログとの突き合わせなしでは誤検知が多く、 「異常が出ても毎回正規の転送だった」という経験が積むと見なくなる方向に働く</div><div class=sub><b>数え方:</b> **DKIM 鍵を定期的にローテーションし、`x=` タグで署名の有効期間を制限する。** 古い正規メールが長期にわたってリプレイに悪用されるリスクを軽減する（日本プルーフポイントの推奨）　<b>副作用:</b> **本記録の評価による。** `x=` タグで有効期間を短くすると、 **遅延して配送されたメールや、受信側で後から再検証されたメールが 認証に失敗する。** 大量配信の最中に有効期限を跨ぐと一部が失敗する。 鍵のローテーションは DNS の TXT レコードの更新と 旧鍵の残置期間（配送中のメールのための猶予）の設計が要り、 手順を誤ると自社メールが一斉に認証失敗する。 **そして日本プルーフポイント自身が「完全には防げない」と明記している**—— 有効期間内の再送は止まらない</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月中旬頃</td><td class=nowrap><span class="b kind">発生</span></td><td>DMARC を突破して正規の企業を装うフィッシングメールが相次いで観測され始めた。 **受信者側で公式アカウントマークや BIMI によるブランドロゴが表示される**事象を伴う</td></tr><tr><td class="sm nowrap tw">時期は本記録では特定できていない（2026年10月中旬）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>NTTドコモが、一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起し、 **該当企業の公式アカウント表示を一時停止**した。 **ドコモ自身の告知は本記録の作成者が探索したが発見できていない**—— この事実は日本プルーフポイントのブログの記述による</td></tr><tr><td class="sm nowrap tw">2026年10月18日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>日本プルーフポイントが 「DMARCを通過するフィッシングメールの落とし穴：DKIM リプレイ攻撃の仕組みと 企業が取るべき対策」をブログで公表した。 DKIM が送信サーバーの正当性を検証しないこと、`h=` タグによる署名対象の限定、 DMARC の reject でも防げないこと、BIMI の限界、4つの対策を示した</td></tr><tr><td class="sm nowrap tw">2026年10月19日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>ZDNET Japan が本件を報じた（本記録の起点）</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>NTTドコモの注意喚起と公式アカウント表示の一時停止</span><div class=sm>**この事実は日本プルーフポイントのブログの記述による。** ZDNET Japan の記事はドコモに言及しておらず、 **本記録の作成者はドコモの迷惑メール対策・メールセキュリティのページを探索したが、 2026年10月の当該告知を発見できなかった。** 告知の日付・対象企業・停止の範囲・解除の条件はいずれも確認できていない。 **本記録は「日本プルーフポイントが伝えた事実」として記録し、 ドコモの一次告知での裏取りはできていない**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>「署名対象が From のみだった」という指摘の位置づけ</span><div class=sm>日本プルーフポイントは**第三者の公開情報をもとに**、 攻撃者が正規の DKIM 署名付きメールを入手して署名を維持したまま一部を変更して再送した 可能性に触れ、**DKIM 署名の対象が From だけに限定されていた点が注目される**とした。 **同社は同時に「これらの改変手法は公開分析に基づくもので、 関係企業による最終的な原因調査結果ではない」と明記している。** 本記録は figures・attack.chain のいずれでもこの留保を併記し、 chain の該当段階の confidence を presumed とした</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>本文の改変可能性の範囲</span><div class=sm>ZDNET Japan は「Content-Type が対象外の場合は、メール本文自体を変更しなくても MIME の構造を定義する情報を変更でき、メールアプリでの本文の解釈や表示に 影響を与えることが可能な場合がある」と記す。 日本プルーフポイントのブログはこれに加えて **「DKIM は通常本文のハッシュも検証するため、本文を自由に書き換えられるわけではない」**という 留保を置いている。 **ZDNET Japan の記事にはこの留保が見当たらない。** 読者が「DKIM リプレイでは本文も自由に変えられる」と受け取らないよう、 本記録は本文（原因・手口の章）に留保を書き出した</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>観測の開始時期の表記</span><div class=sm>ZDNET Japan は「**10月中旬頃から**送信ドメイン認証の1つである DMARC を突破した 正規の企業を装うフィッシングメールが相次ぎ観測されている」とする。 日本プルーフポイントのブログは「2026年10月に国内で事象が確認された」とし、 **より細かい観測期間は示していない。** 本記録は経過の起点を「2026年10月中旬頃」として precision を unknown・approx とした</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録の作成者が確認した範囲</span><div class=sm>本記録の作成者は2026年10月20日に、日本プルーフポイントのブログ （www.proofpoint.com/jp/blog/email-and-cloud-threats/dkim-replay-attacks・ 2026年10月18日付・著者 Yukimi Sohta）を取得し、内容を確認した。 確認できたのは、2026年10月に国内で事象が確認されたこと・ 公式アカウントマークと BIMI のロゴが表示されたこと・ NTTドコモの注意喚起と公式アカウント表示の一時停止・ DKIM が送信サーバーの正当性を検証しないこと・ `h=` タグによる署名対象の限定の指摘とその留保・ Content-Type の改変と MIME 構造への影響・本文ハッシュは検証される旨の注記・ DMARC が SPF か DKIM のいずれかの成功で成立すること・ p=reject でも防げない理由・BIMI の限界・ 4つの対策（署名対象の設定とオーバーサイニング、外部配信サービスの確認、 DMARC レポートの監視と転送による誤検知の留保、鍵の管理と `x=` タグによる 有効期間の設定とその限界）である。 **装われた企業名・問題メールの総数・被害人数は、いずれの資料にも記載がない。** **NTTドコモの一次告知は探索したが発見できていない。** **第三者の公開分析そのもの（`h=` の指摘の出所）は確認していない。** **フィッシングメールの実物・ヘッダーの検体は確認していない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>正規の DKIM 署名が再利用され、DMARC と BIMI を通過してフィッシングメールが届く流れ</div><div class=svgwrap><svg viewBox="0 0 998 284" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,98.0 C91.0,98.0 91.0,179.0 16,179.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,179.0 C193.0,179.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C295.0,111.0 295.0,180.0 220,180.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,180.0 C397.0,180.0 397.0,105.0 424,105.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,105.0 C499.0,105.0 499.0,193.0 424,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,193.0 C601.0,193.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C703.0,53.0 703.0,141.0 628,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C703.0,141.0 703.0,230.0 628,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,230.0 C805.0,230.0 805.0,54.0 832,54.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,135.0 C805.0,135.0 805.0,230.0 628,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,135.0 C499.0,135.0 499.0,98.0 16,98.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,223.0 C703.0,223.0 703.0,193.0 424,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="68.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">正規の企業（名称非公表）</text><text x="91.0" y="103.0" text-anchor="middle" fill="#80cbc4" font-size="10">ドコモが公式アカウント表</text><text x="91.0" y="115.0" text-anchor="middle" fill="#80cbc4" font-size="10">示を一時停止</text><rect x="16" y="142.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="91.0" y="164.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自社 MTA / 外部メ</text><text x="91.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ール配信サービス</text><text x="91.0" y="191.0" text-anchor="middle" fill="#64b5f6" font-size="10">DKIM 署名を付与（h</text><text x="91.0" y="203.0" text-anchor="middle" fill="#64b5f6" font-size="10">= は From のみと</text><rect x="220" y="80.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">正規に DKIM 署名さ</text><text x="295.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れたメール</text><text x="295.0" y="129.0" text-anchor="middle" fill="#ffcc80" font-size="10">署名は本文ハッシュも含む</text><rect x="220" y="156.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（実体非公表）</text><text x="295.0" y="191.0" text-anchor="middle" fill="#f48fb1" font-size="10">入手経路は非公表</text><rect x="424" y="61.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="83.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">署名対象外ヘッダーの改変</text><text x="499.0" y="97.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（Subject・Con</text><text x="499.0" y="111.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tent-Type）</text><text x="499.0" y="124.0" text-anchor="middle" fill="#f48fb1" font-size="10">公開分析による指摘・確定</text><text x="499.0" y="136.0" text-anchor="middle" fill="#f48fb1" font-size="10">原因ではない</text><rect x="424" y="163.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者のメールサーバー</text><text x="499.0" y="198.0" text-anchor="middle" fill="#64b5f6" font-size="10">SPF は通らなくても </text><text x="499.0" y="210.0" text-anchor="middle" fill="#64b5f6" font-size="10">DMARC は成立しうる</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">受信側の DKIM 認証</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（成功）</text><text x="703.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">送信サーバーの正当性は検</text><text x="703.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">証しない</text><rect x="628" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">DMARC（アライメント</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">成立・認証成功）</text><text x="703.0" y="153.0" text-anchor="middle" fill="#f48fb1" font-size="10">p=reject でも拒</text><text x="703.0" y="165.0" text-anchor="middle" fill="#f48fb1" font-size="10">否されない</text><rect x="628" y="192.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公式アカウントマーク・B</text><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IMI ブランドロゴの表</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">示</text><text x="703.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">内容の安全性は保証しない</text><rect x="832" y="24.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="46.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メールの受信者</text><text x="907.0" y="59.0" text-anchor="middle" fill="#8892b0" font-size="10">マーク付きのフィッシング</text><text x="907.0" y="71.0" text-anchor="middle" fill="#8892b0" font-size="10">メールを受信</text><rect x="832" y="98.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="120.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NTTドコモ（受信側事業</text><text x="907.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者）</text><text x="907.0" y="147.0" text-anchor="middle" fill="#64b5f6" font-size="10">注意喚起・公式アカウント</text><text x="907.0" y="159.0" text-anchor="middle" fill="#64b5f6" font-size="10">表示を一時停止</text><rect x="832" y="186.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">日本プルーフポイント（解</text><text x="907.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">説の公表）</text><text x="907.0" y="235.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026/10/18 ブ</text><text x="907.0" y="247.0" text-anchor="middle" fill="#80cbc4" font-size="10">ログ</text></svg></div><div class=fn>layer 0 は正規の企業と、そのメール送信基盤（自社 MTA および外部のメール配信サービス）。 layer 1 は正規に DKIM 署名されたメールと、それを入手した攻撃者。 layer 2 は攻撃者の手元での加工——署名対象外のヘッダー（Subject・Content-Type）の改変——と、 攻撃者のメールサーバーからの再送。 layer 3 は受信側の認証と表示（DKIM 成功 → DMARC アライメント成立 → 公式アカウントマーク・BIMI ロゴの表示）。 layer 4 は受信者と、注意喚起・表示停止を行った NTTドコモ。 **DKIM は署名の正当性だけを見て送信サーバーの正当性を見ないため、 経路が変わっても認証は成功する。** 署名対象の限定（`h=` が From のみ）は第三者の公開分析による指摘であり、 確定した原因ではない。</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**送信側に検知機会はない**（本記録の評価）。 攻撃者が自社からメールを1通受け取る行為は、 正常な資料請求・会員登録と区別がつかない。 **「署名付きメールを外部に渡さない」という防御は成立しない**—— メールは渡すために送るものである。 だからこそ対策は「渡った署名が再利用されたときに効くもの」 （署名対象の拡大・`x=` タグによる有効期間の制限・鍵のローテーション）になる</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>DKIM 署名に `x=` タグで**有効期間**を設定し、 古いメールが長期にわたって再利用されるリスクを下げる</div><div class=ctl><span class="b eff">影響を限定できた</span>DKIM の秘密鍵を適切に管理し、**定期的にローテーションする**</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">公表されていない</span><div class=sm>**この段階は攻撃者の手元で行われるため、送信側・受信側のいずれにも観測点がない。** 日本プルーフポイントは、この改変手法が**第三者の公開分析に基づくもので 「関係企業による最終的な原因調査結果ではない」**と明記している。 **本記録はこれを確定した手口として扱わない**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**DKIM の署名対象を適切に設定する。** RFC 6376 が必須とする From だけでなく、 必要に応じて **Subject・To・Date・Message-ID・Content-Type** も署名対象に含める。 必要ならオーバーサイニング（存在しないヘッダーの追加を防ぐ署名方式）も検討する</div><div class=ctl><span class="b eff">侵入を防げた</span>**外部のメール配信サービスの DKIM 設定を確認する。** 自社のメール基盤で適切に設定していても、 マーケティングメール・フォームの自動返信などで外部サービスが 自社ドメインで署名している場合、その署名対象と鍵の管理状況が穴になる。 **第三者が任意のアドレスへ署名付きメールを送らせられないかも確認する**</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ここが送信側で唯一観測できる段階である**（本記録の評価）。 DMARC の集計レポートには「認証に成功したメールがどの IP アドレス・ どのメール送信基盤から送られたか」が現れる。 日本プルーフポイントも 「自社のメール配信サービスからしか送信されないはずのメールが 突然無関係な IP アドレスから大量に送信されている」例を挙げている。 **ただし正規の転送（メーリングリスト・自動転送）でも似た結果が出る**ため、 レポート単独では判定できず、送信ログとの突き合わせが要る</div></td><td><div class=ctl><span class="b eff">検知できた</span>**DMARC レポートを継続的に監視する。** 認証成功率だけでなく、 **認証に成功しているメールの送信元 IP・送信基盤**を見る。 集計レポートに加えて自社のメール送信ログを組み合わせ、 通常の送信状況との違いを継続的に確認する</div><div class=ctl><span class="b eff">検知できた</span>送信基盤の棚卸し表（自社 MTA・外部配信サービス・SaaS からの通知メール）を維持し、 **DMARC レポートに現れる送信元の「期待される集合」を定義しておく**。 定義が無ければ、未知の送信元が出ても異常と判定できない</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**検知したのは受信側のメール事業者である**（本記録の評価）。 NTTドコモが注意喚起と表示停止を行っており、 **装われた企業自身が先に気づいた形跡は公表されていない。** 自社ブランドのロゴがフィッシングに使われていることは、 受信者の報告か受信側事業者の通報でしか届かない構造である</div></td><td><div class=ctl><span class="b eff">検知できた</span>自社ドメインを装うメールの報告窓口（phishing@・abuse@）を公開し、 受信者からの報告を受け取れる状態にしておく</div><div class=ctl><span class="b eff">影響を限定できた</span>BIMI・公式アカウントマークを導入している場合、 **その表示が「内容の安全性」を意味しないことを利用者向けの案内に明記する**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「DMARC を reject にした」を「自社を装うメールは届かない」と報告させない</div><div class=lw>日本プルーフポイントは**DMARC のポリシーを reject にしていても DKIM リプレイ攻撃を完全には防げない**と明記している。 DMARC は SPF か DKIM のいずれかが成功しアライメントを満たせば成功し、 **reject は「認証に失敗したメール」を拒否するポリシーである。** 正規の署名が再利用されれば認証は成功し、拒否は働かない</div><div class=la><b>取るべき行動</b> メールセキュリティの報告様式から 「DMARC を reject にしたので自社を装うメールは届かなくなった」という結論を削り、 **「①送信ドメイン認証の設定状況 ②認証に成功しているメールの送信元の把握状況 ③自社を装うメールの報告件数」の3つを別々に報告させる。** ①が完了しても②③はゼロにならないことを、報告の前提として共有する</div></li><li><div class=lp>BIMI・公式アカウントマークの導入を「利用者への説明」とセットで決める</div><div class=lw>今回の事象では、**フィッシングメールに公式アカウントマークと BIMI のブランドロゴが表示された。** 日本プルーフポイントは「こうした仕組みがメールの内容自体の安全性までを 保証するものではない点が露呈した」とし、 **「認証結果に基づいたブランド表示の運用についても、重要な課題を示した」**と指摘している。 さらに NTTドコモは該当企業の**公式アカウント表示を一時停止**している—— **導入したブランド表示は、自社の設定不備で止まりうる**</div><div class=la><b>取るべき行動</b> ①BIMI・公式アカウントマークを導入している／導入予定なら、 利用者向けの案内に**「このマークは送信者の認証結果を示すもので、 メールの内容の安全性を保証するものではありません」**と明記する ②表示が一時停止された場合の顧客対応（問い合わせ対応・代替の見分け方の案内）を あらかじめ決める ③**「ロゴが出ているから本物」という見分け方を自社の注意喚起文に書いていないか点検する**—— 書いてあれば直す</div></li><li><div class=lp>自社ドメインで署名している外部メール配信サービスを棚卸しする</div><div class=lw>日本プルーフポイントは 「**自社のメール基盤で DKIM を適切に設定していても、 マーケティングメールなどで外部のメール配信サービスを利用している場合に 署名の設定が不十分だとリスクが生じる可能性がある**」と指摘している。 **これらの契約はマーケティング部門・事業部門が個別に結んでいることが多く、 セキュリティ部門が一覧を持っていない**</div><div class=la><b>取るべき行動</b> ①自社ドメインを From に持つメールを送っている全経路を洗い出す—— 自社 MTA・MA ツール・メール配信 SaaS・フォームの自動返信・ 問い合わせ管理システム・請求書送付サービス・SaaS からの通知メール ②各経路の **DKIM 署名対象（`h=` タグ）と鍵の管理主体**を記録する ③**自社で変更できない経路を「変更できない」と明示して残す。** 記録しておけば、次に同種の事象が報じられたときに点検を1日で終えられる</div></li><li><div class=lp>「認証に成功しているメール」を見る運用に、人と道具を割り当てる</div><div class=lw>送信側で本件を観測できる唯一の窓が DMARC レポートであり、 見るべきは**認証に成功しているメールの送信元 IP・送信基盤**である。 **DMARC レポートは通常、認証の失敗を減らすために読まれる**ため、 成功側を見る運用は新たに作る必要がある。 日本プルーフポイントも「正規の転送でも同様の結果が出る」として、 送信ログとの突き合わせを求めている</div><div class=la><b>取るべき行動</b> ①DMARC レポートの可視化ツール／サービスを導入し、 **送信元 IP・送信基盤別の「認証成功」の内訳**を見られるようにする ②**自社の正規の送信元の集合を定義する**（棚卸しの結果を使う）。 定義が無ければ未知の送信元を異常と判定できない ③見る人を決め、月次の確認を業務として割り当てる。 **「異常が出ても毎回正規の転送だった」という経験が積むと見なくなる**ため、 正規の転送をあらかじめ除外しておくことが継続の条件になる</div></li><li><div class=lp>自社ブランドを装うメールの報告を受け取れる窓口を用意する</div><div class=lw>本件で検知したのは**受信側のメール事業者（NTTドコモ）**であり、 装われた企業自身が先に気づいた形跡は公表されていない。 **自社のロゴがフィッシングに使われていることは、 受信者の報告か受信側事業者の通報でしか届かない構造である**（本記録の評価）</div><div class=la><b>取るべき行動</b> ①`phishing@`／`abuse@` の窓口を公開し、 **メールヘッダーごと転送してもらえる案内**を自社サイトに置く （ヘッダーが無いと DKIM 署名の検証ができない） ②受け取った報告から DKIM-Signature の `h=` タグと送信元 IP を確認する手順を決める ③主要な受信側事業者（キャリア・ISP）からの連絡を受ける窓口を 平時に確認しておく</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>自社の DKIM-Signature の `h=` タグを実物のメールで確認する</div><div class=lw>第三者の公開分析が指摘したのは、**署名対象が From ヘッダーだけに 限定されていた**構成である。 **From のみの署名は RFC 6376 に適合しており、仕様違反として検出されない。** 設定画面に「署名対象」の表示が無い製品・サービスもあるため、 **設定を見るのではなく、実際に届いたメールのヘッダーを見るのが確実である**</div><div class=la><b>取るべき行動</b> 自社ドメインから送られる各種のメール（会員登録確認・パスワードリセット・ 請求書・マーケティングメール・フォームの自動返信）を**1通ずつ自分宛に受信**し、 生のヘッダーから `DKIM-Signature:` 行の `h=` の値を書き出す。 **Subject・Content-Type・To・Date・Message-ID が含まれているかを経路ごとに表にする。** 含まれていない経路を改善対象として起票する</div></li><li><div class=lp>署名対象を広げる変更は、転送経路での検証失敗を測ってから入れる</div><div class=lw>日本プルーフポイントは Subject・To・Date・Message-ID・Content-Type の 署名対象への追加と、必要に応じたオーバーサイニングを推奨している。 一方、**署名対象を広げると正規の転送でメールが改変されたときに DKIM 検証が失敗しやすくなる**（本記録の評価）—— メーリングリストは件名に接頭辞を付け、本文にフッターを足す</div><div class=la><b>取るべき行動</b> ①変更前に DMARC レポートで**現在の DKIM 認証失敗の分布**（送信元・割合）を記録する ②**Subject の追加を先に、Content-Type を次に**、段階的に適用して 各段階で失敗率の変化を測る ③自社が運用するメーリングリスト・転送設定の一覧を作り、 ARC の対応状況を確認する。 **「正規のメールが届かなくなる」方向の副作用なので、 気づくのが遅れると業務に効く**</div></li><li><div class=lp>DMARC レポートを「認証成功の送信元分布」として見る集計に変える</div><div class=lw>DMARC の集計レポートは通常、失敗を減らすために読まれる。 本件で見るべきは**認証に成功しているメールの送信元 IP・送信基盤**である。 日本プルーフポイントは 「自社のメール配信サービスからしか送信されないはずのメールが 突然無関係な IP アドレスから大量に送信されている」例を挙げている</div><div class=la><b>取るべき行動</b> DMARC 集計レポート（XML）を取り込み、 **`policy_evaluated` が pass のレコードを送信元 IP・ASN 単位で集計**するダッシュボードを作る。 自社の正規送信元を許可リストとして持ち、**それ以外の pass を日次で一覧に出す。** 正規の転送（メーリングリスト・キャリア転送）は既知として除外リストに積み、 **残った未知の送信元だけを調べる形にする**</div></li><li><div class=lp>`x=` タグによる署名の有効期間設定は、配送遅延の実績を見て決める</div><div class=lw>日本プルーフポイントは `x=` タグで署名の有効期限を設定することを推奨し、 **「ただし、有効期間内の再送は防げない」**と明記している。 一方、有効期間を短くすると**遅延配送されたメールや 後から再検証されたメールが認証に失敗する**（本記録の評価）</div><div class=la><b>取るべき行動</b> ①自社メールの**配送完了までの時間の分布**を送信ログから出す （99パーセンタイル・最大値） ②その値に余裕を持たせた期間を `x=` に設定する。 大量配信の最中に期限を跨がないよう、配信にかかる時間も足す ③設定後、DMARC レポートで DKIM 失敗が増えていないかを1か月監視する。 **「短くすればするほど安全」ではない**—— 短すぎれば自社メールが落ちるだけで、再送は止まらない</div></li><li><div class=lp>DKIM 鍵のローテーション手順を、旧鍵の残置期間まで決めて文書化する</div><div class=lw>日本プルーフポイントは秘密鍵の適切な管理と**定期的なローテーション**を推奨している。 一方、**ローテーションは DNS の TXT レコードの更新を伴い、 手順を誤ると自社メールが一斉に認証失敗する**（本記録の評価）—— 配送中・未検証のメールのために旧鍵を一定期間残す設計が要る</div><div class=la><b>取るべき行動</b> ①セレクタを複数持つ構成（`s1`／`s2` の交互運用）に移行する ②ローテーションの手順書に **「新セレクタの公開 → 署名の切り替え → 旧セレクタの残置期間 → 旧セレクタの削除」**の 4段階と各段階の待ち時間を書く ③年1回の実施を定例化し、**実施直後に DMARC レポートで DKIM の pass 率を確認する**。 残置期間は配送遅延の実績（上記の `x=` の検討で出した値）に合わせる</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 自社ドメインから送るメールの DKIM-Signature の `h=` タグに Subject・Content-Type が含まれていない（または確認していない）</td><td class=sm>第三者の公開分析が指摘したのは**署名対象が From のみに限定されていた**構成である。 署名対象外のヘッダーは、署名を維持したまま改変できる余地がある。 **From のみの署名は RFC 6376 に適合しており、仕様違反としては検出されない**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> マーケティングメール・フォームの自動返信・請求書送付などで、 外部のメール配信サービスが自社ドメインで DKIM 署名している</td><td class=sm>日本プルーフポイントは「自社のメール基盤で適切に設定していても、 外部のメール配信サービス側の署名の設定が不十分だとリスクが生じる」と指摘している。 **署名対象を自社で変更できない場合がある**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> DMARC レポートを「認証の失敗を減らす」目的でしか見ておらず、 **認証に成功しているメールの送信元 IP・送信基盤**を把握していない</td><td class=sm>送信側で本件を観測できる唯一の窓が DMARC レポートの成功側である。 **自社の正規送信元の集合を定義していなければ、未知の送信元を異常と判定できない**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> DMARC のポリシーを reject にしたことを「自社を装うメールは届かない」と 社内・顧客に説明している</td><td class=sm>日本プルーフポイントは**reject でも DKIM リプレイを完全には防げない**と明記している。 reject は認証に失敗したメールを拒否するポリシーであり、 **正規の署名が再利用されれば認証は成功する**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> BIMI または受信側事業者の公式アカウントマークを導入しており、 利用者向けの案内で「このマークがあれば本物」という見分け方を示している</td><td class=sm>今回の事象では**フィッシングメールにマークとロゴが表示された。** さらに NTTドコモは該当企業の公式アカウント表示を**一時停止**している—— 自社の設定不備でブランド表示が止まるリスクが具体化した</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自社ドメインを装うメールの報告を受け取る窓口（phishing@・abuse@）が無い、 またはヘッダー付きで報告してもらう案内をしていない</td><td class=sm>本件を検知したのは**受信側のメール事業者**であり、 装われた企業自身ではない。 **DKIM 署名の検証にはメールヘッダーが必要で、本文の転送だけでは確認できない**</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月18日 日本プルーフポイント株式会社</span> <a href="https://www.proofpoint.com/jp/blog/email-and-cloud-threats/dkim-replay-attacks" target="_blank" rel="noreferrer noopener nofollow">DMARCを通過するフィッシングメールの落とし穴：DKIMリプレイ攻撃の仕組みと企業が取るべき対策</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料。日本プルーフポイントによる解説。著者 Yukimi Sohta。 本記録の作成者が2026年10月20日に取得し内容を確認した。 2026年10月に国内で事象が確認されたこと・ DMARC を通過したフィッシングメールに公式アカウントマークと BIMI のブランドロゴが表示されたこと・ **NTTドコモが一部企業の送信ドメイン認証設定に脆弱性がある可能性を注意喚起し、 該当企業の公式アカウント表示を一時停止したこと**・ DKIM が検証するのは署名の正当性であり送信サーバーの正当性は見ないこと・ `h=` タグで署名対象が From だけに限定されていたという**第三者の公開分析による指摘**と 「関係企業による最終的な原因調査結果ではない」という留保・ Content-Type の改変による MIME 構造・表示への影響・ **「DKIM は通常本文のハッシュも検証するため本文を自由に書き換えられるわけではない」**という注記・ DMARC は SPF か DKIM のいずれかが成功しアライメントを満たせば成功すること・ p=reject でも DKIM リプレイを完全には防げない理由・BIMI の限界・ 4つの対策〈署名対象の適切な設定とオーバーサイニング／外部メール配信サービスの DKIM 設定の確認／DMARC レポートの継続監視と正規の転送による誤検知の留保／ DKIM 鍵の管理と `x=` タグによる有効期間の設定とその限界〉の出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月19日 ZDNET Japan セキュリティ</span> <a href="https://japan.zdnet.com/article/35253733/" target="_blank" rel="noreferrer noopener nofollow">送信ドメイン認証を突破する詐欺メール--「設定の再確認を」とプルーフポイント</a> <span class="b kind">記事</span><span class=sm>（(報道。本記録の起点。 「10月中旬頃から」観測されているという時期・ 「フィッシングメールにもかかわらず、企業の公式アカウントマークや BIMI による ブランドロゴが受信者側で表示されてしまうもの」という事象の説明・ 日本プルーフポイントの「DKIM の暗号技術自体を破るわけではなく、 正規に署名されたメールを再利用して送信ドメイン認証を通過させる手法」という解説・ DMARC/SPF/DKIM の役割の整理・`h=` タグと署名対象の説明・ DMARC の3つのポリシーと reject でも防げない旨・ BIMI の限界と「送信ドメイン認証だけでなく、認証結果に基づいたブランド表示の 運用についても、重要な課題を示した」という指摘・ 4つの推奨対策の出典。 **NTTドコモの注意喚起と公式アカウント表示の一時停止には言及していない。 「DKIM は本文のハッシュも検証する」という留保も見当たらない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月20日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月19日の ZDNET Japan 記事を起点に、 **一次資料（日本プルーフポイントの2026年10月18日付ブログ 「DMARCを通過するフィッシングメールの落とし穴：DKIM リプレイ攻撃の仕組みと 企業が取るべき対策」）を取得して裏を取った。** 2026年10月の国内での観測・公式アカウントマークと BIMI ロゴの表示・ DKIM が送信サーバーの正当性を検証しないこと・ p=reject でも防げない理由・BIMI の限界・4つの対策は一次資料で確認した。 **ZDNET Japan が伝えていない事実を2つ一次資料から補った**—— ①**NTTドコモが注意喚起し該当企業の公式アカウント表示を一時停止したこと** ②**「DKIM は通常本文のハッシュも検証するため本文を自由に書き換えられるわけではない」**という留保。 ②は読者が「本文も自由に変えられる」と誤読しないために本文へ書き出した。 **`h=` が From のみだったという指摘は第三者の公開分析に基づくもので、 日本プルーフポイント自身が「関係企業による最終的な原因調査結果ではない」と 明記している**——本記録は確定した原因として扱わず、 該当する攻撃段階の確度を presumed とし未確定事項に残した。 **NTTドコモの一次告知は探索したが発見できておらず、 齟齬（一次資料での裏取り不能）として記録した。** 装われた企業名・問題メールの総数・被害人数・誘導先と実害はいずれも公表されておらず、 未確定事項とした。 type は特定組織の事案ではなく観測された手口として threat-campaign とし、 詐欺の手口としての性格を secondary_types に fraud-scheme として併記した</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">DKIMリプレイ攻撃</span><span class="b tag">DMARC</span><span class="b tag">DKIM</span><span class="b tag">SPF</span><span class="b tag">BIMI</span><span class="b tag">公式アカウントマーク</span><span class="b tag">送信ドメイン認証</span><span class="b tag">NTTドコモ</span><span class="b tag">日本プルーフポイント</span><span class="b tag">フィッシング</span><span class="b tag">RFC6376</span><span class="b tag">オーバーサイニング</span><span class="b tag">DMARCレポート</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-20 09:18 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
