@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>MCP 横断のSSRF・Google に CVE 発行 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0651</span>MCP 横断のSSRF・Google に CVE 発行</h1>
+<header class="site-header">
+  <p class="subtitle">独立研究者 Syed Anas Mohiuddin は、複数の組織の MCP（Model Context Protocol） サーバに同型のサーバサイドリクエストフォージェリ（SSRF）があることを公表した—— Google の「MCP Toolbox for Databases」の汎用 HTTP ソース／ツールにある CVE-2026-14540（CWE-918・CVSS v4.0 基本値8.0・High）は、HTTP クライアントが リダイレクト方針を制限せず宛先 IP も検証しないため、細工した path パラメータで 内部エンドポイントへ要求を出させられる。**同じ思い込み（「信頼の確認は どこか別の場所で済んでいる」）が Google・JPMorgan Chase・Weaviate・ フランス DINUM・インドネシア タンゲラン市の5組織で独立に修正された。** 研究者は、MCP の出力に仕込んだ指示が A2A の委任を通って別のエージェントの 権限で実行される攻撃類型を「Protocol Pivoting」と名付けている。 Google は v1.5.0（2026年6月18日）で SSRFGuard を入れて修正済みだが、 日本のデジタル庁の MCP サーバについては別種の指摘（認証が無い）が 未解決のまま残っている</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年7月31日（CVE-2026-14540 の公開）</span>
+  <span>最終更新: 2026年10月21日</span>
+</div>
+
+<div class="lead"><p><strong>5つの組織が、連絡を取り合わずに同じ欠陥を直しました。</strong></p>
+<p><strong>独立研究者の Syed Anas Mohiuddin は、複数の組織の MCP（Model Context Protocol）サーバに同型のサーバサイドリクエストフォージェリ（SSRF）があることを公表しました</strong>（出典1・2・3）。<strong>このうち Google の「MCP Toolbox for Databases」のものにはCVE 番号が発行されています</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE</td>
+<td><strong>CVE-2026-14540</strong>（GHSA-3x3x-8ffg-ghcv）</td>
+</tr>
+<tr>
+<td>対象</td>
+<td><strong>Google <code>googleapis/mcp-toolbox</code>（MCP Toolbox for Databases）の汎用 HTTP ソース／ツール</strong></td>
+</tr>
+<tr>
+<td>分類</td>
+<td><strong>CWE-918（SSRF）</strong></td>
+</tr>
+<tr>
+<td>深刻度</td>
+<td><strong>CVSS v4.0 基本値 8.0（High）</strong>。ベクタは <code>AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:U</code></td>
+</tr>
+<tr>
+<td>影響バージョン</td>
+<td><strong>0.3.0 から 1.4.0</strong>（勧告の本文による）</td>
+</tr>
+<tr>
+<td>修正</td>
+<td><strong>v1.5.0</strong>（PR #3448・2026年6月18日）</td>
+</tr>
+<tr>
+<td>CVE 公開</td>
+<td><strong>2026年7月31日</strong>（Google の CNA が発行。予約は7月3日）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>原因は2つの欠落です</strong>（出典1）。</p>
+<ul>
+<li><strong>HTTP クライアントが、リダイレクトを安全に制限する方針を持たずに初期化されていた</strong>（<code>internal/sources/http/http.go</code>）</li>
+<li><strong>宛先 IP アドレスの検証が無かった</strong></li>
+</ul>
+<p><strong>結果として、細工した path パラメータでリダイレクトを起こすと、Toolbox が内部または外部のエンドポイントへ許可されていない要求を出します</strong>（出典1）。<strong>勧告は「悪意あるデータ駆動のプロンプトからも発火しうる」と付記しています</strong>（出典1）。</p>
+<p><strong>本事案の論点は、CVE 1件の深刻度ではありません。</strong> <strong>研究者が示したのは、同じ思い込みが別々の組織で独立に成立していたという事実です</strong>（出典2・3）。</p>
+<table>
+<thead>
+<tr>
+<th>組織</th>
+<th>欠陥</th>
+<th>識別子</th>
+<th>修正</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Google</strong>（MCP Toolbox for Databases）</td>
+<td>リダイレクト無制限＋宛先 IP 未検証の SSRF</td>
+<td><strong>CVE-2026-14540</strong>（CVSS 8.0）</td>
+<td><strong>PR #3448 / v1.5.0（2026年6月18日）</strong></td>
+</tr>
+<tr>
+<td><strong>JPMorgan Chase</strong>（<code>jpmorgan-payments/ai</code> の文書検索サーバ・<code>related()</code> ツール）</td>
+<td>取得ツールに、兄弟ツールが持っていた許可一覧が無かった（中程度）</td>
+<td>なし</td>
+<td><strong>確認され修正済み</strong></td>
+</tr>
+<tr>
+<td><strong>Weaviate</strong>（Google モジュールの <code>apiEndpoint</code>）</td>
+<td>設定可能な <code>apiEndpoint</code>・<code>region</code>・<code>location</code> 経由の SSRF</td>
+<td>なし</td>
+<td><strong>PR #12961（2026年9月7日）</strong></td>
+</tr>
+<tr>
+<td><strong>DINUM（フランス政府）</strong>（<code>datagouv/datagouv-mcp</code>）</td>
+<td>提供者が渡す URL 経由の SSRF（DNS リバインディングにも開いていた）</td>
+<td>なし</td>
+<td><strong>PR #126（2026年9月4日）</strong></td>
+</tr>
+<tr>
+<td><strong>タンゲラン市（インドネシア）</strong>（<code>INFOKOM-KI/Wazuh-MCP-Server</code>）</td>
+<td>ホスト名の解決結果を検査していない SSRF（高）</td>
+<td><strong>GHSA-pw2j-pj4h-f5vg</strong></td>
+<td><strong>コミット 2bbfe12（2026年9月3日勧告公開）</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>研究者はこれを「同じ悪い前提（one bad assumption）」と呼んでいます</strong>（出典2）—— <strong>「URL が信頼境界を越えたのに、その境界で誰も検査しなかった」。</strong></p>
+<p><strong>さらに研究者は、MCP 単体では閉じない攻撃類型を「Protocol Pivoting」と名付けています</strong>（出典2・3）。<strong>仕組みは4段です</strong>（出典3）。</p>
+<ol>
+<li><strong>攻撃者が、MCP ツールの返す内容に A2A のタスク指示の形をした文を仕込む</strong></li>
+<li><strong>統括エージェントがその出力を読み、通常の委任として子エージェントへ指示を渡す</strong></li>
+<li><strong>子エージェントは統括エージェントを信頼して指示を実行する</strong></li>
+<li><strong>その子エージェントの MCP サーバに SSRF があれば、要求は信頼境界の内側から、子エージェントのネットワーク位置と権限で出る</strong></li>
+</ol>
+<p><strong>どの部品も古典的な意味では「侵害」されていません</strong>（出典3）—— <strong>それぞれが設計どおりに動いた結果です。</strong></p>
+<p><strong>なお、Google の修正は2026年6月18日、CVE の公開は7月31日であり、本記録の起点となった報道（2026年10月21日）はこれらより3〜4か月後です</strong>（本記録の整理）〈齟齬3〉—— <strong>「新しく見つかった脆弱性」ではなく、「既に修正された一連の指摘が、研究者の整理によってまとめて報じられたもの」です。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>修正後のリダイレクト方針の具体的な実装</span><span class="b rsn">公表されていない</span><div class=sm>**PR #3448 の説明には `SSRFGuard` の追加と設定項目が書かれており、 自動レビューの要約は「接続時とリダイレクト時の両方で IP を検証する」と 述べている**（出典4）。 **しかし、リダイレクトを何回まで追うのか、 追う際にどの時点で名前解決を行うのか、 既定で遮断される範囲の正確な定義は、 本記録が確認した範囲では読み取れなかった**（本記録の確認）—— **出典4 のページは本記録が読んだ範囲（先頭10万字）を超えており、 確定にはソースコードの確認が必要である**</div></li><li><span class=ui>影響を受けた組織数・利用組織数</span><span class="b rsn">公表されていない</span><div class=sm>**MCP Toolbox for Databases を 0.3.0〜1.4.0 の版で、 汎用 HTTP ソース／ツールを使う設定で動かしていた組織の数は 公表されていない**（出典1）。 **悪用による被害が発生した組織の記述も無い**（本記録の確認）。 **他の4組織（JPMorgan Chase・Weaviate・DINUM・タンゲラン市）についても、 影響範囲の数値は公表されていない**（出典3）</div></li><li><span class=ui>JPMorgan Chase の件の修正日と、CVE が発行されなかった理由</span><span class="b rsn">公表されていない</span><div class=sm>**「確認され修正済み（Confirmed valid and fixed）」と記載されているが、 報告日・修正日・修正の内容はいずれも示されていない**（出典3）。 **CVE 番号も発行されていない**—— **自社運用の MCP サーバであれば CVE の対象にならないという整理も 成り立つが、その判断の理由は公表されていない**（本記録の整理）。 **本記録の作成者は JPMorgan Chase 側の公表を確認していない**〈齟齬2〉</div></li><li><span class=ui>Anthropic・Microsoft の件の修正状況</span><span class="b rsn">公表されていない</span><div class=sm>**2026年5月25日に Full Disclosure で公開された時点で修正状況は 確認されておらず、研究者は「修正されたとは主張しない」と明記している**（出典2）。 **その後の状況について、本記録が確認した資料には記述が無い**（本記録の確認）。 **CVE 番号も発行されていない**—— **したがって、利用者が「自分の環境は対処済みか」を 識別子から判定する手段が無い**（本記録の評価）</div></li><li><span class=ui>同型の欠陥が他にどれだけ残っているか</span><span class="b rsn">探索したが未発見</span><div class=sm>**研究者は16件の GitHub セキュリティ勧告で謝辞に挙げられており、 対象プロジェクト名も列挙されているが、 それぞれの CVE 番号・日付・修正状況は記載されていない**（出典3）。 **走査ツール `mcp-safeguard` については、 研究者自身が「この類型の多くを見逃す」「いくつかの発見は 手でソースを読む必要があった」と述べている**（出典3）—— **つまり、網羅的な探索は行われていない**（本記録の整理）</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**実環境での悪用が確認されたという記述は、 本記録が確認した資料のいずれにも無い**（本記録の確認）。 **CVSS ベクタの `E:U`（悪用コードが未公開）もこれと整合する**（出典1）。 **ただし SSRF は、正規のサービスが自分の権限で出した要求として 現れるため、エージェント基盤の通信記録を取っていない組織では 事後の判定ができない**（本記録の評価）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Syed Anas Mohiuddin（独立研究者）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Google（`googleapis/mcp-toolbox`）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>MCP Toolbox for Databases を利用する組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPMorgan Chase（`jpmorgan-payments/ai`）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Weaviate</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>DINUM（フランス政府・デジタル担当部局／`datagouv/datagouv-mcp`）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>タンゲラン市（インドネシア／`INFOKOM-KI/Wazuh-MCP-Server`）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Anthropic（`mcp-server-fetch`）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Microsoft（`playwright-mcp`）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>デジタル庁（`digital-go-jp/jgrants-mcp-server`）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Rapid7（Bulk Export MCP サーバ）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GSA Technology Transformation Services（米連邦・5サーバ）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-14540 の CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.0<span class=fu>点</span></div><div class=fn>**GitHub Security Advisory（GHSA-3x3x-8ffg-ghcv）に記載された値である**（出典1）。 **ベクタは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:U`**—— **ネットワークから・攻撃複雑性は低・権限不要・利用者の操作不要で、 機密性と完全性に高い影響、可用性への影響は無し。 `E:U` は「悪用コードが未公開」という評価である**（本記録の整理）。 **CVSS v3.1 の値は GitHub の勧告には記載が無い**（出典1）—— **一方、第三者の CVE 集約サイトは v3.1 で 6.1（Medium）と表示しており、 同じ脆弱性が「High」と「Medium」の両方で流通している**〈齟齬1〉。 **数値の性質には「評点」に当たる区分が無いため、 件数の区分を便宜的に用いた**（本記録の明示）</div></div><div class=fig><div class=fh><span class=fl>影響を受けるバージョンの範囲</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1.4<span class=fu>（0.3.0〜1.4.0）</span></div><div class=fn>**value は数値欄を埋めるための便宜的な値であり、意味を持たない**（本記録の明示）。 **勧告の本文に「0.3.0 から 1.4.0」と書かれている**（出典1）。 **ただし同じ勧告の構造化された「影響バージョン」欄は &quot;Unknown&quot;、 「修正バージョン」欄も &quot;Unknown&quot; のままである**（出典1）〈齟齬2〉—— **機械可読な欄が空なので、依存関係の自動検査には引っかからない** （本記録の評価）。 **修正が v1.5.0 であることは PR #3448 のリリース記録から確認した**（出典4）</div></div><div class=fig><div class=fh><span class=fl>同型の SSRF を独立に修正した組織の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>組織</span></div><div class=fn>**Google・JPMorgan Chase・Weaviate・DINUM（フランス）・ タンゲラン市（インドネシア）の5組織**（出典3）。 **「独立に（independently）」とは、互いに連絡を取り合わずに 同じ類型の欠陥を直したという意味である**（出典3。整理は本記録）。 **研究者の別の文書（出典2）は「4つのベンダー」として Google・Anthropic・Microsoft・Weaviate を挙げており、 組み合わせが一致しない**〈齟齬4〉</div></div><div class=fig><div class=fh><span class=fl>研究者が謝辞に挙げられた GitHub セキュリティ勧告の件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>16<span class=fu>件</span></div><div class=fn>**プロジェクトの保守者が公開した勧告のうち、 この研究者を謝辞に挙げたものが16件ある**（出典3）。 **出典3 は対象プロジェクト名（1Password-MCP・jupyter-mcp-server・ powershell-mcp・pdf-reader-mcp 等）を列挙しているが、 CVE 番号・日付・修正状況は記載していない**（本記録の確認）。 **scope を background にしたのは、 これが本事案の規模ではなく「同型の指摘がどれだけ広く出ているか」を 示す値だからである**（本記録の判断）</div></div><div class=fig><div class=fh><span class=fl>修正の公開から CVE 公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>43<span class=fu>日</span></div><div class=fn>**本記録の作成者による算出。** **2026年6月18日（T5。PR #3448 のマージと v1.5.0 の公開）から 2026年7月31日（T7。CVE-2026-14540 の公開）までで43日である。** **この間、修正は公開されていたが、 利用者が「これは脆弱性の修正である」と知る手段は無かった** （本記録の評価）—— **PR の題名は `fix(source/http): implement SSRF guard` であり、 リリースノートの分類は「Bug Fixes」だった**（出典4）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>以下は研究者と勧告が示した成立経路を段階ごとに並べたものである（出典1・2・3）。 **実環境での攻撃が観測された事例の記述は無く、段階は研究者が示した成立条件である** 〈未確定6〉。 攻撃者は、AI エージェントが読む外部の内容に指示を仕込む。 エージェントが MCP ツールを呼ぶと、細工した path パラメータがリダイレクトを起こし、 HTTP クライアントは宛先 IP を検証しないまま内部のエンドポイントへ要求を出す。 エージェント間の委任（A2A）を挟むと、要求は別のエージェントの ネットワーク位置と権限で出る（Protocol Pivoting）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">third_party_research</span><span class=srcs>[1] [3]</span></div><div>攻撃者が、AI エージェントが読む外部の内容に指示を仕込む。 形は A2A のタスク指示を模したものでもよい。 エージェントはそれを入力として読む</div><div class=fn>根拠: 出典1 の付記「悪意あるデータ駆動のプロンプトからも発火しうる」（原文英語）。 出典3 の記述「攻撃者が、MCP ツールの返す内容に A2A のタスク指示の形をした文を仕込む」（原文英語を本記録が訳した）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">disclosed</span><span class=srcs>[1] [4]</span></div><div>エージェントが MCP ツールを呼び、細工した path パラメータが HTTP クライアントに渡る。クライアントはリダイレクトを安全に制限する方針を 持たずに初期化されており、宛先 IP の検証も行わない</div><div class=fn>根拠: 出典1 の記述「`internal/sources/http/http.go` の HTTP クライアントは リダイレクトを安全に制限していない。制限的なリダイレクト方針を持たずに 初期化されており、宛先 IP の検証も無い」（原文英語を本記録が訳した）</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class="b conf">disclosed</span><span class=srcs>[1] [4] [5]</span></div><div>要求が内部または外部のエンドポイントへ出る。 攻撃者が本来直接到達できない内部システムへ、 MCP サーバの立場で要求を出させられる</div><div class=fn>根拠: 出典1 の記述「toolbox が内部または外部のエンドポイントへ 許可されていない要求を送る」（原文英語を本記録が訳した）。 出典5 の整理「攻撃者が本来直接アクセスできない内部システムへ MCP サーバがネットワーク要求を出すよう誘導できる」</div></li><li><div class=stg><span class="b stage">4. 横展開</span><span class="b conf">third_party_research</span><span class=srcs>[3] [5]</span></div><div>エージェント間の委任（A2A 等）を挟むと、 統括エージェントが読んだ指示が子エージェントへ渡り、 子エージェントは統括エージェントを信頼して実行する。 要求は子エージェントのネットワーク位置と権限で、信頼境界の内側から出る （Protocol Pivoting）</div><div class=fn>根拠: 出典3 の4段の記述（①MCP ツールの出力に A2A のタスク指示を仕込む ②統括エージェントが通常の委任として子エージェントへ渡す ③子エージェントは統括エージェントを信頼して実行する ④子エージェントの MCP サーバに SSRF があれば、 要求は信頼境界の内側から出る）。 出典3 は「どの部品も古典的な意味では侵害されていない」と明記している</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>修正の公開から CVE 公開までの日数</div><div class=mv>**本記録の作成者による算出。** 2026年6月18日（T5）から 2026年7月31日（T7）までで43日である。 **修正は先に出ており、CVE が後から付いた**—— **この間、利用者が「これは脆弱性の修正である」と知る手段は リリースノートを人が読むことだけだった**（本記録の評価）</div></div><div class=met><div class=ml>報告から修正のマージまで（Google の件）</div><div class=mv>**本記録の作成者による算出。** PR #3448 は2026年6月17日に承認され（T4）、 6月18日にマージされて同日公開された（T5）。 **研究者からの報告日は公表されていないため、 報告から修正までの日数は算出できない**〈未確定3〉—— **ここで測れるのは承認からマージ・公開までの1日だけである**</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Google は修正を先に公開（2026年6月18日・v1.5.0）し、 CVE-2026-14540 は43日後の7月31日に公開した。 PR の題名は `fix(source/http): implement SSRF guard` で、 リリースノートの分類は「Bug Fixes」だった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **先に修正を出したことで、利用者は早く更新できる状態になった** （本記録の整理）—— **攻撃者に手がかりを与える期間も短くなる。** **一方で捨てたのは「利用者が気づく手段」である**（本記録の評価）—— **CVE が無い43日間、依存関係の警告もスキャナも鳴らず、 更新の動機は「リリースノートを読んだ人がいるかどうか」に依存した。** **さらに、CVE 公開後も勧告の構造化欄が空のままであるため 〈齟齬2〉、自動検査には現在も現れない。**</div></li><li><div class=ui>研究者は、組織ごとに異なる経路で報告した—— Google は GitHub 経由で CVE 発行まで至り、 Weaviate は HackerOne、タンゲラン市は GitHub の勧告、 Anthropic と Microsoft は Full Disclosure での公開、 デジタル庁は JPCERT/CC への報告である</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **組織ごとに経路を変えることで、受付窓口のある組織では 修正まで到達できた**（本記録の整理）—— **Google は CVE 発行、Weaviate は Hall of Fame への掲載、 タンゲラン市は1日で勧告公開まで進んでいる。** **一方で捨てたのは「一貫した識別子」である**（本記録の評価）—— **同じ類型の欠陥が、CVE・GHSA・PR・Full Disclosure の投稿と 4種類の形で散っており、利用者が「自分の環境は該当するか」を 一箇所で調べられない。**</div></li></ul></div>
+<section id="s6"><h2>欠けていたのは2つ——リダイレクトを制限する方針と、宛先 IP の検証である<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>CVE-2026-14540 の原因は、勧告に2点として書かれている</strong>（出典1）。</p>
+<blockquote>
+<p><strong>mcp-toolbox の汎用 HTTP ソースおよびツールの部品にある SSRF。<code>internal/sources/http/http.go</code> の HTTP クライアントはリダイレクトを安全に制限していない。制限的なリダイレクト方針を持たずに初期化されており、宛先 IP の検証も無い。細工した path パラメータがリダイレクトを引き起こし、toolbox が内部または外部のエンドポイントへ許可されていない要求を送る</strong>（出典1。原文英語を本記録が訳した）</p>
+</blockquote>
+<p><strong>ここで効いているのは「運用者が base URL を設定している」という設計である</strong>（出典2。整理は本記録）。<strong>設定の時点では宛先は正しい。しかしリダイレクトを追う段で、その正しさは引き継がれない</strong>—— <strong>研究者は「Google は、運用者が設定した base URL がリダイレクトまで覆うと想定していた」と整理している</strong>（出典2）。</p>
+<p><strong>深刻度は CVSS v4.0 で 8.0（High）である</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>ベクタの要素</th>
+<th>値</th>
+<th>意味</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AV</td>
+<td>N</td>
+<td>ネットワークから</td>
+</tr>
+<tr>
+<td>AC</td>
+<td>L</td>
+<td>攻撃複雑性は低い</td>
+</tr>
+<tr>
+<td>AT</td>
+<td>N</td>
+<td>特別な攻撃要件なし</td>
+</tr>
+<tr>
+<td>PR</td>
+<td>N</td>
+<td>権限不要</td>
+</tr>
+<tr>
+<td>UI</td>
+<td>N</td>
+<td>利用者の操作不要</td>
+</tr>
+<tr>
+<td>VC / VI / VA</td>
+<td>H / H / N</td>
+<td>機密性と完全性に高い影響、可用性への影響なし</td>
+</tr>
+<tr>
+<td>E</td>
+<td>U</td>
+<td>悪用コードは未公開</td>
+</tr>
+</tbody>
+</table>
+<p><strong>分類は CWE-918（SSRF）である</strong>（出典1）。</p>
+<p><strong>なお、同じ脆弱性が「High」と「Medium」の両方で流通している</strong>（本記録の確認）〈齟齬1〉—— <strong>GitHub の勧告は CVSS v4.0 で 8.0（High）だが、第三者の CVE 集約サイトは v3.1 で 6.1（Medium）と表示している。</strong> <strong>v3.1 の値は GitHub の勧告には記載が無い</strong>（出典1）。</p></section>
+<section id="s7"><h2>5つの組織が、連絡を取らずに同じ欠陥を直した——共通していたのは「思い込み」である<span class="b slot">評価・解釈</span><span class=srcs>出典 [2] [3]</span></h2><p><strong>研究者の整理によれば、同型の SSRF は5つの組織で独立に修正された</strong>（出典3）。</p>
+<table>
+<thead>
+<tr>
+<th>組織</th>
+<th>どこに入っていたか</th>
+<th>研究者の整理による「思い込み」</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Google</strong></td>
+<td>汎用 HTTP ソースのクライアント</td>
+<td>運用者が設定した base URL がリダイレクトまで覆うと考えた</td>
+</tr>
+<tr>
+<td><strong>Anthropic・Microsoft</strong></td>
+<td><code>mcp-server-fetch</code> / <code>playwright-mcp</code></td>
+<td>モデルが渡す URL を信頼した</td>
+</tr>
+<tr>
+<td><strong>Weaviate</strong></td>
+<td>Google モジュールの <code>apiEndpoint</code></td>
+<td><code>baseURL</code> 欄は固めたが、別の欄を見落とした</td>
+</tr>
+<tr>
+<td><strong>JPMorgan Chase</strong></td>
+<td>文書検索サーバの <code>related()</code> ツール</td>
+<td>兄弟ツールに許可一覧があったので、こちらにも効いていると考えた</td>
+</tr>
+<tr>
+<td><strong>DINUM（フランス）</strong></td>
+<td><code>datagouv/datagouv-mcp</code></td>
+<td>提供者が渡す URL を信頼した（DNS リバインディングにも開いていた）</td>
+</tr>
+<tr>
+<td><strong>タンゲラン市（インドネシア）</strong></td>
+<td><code>INFOKOM-KI/Wazuh-MCP-Server</code></td>
+<td>ホスト名の解決結果を検査しなかった</td>
+</tr>
+</tbody>
+</table>
+<p><strong>研究者はこれを1行でまとめている</strong>（出典2）。</p>
+<blockquote>
+<p><strong>URL が信頼境界を越えたのに、その境界で誰も検査しなかった。それぞれのベンダーは、信頼の確認はどこか別の場所で済んでいると考えていた</strong>（出典2。原文英語を本記録が訳した）</p>
+</blockquote>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>この並びが示しているのは、個々の実装の質の問題ではない。</strong> <strong>MCP には「ツールが外部へ要求を出す」という機能が標準的に含まれており、その宛先を誰が決めるのかという点について、プロトコルの側に答えが用意されていない</strong>（本記録の評価）。<strong>結果として、各実装が独自に「どこかで検査されているはずだ」と仮定する余地が残った。</strong></p>
+<p><strong>参加している組織の性質も読みどころである。</strong> <strong>大手クラウド事業者（Google）、金融機関（JPMorgan Chase）、ベクトルデータベースの事業者（Weaviate）、国の行政機関（フランス DINUM）、自治体（インドネシア タンゲラン市）が並んでいる</strong>（出典3）—— <strong>MCP サーバを自前で書いて動かすことの敷居が低く、セキュリティ実装の水準が組織の規模と相関しない領域だということである</strong>（本記録の評価）。</p>
+<p><strong>なお、研究者の2つの文書で挙げられる組織の組み合わせが一致しない</strong>（本記録の確認）〈齟齬4〉—— <strong>一方は「4つのベンダー」として Google・Anthropic・Microsoft・Weaviate を挙げ、他方は「5組織が独立に同じ類型を修正した」としてGoogle・JPMorgan Chase・Weaviate・DINUM・タンゲラン市を挙げている。</strong> <strong>本記録は両方を併記する。</strong></p></section>
+<section id="s8"><h2>「Protocol Pivoting」は、どの部品も侵害せずに信頼境界を越える<span class="b slot">評価・解釈</span><span class=srcs>出典 [3] [5]</span></h2><p><strong>研究者が名付けた攻撃類型「Protocol Pivoting」の定義はこうである</strong>（出典3）。</p>
+<blockquote>
+<p><strong>複数のプロトコルを使うエージェント基盤（ツール用の MCP、エージェント間委任の A2A、発見用の ANP など）において、1つのノードを制御する攻撃者が、委任を利用して信頼境界を越える攻撃類型</strong>（出典3。原文英語を本記録が訳した）</p>
+</blockquote>
+<p><strong>手順は4段である</strong>（出典3）。</p>
+<ol>
+<li><strong>攻撃者が、MCP ツールの返す内容に、A2A のタスク指示の形をした文を仕込む</strong></li>
+<li><strong>統括エージェントがその出力を読み、通常の委任として子エージェントへ渡す</strong></li>
+<li><strong>子エージェントは統括エージェントを信頼して指示を実行する</strong></li>
+<li><strong>その子エージェントの MCP サーバに SSRF があれば、要求は信頼境界の内側から、子エージェントのネットワーク位置と権限で出る</strong></li>
+</ol>
+<p><strong>研究者が強調しているのは、次の2点である</strong>（出典3）。</p>
+<ul>
+<li><strong>どの部品も古典的な意味では侵害されていない。</strong> それぞれが設計どおりに動く</li>
+<li><strong>この攻撃は SSRF に依存しない。</strong> SSRF は、特権のある外向き要求を得る具体的な一手段にすぎない</li>
+</ul>
+<p><strong>報道も同じ点を伝えている</strong>（出典5）—— <strong>「攻撃者は AI エージェントが読む外部の内容に悪意ある指示を植え込める。エージェントが作業を別のエージェントへ渡すとき、悪意ある指示も一緒に渡されうる。受け取ったエージェントがその操作が認可されているかを確認しなければ、本来は制限されていた操作を指示どおりに実行してしまう」</strong>（出典5）。</p>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>防御の観点で厄介なのは、各段が「正常」だということである。</strong></p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>見た目</th>
+<th>検知の手がかり</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ツール出力に指示が混ざる</td>
+<td>正規のツール呼び出しの戻り値</td>
+<td><strong>内容の検査が必要。形式では区別できない</strong></td>
+</tr>
+<tr>
+<td>統括→子への委任</td>
+<td>正規の A2A の委任</td>
+<td><strong>委任自体は日常的に起きる</strong></td>
+</tr>
+<tr>
+<td>子が実行する</td>
+<td>正規のツール実行</td>
+<td><strong>実行主体の権限で動くので、権限違反としては映らない</strong></td>
+</tr>
+<tr>
+<td>SSRF で内部へ要求</td>
+<td>正規サービスからの HTTP 要求</td>
+<td><strong>外部からの不審な接続としては映らない</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>つまり、どの層で見ても「異常な通信」としては現れない</strong>（本記録の評価）。<strong>残る手は、①ツール出力を指示として解釈させない設計、②委任のたびに認可を確認する仕組み、③エージェントの外向き・内向き通信を宛先で絞ることの3つである</strong>（本記録の整理。mitigations 参照）。</p></section>
+<section id="s9"><h2>修正は6月に出ていた——CVE は43日後、報道は4か月後である<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [4] [5]</span></h2><p><strong>時系列を並べると、本事案の性質が変わって見える</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>起きたこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年6月17日</td>
+<td>Google の修正 PR #3448 が承認される</td>
+</tr>
+<tr>
+<td><strong>2026年6月18日</strong></td>
+<td><strong>PR #3448 がマージされ、同日 v1.5.0 として公開される</strong></td>
+</tr>
+<tr>
+<td>2026年7月3日</td>
+<td>CVE-2026-14540 が予約される</td>
+</tr>
+<tr>
+<td><strong>2026年7月31日</strong></td>
+<td><strong>CVE-2026-14540 が公開される（修正の43日後）</strong></td>
+</tr>
+<tr>
+<td>2026年8月8日</td>
+<td>GitHub の勧告が最終更新される</td>
+</tr>
+<tr>
+<td><strong>2026年10月21日</strong></td>
+<td><strong>報道が「研究成果の公表」として本件を報じる（修正の約4か月後）</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>つまり、本記録の起点となった報道（出典5）は、「新しく見つかった脆弱性」ではなく「既に修正された一連の指摘が、研究者の整理によってまとめて報じられたもの」である</strong>（本記録の整理）〈齟齬3〉。</p>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>修正から CVE 公開までの43日間、修正は公開されていたが、利用者が「これは脆弱性の修正である」と知る手段は無かった。</strong> <strong>PR の題名は <code>fix(source/http): implement SSRF guard</code>、リリースノートの分類は「Bug Fixes」である</strong>（出典4）—— <strong>SSRF guard という語は読めば分かるが、リリースノートを人が読まなければ届かない。</strong></p>
+<p><strong>さらに、CVE が公開された後も機械可読な欄は埋まっていない</strong>（出典1）〈齟齬2〉—— <strong>勧告の構造化欄は「パッケージ名: 記載なし」「影響バージョン: Unknown」「修正バージョン: Unknown」のままである。</strong> <strong>影響範囲（0.3.0〜1.4.0）は勧告の本文（説明の文章）にしか書かれていない。</strong></p>
+<p><strong>この2つが重なると、実務では次のようになる</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>依存関係の自動警告は鳴らない</strong>（パッケージ名が無いため）</li>
+<li><strong>SBOM の照合でも引っかからない</strong>（影響バージョンが Unknown のため）</li>
+<li><strong>「自社が使っている版は該当するか」を知るには、勧告の説明文を人が読む必要がある</strong></li>
+</ul>
+<p><strong>修正が出ていることと、利用者が更新できることの間には距離がある</strong>（本記録の指摘）—— <strong>本件は「ベンダーが速く直した事例」でありながら、同時に「直ったことが伝わらない事例」でもある。</strong></p></section>
+<section id="s10"><h2>修正の中身は「二層のガード」——接続時とリダイレクト時の両方で IP を見る<span class="b slot">再発防止</span><span class=srcs>出典 [3] [4]</span></h2><p><strong>Google の修正 PR #3448 の説明に書かれている対処は4点である</strong>（出典4）。</p>
+<table>
+<thead>
+<tr>
+<th>対処</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>SSRFGuard</code> の追加</strong></td>
+<td>DNS リバインディング（TOCTOU）攻撃を防ぐことを目的とする</td>
+</tr>
+<tr>
+<td><strong>設定項目の追加</strong></td>
+<td><code>allowPrivateNetworks</code>・<code>allowedIpRanges</code>・<code>customBlockedIpRanges</code></td>
+</tr>
+<tr>
+<td><strong><code>BaseURL</code> の早期検証</strong></td>
+<td>初期化の時点で検証し、設定ミスを早く失敗させる</td>
+</tr>
+<tr>
+<td><strong>警告の記録</strong></td>
+<td><code>disableSslVerification</code> が有効なとき、中間者攻撃の危険を警告として記録する</td>
+</tr>
+</tbody>
+</table>
+<p><strong>コミットの題名からは「二層のガードと安全側の既定値」が読め、既定の遮断判定は <code>IsGlobalUnicast</code> で簡素化されている</strong>（出典4）。<strong>自動レビューの要約は「ガードが接続時とリダイレクト時の両方でIP を検証する」と述べている</strong>（出典4）—— <strong>ただしリダイレクト方針そのものの実装は、本記録が確認した範囲ではページ上に現れていない</strong>（本記録の確認）〈未確定1〉。</p>
+<p><strong>ここで押さえておくべき設計上の要点を、本記録の評価として書く。</strong></p>
+<p><strong>第一に、「URL の検査」では足りず「IP の検査」が必要だという点である。</strong> <strong>DNS リバインディングは、同じホスト名が検査の時点と接続の時点で違う IP を返す攻撃である</strong>（本記録の補足）—— <strong>したがって、名前解決の結果を接続の直前に検査しなければ意味がない。</strong> <strong>研究者がタンゲラン市の件を「ホスト名の解決結果を一度も検査していない」と整理しているのは、まさにこの点である</strong>（出典3）。</p>
+<p><strong>第二に、リダイレクトを追うたびに検査が必要だという点である。</strong> <strong>1回目の宛先が許可された IP でも、リダイレクト先が内部の IP なら SSRF は成立する</strong>（本記録の整理）—— <strong>これが CVE-2026-14540 の原因そのものだった。</strong></p>
+<p><strong>第三に、既定値が安全側であることと、利用者が設定を書いていることは別だという点である</strong>（本記録の評価）。<strong><code>allowPrivateNetworks</code> のような項目は、社内 API を参照する正規の設定を動かすために有効化されやすい——そこで広く許可してしまえば、修正の効果は失われる。</strong></p></section>
+<section id="s11"><h2>未解決のまま残っているものがある——うち1件はデジタル庁の MCP サーバである<span class="b slot">未確定事項</span><span class=srcs>出典 [3]</span></h2><p><strong>研究者の一覧には、本記録の確認時点で未解決の指摘が含まれている</strong>（出典3）。</p>
+<table>
+<thead>
+<tr>
+<th>対象</th>
+<th>指摘の内容</th>
+<th>状態</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GSA Technology Transformation Services（米連邦・5サーバ）</strong></td>
+<td>上流のエラー本文が伏字処理されずに記録されており、個人データを含みうる（退役軍人省の給付請求、CMS Blue Button、regulations.gov、USASpending、CDC PLACES）</td>
+<td><strong>2026年9月2日に非公開の GHSA として提出。triage 中（未解決）</strong></td>
+</tr>
+<tr>
+<td><strong>デジタル庁（<code>digital-go-jp/jgrants-mcp-server</code>）</strong></td>
+<td>認証が無い</td>
+<td><strong>2026年9月1日に JPCERT/CC へ報告。9月7日に公開の PR #6 を提出したが未マージ（未解決）</strong></td>
+</tr>
+<tr>
+<td><strong>Anthropic（<code>mcp-server-fetch</code>）・Microsoft（<code>playwright-mcp</code>）</strong></td>
+<td>モデルが渡す URL を信頼する形の SSRF（CVSS v3.1 で 7.5）</td>
+<td><strong>2026年5月25日に Full Disclosure で公開。修正状況は公開の時点で未確認</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>いずれも SSRF とは別の類型を含んでいる</strong>（本記録の明示）—— <strong>GSA の件は情報漏えい、デジタル庁の件は認証の欠落である。</strong> <strong>同じ研究者による一連の指摘に含まれているが、同じ原因ではない。</strong></p>
+<p><strong>デジタル庁の件について、本記録が確認できた範囲を明確にする</strong>（本記録の確認）。</p>
+<ul>
+<li><strong>確認できたこと</strong>: 研究者の公開ページに「<code>digital-go-jp/jgrants-mcp-server</code>、認証が無い、2026年9月1日に JPCERT へ報告、9月7日に公開 PR #6、未解決」と記載されていること（出典3）</li>
+<li><strong>確認できていないこと</strong>: <strong>デジタル庁側の公表、JPCERT/CC 側の記録、PR #6 の現在の状態のいずれも本記録の作成者は直接確認していない</strong>〈齟齬2〉</li>
+</ul>
+<p><strong>したがって、本記録はこの件を「研究者の記述による未解決の指摘」として扱い、デジタル庁の対応の評価は行わない</strong>（本記録の判断）。</p>
+<p><strong>なお、研究者は走査ツール <code>mcp-safeguard</code> を公開しているが、自身で限界を明記している</strong>（出典3）—— <strong>「この類型の多くを見逃す」「いくつかの発見は手でソースを読む必要があった」。</strong> <strong>つまり、同型の欠陥が他にどれだけ残っているかは分からない</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**Google `googleapis/mcp-toolbox`（MCP Toolbox for Databases）の 汎用 HTTP ソースおよびツールの部品**（出典1）。 **該当のコードは `internal/sources/http/http.go` である**（出典1・4）。 **影響バージョンは勧告本文で「0.3.0 から 1.4.0」、修正は v1.5.0**（出典1・4）。 **ただし勧告の構造化欄（パッケージ名・エコシステム・影響バージョン・ 修正バージョン）はいずれも &quot;No package listed&quot; / &quot;Unknown&quot; のままである** （出典1）〈齟齬2〉—— **依存関係の自動検査やパッケージ単位の照合には現れない。** **同型の欠陥は、研究者の整理では JPMorgan Chase の文書検索サーバ（`related()` ツール）、 Weaviate の Google モジュール（`apiEndpoint`・`region`・`location`）、 DINUM の `datagouv/datagouv-mcp`、 タンゲラン市の `INFOKOM-KI/Wazuh-MCP-Server` にも存在した**（出典3）。 **Anthropic の `mcp-server-fetch` と Microsoft の `playwright-mcp` は、 モデルが渡す URL を信頼する形の同種の問題として 2026年5月25日に公開されている**（出典2）。</td></tr><tr><th>finding_name</th><td>**攻撃類型の名前は「Protocol Pivoting」**（出典2・3）—— **研究者 Syed Anas Mohiuddin による命名である。** **定義は「複数のプロトコルを使うエージェント基盤（ツール用の MCP、 エージェント間委任の A2A、発見用の ANP など）で、 1つのノードを制御する攻撃者が委任を利用して信頼境界を越える攻撃類型」である** （出典3。日本語訳は本記録・原文英語）。 **研究者は「SSRF に依存する攻撃ではない。 SSRF は、特権のある外向き要求を得る具体的な一手段にすぎない」と 明記している**（出典3）。 **正式な記述は DOI 10.5281/zenodo.20371152 で公開されている**（出典3）。 **CVE は CVE-2026-14540（Google・SSRF）と CVE-2026-97228（Rapid7・GraphQL のエスケープ漏れ・CVSS 2.7）の2件が 発行されている**（出典3）—— **残りの指摘には CVE 番号が無い**（本記録の整理）。</td></tr><tr><th>exploit_status</th><td>**実環境での悪用が確認されたという記述は、本記録が確認した資料のいずれにも無い** （本記録の確認）。 **CVE-2026-14540 の CVSS ベクタに含まれる `E:U` は 「悪用コードが未公開（Unreported）」という評価である**（出典1。整理は本記録）。 **公開された実証コードも確認されていない**（本記録の確認）。 **ただし、発火の条件は軽い**（出典1）—— **勧告は「悪意あるデータ駆動のプロンプトからも発火しうる」と付記しており、 攻撃者が直接 API を叩く必要はなく、 エージェントが読む外部の内容に指示を仕込むだけで足りる**（出典1。整理は本記録）。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月22日・本記録の確認時点</td></tr><tr><th>patch_status</th><td>**CVE-2026-14540 は修正済みである。** **PR #3448（`fix(source/http): implement SSRF guard`）が 2026年6月18日にマージされ、同日 v1.5.0 として公開された**（出典4）。 **修正の内容は次のとおり PR の説明に記されている**（出典4）。 **①`SSRFGuard` を追加し、DNS リバインディング（TOCTOU）攻撃を防ぐ ②設定項目 `allowPrivateNetworks`・`allowedIpRanges`・ `customBlockedIpRanges` を追加 ③設定された `BaseURL` を初期化の時点で検証し、設定ミスを早期に失敗させる ④`disableSslVerification` が有効なときに中間者攻撃の危険を警告として記録する。** **コミットの題名からは「二層のガードと安全側の既定値」、 既定の遮断判定を `IsGlobalUnicast` で簡素化したことが読める**（出典4）—— **自動レビューの要約は「ガードが接続時とリダイレクト時の両方で IP を検証する」と 述べているが、リダイレクト方針そのものの実装は本記録が確認した範囲では ページ上に現れていない**（本記録の確認）〈未確定1〉。 **他の組織の修正状況は次のとおりである**（出典3）—— **JPMorgan Chase: 修正済み（日付の記載なし）／ Weaviate: PR #12961（2026年9月7日）／ DINUM: PR #126（2026年9月4日）／ タンゲラン市: コミット 2bbfe12（2026年9月3日）。** **未解決のまま残っているのは、 GSA Technology Transformation Services の5サーバ（2026年9月2日提出・triage 中）と、 デジタル庁の `jgrants-mcp-server`（PR #6 が未マージ）である**（出典3）。 **Anthropic・Microsoft の件は、公開の時点で修正状況が確認されていない**（出典2）〈未確定4〉。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月22日・本記録の確認時点</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月22日・本記録の確認時点　<b>詳細:</b> **実環境での悪用は確認されていない**（本記録の確認）。 **CVSS ベクタの `E:U`（悪用コードが未公開）もこれと整合する**（出典1）。 **ただし「確認されていない」は「起きていない」ではない**（本記録の明示）—— **SSRF の痕跡は、MCP サーバから内部向けに出た HTTP 要求として 現れるため、エージェント基盤の外向き・内向き通信の記録を 取っていない組織では事後の判定ができない**（本記録の評価。後段を参照）。</td></tr><tr><th>ログの有無</th><td>**本事案で記録が要るのは「MCP サーバがどこへ要求を出したか」である** （本記録の整理）。 **SSRF は、正規のサービスが自分の権限で出した要求として現れるため、 外部からの不審な接続としては映らない**（本記録の評価）。 **検知に要るのは次の3つである**（本記録の評価）—— **①MCP サーバ（および AI エージェントの実行環境）からの 外向き・内向き HTTP 要求の宛先の記録、 ②リダイレクトの追跡（最初の宛先と最終の宛先の両方）、 ③内部ネットワーク側で「エージェント基盤から来た要求」を 受けたことの記録。** **本記録の確認時点で、侵害判定のための指標（IoC）は公表されていない** （本記録の確認）—— **攻撃に使われる URL は環境ごとに異なるため、 値としての IoC が成立しにくい類型である**（本記録の評価）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>対応:</b> **MCP Toolbox for Databases を v1.5.0 以降へ更新する**（出典1・4）。 **汎用 HTTP ソース／ツールを使っている設定が対象である。** **更新後は、追加された設定項目 （`allowPrivateNetworks`・`allowedIpRanges`・`customBlockedIpRanges`）を 明示的に設定する**（出典4）—— **既定値は安全側とされているが、自組織で到達を許す範囲を 自分で書いておかないと、既定値の変更に気づけない。**　<b>副作用:</b> **私設ネットワークへの到達を既定で遮断するため、 社内 API を参照する正規の設定が動かなくなる可能性がある**（本記録の評価）—— **`allowedIpRanges` で明示的に許可する作業が必要になり、 そこで広く許可してしまうと修正の効果が失われる。** **また、`disableSslVerification` を有効にしている環境では 警告が記録されるようになるため、ログの増加を見込む**（出典4）。　<b>出典:</b> 1、4</div><div class=sub><b>対応:</b> **自組織の MCP サーバについて、「外部から来た文字列が そのまま HTTP 要求の宛先になる箇所」を棚卸しする**（出典2・3。整理は本記録）。 **研究者が示した4つの型を検査の観点にする**（出典2・3）—— **①運用者が設定した base URL があるがリダイレクトを制限していない（Google 型）、 ②モデルが渡す URL を信頼している（Anthropic・Microsoft 型）、 ③ある欄は固めたが別の欄を見落としている（Weaviate 型）、 ④兄弟ツールには許可一覧があるのに、別のツールには無い（JPMorgan 型）。**　<b>副作用:</b> **走査ツールでは足りない**（出典3 が明記）—— **研究者自身が、公開した `mcp-safeguard` は 「この類型の多くを見逃す」「いくつかの発見は手でソースを読む必要があった」と 述べている。** **つまりこの棚卸しは人手のコードレビューになり、 MCP サーバの数に比例して工数が増える**（本記録の評価）。　<b>出典:</b> 2、3</div><div class=sub><b>対応:</b> **エージェントの外向き通信を、宛先の許可一覧で絞る**（出典5。整理は本記録）。 **報道は「AI エージェントを配備する企業は、 プロンプトインジェクションへの対処だけでなく、 MCP ツールのネットワーク到達範囲を制限する必要がある」と整理している**（出典5）。 **具体的には、エージェント実行環境を専用のネットワークに置き、 外向きは許可した宛先のみ、内部向けはメタデータサービス （169.254.169.254 等）と管理面を遮断する。**　<b>副作用:</b> **許可一覧の維持が運用の負担になる**（本記録の評価）—— **エージェントが参照先を増やすたびに申請と承認が必要になり、 「とりあえず全許可」に戻る圧力がかかる。** **また、宛先の絞り込みは SSRF の到達先を狭めるだけで、 許可した宛先の中で起きる悪用は防げない。**　<b>出典:</b> 5</div><div class=sub><b>対応:</b> **エージェント間の委任（A2A 等）で渡される指示に、 権限の確認を挟む**（出典3・5）。 **報道は「AI エージェントが機微なデータへアクセスする、 あるいは高権限の操作を実行する前に、 適切な認可を得ているかを確認する必要がある」と整理している**（出典5）。 **研究者の整理では、子エージェントが統括エージェントを信頼して 指示を実行する段が成立の鍵である**（出典3）。　<b>副作用:</b> **確認を挟むと、エージェントに任せる利点（自律的な連鎖処理）が その分だけ失われる**（本記録の評価）—— **どの操作で止めるかの線引きが必要で、 線を厳しくすると実用性が落ち、緩くすると素通りする。** **また、確認の判断自体をモデルに任せると、 同じプロンプトインジェクションの影響下に置かれる。**　<b>出典:</b> 3、5</div><div class=sub><b>対応:</b> **CVE 番号を鍵にしない棚卸しの経路を持つ**（本記録の整理）。 **本件の指摘のうち CVE が発行されたのは2件 （CVE-2026-14540・CVE-2026-97228）だけで、 残りは PR とコミット、あるいは GitHub の勧告で修正されている**（出典3）。 **自組織が使う MCP サーバの実装について、 リリースノートと勧告を直接追う担当と頻度を決める。**　<b>副作用:</b> **追跡の対象が増える**（本記録の評価）—— **MCP サーバは小規模な OSS が多く、 勧告の出し方も保守者ごとに違う。 自動化できないため、人手の作業が定常的に発生する。**　<b>出典:</b> 3</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年3月27日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Weaviate の PR #10878 がマージされる（`baseURL` の検証をオプトインで追加）—— この時点では `apiEndpoint` は対象外だった</td></tr><tr><td class="sm nowrap tw">2026年5月25日</td><td class=nowrap><span class="b kind">公表</span></td><td>Anthropic の `mcp-server-fetch` と Microsoft の `playwright-mcp` の件が Full Disclosure で公開される（CVSS v3.1 で 7.5）。 公開時点で修正状況は確認されていない</td></tr><tr><td class="sm nowrap tw">2026年6月</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>研究者が IETF の Internet-Draft `draft-mohiuddin-mcp-security-considerations-00` を公開する</td></tr><tr><td class="sm nowrap tw">2026年6月17日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Google の修正 PR</td></tr><tr><td class="sm nowrap tw">2026年6月18日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>PR #3448（`fix(source/http): implement SSRF guard`）が `fix/http-ssrf` から `main` へ8コミットでマージされ、同日 v1.5.0 として公開される。 同日、Weaviate の PR #11683 もマージされる</td></tr><tr><td class="sm nowrap tw">2026年7月3日</td><td class=nowrap><span class="b kind">公表</span></td><td>CVE-2026-14540 が予約される</td></tr><tr><td class="sm nowrap tw">2026年7月31日</td><td class=nowrap><span class="b kind">公表</span></td><td>CVE-2026-14540 が Google の CNA により公開され、 GitHub Advisory Database と NVD に掲載される（GHSA-3x3x-8ffg-ghcv）</td></tr><tr><td class="sm nowrap tw">2026年8月8日</td><td class=nowrap><span class="b kind">訂正</span></td><td>GHSA-3x3x-8ffg-ghcv が最終更新される</td></tr><tr><td class="sm nowrap tw">2026年8月25日</td><td class=nowrap><span class="b kind">公表</span></td><td>Weaviate の Security Hall of Fame に研究者が掲載される</td></tr><tr><td class="sm nowrap tw">2026年9月1日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>デジタル庁の `digital-go-jp/jgrants-mcp-server` の 「認証が無い」という指摘が JPCERT/CC へ報告される</td></tr><tr><td class="sm nowrap tw">2026年9月2日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>タンゲラン市（インドネシア）の Wazuh-MCP-Server の件が報告される。 同日、GSA Technology Transformation Services の5サーバの件が 非公開の GHSA として提出される</td></tr><tr><td class="sm nowrap tw">2026年9月3日</td><td class=nowrap><span class="b kind">公表</span></td><td>タンゲラン市の件の勧告 GHSA-pw2j-pj4h-f5vg が公開され、 コミット 2bbfe12 で修正される</td></tr><tr><td class="sm nowrap tw">2026年9月4日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>DINUM（フランス）の `datagouv/datagouv-mcp` の PR</td></tr><tr><td class="sm nowrap tw">2026年9月7日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Weaviate の PR #12961 が stable/v1.37 へマージされる。 同日、デジタル庁の件について公開の PR #6 が提出される（未マージ）</td></tr><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>台湾の iThome が、Google・JPMorgan Chase 等の MCP プロジェクトに 同型の SSRF があるとする研究成果と、CVE-2026-14540 を報じる。 研究者は Ars Technica に対して「Protocol Pivoting」の手法を説明した</td></tr><tr><td class="sm nowrap tw">2026年10月23日（予定）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>研究者が MCPCon North America で本類型を発表する予定とされている （本記録の作成時点では未実施）</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>同じ脆弱性が CVSS v4.0 で 8.0（High）と v3.1 で 6.1（Medium）の両方で流通している</span><div class=sm>**GitHub Security Advisory（出典1）は CVSS v4.0 基本値 8.0（High）を示し、 v3.1 の値は記載していない**（本記録の確認）。 **一方、第三者の CVE 集約サイトは v3.1 で 6.1（Medium）と表示している** （本記録の確認）。 **差が生じるのは v3.1 と v4.0 で評価の軸が違うためである** （v4.0 は影響の及ぶ範囲を VC/VI/VA と SC/SI/SA に分けて数える。 本記録の補足）—— **どちらかが誤りということではない。** **本記録は、当事者である Google の CNA が発行した勧告の値 （v4.0 で 8.0・High）を採る**（本記録の判断）。 **実務上の注意は、社内の脆弱性管理で 「High」と「Medium」のどちらで登録されるかが 参照した情報源で変わることである**（本記録の指摘）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>勧告の構造化欄が空で、影響範囲は説明文の中にしか書かれていない</span><div class=sm>**GitHub Security Advisory の説明文には 「versions 0.3.0 through 1.4.0」と書かれている**（出典1）。 **しかし同じ勧告の構造化された欄は、 パッケージ名が &quot;No package listed&quot;、 ソースコードが &quot;No known source code&quot;、 影響バージョンが &quot;Unknown&quot;、修正バージョンが &quot;Unknown&quot; である** （本記録の確認）。 **修正が v1.5.0 であることは、PR #3448 のリリース記録から確認した**（出典4）—— **勧告自体には書かれていない。** **これが実務で効く**（本記録の評価）—— **依存関係の自動警告はパッケージ名で引き、 SBOM 照合は影響バージョンで引く。 どちらも空なので、本件は自動検査に現れない。** **利用者が該当を判定するには、勧告の説明文を人が読む必要がある。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>報道の時点（2026年10月21日）は修正の約4か月後であり、「新しい脆弱性」ではない</span><div class=sm>**本記録の作成者による整理である。** **報道（出典5）は「研究人員近期公布（研究者が最近公表した）」として 本件を伝えているが、時系列は次のとおりである**（出典1・3・4）—— **Google の修正は2026年6月18日（v1.5.0）、 CVE-2026-14540 の予約は7月3日、公開は7月31日。** **報道は修正から約4か月後、CVE 公開から約2か月半後である。** **本記録は、本事案を「新しく見つかった脆弱性」ではなく 『既に修正された一連の指摘が、研究者の整理 （出典3「Protocol Pivoting, Four Months Later」）によって まとめて報じられたもの』として扱う**（本記録の判断）。 **この区別は実務に効く**（本記録の指摘）—— **緊急の適用判断が必要なのか、 棚卸しと設計の見直しが必要なのかが変わる。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>研究者の2つの文書で、挙げられる組織の組み合わせが一致しない</span><div class=sm>**出典2（「Four vendors, one bad assumption」）が挙げるのは Google・Anthropic・Microsoft・Weaviate の4ベンダーである**（本記録の確認）—— **JPMorgan Chase と政府機関への言及は無く、 5件目は「ベンダーの開示手続きの途中で名前を出せない」とされている。** **出典3（「Protocol Pivoting, Four Months Later」）が 「5組織が独立に同じ SSRF 類型を修正した」として挙げるのは Google・JPMorgan Chase・Weaviate・DINUM・タンゲラン市である**（本記録の確認）—— **Anthropic と Microsoft はこの5組織に含まれていない。** **報道（出典5）は「Google、摩根大通（JPMorgan Chase）など」と書いており、 出典3 の側に沿っている。** **本記録は両方を併記する**（本記録の判断）—— **出典2 は時期の早い記事であり、出典3 はその後の追加分を含む 続報と読めるため、矛盾ではなく時点の違いと考えられる。 ただしこの解釈は本記録の推定である。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>JPMorgan Chase・デジタル庁・Anthropic・Microsoft の各側の記録を直接確認できていない</span><div class=sm>**本記録の作成者が一次資料として取得して確認したのは、 GitHub Security Advisory（出典1）、研究者の2つの文書（出典2・3）、 Google の修正 PR（出典4）である。** **これに対して、次のものは直接確認していない**（本記録の確認）—— **①JPMorgan Chase 側の公表（修正日・修正内容。 「確認され修正済み」は研究者の記述による）、 ②デジタル庁側の公表と JPCERT/CC 側の記録 （`jgrants-mcp-server` の「認証が無い」という指摘、PR #6 の現状）、 ③Anthropic・Microsoft の件の修正状況 （公開時点で未確認とされており、その後の状況は不明）、 ④Weaviate・DINUM・タンゲラン市の各 PR とコミットの内容。** **したがって、Google 以外の組織については 「研究者の記述によれば」という留保が付く**（本記録の明示）。 **とくにデジタル庁の件は日本の組織に関わるため、 本記録は対応の評価を行わない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>外部の内容に仕込まれた指示が、委任と SSRF を通って内部システムへ要求を出させるまで</div><div class=svgwrap><svg viewBox="0 0 794 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,104.0 C91.0,104.0 91.0,206.0 16,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,206.0 C193.0,206.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C295.0,111.0 295.0,192.0 220,192.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,192.0 C397.0,192.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C499.0,104.0 499.0,206.0 424,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,206.0 C601.0,206.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,206.0 C601.0,206.0 601.0,148.0 628,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,250.0 C601.0,250.0 601.0,206.0 424,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（MCP サーバへ</text><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">直接アクセスする必要はな</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">エージェントが読む外部の</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">内容に指示を仕込む</text><rect x="16" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エージェントが読む外部の</text><text x="91.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内容（文書・ツールの戻り</text><text x="91.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">値・提供者が渡す UR…</text><text x="91.0" y="225.0" text-anchor="middle" fill="#ffcc80" font-size="10">勧告は「悪意あるデータ駆</text><text x="91.0" y="237.0" text-anchor="middle" fill="#ffcc80" font-size="10">動のプロンプトからも発火</text><rect x="220" y="81.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">統括エージェント</text><text x="295.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">ツール出力を読み、通常の</text><text x="295.0" y="128.0" text-anchor="middle" fill="#f48fb1" font-size="10">委任として子エージェント</text><rect x="220" y="155.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">子エージェント（委任を受</text><text x="295.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ける側）</text><text x="295.0" y="204.0" text-anchor="middle" fill="#f48fb1" font-size="10">統括エージェントを信頼し</text><text x="295.0" y="216.0" text-anchor="middle" fill="#f48fb1" font-size="10">て指示を実行する。要求は</text><rect x="424" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MCP サーバ（MCP </text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Toolbox for </text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Databases 0…</text><text x="499.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">ツール呼び出しの pat</text><text x="499.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">h パラメータが HTT</text><rect x="424" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTP クライアント（</text><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">internal/sou</text><text x="499.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rces/http/h…</text><text x="499.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">制限的なリダイレクト方針</text><text x="499.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">を持たずに初期化され、宛</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部システム・管理 AP</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">I</text><text x="703.0" y="65.0" text-anchor="middle" fill="#64b5f6" font-size="10">攻撃者が本来直接到達でき</text><text x="703.0" y="77.0" text-anchor="middle" fill="#64b5f6" font-size="10">ない宛先</text><rect x="628" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラウドのメタデータサー</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ビス（169.254.1</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">69.254 等）</text><text x="703.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">SSRF の典型的な到達</text><text x="703.0" y="179.0" text-anchor="middle" fill="#64b5f6" font-size="10">先。資格情報の取得に使わ</text><rect x="628" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SSRFGuard（v1</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.5.0・2026年6月</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">18日）</text><text x="703.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">接続時とリダイレクト時の</text><text x="703.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">両方で IP を検証。a</text></svg></div><div class=fn>layer 0 は攻撃者と、攻撃者が内容を仕込める外部の情報源。 layer 1 は AI エージェントの側（統括エージェントと、委任を受ける子エージェント）。 layer 2 は MCP サーバと、その中の HTTP クライアント（リダイレクト方針なし・ 宛先 IP の検証なし）。 layer 3 は要求が届く先（内部システム・クラウドのメタデータサービス）と、 v1.5.0 で入った対処（SSRFGuard）。 **実環境での攻撃が観測された事例は公表されていない**—— 本図は研究者と勧告が示した成立経路である。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価である。** ツールの戻り値は記録できる位置にあるため、 内容を検査する機会は原理的に存在する。 **ただし指示と正規の内容を形式で区別する方法は無く、 既定で検査する実装も無い**（出典1・3。整理は本記録）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>ツールの戻り値を「データ」として扱い、指示として解釈させない（出力の分離・サニタイズ）<span class=sm>　**本記録の評価。** 根本的な対処だが、 エージェントがツール出力を読んで次の行動を決める設計そのものと 衝突するため、実装の自由度が低い</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価である。** 呼び出し自体は正規のツール実行であり、 権限違反としては映らない。 **検知の余地があるのは、この後に出る HTTP 要求の宛先を 見ている場合だけである**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>リダイレクトを追うたびに、名前解決の結果（IP）を接続の直前に検証する<span class=sm>　**これが v1.5.0 の `SSRFGuard` が行っていることである**（出典4）—— **DNS リバインディング（TOCTOU）への対処として、 検査の時点ではなく接続の時点で IP を見る**</span></div><div class=ctl><span class="b eff">侵入を防げた</span>設定された `BaseURL` を初期化の時点で検証し、設定ミスを早期に失敗させる<span class=sm>　出典4 に記載された修正の一部。 **運用の誤りを起動時に落とすので、気づかないまま動き続けるのを防げる**</span></div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価である。** 要求は実際にネットワークを流れるため、 外向き・内向きの宛先を記録していれば見える。 **ただし SSRF は正規のサービスが自分の権限で出した要求として現れ、 外部からの不審な接続としては映らない**—— **エージェント基盤の通信記録を取っていない組織では 事後の判定もできない**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>私設ネットワークへの到達を既定で遮断し、許可する範囲を明示的に設定する<span class=sm>　**v1.5.0 で追加された設定項目 （`allowPrivateNetworks`・`allowedIpRanges`・`customBlockedIpRanges`）が これに当たる**（出典4）—— **ただし社内 API を参照する正規の設定のために広く許可すると 効果が失われる**（本記録の注意）</span></div><div class=ctl><span class="b eff">影響を限定できた</span>エージェント実行環境を専用ネットワークに置き、メタデータサービスと管理面を遮断する<span class=sm>　**本記録の評価。** 製品側の修正とは独立に、 利用側で置ける統制である—— **修正が出ていない MCP サーバを使う場合、ここだけが残る手になる**</span></div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価である。** 委任は日常的に起きる正規の動作であり、 実行は子エージェント自身の権限で行われるため、 権限違反としても異常通信としても現れない。 **各段が設計どおりに動いた結果なので、 「どこかが壊れた」という形の検知が成立しない**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>エージェントが機微データへのアクセスや高権限の操作を行う前に、認可の有無を確認する<span class=sm>　出典5 が企業向けの対処として整理している点。 **ただし確認の判断自体をモデルに任せると、 同じプロンプトインジェクションの影響下に置かれる**（本記録の注意）</span></div><div class=ctl><span class="b eff">検知できた</span>委任で渡される指示の出所を記録し、ツール出力由来のものを区別する<span class=sm>　**本記録の評価。** 「この指示は人間から来たのか、 ツールの戻り値から来たのか」を追跡できる基盤設計が無いと、 事後の調査もできない</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Google は修正を先に公開（2026年6月18日・v1.5.0）し、 CVE-2026-14540 は43日後の7月31日に公開した。 PR の題名は `fix(source/http): implement SSRF guard` で、 リリースノートの分類は「Bug Fixes」だった</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価である。** 修正そのものの速度と内容 （`SSRFGuard`・二層の検証・設定項目の追加）は十分である。 **評価を partial にしたのは、 「直ったことが利用者に届く経路」が整っていないためである**—— **勧告の構造化欄（パッケージ名・影響バージョン・修正バージョン）が Unknown のままでは、影響範囲が説明文の中にしか存在せず、 依存関係の自動警告も SBOM 照合も働かない。** **これは Google 固有の問題ではなく、 MCP サーバの多くがパッケージとして配布されていない構造の問題でもある** （本記録の整理）。</td></tr><tr><td>研究者は、組織ごとに異なる経路で報告した—— Google は GitHub 経由で CVE 発行まで至り、 Weaviate は HackerOne、タンゲラン市は GitHub の勧告、 Anthropic と Microsoft は Full Disclosure での公開、 デジタル庁は JPCERT/CC への報告である</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>**評価できる材料がない**（本記録の判断）。 **各組織の受付窓口がどう応答したか、 研究者がどの時点でどの経路を選んだかは公表されていない。** **本記録が確認できるのは結果（経路と修正状況の一覧）だけである**（出典3）。</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>MCP サーバは「自前で書いて動かす部品」であり、組織の規模と実装の質が相関しない</div><div class=lw>**同型の SSRF を独立に修正した5組織には、 大手クラウド事業者（Google）、金融機関（JPMorgan Chase）、 国の行政機関（フランス DINUM）、自治体（インドネシア タンゲラン市）が 並んでいる**（出典3）。 **研究者は16件の GitHub 勧告で謝辞に挙げられており、 指摘は特定のベンダーに限られていない**（出典3）。 **自治体が SIEM（Wazuh）の MCP サーバを自前で公開していた例もある**（出典3）</div><div class=la><b>取るべき行動</b> **自組織が「使っている」「公開している」MCP サーバの一覧を作る。** ①社内のエージェント基盤に組み込んだ MCP サーバ（製品・OSS・自作）、 ②外部へ公開している MCP サーバ（自組織のデータを提供するもの）、 ③従業員が個人の判断で設定に加えたもの、の3区分で数える。 **③は端末管理の仕組みから設定ファイルを集めないと見えない**</div></li><li><div class=lp>「修正が出ている」ことと「利用者が気づける」ことは別である</div><div class=lw>**Google の修正は2026年6月18日に v1.5.0 として公開されたが、 CVE-2026-14540 の公開は43日後の7月31日である**（出典1・4）。 **PR の題名は `fix(source/http): implement SSRF guard`、 リリースノートの分類は「Bug Fixes」だった**（出典4）。 **さらに CVE 公開後も、勧告の構造化欄（パッケージ名・影響バージョン・ 修正バージョン）はいずれも記載なし／Unknown のままである**（出典1）—— **依存関係の自動警告も SBOM 照合も働かない**</div><div class=la><b>取るべき行動</b> **AI エージェント基盤の部品について、 自動検査とは別の追跡経路を置く。** ①使っている MCP サーバ・SDK の一覧を作り、 各リポジトリのリリースノートと勧告を追う担当と頻度を決める、 ②「脆弱性の修正」と明記されていない更新も適用対象に含める運用にする、 ③脆弱性管理台帳に CVE 番号の無い行を作れるようにする。 **「スキャナが赤くならない」ことを安全の根拠にしない**</div></li><li><div class=lp>エージェントの権限は「できること」ではなく「どこへ到達できるか」で見る</div><div class=lw>**SSRF の影響は、MCP サーバがネットワーク上のどこに届くかで決まる** （出典1・5）。 **Protocol Pivoting では、要求は子エージェントの ネットワーク位置と権限で、信頼境界の内側から出る**（出典3）—— **アカウントの権限を絞っても、ネットワークの到達範囲が広ければ 被害は変わらない**（本記録の評価）</div><div class=la><b>取るべき行動</b> **エージェント実行環境ごとに「到達可能なネットワーク範囲」を図にして 承認対象にする。** ①外向きは許可した宛先のみ、 ②内部向けはメタデータサービス（169.254.169.254 等）・ 管理面・他システムの管理 API を遮断、 ③エージェントを専用のセグメントに置く。 **この3つは、使っている MCP サーバに修正が出ていなくても 利用側だけで置ける統制である**</div></li><li><div class=lp>委任を前提にした基盤では、「どの部品も壊れていない侵害」が起きる</div><div class=lw>**研究者は Protocol Pivoting について 「どの部品も古典的な意味では侵害されていない。 それぞれが設計どおりに動いた結果である」と明記している**（出典3）。 **統括エージェントがツール出力を読み、委任として子エージェントへ渡し、 子エージェントが統括を信頼して実行する—— 各段はすべて正規の動作である**（出典3）</div><div class=la><b>取るべき行動</b> **インシデント対応の想定に「権限違反が1件も出ない侵害」を加える。** ①エージェント間で渡される指示の出所（人間／ツール出力／別エージェント）を 記録する基盤設計を要件に入れる、 ②高権限の操作と機微データへのアクセスの前に認可を確認する段を置く、 ③その確認の判断をモデル自身に委ねない （同じプロンプトインジェクションの影響下に入るため）</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>URL の検査では止まらない——検査すべきは接続の直前の IP である</div><div class=lw>**CVE-2026-14540 の原因は、リダイレクト方針の欠落と 宛先 IP の検証の欠落である**（出典1）。 **v1.5.0 の `SSRFGuard` は DNS リバインディング（TOCTOU）への対処として 追加されており、自動レビューの要約は 「接続時とリダイレクト時の両方で IP を検証する」と述べている**（出典4）。 **タンゲラン市の件は「ホスト名の解決結果を一度も検査していない」と 整理されている**（出典3）</div><div class=la><b>取るべき行動</b> **自組織の HTTP クライアント実装を、次の4点で点検する。** ①リダイレクトを追う前に、毎回、宛先 IP を検証しているか、 ②検証は名前解決の結果に対して、接続の直前に行っているか （検査と接続の間に再解決が入ると意味がない）、 ③私設アドレス範囲・リンクローカル（169.254.0.0/16）・ ループバックを既定で遮断しているか、 ④許可範囲を設定で広げたときに、それが記録に残るか</div></li><li><div class=lp>「ある欄は固めたが、別の欄を見落とす」が最も再発しやすい形である</div><div class=lw>**Weaviate は `baseURL` 欄の検証を2026年3月に追加したが、 `apiEndpoint`・`region`・`location` が残っており、 9月まで3段階（PR #10878 → #11683 → #12961）かかっている**（出典2・3）。 **JPMorgan Chase の件は「兄弟ツールには許可一覧があったのに、 取得ツールには無かった」という形である**（出典3）</div><div class=la><b>取るべき行動</b> **「外部から来た文字列が HTTP 要求の宛先になる箇所」を 欄単位で網羅的に列挙する。** 設定項目・ツール引数・取得した文書の中の URL・ リダイレクトの Location ヘッダのすべてを対象にし、 ツールごとに「この欄に検証が入っているか」の表を作る。 **1つのツールで直したら、同じリポジトリの他のツールも必ず見る**</div></li><li><div class=lp>走査ツールでは見つからない——手でソースを読む工程が要る</div><div class=lw>**研究者は走査ツール `mcp-safeguard` を公開しているが、 自身で「この類型の多くを見逃す」「いくつかの発見は 手でソースを読む必要があった」と述べている**（出典3）。 **MCP サーバはツール面（外から呼べる関数）だけを見ても、 内部で何に接続するかが分からない**（本記録の整理）</div><div class=la><b>取るべき行動</b> **MCP サーバのレビュー観点を1枚にして、コードレビューの必須項目にする。** 含める項目は、①外部由来の文字列が宛先になる経路、 ②リダイレクトの扱い、③名前解決の時点と接続の時点のずれ、 ④ツール出力が次の行動の入力になる箇所、 ⑤認証・認可の有無。 **走査ツールは「全部見た」の根拠にしない**</div></li><li><div class=lp>SSRF の痕跡は「正規サービスが出した要求」として現れる——記録が無ければ事後に分からない</div><div class=lw>**SSRF は、MCP サーバが自分の権限で出した HTTP 要求として現れる** （本記録の評価）。 **外部からの不審な接続としては映らず、 権限違反としても記録されない。** **本記録の確認時点で侵害判定の指標（IoC）は公表されておらず、 攻撃に使われる URL は環境ごとに異なるため値としての IoC が 成立しにくい**（本記録の評価）</div><div class=la><b>取るべき行動</b> **エージェント基盤の通信記録を、宛先単位で取る。** ①MCP サーバと AI エージェント実行環境からの外向き・内向き HTTP 要求の宛先、②リダイレクトの最初の宛先と最終の宛先の両方、 ③内部ネットワーク側で「エージェント基盤から来た要求」を受けた記録。 **③を取っておくと、製品側の修正が無い状況でも 「内部へ向いた要求があったか」を後から言える**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> Google の MCP Toolbox for Databases を 0.3.0〜1.4.0 の版で使っており、 汎用 HTTP ソース／ツールを有効にしている</td><td class=sm>CVE-2026-14540 の影響範囲そのもの。 **修正は v1.5.0（2026年6月18日）**。 **勧告の構造化欄が Unknown のため、依存関係の自動警告では気づけない**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> AI エージェントの実行環境が、社内ネットワークやクラウドの メタデータサービス（169.254.169.254 等）に到達できる位置にある</td><td class=sm>SSRF の被害は「MCP サーバがどこへ届くか」で決まる。 **製品側の修正が無い場合、到達範囲の制限が利用側に残る唯一の統制である**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> エージェント間の委任（A2A 等）を使っており、 子エージェントが統括エージェントの指示を認可の確認なしに実行する</td><td class=sm>Protocol Pivoting の成立の鍵はこの段である（出典3）。 **どの部品も侵害されないため、権限違反としても異常通信としても現れない**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> エージェントが読む外部の内容（取得した文書・ツールの戻り値・ 提供者が渡す URL）を、指示として解釈しうる形でモデルに渡している</td><td class=sm>勧告は「悪意あるデータ駆動のプロンプトからも発火しうる」と付記している （出典1）。 **攻撃者は MCP サーバへ直接アクセスする必要が無い**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> MCP サーバ・AI エージェント基盤の脆弱性管理が、 CVE 番号を鍵にした自動検査（スキャナ・SBOM・依存関係警告）に依存している</td><td class=sm>**研究者の一連の指摘のうち CVE が発行されたのは2件だけで、 残りは PR・コミット・GitHub 勧告・Full Disclosure の投稿として散っている** （出典2・3）。 **CVE-2026-14540 も構造化欄が Unknown のため自動検査に現れない**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 自組織が外部へ MCP サーバを公開している（自組織のデータ・API を提供している）</td><td class=sm>**本件の一覧には国の行政機関・自治体・金融機関が並んでいる**（出典3）。 **公開している側は、研究者からの指摘を受け取る窓口と、 修正を反映する経路（PR の受け入れ体制）を持っている必要がある**—— **デジタル庁の件は公開 PR が未マージのまま残っている**</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年7月31日 GitHub Advisory Database（Google の CNA が発行）</span> <a href="https://github.com/advisories/GHSA-3x3x-8ffg-ghcv" target="_blank" rel="noreferrer noopener nofollow">GHSA-3x3x-8ffg-ghcv / CVE-2026-14540: Server-Side Request Forgery in mcp-toolbox</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(一次資料（当事者である Google の CNA が発行した勧告）。 本記録の作成者が2026年10月22日に取得して内容を確認した。 CVE-2026-14540 / GHSA-3x3x-8ffg-ghcv・CWE-918・CVSS v4.0 基本値 8.0（High）・ ベクタ `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N/E:U`・ 原因（`internal/sources/http/http.go` の HTTP クライアントが 制限的なリダイレクト方針を持たずに初期化され、宛先 IP の検証も無い。 細工した path パラメータでリダイレクトを起こすと内部・外部のエンドポイントへ 許可されていない要求を送る）・ 「悪意あるデータ駆動のプロンプトからも発火しうる」の付記・ 影響バージョンが説明文で「0.3.0 から 1.4.0」とされていること・ 公開日2026年7月31日と最終更新2026年8月8日の出典。 **構造化欄（パッケージ名・エコシステム・影響バージョン・修正バージョン）は いずれも記載なし／Unknown であり、CVSS v3.1 の値も記載が無い**)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年6月18日（マージ） googleapis/mcp-toolbox</span> <a href="https://github.com/googleapis/mcp-toolbox/pull/3448" target="_blank" rel="noreferrer noopener nofollow">PR #3448: fix(source/http): implement SSRF guard</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料（当事者の修正そのもの）。本記録の作成者が2026年10月22日に取得して 内容を確認した（ページは約21万字あり、確認したのは先頭10万字の範囲）。 作者 duwenxin99・承認者 Yuan325（2026年6月17日）・ 2026年6月18日に `fix/http-ssrf` から `main` へ8コミットでマージ・ v1.5.0（2026年6月18日）に「Bug Fixes」として収録・ 報告者が Syed Anas Mohiuddin であること・ 修正の内容（`SSRFGuard` の追加による DNS リバインディング（TOCTOU）対策、 設定項目 `allowPrivateNetworks`・`allowedIpRanges`・`customBlockedIpRanges` の追加、 `BaseURL` の初期化時検証、`disableSslVerification` 有効時の中間者攻撃の警告記録、 「二層のガードと安全側の既定値」、既定の遮断判定の `IsGlobalUnicast` による簡素化）・ 変更ファイル（`internal/sources/http/http.go`・`internal/sources/http/http_test.go`）の出典。 **リダイレクト方針そのものの実装は、本記録が読んだ範囲では現れていない**)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年（日付の記載なし） Syed Anas Mohiuddin</span> <a href="https://dev.to/syedanas01/four-vendors-one-bad-assumption-ssrf-in-mcp-servers-48ii" target="_blank" rel="noreferrer noopener nofollow">Four vendors, one bad assumption: SSRF in MCP servers</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料（発見者の記事）。本記録の作成者が2026年10月22日に取得して内容を確認した。 4ベンダー（Google・Anthropic・Microsoft・Weaviate）の整理・ 共通の原因（「URL が信頼境界を越えたのに、その境界で誰も検査しなかった」 「それぞれのベンダーは信頼の確認がどこか別の場所で済んでいると考えていた」）・ ベンダーごとの思い込みの型（Google: 運用者が設定した base URL がリダイレクトまで 覆うと想定／Anthropic・Microsoft: モデルが渡す URL を信頼／ Weaviate: `baseURL` は固めたが `apiEndpoint` を見落とし）・ 「Protocol Pivoting」の定義・ 開示の時系列（2026年3月27日 Weaviate PR #10878、5月25日 Anthropic・Microsoft の Full Disclosure 公開（CVSS v3.1 で 7.5・修正状況は未確認）、6月の IETF Internet-Draft、6月18日 Google PR #3448 マージと v1.5.0 公開・ Weaviate PR #11683 マージ、7月31日 CVE 公開、9月7日 Weaviate PR #12961）の出典。 **JPMorgan Chase・2つの政府機関への言及は無く、 企業向けの推奨も書かれていない**)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月（日付の記載なし） Syed Anas Mohiuddin</span> <a href="https://anas-security-portfolio.vercel.app/protocol-pivoting-update.html" target="_blank" rel="noreferrer noopener nofollow">Protocol Pivoting, Four Months Later</a> <span class="b kind">調査レポート</span><span class=sm>（(一次資料（発見者の続報ページ）。本記録の作成者が2026年10月22日に取得して内容を確認した。 組織別の一覧（Google: CVE-2026-14540・予約7月3日・公開7月31日・PR #3448 で修正／ JPMorgan Chase: `jpmorgan-payments/ai` 文書検索サーバの `related()` ツール・中程度・ 確認され修正済み・日付の記載なし／Weaviate: `apiEndpoint`・`region`・`location` 経由・ Hall of Fame 2026年8月25日・PR #12961／DINUM（フランス）: `datagouv/datagouv-mcp`・ DNS リバインディングにも開いていた・PR #126 が2026年9月4日マージ／ タンゲラン市（インドネシア）: `INFOKOM-KI/Wazuh-MCP-Server`・高・ 2026年9月2日報告・9月3日 GHSA-pw2j-pj4h-f5vg 公開・コミット 2bbfe12／ Rapid7: Bulk Export MCP サーバの GraphQL エスケープ漏れ・CVE-2026-97228・ CVSS 2.7（SSRF ではない）／GSA TTS の5サーバ: 上流エラー本文の伏字漏れ・ 2026年9月2日に非公開 GHSA 提出・triage 中／ デジタル庁 `digital-go-jp/jgrants-mcp-server`: 認証が無い・ 2026年9月1日に JPCERT へ報告・9月7日に公開 PR #6・未マージ）・ 「5組織が独立に同じ SSRF 類型を修正した」という整理・ Protocol Pivoting の定義と4段の仕組み・ 「SSRF に依存する攻撃ではない」の明記・DOI 10.5281/zenodo.20371152・ 16件の GitHub 勧告での謝辞・走査ツール `mcp-safeguard` とその限界 （「この類型の多くを見逃す」「いくつかの発見は手でソースを読む必要があった」）・ 2026年10月23日の MCPCon North America での発表予定の出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年10月21日 iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/179776" target="_blank" rel="noreferrer noopener nofollow">多個組織的MCP專案存在SSRF漏洞，研究人員示警AI代理信任問題</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事。 Google・JPMorgan Chase 等の MCP プロジェクトに同型の SSRF があるという研究成果・ CVE-2026-14540（CVSS 8.0）とその原因（URL のリダイレクト検査と宛先 IP 検証の欠落）・ 研究者が Ars Technica に説明した「Protocol Pivoting」の手法 （外部内容に悪意ある指示を植え込み、エージェント間の委任で伝播させる）・ Google の修正内容（接続時の宛先 IP 検査、許可一覧と遮断一覧による接続範囲の制限）・ 企業向けの整理（プロンプトインジェクション対策に加えて MCP ツールの ネットワーク到達範囲を制限し、AI エージェントが機微データへのアクセスや 高権限の操作を行う前に適切な認可を得ているか確認する）の出典。 **修正が2026年6月、CVE 公開が7月であることには触れていない**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月22日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月21日収集分の iThome（台湾）の記事（出典5）を起点に、 一次資料である GitHub Security Advisory（GHSA-3x3x-8ffg-ghcv／ CVE-2026-14540・出典1）と Google の修正 PR #3448（出典4）、 および発見者の2つの文書（出典2・3）を取得して裏取りした。 CVE 番号・CWE-918・CVSS v4.0 基本値8.0 とベクタ・ 原因（`internal/sources/http/http.go` の HTTP クライアントが 制限的なリダイレクト方針を持たずに初期化され、宛先 IP の検証も無い）・ 影響バージョン（0.3.0〜1.4.0）と修正（v1.5.0・2026年6月18日）・ 修正の内容（SSRFGuard・二層のガード・設定項目3つ・BaseURL の早期検証）・ CVE の予約（7月3日）と公開（7月31日）・ 同型の SSRF を独立に修正した5組織と各々の修正状況・ 「Protocol Pivoting」の定義と4段の仕組みはいずれも一次資料で確認した。 **報道の時点が修正の約4か月後であることを discrepancies に記した**—— **本事案は「新しく見つかった脆弱性」ではなく、 既に修正された一連の指摘がまとめて報じられたものである。** **勧告の構造化欄（パッケージ名・影響バージョン・修正バージョン）が いずれも空／Unknown で、影響範囲が説明文の中にしか無いことも discrepancies に記した**——依存関係の自動警告にも SBOM 照合にも現れない。 **CVSS が v4.0 で 8.0（High）と v3.1 で 6.1（Medium）の両方で 流通している点、研究者の2つの文書で挙げられる組織の組み合わせが 一致しない点も discrepancies に記した。** **日本の組織としてデジタル庁の `jgrants-mcp-server` に 別種の指摘（認証が無い・2026年9月1日に JPCERT/CC へ報告・ 公開 PR #6 が未マージ）が未解決で残っていることを japan_relevance_note と sections に記したが、 デジタル庁側・JPCERT/CC 側の記録は直接確認できておらず、 対応の評価は行わない（self_unverified）。** 影響組織数、JPMorgan Chase の修正日と CVE が無い理由、 Anthropic・Microsoft の修正状況、リダイレクト方針の具体的な実装、 同型の欠陥の残存数、実環境での悪用の有無はいずれも unknowns に記した。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">MCP</span><span class="b tag">Model Context Protocol</span><span class="b tag">SSRF</span><span class="b tag">CWE-918</span><span class="b tag">CVE-2026-14540</span><span class="b tag">Google</span><span class="b tag">MCP Toolbox</span><span class="b tag">JPMorgan Chase</span><span class="b tag">Weaviate</span><span class="b tag">DINUM</span><span class="b tag">デジタル庁</span><span class="b tag">Protocol Pivoting</span><span class="b tag">A2A</span><span class="b tag">AIエージェント</span><span class="b tag">プロンプトインジェクション</span><span class="b tag">DNSリバインディング</span><span class="b tag">サプライチェーン</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-22 11:28 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

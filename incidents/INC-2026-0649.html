@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>IIJがLinux版Noodle RATを分析 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0649</span>IIJがLinux版Noodle RATを分析</h1>
+<header class="site-header">
+  <p class="subtitle">IIJ が Linux 版 Noodle RAT と専用ローダを分析——ローダのアンチウイルス検知率は 記事執筆時点で0%。攻撃者は日本の IP アドレスから同一アカウントで VirusTotal に検体を上げ、検知回避性能を試していたとみられる（2026年10月21日）</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">公表されていない／不明</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月21日（IIJ Security Diary が公表）</span>
+  <span>最終更新: 2026年10月22日（本記録の作成）</span>
+</div>
+
+<div class="lead"><p><strong>「検知されないこと」を攻撃者が先に測っている。</strong> <strong>2026年10月21日、IIJ（Internet Initiative Japan）の Security Diary は、 2026年9月に VirusTotal へアップロードされた複数の Linux 版 Noodle RAT と そのローダを分析した結果を公表した</strong>（出典1）。 <strong>Noodle RAT は中国語圏の複数の攻撃者グループが使うマルウェアで、 過去にサイバーエスピオナージ目的の攻撃と金銭目的の攻撃で観測されている</strong>（出典1・2）。<strong>検体は同時期に同一のユーザによって API 経由でアップロードされており、 ファイル名は <code>vt-submit-x64.bin</code> や <code>vt2-packed-x64</code> だった。</strong> <strong>IIJ は「攻撃者がマルウェアの検知回避性能を検証する目的で VirusTotal にアップロードした可能性が高い」と評価している。</strong> <strong>アップロード元は日本の IP アドレスで、VirusTotal の Submitter ID は <code>1f915147</code>。</strong> <strong>そして記事執筆時点で、ローダのアンチウイルス製品による検知率は0%である</strong>（出典1）。<strong>ローダの作りはこうである。</strong> 実行されると<strong>まず自分自身 （<code>/proc/self/exe</code>）の末尾60バイトを読む。</strong> そこには <strong>マジック値 <code>NLKA01\x00\x01</code> から始まる、本体のサイズと復号パラメータ</strong>が入っている。 続いて<strong>オフセット <code>0x5B88</code> 以降の ChaCha20 で暗号化された Noodle RAT 本体を 読み出して復号し、<code>memfd_create</code> で <code>kworker</code> という名前の無名ファイルを作って そこへ書き込み、<code>execve</code> で実行する</strong>（出典1）。 <strong><code>memfd_create</code> が失敗した場合、または環境変数 <code>STUB_MODE</code> に <code>file</code> が 設定されていた場合は <code>/tmp/.0000e444</code> に書いて実行する。</strong> <strong>環境変数 <code>STUB_ARGV0</code> が設定されていれば <code>argv</code> を書き換えてプロセス名を偽装する。</strong> <strong>IIJ は「このローダは Noodle RAT 以外のマルウェアを実行する時にも 使用される可能性がある」と指摘している。</strong> <strong>設定情報の鍵は付け替えられていた</strong>——<strong>RC4 鍵が <code>r0st@#$</code> から <code>mBCHk?u</code> に 変わっている。</strong> ところが<strong>偽装先プロセス名を復号するコードは古い鍵を使うままで、 この機能は正常に動作しない。IIJ は「マルウェア開発者のミスだと考えられる」としている</strong>（出典1）。 <strong>復号できた設定は、偽装先プロセス名が <code>/usr/bin/sshd</code>、 C2 サーバが <code>127.0.0.1:9000</code> と <code>192.0.2.9:443</code>、稼働時間 00-24、 稼働曜日は全曜日、通信間隔 5 だった。</strong> <strong>C2 がループバックアドレスと例示用アドレス（RFC 5737 の TEST-NET-1）である点から、 IIJ はこの検体が実攻撃用ではないとみている</strong>（出典1）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>検体をアップロードした者の身元と所属（どの攻撃者グループか）</span><span class="b rsn">公表されていない</span><div class=sm>**IIJ は「中国語圏の複数の攻撃者グループによって使用されているマルウェア」と 述べるにとどまり、本件の検体をアップロードした者を特定していない**（出典1）。 **アップロード元が日本の IP アドレスであることと Submitter ID （`1f915147`）は示されているが、所在地の特定には使えない**（本記録の留保）</div></li><li><span class=ui>このローダが実際の攻撃でどのように配布されるか（初期侵入の経路）</span><span class="b rsn">公表されていない</span><div class=sm>**分析は「届いた後に何が起きるか」に限られている**（出典1）。 **配布の経路（脆弱性の悪用か、認証情報か、別の経路か）は対象外**</div></li><li><span class=ui>同じローダで運ばれている他のマルウェアの有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**IIJ は「このローダは Noodle RAT 以外のマルウェアを実行する時にも 使用される可能性がある」と指摘しているが、実例は示していない**（出典1）</div></li><li><span class=ui>設定情報の「通信間隔 5」の単位</span><span class="b rsn">公表されていない</span><div class=sm>**復号結果の表に「通信間隔 5」と記されているが、単位の明示が無い** （出典1・齟齬2）。**本記録は値のみを記録する**</div></li><li><span class=ui>検知率0%が公開後にどう変わったか</span><span class="b rsn">検証できない</span><div class=sm>**「記事執筆時点」の値であり、時点依存である**（出典1・齟齬3）。 **本記録は検知率の追跡を行っていない**—— **IoC が公開された以上、各社の検知は追いつくと見るのが自然だが、 本記録はそれを確認していない**</div></li><li><span class=ui>実攻撃の検体で RC4 鍵の実装ミスが修正されているか</span><span class="b rsn">公表されていない</span><div class=sm>**今回の検体では偽装先プロセス名の復号に古い鍵が使われており機能しない** （出典1）。**修正版の存在は確認されていない**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社インターネットイニシアティブ（IIJ）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**VirusTotal にアップロードされた Linux 版 Noodle RAT とローダを 観測・分析し、Security Diary で結果と IoC を公表した主体**（出典1）</p><p class=org-p><span class=org-l>影響</span>**ローダの構造（末尾60バイトのメタデータ・ChaCha20・`memfd_create` による 無名ファイル実行・プロセス名偽装）、RC4 鍵の変更とその実装ミス、 設定情報の内容を特定し、検体6件のハッシュ値を公開した**（出典1）</p></div></div><div class=org><div class=org-h><span class=org-n>中国語圏の攻撃者グループ（複数。個別名は示されていない）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**Noodle RAT を使用しているとされる主体**（出典1・2）。 **IIJ は「中国語圏の複数の攻撃者グループによって使用されているマルウェア」と 述べるにとどまり、本件の検体をアップロードした者を特定していない** （unknowns 1）</p><p class=org-p><span class=org-l>影響</span>**過去にサイバーエスピオナージ目的の攻撃と金銭目的の攻撃で Noodle RAT の使用が観測されている**（出典1・2）</p></div></div><div class=org><div class=org-h><span class=org-n>VirusTotal（Google）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**検体がアップロードされたプラットフォーム。** **攻撃者は API 経由で同一アカウントから検体を投入しており、 ファイル名（`vt-submit-x64.bin`・`vt2-packed-x64`）からも 検知率の検証が目的だったとみられる**（出典1）。 **IIJ はここに上がった検体を観測して分析した**</p><p class=org-p><span class=org-l>影響</span>**検知回避の試験場として使われた形になる**（本記録の整理）。 **一方で、同じ可視性があったからこそ IIJ が気づけた**</p></div></div><div class=org><div class=org-h><span class=org-n>トレンドマイクロ</span><span class="b role">報告したベンダー</span><span class="b lc">間接言及</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**Noodle RAT の先行分析（2024年公表「中国語圏の攻撃グループが展開する バックドア型マルウェア『Noodle RAT』を分析」）の公表主体**（出典2）。 **IIJ はこれを背景として参照している**</p><p class=org-p><span class=org-l>影響</span>**本件の分析の前提となる既知情報を提供している**</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Noodle RAT ローダのアンチウイルス製品による検知率（記事執筆時点）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>0<span class=fu>%</span></div><div class=fn>**「記事執筆時点で Noodle RAT ローダのアンチウイルス製品による検知率は0%」 と図の説明に記されている**（出典1）。 **これは時点依存の値である**——**公開後に各社の検知が追いつけば変わる** （本記録の留保・齟齬3）。**なお「FUD」は Fully UnDetectable の略で、 記事の題名にも使われている攻撃者側の用語である**（本記録の補足）</div></div><div class=fig><div class=fh><span class=fl>公開された検体のハッシュ値の件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>6<span class=fu>件</span></div><div class=fn>**本記録が出典1 の Appendix から数えた**—— **ローダ2件、Noodle RAT 本体4件。** **IIJ は「脅威分析や監視等でお役立てください」として公開している**（出典1）</div></div><div class=fig><div class=fh><span class=fl>ローダが自分自身から読み取るメタデータの大きさ</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>60<span class=fu>バイト</span></div><div class=fn>**ローダは実行されるとまず `/proc/self/exe`（ローダ自身）の末尾60バイトを 読み取る。** この部分は **`NLKA01\x00\x01` というマジック値から始まり、 Noodle RAT 本体のサイズや復号処理で使用するパラメータを含む**（出典1）</div></div><div class=fig><div class=fh><span class=fl>復号できた設定情報に含まれていた C2 サーバの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>**`127.0.0.1:9000`（ループバックアドレス）と `192.0.2.9:443` （RFC 5737 の例示用アドレス）である**（出典1）。 **実在の C2 ではない**——**だからこそ IIJ は「実攻撃用ではなく 検知回避性能のテスト目的」と評価している**（出典1）。 **設定は検体ごとに異なり、この値は `packed-x64` （SHA256 `5cc6aad1…`）のものである**</div></div><div class=fig><div class=fh><span class=fl>設定情報に含まれていた通信間隔の値</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>（単位は記事に明示なし）</span></div><div class=fn>**設定の復号結果は「通信間隔 5」と記されているが、単位（秒・分）の明示は無い** （出典1・齟齬2）。**本記録は値のみを記録し、単位を補わない。** 同じ設定では**稼働時間が `00-24`（0時〜24時）、 稼働曜日が `1;1;1;1;1;1;1;`（日曜日〜土曜日）**で、 **時間帯・曜日の制限を掛けない設定になっている**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件で分析されたのは「本体」ではなく「運び方」である**（本記録の整理）。 **ローダは自分の末尾に本体を抱え、ChaCha20 で復号して `memfd_create` の無名ファイルから直接実行する。** **ディスクに Noodle RAT の実体が現れないため、ファイルを走査する防御は空振りする** ——**記事執筆時点の検知率0%はその結果である**（出典1）。 **プロセス名の偽装（`kworker`・`/usr/bin/sshd`）が重なると、 プロセス一覧を見ても異常が分からない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 検知回避</span><span class="b conf">third_party</span><span class=srcs>[1]</span></div><div>**ローダは自分自身を読んで本体を取り出す。** 実行されると **`/proc/self/exe`（ローダ自身）の末尾60バイトを読み取る。** この領域は **`NLKA01\x00\x01` というマジック値で始まり、 Noodle RAT 本体のサイズと復号パラメータを含む。** 続いて**オフセット `0x5B88` 以降にある ChaCha20 で暗号化された本体を読み出し、 末尾から得たパラメータで復号する**（出典1）。 **外部からペイロードを取りに行かないため、通信の観測にも引っかからない** （本記録の評価）</div><div class=fn>根拠: IIJ Security Diary「FUD ローダによって実行される Linux 版の Noodle RAT」 （2026年10月21日）。**本記録の作成者が記事全文で確認した**〈齟齬1〉</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">third_party</span><span class=srcs>[1]</span></div><div>**復号した本体を、ディスクに置かずに実行する。** **`memfd_create` システムコールで `kworker` という名前の無名ファイルを作成し、 そこへ ChaCha20 復号した Noodle RAT 本体を書き込んで `execve` で実行する。** **`memfd_create` が失敗した場合、または環境変数 `STUB_MODE` に `file` が 設定されていた場合は `/tmp/.0000e444` に書き込んで実行する。** さらに**環境変数 `STUB_ARGV0` に値が設定されていれば、コマンドライン引数 （`argv`）を書き換えてプロセス名を偽装する。** **Noodle RAT 本体にも同様の偽装機能が実装されているため、 IIJ は「このローダは Noodle RAT 以外のマルウェアを実行する時にも 使用される可能性がある」と指摘している**（出典1）</div><div class=fn>根拠: 同記事。`memfd_create`・`execve`・環境変数の挙動の記述を確認した</div></li><li><div class=stg><span class="b stage">3. C2通信</span><span class="b conf">third_party</span><span class=srcs>[1]</span></div><div>**設定情報は RC4 で暗号化されており、鍵は付け替えられていた**—— **過去に観測された Noodle RAT では `r0st@#$`、今回の検体では `mBCHk?u`。** **ただし偽装先プロセス名を復号するコードは古い鍵を使うままで、 この機能は正常に動作しない。IIJ は「マルウェア開発者のミスだと考えられる」とする** （設定情報側の復号は正しく実装されている）。 **復号できた設定は、偽装先プロセス名 `/usr/bin/sshd`、 C2 サーバ `127.0.0.1:9000` と `192.0.2.9:443`、稼働時間 `00-24`、 稼働曜日 `1;1;1;1;1;1;1;`（全曜日）、通信間隔 `5`**（出典1）</div><div class=fn>根拠: 同記事。RC4 鍵の変更と復号結果の表を確認した</div></li></ol></div>
+<section id="s5"><h2>攻撃者が自分で VirusTotal に上げて、検知されないことを確かめていた<span class="b slot">発覚の端緒</span></h2><p><strong>2026年9月、IIJ は VirusTotal にアップロードされた複数の Linux 版 Noodle RAT とローダを観測した</strong>（出典1）。<strong>気づきの手がかりは、上げ方そのものだった。</strong> <strong>検体は同時期に同一のユーザによって API 経由でアップロードされており、 ファイル名が <code>vt-submit-x64.bin</code>・<code>vt2-packed-x64</code> だった。</strong> <strong>IIJ は「攻撃者がマルウェアの検知回避性能を検証する目的で VirusTotal にアップロードした可能性が高い」と評価している。</strong> <strong>アップロード元は日本の IP アドレスで、Submitter ID は <code>1f915147</code> である。</strong> <strong>そして記事執筆時点で、ローダのアンチウイルス製品による検知率は0%だった</strong>（出典1）。 <strong>記事の題名にある「FUD」は Fully UnDetectable の略で、 攻撃者側が「どの製品にも検知されない」状態を指して使う言葉である</strong>（本記録の補足）。 <strong>つまり攻撃者は、FUD であることを確認するために VirusTotal を使った</strong> ——<strong>検知率は防御側の指標だが、同じ数字を攻撃側も読んでいる</strong>（本記録の評価）。<strong>ただし IP アドレスが日本であることを過大に読まないこと</strong>（本記録の留保）。 <strong>VPN・クラウド・踏み台のいずれでも日本の IP は得られる。</strong> <strong>IIJ も攻撃者の所在については何も述べていない</strong>（unknowns 1）。</p></section>
+<section id="s6"><h2>ローダは自分の末尾に本体を抱え、無名ファイルから直接実行する<span class="b slot">原因・手口</span></h2><p><strong>ローダの動きは4段階である</strong>（出典1）。<strong>①自分自身を読む。</strong> 実行されると <strong><code>/proc/self/exe</code>（ローダ自身）の 末尾60バイトを読み取る。</strong> この領域は <strong><code>NLKA01\x00\x01</code> というマジック値から始まり、 Noodle RAT 本体のサイズや復号処理で使用するパラメータを含む。</strong> <strong>②本体を復号する。</strong> <strong>オフセット <code>0x5B88</code> 以降に存在する ChaCha20 で暗号化された Noodle RAT 本体を読み取り、 末尾から取得したパラメータを使って復号する。</strong> <strong>③ディスクに置かずに実行する。</strong> <strong><code>memfd_create</code> システムコールで <code>kworker</code> という名前の無名ファイルを作成し、そこへ復号した本体を書き込んで <code>execve</code> で実行する。</strong> <strong><code>kworker</code> は Linux のカーネルワーカースレッドの名前であり、 プロセス一覧の中で最も目立たない名前のひとつである</strong>（本記録の補足）。<strong>④失敗したときの逃げ道を持つ。</strong> <strong><code>memfd_create</code> が失敗した場合、 または環境変数 <code>STUB_MODE</code> に <code>file</code> が設定されていた場合は <code>/tmp/.0000e444</code> に本体を書き込んで実行する。</strong> さらに<strong>環境変数 <code>STUB_ARGV0</code> に値が設定されていれば、 コマンドライン引数（<code>argv</code>）を書き換えてプロセス名を偽装する。</strong> <strong>ここから2つのことが言える</strong>（本記録の評価）。 <strong>1つは、ファイルを走査する防御が構造的に空振りすること。</strong> ディスクに現れるのはローダだけで、<strong>Noodle RAT 本体の実体はメモリ上にしか無い。</strong> <strong>検知率0%はこの作りの結果である。</strong> <strong>もう1つは、このローダが Noodle RAT 専用ではないこと。</strong> <strong>IIJ も「このローダは Noodle RAT 以外のマルウェアを実行する時にも 使用される可能性がある」と指摘している</strong>—— <strong>本体を差し替えれば同じ運び方が使える。</strong></p></section>
+<section id="s7"><h2>RC4 鍵の付け替えに失敗していて、プロセス名の偽装は動かない<span class="b slot">原因・手口</span></h2><p><strong>設定情報の暗号鍵は変わっていた</strong>（出典1）。 <strong>過去に観測された Noodle RAT では、偽装先プロセス名と設定情報が RC4 鍵 <code>r0st@#$</code> で暗号化されていた。今回の検体ではこれが <code>mBCHk?u</code> になっている。</strong> <strong>ところが付け替えは徹底されていなかった。</strong> <strong>偽装先プロセス名を復号するコードは古い鍵 <code>r0st@#$</code> を使うままで、 この機能は正常に動作しない。</strong> 設定情報の方の復号は正しく実装されている。 <strong>IIJ は「これはマルウェア開発者のミスだと考えられる」としている</strong>（出典1）。<strong>復号できた設定はこうだった</strong>（検体 <code>packed-x64</code>・SHA256 <code>5cc6aad1…</code> のもの。 <strong>設定は検体ごとに異なる</strong>）。<br />
+- <strong>偽装先プロセス名: <code>/usr/bin/sshd</code></strong> - <strong>C2 サーバ1: <code>127.0.0.1:9000</code></strong>（ループバックアドレス） - <strong>C2 サーバ2: <code>192.0.2.9:443</code></strong>（RFC 5737 の例示用アドレス） - <strong>稼働時間: <code>00-24</code>（0時〜24時）</strong> - <strong>稼働曜日: <code>1;1;1;1;1;1;1;</code>（日曜日〜土曜日）</strong> - <strong>通信間隔: <code>5</code></strong>（<strong>単位の明示は無い</strong>・齟齬2）<strong>実装ミスの発見には実務上の意味がある</strong>（本記録の評価）。 <strong>偽装先プロセス名の復号が壊れているなら、この検体は <code>/usr/bin/sshd</code> を名乗らない。</strong> <strong>逆に言えば、実攻撃の検体で このバグが直っていれば、プロセス名を見た調査は確実に騙される。</strong> <strong>分析記事のこの種の指摘は、検体ごとの差を読む手がかりになる。</strong></p></section>
+<section id="s8"><h2>C2 がループバックと例示用アドレス——これは実攻撃の検体ではない<span class="b slot">被害規模・影響範囲</span></h2><p><strong>C2 の設定が、この検体の性格を決めている</strong>（出典1）。<strong><code>127.0.0.1</code>（ループバック）と <code>192.0.2.9</code>（RFC 5737 の TEST-NET-1。 文書で例示に使うために予約されたアドレス）</strong>は、 <strong>どちらも実際の通信先になりえない。</strong> <strong>IIJ は「C2 サーバとしてループバックアドレスおよび例示用アドレスが 指定されていることから、記事冒頭にも記述した通り、この Noodle RAT は 実際の攻撃で使用するためのものではなく、主にローダの検知回避性能を テストする目的でアップロードされた可能性が高いといえる」と結論している。</strong> <strong>本記録はこの区別を重く扱う</strong>（本記録の整理）。 <strong>本件は「侵害事案」ではない。被害組織も、持ち出された情報も無い。</strong> <strong>観測されたのは、攻撃の準備段階——道具の仕上がりを攻撃者が確認する作業である。</strong> <strong>それでも記録する理由は2つある。</strong> ①<strong>IIJ 自身が「2026年においても Noodle RAT（ローダ）の開発は続いていて、 攻撃でも使用される可能性が高いため、今後も警戒が必要」と述べている</strong>（出典1）。 ②<strong>検知の手がかり（<code>NLKA01</code> のマジック値・<code>memfd_create</code> からの実行・ <code>/tmp/.0000e444</code>・<code>kworker</code> を名乗る無名ファイル）が、 実攻撃の検体でもそのまま使える</strong>（本記録の評価）。 <strong>道具の構造は、C2 を書き換えても変わらない。</strong></p></section>
+<section id="s9"><h2>Linux サーバの「見えなさ」が、そのまま検知率0%になっている<span class="b slot">評価・解釈</span></h2><p><strong>本記録の評価を1つに絞る。この0%は、ローダの出来の良さだけで説明できない。</strong> <strong><code>memfd_create</code> による無名ファイルの実行は、Linux の正規の仕組みである</strong> （本記録の整理）。<strong>ディスクに実体を作らずにプログラムを動かせる。</strong> <strong>ファイルを走査する前提の防御——つまり多くのアンチウイルス製品——は、 この経路では何も見るものが無い。</strong> <strong>攻撃者がやったのは、既にある仕組みを使ってファイルを消しただけである。</strong> <strong>日本の組織に当てはめると、問題は製品ではなく配備の側にある</strong>（本記録の評価）。 <strong>Windows 端末にはプロセス実行のテレメトリ（EDR）が入っているのに、 Linux サーバには入っていない組織が多い。</strong> <strong>Noodle RAT の標的は後者である。</strong> <strong>検知の設計としては、見る場所を変えるしかない</strong>（本記録の推奨。lessons へ続く）。 <strong>①プロセスの実体を <code>/proc/&lt;pid&gt;/exe</code> で確認する</strong> ——<code>ps</code> の表示は <code>argv</code> の書き換えで偽装される。 <strong>②<code>memfd_create</code> 由来のファイルからの <code>execve</code> を異常として扱う。</strong> <strong>③外向き通信を既定で拒否する。</strong> <strong>①〜③はいずれも製品の検知率に依存しない。</strong> <strong>「検知率0%」のマルウェアに対して、組織側に残っている手はこの3つである。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>**Linux（x64）環境で動作するサーバ**（検体のファイル名は `packed-x64`・ `vt2-packed-x64`・`vt-submit-x64.bin` 等）。 **特定のサービス・製品の脆弱性を突くものではない**（出典1）</td></tr><tr><th>直接原因</th><td>**該当しない**（本件は検体の分析であり、侵害の原因は存在しない）。 **IIJ の観測の契機は、攻撃者自身が VirusTotal にアップロードしたことである**（出典1）</td></tr><tr><th>ログの有無</th><td>**本件は検体の静的・動的分析であり、被害環境のログは存在しない**（出典1）。 **ただし「何がログに残るか」は分析から読み取れる**—— **`memfd_create` からの `execve`、`/proc/&lt;pid&gt;/exe` の削除済み表示、 `/tmp/.0000e444` の作成、`argv` 書き換えによるプロセス名の不一致** （本記録の整理。attack.chain の execution 段階）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月21日（IIJ の公表時点）　<b>詳細:</b> **この検体が実際の攻撃に使われた形跡は示されていない。** **C2 がループバックアドレスと例示用アドレスであることから、 IIJ は「実際の攻撃で使用するためのものではなく、主にローダの 検知回避性能をテストする目的でアップロードされた可能性が高い」とする**（出典1）。 **一方で IIJ は「2026年においても開発は続いていて、攻撃でも使用される 可能性が高い」と述べている**——**本件は「攻撃の前段」の観測である** （本記録の評価）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **IIJ が公開した6件のハッシュ値による照合**（ローダ2件・本体4件。出典1）　<b>副作用:</b> **本記録の評価による。** **ハッシュは再ビルドで変わる。** **本件の検体は検知回避の試験用であり、実攻撃用は別のハッシュになる** ——**ハッシュ照合を主な対策に据えると、やったつもりになって終わる**</div><div class=sub><b>数え方:</b> **構造的な特徴での検知**（**ELF の末尾に `NLKA01` のマジック値**、 **`memfd_create` 由来のファイルからの実行**、 **`/tmp/.0000e444` のような隠しファイル**。本記録の推奨）　<b>副作用:</b> **本記録の評価による。** **`memfd_create` からの実行は、 正規のソフトウェア（一部のパッケージ管理・セキュリティ製品）も使う。** **一律に警報にすると誤検知が出るため、許可リストの維持が要る**</div><div class=sub><b>数え方:</b> **Linux サーバのプロセス実行テレメトリの導入**（auditd・eBPF ベースの監視。 本記録の推奨）　<b>副作用:</b> **本記録の評価による。** **Windows 側に比べて Linux の プロセス監視は導入されていない組織が多く、 入れると初期は誤検知とログ量で運用が重くなる。** **収集対象を `execve`・`memfd_create` 等に絞る設計が要る**</div><span class="b rsn">stated</span></td></tr><tr><th>通知</th><td><b>手法:</b> **IIJ Security Diary での公表（IoC の公開を含む）**（出典1）。 **「記事末尾に今回観測した Noodle RAT およびローダのファイルハッシュ値を 記載しているので、脅威分析や監視等でお役立てください」とされている**　<b>範囲:</b> **一般公開**（特定組織への個別通知は記述されていない）　<b>完了日時:</b> **該当しない**</td></tr><tr><th>当局への報告</th><td>**該当しない**（当局への報告を要する事案ではない）<span class="b rsn">該当なし</span></td></tr><tr><th>再発防止策</th><td>**該当しない**（侵害事案ではない）。 **IIJ は「今後も警戒が必要」として継続的な監視を促している**（出典1）<span class="b rsn">該当なし</span></td></tr><tr><th>利用者への行動案内</th><td>**IoC（SHA256）の活用を促している**（出典1）。 **一般利用者向けの呼びかけは無い**——**技術者向けの分析記事である**<span class="b rsn">stated</span></td></tr><tr><th>経営責任</th><td>**該当しない**（検体の分析の記録である）<span class="b rsn">該当なし</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2024年</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**トレンドマイクロが Noodle RAT の分析を公表**（出典2）。 **中国語圏の攻撃グループが展開するバックドア型マルウェアとして位置づけられた。** **当時の Noodle RAT では、偽装先プロセス名と設定情報が RC4 鍵 `r0st@#$` で暗号化されていた**（出典1 の記述による）</td></tr><tr><td class="sm nowrap tw">2026年9月</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**IIJ が、VirusTotal にアップロードされた複数の Linux 版 Noodle RAT および ローダを観測した。** **検体は同時期に同一のユーザによって API 経由で アップロードされており、ファイル名は `vt-submit-x64.bin`・`vt2-packed-x64` 等。 アップロード元は日本の IP アドレスで、Submitter ID は `1f915147` だった**（出典1）</td></tr><tr><td class="sm nowrap tw">2026年10月21日 00:42 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**IIJ Security Diary が「FUD ローダによって実行される Linux 版の Noodle RAT」を 公表した**（出典1）。**記事執筆時点でローダのアンチウイルス製品による 検知率は0%**とされ、**ローダ2件・Noodle RAT 4件の SHA256 ハッシュが IoC として公開された**</td></tr><tr><td class="sm nowrap tw">2026年10月22日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が裏取りを行った。** **IIJ のサイトへの直接アクセスは HTTP 503 で 失敗したため、IIJ が配信した記事全文（IoC の一覧まで含む）で内容を確認した** 〈齟齬1〉</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>一次資料の取得方法（IIJ サイトへの直接アクセスが失敗したこと）</span><div class=sm>**本記録の作成者は2026年10月22日に IIJ Security Diary の記事 URL へ 直接アクセスを試みたが、HTTP 503 で本文を取得できなかった**（3回試行）。 **本記録が確認に用いたのは、IIJ が配信した記事の全文テキストである** ——**本文・設定情報の表・Appendix の IoC（SHA256 6件）・脚注まで含まれており、 記事の全体が含まれている。** **したがって内容の確認は果たせているが、「公開ページそのものを 本記録が直接開いて確認した」とは言えない。** この区別を明示しておく。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>設定情報「通信間隔 5」の単位</span><div class=sm>**復号結果の表には「通信間隔 5」と記されているが、 単位（秒・分）の明示が無い**（出典1）。 **本記録は値のみを記録し、単位を補わない**（unknowns 4）。 **検知ルールで間隔を使う場合、この曖昧さが影響する**（本記録の指摘）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>「検知率0%」の時点依存性</span><div class=sm>**出典1 は「記事執筆時点」での検知率を0%としている。** **本記録はこの値を時点付きの観測として扱い、現在も0%であるとは書かない** ——**IoC が公開された以上、各社の検知は追いつくと見るのが自然だが、 本記録は追跡を行っていない**（unknowns 5。この留保の付与自体は 本記録の作成者の判断である）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>攻撃者の所在についての解釈</span><div class=sm>**出典1 は「アップロード元は日本の IP アドレスで、 VirusTotal の Submitter ID は `1f915147` だった」と事実のみを記す。** **「攻撃者が日本にいる」という推論は出典にも本記録にも無い** ——**VPN・クラウド・踏み台のいずれでも日本の IP は得られるという留保は、 本記録の作成者が付けたものである**（unknowns 1）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>ローダが自分の末尾から本体を取り出し、無名ファイルから実行する構造</div><div class=svgwrap><svg viewBox="0 0 794 384" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,141.0 C91.0,141.0 91.0,243.0 16,243.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,243.0 C91.0,243.0 91.0,141.0 16,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,96.0 C295.0,96.0 295.0,198.0 220,198.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,198.0 C295.0,198.0 295.0,294.0 220,294.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,294.0 C397.0,294.0 397.0,148.0 424,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,294.0 C397.0,294.0 397.0,243.0 424,243.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,148.0 C601.0,148.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,243.0 C601.0,243.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C703.0,141.0 703.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C703.0,53.0 703.0,236.0 628,236.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,96.0 C499.0,96.0 499.0,331.0 628,331.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="97.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（中国語圏のグルー</text><text x="91.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プとされる・個別名は不明</text><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="91.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">日本の IP からアップ</text><text x="91.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">ロード。Submitte</text><rect x="16" y="199.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="91.0" y="221.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VirusTotal（A</text><text x="91.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PI 経由のアップロード</text><text x="91.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">先）</text><text x="91.0" y="262.0" text-anchor="middle" fill="#64b5f6" font-size="10">ファイル名 vt-sub</text><text x="91.0" y="274.0" text-anchor="middle" fill="#64b5f6" font-size="10">mit-x64.bin </text><rect x="220" y="52.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="74.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Noodle RAT ロ</text><text x="295.0" y="88.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーダ（packed-x6</text><text x="295.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4 / vt2-pac…</text><text x="295.0" y="115.0" text-anchor="middle" fill="#f48fb1" font-size="10">記事執筆時点のアンチウイ</text><text x="295.0" y="127.0" text-anchor="middle" fill="#f48fb1" font-size="10">ルス検知率0%</text><rect x="220" y="154.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自身の末尾60バイト（マ</text><text x="295.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジック値 NLKA01\</text><text x="295.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">x00\x01 ＋ 復…</text><text x="295.0" y="217.0" text-anchor="middle" fill="#ffcc80" font-size="10">/proc/self/e</text><text x="295.0" y="229.0" text-anchor="middle" fill="#ffcc80" font-size="10">xe を読んで取得</text><rect x="220" y="256.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="278.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ChaCha20 暗号化</text><text x="295.0" y="292.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">された Noodle R</text><text x="295.0" y="306.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AT 本体（オフセット…</text><text x="295.0" y="319.0" text-anchor="middle" fill="#ffcc80" font-size="10">ローダ自身の中に同梱</text><rect x="424" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">memfd_create</text><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> の無名ファイル「kwo</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rker」</text><text x="499.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">主経路。ディスクに実体を</text><text x="499.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">残さず execve</text><rect x="424" y="206.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/tmp/.0000e4</text><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">44（代替経路）</text><text x="499.0" y="255.0" text-anchor="middle" fill="#f48fb1" font-size="10">memfd_create</text><text x="499.0" y="267.0" text-anchor="middle" fill="#f48fb1" font-size="10"> 失敗時、または STU</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Noodle RAT 本</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">体</text><text x="703.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">プロセス名偽装機能を持つ</text><text x="703.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">（STUB_ARGV0 </text><rect x="628" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">設定情報（RC4 鍵 m</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BCHk?u）</text><text x="703.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">偽装先 /usr/bin</text><text x="703.0" y="165.0" text-anchor="middle" fill="#ffcc80" font-size="10">/sshd・稼働時間 0</text><rect x="628" y="192.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（127.0.0.1</text><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">:9000 / 192.</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0.2.9:443）</text><text x="703.0" y="255.0" text-anchor="middle" fill="#64b5f6" font-size="10">ループバックと RFC </text><text x="703.0" y="267.0" text-anchor="middle" fill="#64b5f6" font-size="10">5737 の例示用アドレ</text><rect x="628" y="294.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="316.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Linux（x64）サー</text><text x="703.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バを運用する組織</text><text x="703.0" y="343.0" text-anchor="middle" fill="#80cbc4" font-size="10">実被害は観測されていない</text><text x="703.0" y="355.0" text-anchor="middle" fill="#80cbc4" font-size="10">（想定される標的）</text></svg></div><div class=fn>**layer 0 は攻撃者側の作業**——VirusTotal への API 経由のアップロード （日本の IP・Submitter ID `1f915147`）で検知回避性能を確認している。 **layer 1 がローダ**（`packed-x64`・`vt2-packed-x64`）。 **自分自身（`/proc/self/exe`）の末尾60バイトからマジック値 `NLKA01\x00\x01` と 復号パラメータを読み、オフセット `0x5B88` 以降の ChaCha20 暗号化本体を復号する。** **layer 2 が実行経路**——**主経路は `memfd_create` の無名ファイル `kworker` から `execve`、代替経路は `/tmp/.0000e444`**（`memfd_create` の失敗時、 または `STUB_MODE=file`）。 **layer 3 が Noodle RAT 本体と設定**（RC4 鍵 `mBCHk?u`。 **偽装先プロセス名の復号は古い鍵を使うバグで動かない**）。 **本件の C2 はループバックと例示用アドレスであり、実在しない**（出典1）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**アンチウイルス製品では検知できていない（記事執筆時点で0%）**（出典1）。 **静的な特徴が薄いローダ本体しかディスクに無いためである**（本記録の評価）。 **検知の余地は「末尾にマジック値 `NLKA01` を持つ ELF」という 具体の特徴にある**——**IIJ が公開したのはまさにこの手がかりである**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**YARA 等で「ELF の末尾に `NLKA01` のマジック値を持つファイル」を探す** （本記録の推奨。出典1 が構造を明示しているため書ける）</div><div class=ctl><span class="b eff">検知できた</span>**IIJ が公開した6件のハッシュでの照合**（出典1）。 **ただしハッシュは再ビルドで変わる**ため、補助的な手段にとどまる</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ここは Linux のテレメトリがあれば捕まえられる段階である**（本記録の評価）。 **`memfd_create` 由来の無名ファイルからの `execve` は、 正常な運用ではほとんど現れない。** **`/proc/&lt;pid&gt;/exe` が `memfd:kworker (deleted)` のような形になる点、 `kworker` を名乗るのに `/proc/&lt;pid&gt;/exe` がカーネルスレッドでない点が 手がかりになる**（本記録の指摘）。 **`/tmp/.0000e444` のようなドット始まりの隠しファイルも痕跡として残る**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**`memfd_create` 由来のファイルからの実行を検知する** （auditd・eBPF・EDR の Linux 対応。本記録の推奨）</div><div class=ctl><span class="b eff">影響を限定できた</span>**`/tmp` を `noexec` でマウントする** （本記録の推奨。**`memfd_create` が使える環境では迂回されるため 単独では足りない**）</div><div class=ctl><span class="b eff">検知できた</span>**プロセス名ではなく `/proc/&lt;pid&gt;/exe` の実体でプロセスを確認する運用** （本記録の推奨。`ps` の表示は偽装されている前提で見る）</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">公表されていない</span><div class=sm>**本件の検体では C2 がループバックと例示用アドレスであり、 実際の通信は発生しない**（出典1）。 **実攻撃の検体では C2 が実在のアドレスに置き換わるため、 この検体の C2 を遮断対象にしても意味が無い**（本記録の指摘）。 **使えるのは「設定の構造」の方である**—— **稼働時間・稼働曜日・通信間隔という項目を持つ以上、 実攻撃の検体は時間帯を絞ったビーコンを打つ**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**サーバからの外向き通信を宛先と時間帯で記録し、 業務時間外の定期的なビーコンを洗い出す**（本記録の推奨）</div><div class=ctl><span class="b eff">侵入を防げた</span>**Linux サーバの外向き通信を既定で拒否し、必要な宛先だけ許可する** （本記録の推奨。egress の制御）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**Linux サーバのプロセス実行テレメトリを、Windows 端末と同じ扱いにする**</div><div class=lw>**本件のローダは `memfd_create` の無名ファイルから本体を実行し、 ディスクに実体を残さない。** **ファイルを走査する防御では 記事執筆時点の検知率が0%である**（出典1）。 **Windows には EDR があり Linux サーバには無い、という配備が そのまま攻撃面になっている**（本記録の評価）</div><div class=la><b>取るべき行動</b> **サーバ群のうち、プロセス実行の記録（`execve` 相当）を 取れていない台数を数える。** **取れていない範囲を 「検知ができない範囲」として経営に報告し、 auditd か eBPF ベースの監視の導入予算を立てる**</div></li><li><div class=lp>**「検知率」を対策の指標から外す**</div><div class=lw>**攻撃者は VirusTotal に検体を上げて検知率を測っていた**（出典1）。 **攻撃側が同じ数字を見て、0%になるまで調整してから使う。** **検知率は防御の達成度ではなく、攻撃者の仕上げの目標値である**（本記録の評価）</div><div class=la><b>取るべき行動</b> **対策の評価軸を「検知できたか」から 「侵害が起きたときに何分で分かるか・どこまで広がるか」へ移す。** **製品の検知率を根拠にした安心を、報告書から排除する**</div></li><li><div class=lp>**ベンダーの分析記事を、自社の検知ルールに変換する担当を決める**</div><div class=lw>**IIJ は構造（`NLKA01` のマジック値・`memfd_create` からの実行・ `/tmp/.0000e444`）と6件のハッシュを公開している**（出典1）。 **ハッシュは再ビルドで変わるが、構造は変わらない**（本記録の評価）</div><div class=la><b>取るべき行動</b> **公開された分析から「ハッシュ」ではなく「構造」を抜き出して ルールにする作業を、月次の定例業務にする。** **読んだだけで終わらせない**——**変換の成果物（ルールの差分）を記録に残す**</div></li><li><div class=lp>**「攻撃の前段」の観測を、脅威情報として受け取る体制を作る**</div><div class=lw>**本件は侵害ではない。攻撃者が道具の仕上がりを確認していた段階である**（出典1）。 **IIJ は「2026年においても開発は続いていて、攻撃でも使用される 可能性が高い」と述べている**</div><div class=la><b>取るべき行動</b> **国内ベンダーの技術ブログ（IIJ・NTT・LAC・MBSD 等）を 定期的に読む担当と頻度を決める。** **「まだ被害が無い」情報を 先に取り込めるかが、この種の道具への備えを決める**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**`memfd_create` 由来のファイルからの実行を検知対象にする**</div><div class=lw>**ローダは `memfd_create` で `kworker` という無名ファイルを作り、 そこへ復号した本体を書き込んで `execve` で実行する**（出典1）。 **正常な運用でこの経路が現れることはまれである**（本記録の評価）</div><div class=la><b>取るべき行動</b> **auditd か eBPF で `memfd_create` と `execve` を取り、 無名ファイルからの実行を警報にする。** **正規に使う製品があれば許可リストに入れる** （一律の警報は誤検知を出すため）</div></li><li><div class=lp>**プロセスは名前ではなく `/proc/&lt;pid&gt;/exe` の実体で確認する**</div><div class=lw>**ローダは環境変数 `STUB_ARGV0` で `argv` を書き換えてプロセス名を偽装し、 Noodle RAT 本体にも同じ機能がある**（出典1）。 **無名ファイルの名前は `kworker`、設定の偽装先は `/usr/bin/sshd` だった** ——**どちらも「あって当然」の名前である**</div><div class=la><b>取るべき行動</b> **調査手順に「`ps` の表示を信じず `/proc/&lt;pid&gt;/exe` を読む」を明記する。** **`kworker` を名乗るのに `/proc/&lt;pid&gt;/exe` が存在する （カーネルスレッドではない）プロセスを探す。** **`exe` が `(deleted)` や `memfd:` を含むプロセスを定期的に洗い出す**</div></li><li><div class=lp>**ELF の末尾にマジック値 `NLKA01` を持つファイルを探す**</div><div class=lw>**ローダは自分の末尾60バイトに `NLKA01\x00\x01` から始まるメタデータを 持ち、オフセット `0x5B88` 以降に ChaCha20 暗号化された本体を抱える**（出典1）。 **これはハッシュと違い、再ビルドでも残る特徴である**（本記録の評価）</div><div class=la><b>取るべき行動</b> **YARA ルールを書いて、サーバ上の ELF と受信ファイルを走査する。** **末尾のマジック値と、ファイルサイズが `0x5B88` を大きく超える ELF という組み合わせで絞る**</div></li><li><div class=lp>**`/tmp` の隠しファイルと `noexec` を見直す**</div><div class=lw>**`memfd_create` が失敗したとき、または `STUB_MODE=file` のときは `/tmp/.0000e444` に書き込んで実行する**（出典1）。 **ドット始まりの名前で `ls` の既定表示から消える**</div><div class=la><b>取るべき行動</b> **`/tmp`・`/var/tmp`・`/dev/shm` を `noexec` でマウントする （迂回されるが段階を1つ増やせる）。** **これらの配下のドット始まりファイルの作成を監視する**</div></li><li><div class=lp>**サーバの外向き通信を既定で拒否する**</div><div class=lw>**設定情報は稼働時間・稼働曜日・通信間隔の項目を持つ**（出典1）。 **実攻撃の検体は、時間帯を絞った定期的なビーコンを打つ作りである** （本記録の読み。本件の C2 はループバックと例示用アドレスで実在しない）</div><div class=la><b>取るべき行動</b> **サーバからの egress を既定拒否にし、必要な宛先だけ許可する。** **許可できない環境では、宛先と時刻を記録して 「一定間隔で同じ宛先に出ている通信」を定期的に抽出する**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **Linux サーバでプロセス実行の記録（`execve` 相当）を取れているか。 取れていない台数を把握しているか**</td><td class=sm>**ローダは `memfd_create` の無名ファイルから実行するため、 ファイル走査型の防御では記事執筆時点の検知率が0%である**（出典1）。 **プロセス側の可視性が無いと、この経路は構造的に見えない**（本記録の評価）</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **`/tmp`・`/var/tmp`・`/dev/shm` が `noexec` でマウントされているか。 これらの配下のファイル作成を監視しているか**</td><td class=sm>**`memfd_create` が失敗したときの逃げ道が `/tmp/.0000e444` である**（出典1）。 **ドット始まりの名前で既定の `ls` から消える**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **サーバからの外向き通信が既定拒否になっているか。 できない場合、宛先と時刻の記録があるか**</td><td class=sm>**設定情報が稼働時間・稼働曜日・通信間隔を持つ以上、 実攻撃の検体は定期的なビーコンを打つ**（出典1。本記録の読み）</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **調査手順が「プロセス名」ではなく「`/proc/&lt;pid&gt;/exe` の実体」を 見る形になっているか**</td><td class=sm>**`argv` の書き換えによるプロセス名の偽装機能がローダと本体の双方にある**（出典1）。 **偽装先は `kworker` と `/usr/bin/sshd`**——**どちらも疑われにくい名前である**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **ベンダーの分析記事から検知ルールを作る担当と頻度が決まっているか （ハッシュの登録で終わっていないか）**</td><td class=sm>**IIJ が公開したのはハッシュ6件と構造の両方である**（出典1）。 **ハッシュは再ビルドで変わるが構造は残る**（本記録の評価）</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> **自組織の Linux サーバに、諜報・金銭目的の攻撃者が狙う資産 （認証情報・顧客データ・開発環境）があるか**</td><td class=sm>**Noodle RAT は過去にサイバーエスピオナージ目的と金銭目的の双方で 観測されている**（出典1・2）。**標的の幅が広い**</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月21日 00:42 UTC IIJ Security Diary（株式会社インターネットイニシアティブ）</span> <a href="https://sect.iij.ad.jp/blog/2026/10/linux-noodlerat-executed-by-fud-loader/" target="_blank" rel="noreferrer noopener nofollow">FUDローダによって実行されるLinux版のNoodle RAT</a> <span class="b kind">ブログ</span><span class=sm>（**一次資料（分析を行ったベンダー自身の公表）。 本記録の作成者は記事の全文テキスト（本文・設定情報の表・Appendix の IoC・脚注）で 内容を確認した。** **ただし公開ページへの直接アクセスは HTTP 503 で 失敗している**〈齟齬1〉。 ここから確認したのは、**2026年9月の観測、同一ユーザによる API 経由の アップロードとファイル名、日本の IP アドレスと Submitter ID `1f915147`、 記事執筆時点の検知率0%、ローダの構造（`/proc/self/exe` の末尾60バイト・ マジック値 `NLKA01\x00\x01`・オフセット `0x5B88`・ChaCha20・ `memfd_create` による `kworker` の作成と `execve`・ `STUB_MODE=file` のときの `/tmp/.0000e444`・`STUB_ARGV0` による プロセス名偽装）、RC4 鍵の変更（`r0st@#$` → `mBCHk?u`）と 偽装先プロセス名の復号が古い鍵のままで動作しないこと（開発者のミスとの評価）、 復号された設定情報（`/usr/bin/sshd`・`127.0.0.1:9000`・`192.0.2.9:443`・ 稼働時間 `00-24`・稼働曜日 `1;1;1;1;1;1;1;`・通信間隔 `5`）、 C2 がループバックと例示用アドレスであることからテスト目的と評価していること、 「このローダは Noodle RAT 以外のマルウェアを実行する時にも使用される 可能性がある」との指摘、および結びの「今後も警戒が必要」**である。 **IoC（ローダ2件・Noodle RAT 4件の SHA256）も確認したが、 本記録には収録せず件数のみを記録する**）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[2]</span> <span class=sm>2024年 トレンドマイクロ</span> <a href="https://www.trendmicro.com/ja_jp/research/24/g/noodle-rat-reviewing-the-new-backdoor-used-by-chinese-speaking-g.html" target="_blank" rel="noreferrer noopener nofollow">中国語圏の攻撃グループが展開するバックドア型マルウェア「Noodle RAT」を分析</a> <span class="b kind">調査レポート</span><span class=sm>（**Noodle RAT の先行分析。出典1 が脚注で参照している背景資料である。** **本記録はこの資料を取得していない**—— **Noodle RAT が中国語圏の複数の攻撃者グループに使われ、 サイバーエスピオナージ目的の攻撃と金銭目的の攻撃で観測されていること、 および旧 RC4 鍵 `r0st@#$` の存在は、いずれも出典1 の記述を通じて確認した**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月22日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月21日の IIJ Security Diary の分析を **一次資料として、記事の全文テキスト（Appendix の IoC・脚注まで）で裏取りした。** **公開ページへの直接アクセスは HTTP 503 で失敗しており、その点を明示した** 〈齟齬1〉。 **本件は侵害事案ではなく検体の分析である**—— **C2 がループバックと例示用アドレスであるため、IIJ は実攻撃用ではなく 検知回避性能のテスト目的と評価している。** **本記録は「攻撃の前段の観測」として記録し、 検知の手がかり（マジック値・`memfd_create` からの実行・隠しファイル・ プロセス名偽装）を lessons に変換した。** **IoC のハッシュ値は件数のみを記録し、値は収録していない。** **「検知率0%」は時点依存の値として扱う**〈齟齬3〉。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Noodle RAT</span><span class="b tag">Linux</span><span class="b tag">FUDローダ</span><span class="b tag">検知回避</span><span class="b tag">無名ファイル実行</span><span class="b tag">ChaCha20</span><span class="b tag">RC4</span><span class="b tag">プロセス名偽装</span><span class="b tag">kworker</span><span class="b tag">VirusTotal</span><span class="b tag">中国語圏の攻撃者グループ</span><span class="b tag">IIJ</span><span class="b tag">マルウェア分析</span><span class="b tag">サイバーエスピオナージ</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-22 09:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
