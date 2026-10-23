@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Node.js Brotli で RCE 実証 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0675</span>Node.js Brotli で RCE 実証</h1>
+<header class="site-header">
+  <p class="subtitle">Node.js が同梱する Brotli デコーダの境界外書き込み（CVE-2026-111497）で、 Imperva が**公式ビルドのまま任意コード実行を実証**した——デバッガも自前ビルドも使わず、 細工した Brotli データを `fetch()` や Express のボディ解析へ食わせるだけで成立する。 ただし**実環境での悪用は観測されていない**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月21日（Node.js のセキュリティリリース公開）</span>
+  <span>最終更新: 2026年10月23日（Imperva の実証公開を反映・本記録の確認時点）</span>
+</div>
+
+<div class="lead"><p><strong>「公式のイメージを、素のまま使っていても成立する」ところまで来ました。</strong></p>
+<p><strong>2026年10月21日、Node.js は10件の脆弱性をまとめて修正するセキュリティリリースを公開しました</strong>（出典1）。<strong>そのうち最も重いのが CVE-2026-111497——同梱する Brotli デコーダの境界外書き込みで、リモートコード実行を許すもので、深刻度は High です</strong>（出典1）。<strong>対象は 22.x・24.x・26.x の3系列、修正版は 22.23.4・24.22.1・26.12.1 で、Node.js 20 以前には修正が提供されません</strong>（出典1）。</p>
+<p><strong>2026年10月22日、Imperva の脅威リサーチが「Node2Shell」としてこの脆弱性の実証を公開しました</strong>（出典2）。<strong>本記録が要点と見たのは、次の3点です。</strong></p>
+<ul>
+<li><strong>実証は「公式ビルドのまま」行われた。</strong> <strong>Imperva は公式の Node.js 24.22.0 Linux arm64 イメージを使い、新しいコンテナ上で実行したとしており、「デバッガも計測用のバイナリも必要なかった」と明記しています</strong>（出典2。原文英語）。<strong>メモリサニタイザは不具合そのものを調べるために別途使ったもので、コード実行の実証には使っていないとしています</strong>（出典2）。<strong>これまで公開されていた実証コードは、標準ビルドに対してはクラッシュとプロセスメモリの限定的な読み出しまでで、コード実行には至っていませんでした</strong>（出典2）。</li>
+<li><strong>入口は2つある。「受け取る側」と「送られる側」の両方である。</strong> <strong>①Node.js 組み込みの <code>fetch()</code> が圧縮された応答を復号するとき（＝自分が外へ取りに行った先から返ってくるデータ）。②受信したリクエストボディを Express 5.0.0〜5.3.0 またはbody-parser 2.0.0〜2.3.0 が展開するとき</strong>（出典2）。<strong>素の Node.js の HTTP サーバは、Brotli のボディを受け取っただけでは展開しないとされています</strong>（出典2）—— <strong>脆弱なコードは Node.js にあり、ミドルウェアは「そこへ到達する経路」を作る側です。</strong></li>
+<li><strong>確実には動かない。「成立しうる」と「いつでも成立する」は別である。</strong> <strong>Imperva は「我々の環境では実行に複数回の試行を要した」「実証はすべての試行で成功したわけではない」と書いています</strong>（出典2。原文英語）。<strong>検証したのは Linux arm64 のそのビルドとアプリ構成であり、22.x・26.x や他のアーキテクチャは試していないとしています</strong>（出典2）。<strong>修正版 24.22.1 では同じ入力が拒否され、コードは動きませんでした</strong>（出典2）。</li>
+</ul>
+<p><strong>本記録は2026年10月23日に Node.js のセキュリティリリース（出典1）・Imperva のレポート（出典2）・CISA の KEV カタログ（出典5）を直接取得して裏を取りました。</strong> <strong>実環境での悪用は、どちらの資料も報告していません</strong>〈未確定1〉。<strong>一方で、報告者の記載が Node.js 側と Imperva 側で食い違っています</strong>〈齟齬1〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**Node.js のリリース（出典1）も Imperva のレポート（出典2）も、 実環境での悪用を報告していない**（本記録の確認）。 **Imperva の主張は実証の結果と Node.js の修正に限られており、 「野良で悪用されている」とは書いていない**（出典2）。 **CISA の KEV にも収載されていない**（出典5。本記録が2026年10月23日に確認）。 **ただし「無かったことが確認された」わけではない**（本記録の評価）—— **Imperva 自身が「予期しないプロセス終了やデコーダのエラーは 調査の手がかりにとどめるべきで、 いずれも単独では悪用の確かな証拠にならない」と書いている**（出典2。原文英語）。 **痕跡が残りにくい種類の脆弱性である。**</div></li><li><span class=ui>CVSS の評点</span><span class="b rsn">公表されていない</span><div class=sm>**Node.js は深刻度を High と記すだけで、CVSS の基本値もベクタも公開していない** （出典1。本記録の確認）。 **第三者のデータベースには 8.1 という値が流通しているが、 本記録はその出所を一次資料で確認できていない**〈齟齬2〉。 **評点が無いことは、社内の受け入れ基準を「点数」で回している組織に そのまま影響する**（本記録の評価）—— **本件は「点数が出ないので判定できない」ではなく 「公式ビルドで RCE が実証された」という事実で判定すべき事案である。**</div></li><li><span class=ui>22.x・26.x および arm64 以外のアーキテクチャでの成立可否</span><span class="b rsn">公表されていない</span><div class=sm>**Imperva は、結果が「検証した Linux arm64 のビルドとアプリ構成に当てはまる」ものであり、 すべての Node.js のビルドやアプリ、中間ミドルウェアのすべてのリリースを 試したわけではないと明記している**（出典2。原文英語）。 **したがって「arm64 以外では成立しない」という読み方はできない**（本記録の評価）—— **試していないだけである。** **脆弱なコードは3系列すべてに同梱されている**（出典1）。</div></li><li><span class=ui>上流 google/brotli 側の欠陥の技術的な詳細と、修正コミットの内容</span><span class="b rsn">公表されていない</span><div class=sm>**Node.js は、上流の修正コミットを `0ed4268` と示し、 それより古い brotli をシステム側でリンクしているビルドも影響を受けるとしている** （出典1）。 **Imperva は、上流の修正が「ありえない遷移に対してデコーダが format error を返すようにするもの」と説明している**（出典2）。 **本記録は google/brotli 側のコミットと issue を取得していない**〈齟齬2〉—— **どの関数のどの境界で書き込みが起きるかは本記録では確認できていない。**</div></li><li><span class=ui>日本の公的機関による注意喚起の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録の作成者は、JPCERT/CC・IPA による2026年10月の Node.js セキュリティリリースに関する注意喚起を発見できなかった**（本記録の確認）〈齟齬4〉。 **PHP2Shell については JPCERT/CC が注意喚起 JPCERT-AT-2026-0033 を出している** （INC-2026-0640 の出典27）。 **「出ていない」と断定する材料は無い**——**探索して見つからなかったという意味である。**</div></li><li><span class=ui>攻撃を受けたことを確かめる方法</span><span class="b rsn">公表されていない</span><div class=sm>**Imperva は、予期しないプロセス終了とデコーダのエラーを 「調査の手がかりにとどめる」よう述べ、 いずれも単独では悪用の確かな証拠にならないとしている**（出典2。原文英語）。 **これ以上の具体的な侵害調査の指標（ログの項目・残る痕跡）は 公表されていない**（本記録の確認）。 **PHP2Shell では JPCERT/CC が侵害調査の着眼点を示したが （INC-2026-0640 の出典27）、本件に相当する公的な指標は見当たらない**（本記録の整理）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Node.js（OpenJS Foundation）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Imperva（脅威リサーチ／Red Team）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>google/brotli（上流のライブラリ）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Express / body-parser（攻撃面を作るミドルウェア）</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA</span><span class="b role">注意喚起主体</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>2026年10月21日のセキュリティリリースで修正された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>10<span class=fu>件</span></div><div class=fn>**High 4件・Medium 4件・Low 3件と数えると11件になるが、 Node.js の一覧に並ぶ CVE は10件である**（出典1。本記録の確認）—— **Low のうち CVE-2026-106070 と CVE-2026-106071 は 26.x のみ、 CVE-2026-106073 は3系列すべてに該当する。** **本記録は一覧に並ぶ CVE の数（10件）を採る。** **「Brotli の1件だけを直す」作業ではないことを示す数である**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける Node.js の系列数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>系列</span></div><div class=fn>**22.x・24.x・26.x の3系列**（出典1）。 **修正版は 22.23.4・24.22.1・26.12.1。** **Node.js 20 以前には修正が提供されない**（出典1）—— **保守終了の系列で動いているアプリは、更新ではなく移行が必要になる**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>実証に使われた Node.js のバージョン（公式 Linux arm64 イメージ）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>24.22<span class=fu>版</span></div><div class=fn>**正確には 24.22.0 である**（出典2）。 **数値として持つために小数2桁で表した**（本記録の整理）—— **修正版は 24.22.1 であり、差は1パッチ版である。** **「公式イメージを素のまま使っている」という条件が、 この数値の意味の中心である**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>攻撃面として挙げられた Express のバージョン幅（5.0.0〜5.3.0）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>マイナーバージョン</span></div><div class=fn>**5.0・5.1・5.2・5.3 の4系列が該当するという意味である** （出典2 の記載から本記録が数えた）。 **body-parser 側は 2.0.0〜2.3.0。** **これらのミドルウェア自身の脆弱性ではない**（本記録の明示）—— **受信ボディの Brotli を展開して脆弱なコードへ到達させる経路として挙げられている。**</div></div></div></div>
+<div class="blk " id="s4"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml></div><div class=mv></div><div class=fn>**Node.js は、修正版のリリースと同時にアドバイザリを公開している**（出典1）—— **2026年10月21日の同日である。** **調整開示として想定どおりの形であり、 PHP2Shell のように公開前に詳細が漏れた形跡は本記録では確認していない** （本記録の評価）。</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>**Node.js のリリース（10月21日）から、 Imperva が実証を公開するまでが1日である**（出典1・2。本記録の算出）。 **「修正が出てから実証が出るまで1日」という速度が、 更新の猶予として与えられた時間である**（本記録の評価）—— **公式ビルドで動く実証がこの速さで出る前提で計画を立てる必要がある。**</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Node.js は深刻度の区分（High）のみを示し、 CVSS の基本値・ベクタ・技術的詳細を公開していない**（出典1。本記録の確認）。</div><div class=fn><b>トレードオフ:</b> **攻撃者に実装の手がかりを渡さないことを取り、 利用者側が優先度を数値で判定する手段を捨てている**（本記録の評価）。 **区分（High）だけでは、CVSS を基準に受け入れ判定を自動化している組織の 判定が通らない。**</div></li><li><div class=ui>**Imperva は、実証の環境・経路・留保を具体的に書いた上で公開した**（出典2）。</div><div class=fn><b>トレードオフ:</b> **公式ビルドで成立することを公表する以上、 攻撃者側にも「狙えば動く」という情報を渡している**（本記録の評価）。 **実証コード自体は公開せず、環境と留保の記述にとどめることで、 再現の容易さを下げる側に寄せている。**</div></li></ul></div>
+<section id="s5"><h2>「公式ビルドのまま」成立したことが、この実証の意味である<span class="b slot">評価・解釈</span></h2><p><strong>脆弱性の実証には、しばしば前提が付きます</strong>（本記録の整理）。<strong>デバッガを当てる、計測用に作り直したバイナリを使う、ASLR を切る、特定のヒープ配置を先に作る——どれも「研究室では動くが現場では動かない」と読む理由になります。</strong></p>
+<p><strong>Imperva の実証には、その前提がありません</strong>（出典2）。</p>
+<ul>
+<li><strong>使ったのは公式の Node.js 24.22.0 Linux arm64 イメージである</strong>（出典2）</li>
+<li><strong>新しいコンテナ上で実行した</strong>（出典2）</li>
+<li><strong>「デバッガも計測用のバイナリも必要なかった」</strong>（出典2。原文英語）</li>
+<li><strong>メモリサニタイザは不具合そのものを調べるために別途使ったもので、コード実行の実証には使っていない</strong>（出典2）</li>
+</ul>
+<p><strong>これまで公開されていた実証は、ここまで届いていませんでした</strong>（出典2）。<strong>最初の公開された実証コードの作者は、標準ビルドに対してはクラッシュとプロセスメモリの限定的な読み出しを報告しており、コード実行ではありませんでした</strong>（出典2）。</p>
+<p><strong>「クラッシュする」と「コードが動く」の間には、実務上まったく違う対応が入ります</strong>（本記録の評価）。<strong>前者なら可用性の問題として段階的に直せますが、後者は「そのプロセスの権限で何でもできる」ことを意味します。</strong></p>
+<p><strong>ただし、同じレポートに留保が書かれています</strong>（出典2）。</p>
+<ul>
+<li><strong>「我々の環境では実行に複数回の試行を要した」</strong>（原文英語）</li>
+<li><strong>「実証はすべての試行で成功したわけではない」</strong>（原文英語）</li>
+<li><strong>検証したのは Linux arm64 のそのビルドとアプリ構成であり、すべての Node.js のビルドやアプリ、中間ミドルウェアのすべてのリリースを試したわけではない</strong></li>
+</ul>
+<p><strong>この2つは矛盾しません</strong>（本記録の評価）。<strong>「毎回確実に動く攻撃」ではないが、「公式ビルドに対して条件を揃えれば動く攻撃」ではある、という状態です。</strong> <strong>防御側の判断に使えるのは後者のほうです。</strong></p></section>
+<section id="s6"><h2>入口は「受け取る側」と「送られる側」の両方にある——素の HTTP サーバだけは別<span class="b slot">原因・手口</span></h2><p><strong>Brotli は圧縮形式であり、Node.js がそれを展開する場面は一つではありません</strong>（本記録の整理）。<strong>Imperva は2つの経路を試しています</strong>（出典2）。</p>
+<p><strong>①自分が取りに行った先から返ってくるデータ</strong></p>
+<p><strong>Node.js 組み込みの <code>fetch()</code> が、圧縮された応答を復号するときです</strong>（出典2）。<strong>これは「攻撃者がこちらのサーバへ送ってくる」構図ではありません</strong>（本記録の評価）—— <strong>こちらから外部 API・外部サイトへ取りに行き、その応答に細工が入っている構図です。</strong> <strong>外向きの通信を WAF で見ていない組織では、ここは監視の外にあります。</strong></p>
+<p><strong>②受信したリクエストボディ</strong></p>
+<p><strong>Express 5.0.0〜5.3.0、または body-parser 2.0.0〜2.3.0 がボディを展開するときです</strong>（出典2）。<strong>Imperva が版を固定して試したのは、Express 5.0.0＋body-parser 2.0.1、Express 5.3.0＋body-parser 2.3.0、body-parser 2.0.0 単体の3つで、<code>raw()</code> と <code>json()</code> の両方のパーサを使っています</strong>（出典2）。</p>
+<p><strong>ここで区別が要ります</strong>（出典2）。</p>
+<p><strong>素の Node.js の HTTP サーバは、Brotli のボディを受け取っただけでは展開しません</strong>（出典2）。<strong>脆弱なコードは Node.js にあり、ミドルウェアは「そこへ到達する経路」を作る側です</strong>（出典2 の記述に基づく整理）。</p>
+<p><strong>したがって、これは Express の脆弱性でも body-parser の脆弱性でもありません</strong>（本記録の明示）。<strong>Express を外しても Node.js を更新しなければ①の経路は残り、Node.js を更新すれば①も②も閉じます。</strong> <strong>直すべきものは Node.js です。</strong></p></section>
+<section id="s7"><h2>同梱されているから、更新は「パッケージ一覧」では見つからない<span class="b slot">対策・注意喚起</span></h2><p><strong>欠陥があるのは Node.js 自身のコードではなく、Node.js が同梱する Brotli ライブラリです</strong>（出典1・2）。<strong>この構図が、更新作業の形を決めます</strong>（本記録の評価）。</p>
+<p><strong>Node.js のリリースは2つの場合を挙げています</strong>（出典1）。</p>
+<ul>
+<li><strong>Node.js が同梱する brotli 依存部が脆弱である</strong></li>
+<li><strong>システム側の brotli をリンクしているビルドでも、上流（google/brotli）の修正（コミット <code>0ed4268</code>）より古ければ影響を受ける</strong></li>
+</ul>
+<p><strong>Imperva の対策の案内も、この点を中心に置いています</strong>（出典2）。</p>
+<ul>
+<li><strong>修正版（22.23.4／24.22.1／26.12.1 以降）へ更新する。Node のバイナリを同梱しているコンテナイメージやその他の成果物も含める</strong></li>
+<li><strong>保守対象外の系列で動いているアプリは、支援されている版へ移す</strong></li>
+<li><strong>信頼できない Brotli データが処理系へ届く場所を洗い出す（取り込んだ応答と、ミドルウェアが展開するリクエストボディの両方）</strong></li>
+<li><strong>配備済みのイメージやホストの中で Node.js の版を確認する——パッケージの棚卸しは同梱された処理系を見落とすことがある</strong></li>
+<li><strong>実務上可能な範囲で、影響のある経路について信頼できない Brotli の通信を一時的に制限する（通常の通信で試験してから）</strong></li>
+</ul>
+<p><strong>最後の項目が、この事案でいちばん実務に効きます</strong>（本記録の評価）。<strong>「<code>npm ls</code> に出てこないものが脆弱である」という形だからです。</strong> <strong>依存関係の一覧には Brotli は現れません。</strong> <strong>現れるのは「Node.js のバージョン」だけで、それはコンテナイメージの中・ビルド基盤の中・商用製品に同梱された処理系の中にあります。</strong></p></section>
+<section id="s8"><h2>痕跡は残りにくい——「落ちていないから大丈夫」は言えない<span class="b slot">未確定事項</span></h2><p><strong>侵害を確かめる手がかりについて、Imperva は慎重に書いています</strong>（出典2）。</p>
+<p><strong>「予期しないプロセスの終了やデコーダのエラーは、調査の手がかりとしてのみ扱うこと」「いずれも単独では悪用の確かな証拠にならない」</strong>（出典2。原文英語）</p>
+<p><strong>これは両方向に効きます</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>エラーが出ていても、悪用されたとは言えない</strong></li>
+<li><strong>エラーが出ていなくても、悪用されていないとは言えない</strong></li>
+</ul>
+<p><strong>実証が「複数回の試行を要した」ものである以上、失敗した試行がプロセスを落とす形で記録に残ることは期待できます</strong>（本記録の推測）。<strong>しかし成功した試行がどう記録に残るかは、公表されていません</strong>〈未確定6〉。</p>
+<p><strong>PHP2Shell では、JPCERT/CC が侵害調査の着眼点3点を示した上で「上述の痕跡が確認されない場合でも、本脆弱性を悪用した攻撃を受けていないと断定することはできません」と明記しました</strong>（INC-2026-0640 の出典27）。<strong>本件に相当する公的な調査指標は見当たりません</strong>（本記録の確認）〈齟齬4〉。</p>
+<p><strong>いま言えるのは、次の形です</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>実環境での悪用は、どの資料も報告していない</strong>（出典1・2）</li>
+<li><strong>CISA の KEV にも収載されていない</strong>（出典5。2026年10月23日時点）</li>
+<li><strong>ただし痕跡が残りにくいため、「観測されていない」と「起きていない」は別である</strong></li>
+</ul></section>
+<section id="s9"><h2>PHP2Shell と同じ日に出たことが、現場の制約になった<span class="b slot">波及・関係先</span></h2><p><strong>2026年10月21日は、PHP2Shell の修正が公開された日です</strong>〈関連 INC-2026-0640〉。<strong>同じ日に、Node.js は High 4件を含む10件の修正を出しました</strong>（出典1）。</p>
+<p><strong>本記録はこの重なりを、技術ではなく運用の問題として記録します</strong>（本記録の評価）。</p>
+<p><strong>PHP2Shell は、各国の政府機関が自らサイトを止めるところまで行った事案です</strong>（INC-2026-0640）。<strong>その日の夜から翌日にかけて、多くの組織のセキュリティ担当はPHP の棚卸しと更新に人手を集中させています。</strong> <strong>その同じ窓で、Node.js の TLS 証明書ホスト名検証の回避2件（CVE-2026-105483・CVE-2026-106069）と DNS 名の切り詰め（CVE-2026-105482）、そして Brotli の RCE（CVE-2026-111497）が出ました</strong>（出典1）。</p>
+<p><strong>台湾の資通安全署は、PHP・Node.js・Go の緊急更新を一括で警告しました</strong>（INC-2026-0640 の出典35）。<strong>3つの言語処理系を同時に扱う警告は、本記録の知る範囲では珍しい形です</strong>（本記録の評価）。</p>
+<p><strong>さらに同じ Node.js のリリースには、eMudhra 中間CA の危殆化への対応（同梱 CA 証明書の更新）も含まれています</strong>（出典1）〈関連 INC-2026-0633〉。<strong>つまりこの1回の更新で、性質の違う3つの事案が同時に閉じます</strong>—— <strong>①Brotli の RCE、②TLS 証明書検証の回避、③危殆化した中間CA の不信任。</strong></p>
+<p><strong>実務の含意は単純です</strong>（本記録の評価）。<strong>「PHP を直したから今週は終わり」にしてはいけない週でした。</strong></p></section>
+<section id="s10"><h2>報告者の記載が食い違っている——どちらが見つけたのかは確定できない<span class="b slot">未確定事項</span></h2><p><strong>誰がこの脆弱性を見つけたのかについて、2つの資料が違うことを書いています</strong>（本記録の確認）。</p>
+<ul>
+<li><strong>Node.js のリリースは、CVE-2026-111497 の報告者としてOpenAI Codex Security・Khai Tran・Sylvie Mayer を挙げ、修正を mcollina・aduh95 が行ったとしている</strong>（出典1）</li>
+<li><strong>Imperva のレポートは、Node.js が報告者として Matteo Collina を、修正者として Antoine du Hamel を挙げていると記述している</strong>（出典2）</li>
+</ul>
+<p><strong><code>mcollina</code> は Matteo Collina、<code>aduh95</code> は Antoine du Hamel のGitHub のアカウント名である</strong>（本記録の整理）。<strong>したがって Imperva は、Node.js 側で「修正」の欄に並ぶ2名を「報告者と修正者」として読み替えている可能性があります</strong>（本記録の推測）〈齟齬1〉。</p>
+<p><strong>本記録はどちらが正しいかを判定しません</strong>（本記録の明示）。<strong>一次資料は Node.js のリリースであり、そこにはOpenAI Codex Security・Khai Tran・Sylvie Mayer と書かれています</strong>（出典1）。</p>
+<p><strong>なぜこれを記録するのか</strong>（本記録の評価）。<strong>PHP2Shell では、AI が数十年存在した欠陥の悪用可能性を実証したことが事案の性格を決めました</strong>（INC-2026-0640）。<strong>本件も報告者欄に OpenAI Codex Security が入っています</strong>（出典1）。<strong>「誰が見つけたか」は、この時期の脆弱性において単なるクレジットの問題ではなく、「発見の速度がどこまで上がっているか」を測る材料です。</strong> <strong>だからこそ、食い違いを潰さずに残します。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**Node.js が同梱する Brotli デコーダ**（出典1・2）。 **対象は Node.js 22.x・24.x・26.x の全ビルド、修正版は 22.23.4・24.22.1・26.12.1。** **Node.js 20 以前には修正が提供されない**（出典1）。 **システム側の brotli をリンクしているビルドでも、 上流 google/brotli の修正（コミット `0ed4268`）より古ければ影響を受ける**（出典1）。 **攻撃面として挙げられたのは、Node.js 組み込みの `fetch()` による応答の復号と、 Express 5.0.0〜5.3.0／body-parser 2.0.0〜2.3.0 による受信ボディの展開である**（出典2）。</td></tr><tr><th>finding_name</th><td>**CVE-2026-111497「Node.js Brotli decoder out-of-bounds write permits remote code execution」** （出典1。原文英語）。 **深刻度 High。CVSS の評点は公開されていない**〈未確定2〉。 **実証に Imperva が付けた名称は「Node2Shell」である**（出典2）—— **これは脆弱性の公式名ではなく、実証に対する呼称である**（本記録の明示）。</td></tr><tr><th>exploit_status</th><td>**実証コードは存在し、公式ビルドでのコード実行が示されている**（出典2）。 **一方、実環境での悪用はどの資料も報告していない**（出典1・2。本記録の確認）〈未確定1〉。 **CISA の KEV にも収載されていない**（出典5）。 **公開済みの先行する実証コードは、標準ビルドに対しては クラッシュとプロセスメモリの限定的な読み出しまでだった**（出典2）。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月23日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>**修正済み。22.23.4・24.22.1・26.12.1 がリリースされている**（出典1）。 **Imperva は修正版 24.22.1 で同じ入力が拒否されることを確認している**（出典2）。 **Node.js 20 以前は修正の対象外であり、更新ではなく移行が必要である**（出典1）。 **コンテナイメージ・商用製品に同梱された処理系も個別に更新が必要である**（出典2）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月23日（本記録の確認時点）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月23日（本記録の確認時点）　<b>詳細:</b> **悪用・被害の発生を示す公表はない**（出典1・2・5。本記録の確認）。 **ただし「無かった」ことが確認されたわけでもない**〈未確定1〉。　<b>ログの有無:</b> **Imperva は「予期しないプロセスの終了やデコーダのエラーは 調査の手がかりとしてのみ扱うこと」とし、 「いずれも単独では悪用の確かな証拠にならない」と明記している**（出典2。原文英語）。 **成功した悪用がどのような記録を残すかは公表されていない**（本記録の確認）〈未確定6〉。 **境界外書き込みによるコード実行は、 アプリケーションのログには正常な処理として現れうる**（本記録の評価）—— **検知を「落ちたかどうか」に依存させられない。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Node.js が2026年10月のセキュリティリリースを公開し、10件の脆弱性を修正した**（出典1）。 **High は4件——CVE-2026-111497（Brotli デコーダの境界外書き込みによるリモートコード実行）、 CVE-2026-105482（`dns.resolve` が NUL 文字を含む名前を切り詰める）、 CVE-2026-105483（IP を全角数字で書いたときの TLS 証明書ホスト名検証の回避）、 CVE-2026-106069（ホストが緩く IP に解決されるときの同種の回避）。** **Medium は4件・Low は3件**（うち CVE-2026-106070 と CVE-2026-106071 は 26.x のみ）。 **修正版は 22.23.4・24.22.1・26.12.1 で、Node.js 20 以前には修正が提供されない**（出典1）。 **同じリリースでは依存部の更新も行われ、c-ares・OpenSSL・SQLite・Undici に加えて 「eMudhra 中間CA の危殆化」への対応が含まれている**（出典1）〈関連 INC-2026-0633〉</td></tr><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**同じ日、PHP が PHP2Shell（CVE-2026-109618／CVE-2026-109619）の修正を公開した** 〈関連 INC-2026-0640〉。 **台湾の資通安全署は PHP・Node.js・Go の緊急更新を一括で警告し、 Go については更新の適用後に再コンパイルと再デプロイまで行わないと 効果が出ないと注意した**（INC-2026-0640 の出典35）。 **本記録はこの日付の重なりを、現場の実務にとっての主要な事情と判断した** （本記録の評価）—— **PHP2Shell の対応に人手が集中した日に、Node.js の High 4件が同時に出ている。**</td></tr><tr><td class="sm nowrap tw">2026年10月22日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Imperva が「Node2Shell: From Brotli Data to Remote Code Execution」を公開し、 公式ビルドでのコード実行を実証したと報告した**（出典2）。 **環境は公式の Node.js 24.22.0 Linux arm64 イメージ、新しいコンテナ、 「デバッガも計測用のバイナリも必要なかった」**（出典2。原文英語）。 **機構としては、Brotli ストリームの構造上ありえないブロック遷移が、 脆弱なデコーダでは「入力がもっと必要」という要求のように見え、 「無効な内部状態のまま処理が続いた」**（出典2。原文英語）。 **別途行ったサニタイザでの試験で、その状態から先へ進むと 意図したバッファの外へ書き込みうることが分かったとしている**（出典2）。 **修正版 24.22.1 では同じ入力が拒否され、 目印のファイルは作られず、Express／body-parser の試験でもサーバは動き続けた**（出典2）</td></tr><tr><td class="sm nowrap tw">2026年10月23日 07時50分（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が実証を報じた**（出典3）。 **「悪性の Brotli データは、Node.js の公式ビルド上のアプリケーションに 攻撃者の与えたコードを実行させうる」と伝え、 対象を「同梱された Brotli デコーダ（CVE-2026-111497）へ細工したデータを与える」 ことと説明している**（出典3。原文英語）。 **本記録は収集時に保存された冒頭部分のみを確認しており、 記事の本文全体は取得できていない**（取得時に 403 が返った）〈齟齬3〉</td></tr><tr><td class="sm nowrap tw">2026年10月23日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、Node.js のセキュリティリリース（出典1）・ Imperva のレポート（出典2）・CISA の KEV カタログ（出典5）を取得して確認した** （本記録の確認）。 **確認したのは——①修正版と対象系列、②報告者の記載が Node.js 側では OpenAI Codex Security・Khai Tran・Sylvie Mayer であること、 ③Imperva の実証環境と「複数回の試行を要した」という留保、 ④入口が `fetch()` と Express／body-parser の2系統であること、 ⑤素の HTTP サーバは受信しただけでは展開しないこと、 ⑥CVE-2026-111497 が KEV に収載されていないこと。** **一方、以下は取得していない**—— **google/brotli 側のコミットと issue、The Hacker News の本文全体、 Node.js の CVSS 評点（公開されていない）**〈齟齬2・齟齬3〉</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**Node.js のリリースは、報告者として OpenAI Codex Security・Khai Tran・Sylvie Mayer を挙げ、 修正を mcollina・aduh95 が行ったとしている**（出典1）。 **一方 Imperva は、Node.js が報告者として Matteo Collina を、 修正者として Antoine du Hamel を挙げていると記述している**（出典2）。 **`mcollina` は Matteo Collina、`aduh95` は Antoine du Hamel の GitHub アカウント名である**（本記録の整理）—— **Imperva が「修正」欄の2名を「報告者と修正者」として読み替えた可能性がある** （本記録の推測）。 **本記録は一次資料である出典1 の記載を採り、どちらが正しいかは判定しない。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><div class=sm>**Node.js は CVSS の評点を公開していない**（出典1。本記録の確認）。 **一方、第三者の脆弱性データベースには CVSS 8.1 という値が流通している** （本記録が検索で把握した範囲）。 **本記録はその出所を一次資料で確認できていないため、 figures には採っていない**（本記録の明示）。 **同じ第三者データベースには「深刻度は低く、悪用される可能性は低い」という 記述も併記されており、Node.js の High 区分と矛盾する**—— **本記録は出典1 を優先する。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録は、上流の修正コミット `0ed4268` の内容と、 google/brotli 側の issue を取得していない**（本記録の明示）—— **どの関数のどの境界で書き込みが起きるかは本記録では確認できていない。** **また The Hacker News の記事（出典3）は、 2026年10月23日の取得時に 403 が返り、本文全体を取得できなかった。** **確認できたのは収集時に保存された冒頭部分だけである。** **記事の後半（Node.js 側の説明・対策の記述）は本記録の根拠に用いていない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**本記録の作成者は、JPCERT/CC・IPA による2026年10月の Node.js セキュリティリリースに関する注意喚起を発見できなかった**（本記録の確認）。 **PHP2Shell については JPCERT/CC が注意喚起を出している** （INC-2026-0640 の出典27）。 **台湾の資通安全署は PHP・Node.js・Go を一括で警告している** （INC-2026-0640 の出典35）。 **「国内で注意喚起が出ていない」と断定する材料は無い**—— **本記録が探索して到達できなかったという意味である。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>脆弱なのは同梱された Brotli、到達させるのは2つの経路、直すのは Node.js の更新</div><div class=svgwrap><svg viewBox="0 0 1202 312" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,124.0 C193.0,124.0 193.0,156.0 220,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,207.0 C295.0,207.0 295.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,207.0 C295.0,207.0 295.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,207.0 C295.0,207.0 295.0,258.0 424,258.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C397.0,60.0 397.0,156.0 220,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C397.0,162.0 397.0,156.0 220,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,156.0 C499.0,156.0 499.0,117.0 628,117.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,117.0 C805.0,117.0 805.0,124.0 832,124.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,124.0 C907.0,124.0 907.0,207.0 832,207.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,156.0 C703.0,156.0 703.0,156.0 220,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,188.0 C805.0,188.0 805.0,124.0 832,124.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="80.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">google/brotl</text><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">i（上流・修正コミット </text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">0ed4268）</text><text x="91.0" y="143.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正は「ありえない遷移に</text><text x="91.0" y="155.0" text-anchor="middle" fill="#f48fb1" font-size="10"> format erro</text><rect x="220" y="112.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Node.js 22.x</text><text x="295.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／24.x／26.x（同</text><text x="295.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">梱 Brotli デコ…</text><text x="295.0" y="175.0" text-anchor="middle" fill="#64b5f6" font-size="10">脆弱なコードはここにある</text><text x="295.0" y="187.0" text-anchor="middle" fill="#64b5f6" font-size="10">（出典1・2）</text><rect x="16" y="182.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（細工した Bro</text><text x="91.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tli データを用意）</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">経路①　組み込み `fe</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tch()` が圧縮され</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">た応答を復号</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">外部へ取りに行った先から</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">返ってくるデータ（出典2</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">経路②　Express </text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">5.0.0〜5.3.0／</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">body-parser…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">raw() と json</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">() の両方で実証（出典</text><rect x="424" y="220.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">素の Node.js H</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TTP サーバ（受信した</text><text x="499.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">だけでは展開しない）</text><text x="499.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">経路にならない（出典2）</text><rect x="628" y="92.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">無効な内部状態のまま処理</text><text x="703.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">継続 → 境界外書き込み</text><rect x="832" y="80.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公式ビルド上での任意コー</text><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド実行（複数回の試行を要</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">した）</text><text x="907.0" y="143.0" text-anchor="middle" fill="#ffcc80" font-size="10">Imperva の実証結</text><text x="907.0" y="155.0" text-anchor="middle" fill="#ffcc80" font-size="10">果（出典2）</text><rect x="832" y="182.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アプリケーション／コンテ</text><text x="907.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ナイメージ／ビルド基盤</text><rect x="1036" y="112.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">更新（22.23.4／2</text><text x="1111.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4.22.1／26.12</text><text x="1111.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.1 以降）</text><text x="1111.0" y="175.0" text-anchor="middle" fill="#f48fb1" font-size="10">Node.js 20 以</text><text x="1111.0" y="187.0" text-anchor="middle" fill="#f48fb1" font-size="10">前には修正が無い（出典1</text><rect x="628" y="156.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="703.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（CVE</text><text x="703.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-2026-111497</text><text x="703.0" y="206.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> は未収載・2026年…</text></svg></div><div class=fn>出典1・2 の記述から、入口・脆弱な部品・実証された結果までを並べた図である。 破線相当（コード実行以降）は Imperva が実証した結果であり、 実環境での悪用の観測ではない〈未確定1〉。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Node.js は深刻度の区分（High）のみを示し、 CVSS の基本値・ベクタ・技術的詳細を公開していない**（出典1。本記録の確認）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**Imperva は、実証の環境・経路・留保を具体的に書いた上で公開した**（出典2）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「同梱されている部品」は資産台帳に出てこない。処理系のバージョンを棚卸しの単位にする。**</div><div class=lw>**壊れているのは Brotli ライブラリだが、修正は Node.js の更新としてしか届かない** （出典1）。 **Imperva は「配備済みのイメージやホストの中で Node.js の版を確認すること。 パッケージの棚卸しは同梱された処理系を見落とすことがある」と書いている** （出典2。原文英語）。 **`npm ls` にも SBOM の依存一覧にも Brotli は現れない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **コンテナイメージ・ビルド基盤・商用製品に同梱された Node.js の版を、 アプリの依存関係とは別の台帳で持つ。** **「どのイメージにどの処理系が何版で入っているか」を 実測できる経路（イメージ走査）を1つ用意する。**</div></li><li><div class=lp>**深刻度の区分しか出ない脆弱性がある。点数が出るまで判定を止める運用をやめる。**</div><div class=lw>**Node.js は High という区分のみを公開し、CVSS の基本値もベクタも出していない** （出典1。本記録の確認）〈未確定2〉。 **第三者データベースには 8.1 という値が流通しているが、本記録は裏付けを 確認できていない**〈齟齬2〉。 **評点を待つ運用では、公式ビルドで RCE が実証されている事案が 優先度表に載らない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性の受け入れ基準に「ベンダが評点を出さない場合の扱い」を明記する。** **「公式ビルドで実証が公開されている」「保守終了系列に修正が無い」を 点数と同等の加点要素として判定表に加える。**</div></li><li><div class=lp>**同じ週に複数の処理系が同時に危なくなる。更新作業の同時並行能力を前提に計画する。**</div><div class=lw>**2026年10月21日は、PHP2Shell の修正と Node.js の High 4件が 同じ日に出た日である**（出典1・INC-2026-0640）。 **台湾の資通安全署は PHP・Node.js・Go を一括で警告した** （INC-2026-0640 の出典35）。 **同じ Node.js のリリースには eMudhra 中間CA の不信任も入っている** （出典1・INC-2026-0633）。 **「PHP を直したから今週は終わり」にできない週だった**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **緊急更新の体制を「1事案に全力」ではなく 「同時に2〜3系統を回せるか」で設計する。** **処理系ごとに更新の担当と所要時間を事前に測り、 同時発生時の優先順位を決めておく。**</div></li><li><div class=lp>**「観測されていない」を「起きていない」として報告しない。痕跡が残らない種類がある。**</div><div class=lw>**Imperva は「予期しないプロセス終了やデコーダのエラーは 調査の手がかりにとどめるべきで、いずれも単独では 悪用の確かな証拠にならない」と明記している**（出典2。原文英語）。 **KEV に収載されていないことも、悪用の不存在を意味しない**（出典5。本記録の明示）。</div><div class=la><b>取るべき行動</b> **経営への報告書式に「調べた範囲」と「調べられない範囲」を分けて書く欄を設ける。** **本件のように痕跡が残りにくい脆弱性では、 「侵害なし」ではなく「更新完了・侵害の確認手段は公表されていない」と書く。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**入口は2系統ある。外向きの `fetch()` を忘れると半分しか塞がらない。**</div><div class=lw>**Imperva は、Node.js 組み込みの `fetch()` が圧縮された応答を復号する経路と、 Express／body-parser が受信ボディを展開する経路の両方で実証している**（出典2）。 **前者は「こちらから取りに行った先」からデータが来る構図であり、 受信側の WAF では見えない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **アプリが外部へ取りに行く先（API・webhook の応答・画像や設定の取得）を洗い出し、 そこで `fetch()` が圧縮応答を受けているかを確認する。** **受信側だけを WAF で守って済ませない。**</div></li><li><div class=lp>**素の HTTP サーバは展開しない。自分のスタックがどちらかを先に確定させる。**</div><div class=lw>**素の Node.js の HTTP サーバは、Brotli のボディを受け取っただけでは 展開しないとされている**（出典2）。 **展開するのは Express 5.0.0〜5.3.0 または body-parser 2.0.0〜2.3.0 であり、 `raw()` と `json()` の両方のパーサで実証されている**（出典2）。</div><div class=la><b>取るべき行動</b> **ボディ解析のミドルウェアと版を一覧にする。** **即時更新が難しい経路では、暫定措置として body-parser の `inflate: false`、または境界で `Content-Encoding: br` を拒否する設定を検討する （通常の通信で試験してから適用する）。**</div></li><li><div class=lp>**Express を外しても直らない。直すのは Node.js である。**</div><div class=lw>**脆弱なコードは Node.js が同梱する Brotli にあり、 Express や body-parser はそこへ到達する経路を作る側である**（出典2 の記述に基づく整理）。 **ミドルウェアを外しても `fetch()` の経路は残る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **対処を「ミドルウェアの設定変更」で終わらせず、 22.23.4／24.22.1／26.12.1 以降への更新を完了条件にする。** **Node.js 20 以前で動いているアプリは、移行計画を別立てで起こす。**</div></li><li><div class=lp>**「毎回成功する攻撃ではない」ことを、監視の設計に織り込む。**</div><div class=lw>**Imperva は「我々の環境では実行に複数回の試行を要した」 「実証はすべての試行で成功したわけではない」としている**（出典2。原文英語）。 **失敗した試行はプロセスの異常終了として現れうる**（本記録の推測）。</div><div class=la><b>取るべき行動</b> **Node.js プロセスの異常終了とデコーダのエラーを、 単発では警報にせず「短時間に繰り返す」ことを条件に監視する。** **ただし Imperva の留保どおり、これだけを悪用の判定に使わない。**</div></li><li><div class=lp>**同じ更新で3つの性質の違う問題が閉じる。更新の理由を1つに絞らない。**</div><div class=lw>**2026年10月21日のリリースには、Brotli の RCE、 TLS 証明書ホスト名検証の回避2件（CVE-2026-105483・CVE-2026-106069）、 DNS 名の切り詰め（CVE-2026-105482）、 そして eMudhra 中間CA の危殆化への対応（同梱 CA 証明書の更新）が入っている** （出典1）。</div><div class=la><b>取るべき行動</b> **更新の起票理由に CVE を1件だけ書かない。** **とくに eMudhra 対応は、Node.js を更新しない限り 危殆化した中間CA を信頼し続ける**（出典1・INC-2026-0633）—— **TLS の信頼の問題として別途追跡する。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社または委託先のサービスが Node.js 22.x・24.x・26.x のいずれかで動いている （公式ビルド・公式コンテナイメージを含む）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Node.js 20 以前で動いているアプリがある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> コンテナイメージ・商用ソフトウェア・ビルド基盤・CI ランナーに Node.js が同梱されており、その版を実測していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> アプリが Node.js 組み込みの `fetch()` で外部から圧縮された応答を受け取っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Express 5.0.0〜5.3.0 または body-parser 2.0.0〜2.3.0 で 受信リクエストボディを展開している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の優先度判定を CVSS の基本値に依存しており、 評点が公表されない場合の扱いを決めていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月21日 Node.js</span> <a href="https://nodejs.org/en/blog/vulnerability/october-2026-security-releases" target="_blank" rel="noreferrer noopener nofollow">October 2026 Security Releases</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次公表。本記録が直接取得して確認した**（2026年10月23日）。 **確認した内容は——①CVE-2026-111497 「Node.js Brotli decoder out-of-bounds write permits remote code execution」が 深刻度 High であること、 ②対象が 22.x・24.x・26.x の3系列であること、 ③修正版が 22.23.4・24.22.1・26.12.1 であり Node.js 20 以前には修正が無いこと、 ④報告者が OpenAI Codex Security・Khai Tran・Sylvie Mayer、 修正が mcollina・aduh95 であること、 ⑤同梱 brotli が脆弱であり、上流の修正（コミット `0ed4268`）より古い システム brotli をリンクしたビルドも影響を受けること、 ⑥同リリースの他の CVE（High: CVE-2026-105482・CVE-2026-105483・CVE-2026-106069／ Medium: CVE-2026-105481・CVE-2026-106072・CVE-2026-106074／ Low: CVE-2026-106070・CVE-2026-106071・CVE-2026-106073）、 ⑦依存部の更新に c-ares・OpenSSL・SQLite・Undici と 「eMudhra 中間CA の危殆化」への対応が含まれること。** **CVSS の評点は掲載されていない**（本記録の確認））</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年10月21日（カタログ版 2026.10.21・収載1,754件） CISA</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（JSON フィード）</a> <span class="b kind">統計・集計資料</span><span class=sm>（**本記録が2026年10月23日に取得し、CVE-2026-111497 を検索して 収載されていないことを確認した**（本記録の確認）。 **同時に CVE-2026-109618・CVE-2026-109619（PHP2Shell）・ CVE-2026-91403（Oracle Java）・CVE-2026-113438（プリザンター）も 収載されていないことを確認している。** **カタログは `catalogVersion: 2026.10.21`・`dateReleased: 2026-10-21T14:04:39Z`・ 収載1,754件であった。** **「KEV に無い」は「悪用されていない」ではなく 「CISA が悪用の確証を得て収載する段階に至っていない」という意味である** （本記録の明示））</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月22日 Imperva（Imperva Threat Research）</span> <a href="https://www.imperva.com/blog/node2shell-from-brotli-data-to-remote-code-execution/" target="_blank" rel="noreferrer noopener nofollow">Node2Shell: From Brotli Data to Remote Code Execution</a> <span class="b kind">調査レポート</span><span class=sm>（**実証の一次資料。本記録が直接取得して確認した**（2026年10月23日）。 **著者は Ron Masas、Imperva Threat Research に帰属。自らを Imperva Red Team と記す。** **確認した内容は——①実証環境が公式の Node.js 24.22.0 Linux arm64 イメージ・ 新しいコンテナであり「デバッガも計測用のバイナリも必要なかった」こと（原文英語）、 ②機構が「構造上ありえないブロック遷移を、脆弱なデコーダが 入力要求のように扱い、無効な内部状態のまま処理を続けた」ことであり、 別途のサニタイザ試験でその状態から意図したバッファの外へ書き込みうると 分かったこと（原文英語）、 ③上流の修正がありえない遷移に対して format error を返すようにするものであること、 ④入口が `fetch()` の応答復号と Express 5.0.0〜5.3.0／body-parser 2.0.0〜2.3.0 の ボディ展開の2系統であり、固定版の試験が Express 5.0.0＋body-parser 2.0.1、 Express 5.3.0＋body-parser 2.3.0、body-parser 2.0.0 単体の3つであること、 ⑤素の Node.js の HTTP サーバは受信しただけでは展開しないこと、 ⑥「我々の環境では実行に複数回の試行を要した」「実証はすべての試行で 成功したわけではない」という留保（原文英語）、 ⑦修正版 24.22.1 では同じ入力が拒否され目印のファイルが作られなかったこと、 ⑧対策として更新・保守対象外系列からの移行・Brotli の到達経路の洗い出し・ イメージ内の版の実測・一時的な通信制限を挙げ、 「予期しないプロセス終了やデコーダのエラーは調査の手がかりにとどめ、 いずれも単独では悪用の確かな証拠にならない」としていること（原文英語）、 ⑨同社が再現できた悪用試行を検知・遮断する WAF ルールを追加したとしていること。** **実環境での悪用は主張していない**（本記録の確認））</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月22日〜23日 Security Boulevard ほか（Imperva レポートの転載・二次解説）</span> <a href="https://securityboulevard.com/2026/10/node2shell-from-brotli-data-to-remote-code-execution/" target="_blank" rel="noreferrer noopener nofollow">Node2Shell: From Brotli Data to Remote Code Execution（転載）</a> <span class="b kind">記事</span><span class=sm>（**Imperva のレポート（出典2）の転載である**（本記録の整理）。 **本記録は出典2 を直接取得しているため、内容の根拠には出典2 を用いる。** **本エントリは、同じ内容が転載経路で広く流通していることを示すために置いた**—— **読者が二次情報から辿ってきたときに、一次資料の所在を示すためである。** **転載先の本文は本記録では取得していない**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月23日 07時50分（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/10/researchers-demonstrate-node2shell-rce.html" target="_blank" rel="noreferrer noopener nofollow">Researchers Demonstrate Node2Shell RCE Exploit on Node.js Build Using Crafted Brotli Data</a> <span class="b kind">記事</span><span class=sm>（**本記録が確認できたのは、収集時に保存された冒頭部分だけである**—— **2026年10月23日の取得時に 403 が返り、本文全体は取得できなかった**〈齟齬3〉。 **冒頭が伝えているのは、 「悪性の Brotli データは、Node.js の公式ビルド上のアプリケーションに 攻撃者の与えたコードを実行させうることを Imperva の研究者が実証した」 「その Node2Shell の実証は、公式の Node.js 24.22.0 Linux arm64 イメージ上で、 デバッガも自前ビルドも使わずに、同梱された Brotli デコーダ （CVE-2026-111497）へ細工したデータを与えることで動いた」ことである （原文英語）。** **記事の後半（Node.js 側の説明・対策）は本記録では確認していない**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月23日</span> <span class="b rev">新規作成</span> **2026年10月23日収集分の記事 〈0231_the-hacker-news_researchers-demonstrate-node2shell-rce-exploit-on-.md〉** **を起点に、一次資料3件を取得して裏を取って作成した**—— **Node.js のセキュリティリリース（出典1）・ Imperva のレポート（出典2）・CISA の KEV カタログ（出典5）。**
+
+**本記録が中心と判断したのは、実証が「公式ビルドのまま」行われたことである。** **Imperva は公式の Node.js 24.22.0 Linux arm64 イメージ・新しいコンテナで、 「デバッガも計測用のバイナリも必要なかった」と明記している**（原文英語）。 **先行する公開実証は、標準ビルドではクラッシュとメモリの限定的な読み出しまでだった。** **一方で同社は「複数回の試行を要した」「すべての試行で成功したわけではない」 という留保も書いており、本記録は両方を併記した。**
+
+**実環境での悪用は、どの資料も報告していない。** **本記録は CISA の KEV カタログ（版 2026.10.21・収載1,754件）を自ら取得し、 CVE-2026-111497 が収載されていないことを確認した**（出典5）。 **同時に PHP2Shell の2件・Oracle Java の CVE-2026-91403・ プリザンターの CVE-2026-113438 も未収載であることを確認している。**
+
+**記録した論点は4つ。** **①入口が `fetch()`（外向き）と Express／body-parser（受信側）の2系統であり、 素の HTTP サーバは受信しただけでは展開しないこと。 ②脆弱なのは同梱された Brotli であり、依存関係の一覧には現れないため 棚卸しの単位を「処理系のバージョン」にする必要があること。 ③2026年10月21日は PHP2Shell の修正と同じ日であり、 同じ Node.js リリースには eMudhra 中間CA の不信任も含まれるため、 1回の更新で性質の違う3つの事案が閉じること （INC-2026-0640・INC-2026-0633 と関連する）。 ④報告者の記載が Node.js 側と Imperva 側で食い違っていること（齟齬1）。**
+
+**取得できなかったもの**—— **The Hacker News の本文全体（403）・上流 google/brotli のコミットと issue・ JPCERT/CC・IPA の国内向け注意喚起（探索したが到達せず）**（齟齬3・齟齬4）。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Node.js</span><span class="b tag">Node2Shell</span><span class="b tag">CVE-2026-111497</span><span class="b tag">Brotli</span><span class="b tag">境界外書き込み</span><span class="b tag">リモートコード実行</span><span class="b tag">Imperva</span><span class="b tag">Express</span><span class="b tag">body-parser</span><span class="b tag">OpenJSFoundation</span><span class="b tag">同梱ライブラリ</span><span class="b tag">コンテナイメージ</span><span class="b tag">EOL</span><span class="b tag">OpenAI Codex Security</span><span class="b tag">AI による脆弱性発見</span><span class="b tag">CISA KEV</span><span class="b tag">実証コード</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-23 17:54 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
