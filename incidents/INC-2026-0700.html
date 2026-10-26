@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Tailscale SSH 転送に権限昇格 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0700</span>Tailscale SSH 転送に権限昇格</h1>
+<header class="site-header">
+  <p class="subtitle">Tailscale SSH の転送機能に権限昇格——Erica Windisch（Cyberdione Labs）が2026年10月25日に 「Tailworm」として Tailscale 1.104.2 と headscale 0.29.5 の11件の発見を公開した。 SSH の転送処理が root 権限の tailscaled 内で行われ、ログインしたアカウントの権限で 制限されていないため、許可された1台を押さえた攻撃者が他のサーバの管理者権限と デバイス追加用の認証鍵に到達できたとされる。 Tailscale は報告を受けて調査中で修正は未公開、CVE もセキュリティ公告も発行されていない。 開示は調整されておらず、研究者と同社の推奨策も食い違っている。</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月25日</span>
+  <span>最終更新: 2026年10月26日</span>
+</div>
+
+<div class="lead"><p>2026年10月25日、Erica Windisch（Cyberdione Labs Corporation）は「Tailworm」と題した評価レポートを公開し、<strong>Tailscale 1.104.2 と headscale 0.29.5 に11件の発見</strong>があるとしました。中核は <strong>Tailscale SSH の転送（port forwarding）機能による権限昇格</strong>です。レポートによれば、Tailscale SSH は利用者単位の認証を行わずデバイスIDでポリシーを評価するため、<strong>ポリシー上ログインを許可された1台を押さえた攻撃者は、セッション中の転送機能を使える</strong>。そして転送の処理は <strong>root 権限で動く tailscaled の内部</strong>で行われ、パスの検証と実際の操作のあいだに競合（TOCTOU）があるため、<strong>ログインしたアカウントの権限では触れない root 所有の Unix ソケットに到達でき、既存のソケットを置き換えることもできた</strong>とされます。研究室内の検証では、<strong>Docker の管理ソケット経由でホストの root 権限に到達し、保護されたシステムファイルを読み出した</strong>ほか、<strong>Tailnet Lock を有効にしていない環境でデバイス追加用の認証鍵（authkey）を通信中から取得し、攻撃者の管理する機器を同じ private network に参加させた</strong>と報告されています。Tailscale は報告を受けて調査中であり、<strong>修正は本記録の確認時点で未公開、CVE もセキュリティ公告（最新は TS-2026-013）も発行されていません</strong>。エンジニアリング担当副社長の Mike Shaver は10月25日、問題は「SSH 接続が認可された後」に生じるもので、外部の攻撃者が未認可のまま任意のサーバにログインできるというものではないとの初期評価を示し、<strong>全利用者に一律で Tailscale SSH を無効化することは勧めない</strong>としました。一方で研究者は Tailscale SSH と App Connectors の無効化を勧めており、<strong>推奨策そのものが食い違っています</strong>。開示は調整されておらず（研究者は「報告はしたが調整はしていない」と述べています）、修正前の詳細公開を無責任とする批判も出ています。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>影響を受ける構成の範囲（どの版・どの設定が対象か）</span><span class="b rsn">調査中</span><div class=sm>Tailscale は「影響を受ける構成をまだ確認中」としている。 研究者が検証したのは Tailscale 1.104.2 と headscale 0.29.5 であり、 **他の版での成否は示されていない。** **転送機能の既定値についても、研究者が Hacker News で「既定で有効」と 述べたとされる一方、Tailscale 側の確認は本記録では取れていない。**</div></li><li><span class=ui>CVE 番号・セキュリティ公告・修正版の提供時期</span><span class="b rsn">公表されていない</span><div class=sm>本記録の確認時点で CVE 番号は発行されておらず、Tailscale のセキュリティ公告一覧に 本件の項目は無い（最新は TS-2026-013）。修正版も出ていない。 **Tailscale は「修正に取り組んでいる」と述べているが、提供時期は示していない。**</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録が参照した資料のいずれにも、実環境での悪用の観測は示されていない。 研究者のレポートも研究室内の検証であると明記している。 **PoC は公開されていないが、レポートには手口の方向（root 所有の Unix ソケットへの 転送、Docker 管理ソケット経由、localapi 経由の authkey 取得）が示されている。**</div></li><li><span class=ui>第三者による再現</span><span class="b rsn">検証できない</span><div class=sm>11件の発見はいずれも研究者のレポートに依拠しており、 **他の研究者による再現は確認されていない。** 具体的な再現手順も公開ページには含まれていない。 Hacker News では、従来の意味でのワーム化は考えにくいとするコメントも出た。</div></li><li><span class=ui>headscale 側（開発プロジェクト）の応答</span><span class="b rsn">探索したが未発見</span><div class=sm>研究者は headscale 0.29.5 では転送を無効化できないとし、 「headscale の SSH 付与はすべて root 相当として扱え」と助言している。 **headscale プロジェクト側の応答は本記録では確認できていない。**</div></li><li><span class=ui>ベンダーへの報告が行われた具体的な日付</span><span class="b rsn">公表されていない</span><div class=sm>研究者は公開前にレポートと PoC を Tailscale のセキュリティ窓口へ送ったと 述べているが、**日付は示されていない。** Tailscale 側も受領の日付を公表していない。 **したがって「報告から公開まで何日あったか」は算出できない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Tailscale Inc.</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span><span class="b lc">判明 2026年10月25日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>指摘の対象となった製品（Tailscale・tailscaled・Tailscale SSH・serve/funnel・ App Connectors）の提供者。報告を受けて調査中であり、 **本記録の確認時点で修正は未公開、CVE もセキュリティ公告も発行されていない。** エンジニアリング担当副社長の Mike Shaver が Reddit で初期の評価を示した。</p><p class=org-p><span class=org-l>影響</span>Tailscale は報告の受領を認め、外部のセキュリティ専門家とともに同じ領域を すでに検証していたと述べ、見つかった問題の修正に取り組んでいるとした。 影響を受ける構成の特定は継続中。**全利用者に一律で Tailscale SSH の無効化を 勧めることはしない**との立場を示した。</p></div></div><div class=org><div class=org-h><span class=org-n>headscale（Tailscale のコントロールサーバの自己ホスト実装・OSS）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>レポートの対象に含まれる。研究者は **headscale 0.29.5 では転送を無効化できない** ため、**「headscale の SSH 付与はすべて root 相当として扱え」** （treat every headscale SSH grant as root-equivalent／原文英語）と助言している。 ほかに headscale と DERP のメモリ枯渇に関する発見も含む。 **headscale 側の応答は本記録では確認できていない。**</p></div></div><div class=org><div class=org-h><span class=org-n>Erica Windisch（Cyberdione Labs Corporation）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>「Tailworm」レポートの著者。テスト期間は2026年10月22日から24日、 文書の日付は2026年10月。**報告はしたが開示の時期は調整していない** （「It was reported but not coordinated.」／原文英語）と述べている。 「Tailworm」の名はワーム的な攻撃への関心から付けたもので、 侵害された1台から他の許可済みホストへ広がりうるという意味だと Hacker News で説明したが、その投稿は通報され非表示になった。</p></div></div><div class=org><div class=org-h><span class=org-n>Tailscale / headscale の利用組織（影響を受ける構成は特定中）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**Tailscale SSH を有効にし、転送を許可し、Tailnet Lock を使っていない構成が 対象になりうる**とされる。**影響を受ける構成の特定は Tailscale 側で継続中であり、 本記録は「どの構成がどれだけ影響を受けるか」を確定できていない。** Tailscale は国内でも拠点間・開発環境・保守経路の接続に使われており、 日本語でも注意喚起の記事が出ている。</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>レポートが提示した発見の件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>11<span class=fu>件</span></div><div class=fa>2026年10月25日 時点</div><div class=fn>番号付きの発見（Finding 1〜11）の数。内部ラベルは T1〜T3・C1〜C4・F-1〜F-5 で、 5つのクラスに分類されている。**Finding 6 には複数の問題が含まれる**ため、 「11件」は論点の数と一対一ではない（本記録の注記）。 **件数はいずれも研究者の自己申告であり、第三者による検証・採番 （CVE 等）はなされていない。**</div></div><div class=fig><div class=fh><span class=fl>検証に用いた Tailscale のバージョン</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1.104.2<span class=fu>バージョン</span></div><div class=fa>2026年10月25日 時点</div><div class=fn>研究者が検証した版。報道によれば2026年10月21日のリリースである。 **他の版で同じ結果が得られるかは示されていない**—— Tailscale は影響を受ける構成の特定を継続中である。</div></div><div class=fig><div class=fh><span class=fl>研究者のテスト期間</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fa>2026年10月25日 時点</div><div class=fn>レポートが示す「2026-10-22 から 2026-10-24」を本記録が数えた日数（両端を含む）。 **公開（10月25日）はテスト終了の翌日である。**</div></div></div></div>
+<section id="s4"><h2>指摘の核は「許可リストはセキュリティ境界ではない」という点にある<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>レポートの中核は、<strong>Tailscale SSH の認可の単位と、転送処理が動く権限のずれ</strong>です。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>認可の単位</td>
+<td><strong>デバイスID</strong>（利用者単位の認証を行わない）</td>
+</tr>
+<tr>
+<td>転送処理が動く場所</td>
+<td><strong>root 権限で動く tailscaled の内部</strong></td>
+</tr>
+<tr>
+<td>指摘されたずれ</td>
+<td>一部の転送操作が<strong>ログインしたアカウントの権限で制限されていない</strong></td>
+</tr>
+<tr>
+<td>加えて</td>
+<td>パスの検証と実際の操作のあいだに<strong>競合（TOCTOU）</strong>がある</td>
+</tr>
+</tbody>
+</table>
+<p>研究者はこれを <strong>「the allowlist is not a security boundary」</strong>（許可リストはセキュリティ境界ではない／原文英語）と表現しています。</p>
+<p>具体的に報告された挙動は次の形です。<strong>ポリシー上ログインを許可された1台を押さえた攻撃者が、<code>ssh -L</code> / <code>ssh -R</code> で root 所有の Unix ソケットに到達でき、既存のソケットを置き換えることもできた。</strong> SSH の転送はもともと、リモート接続を通して相手側のサービスへ到達するための機能です。ところが本件では、<strong>一般のアカウントでは操作する権限が無いシステムの機能にも届いた</strong>とされます。</p>
+<p>研究室内の検証では、<strong>Docker の管理ソケットに転送で接続して高権限のコマンドを実行し、保護されたシステムファイルを読み出した</strong>と報告されています。Docker のソケットは「触れれば root 相当」として知られる資産であり、<strong>到達できてしまえば昇格の工程は要らない</strong>（本記録の注記）。</p>
+<p>もうひとつの経路が<strong>デバイス追加用の認証鍵（authkey）</strong>です。ソケットの乗っ取りによって <strong>localapi 経由の authkey を通信中に取得した</strong>とされ、<strong>Tailnet Lock を有効にしていない検証環境では、その鍵で攻撃者の管理する機器を同じ private network に参加させられた</strong>と報告されています。ただし、<strong>新たに参加した機器がすべてのサーバに接続できるわけではなく、実際に到達できる範囲は Tailscale 側の既存の権限設定で制限されます。</strong></p>
+<p>Tailnet Lock が有効な場合についてもレポートは触れており、<strong>「the TKA disable-secret and signer-key material were captured in transit」</strong>（TKA の無効化シークレットと署名鍵の素材を通信中に取得した／原文英語）としながら、<strong>実際の無効化は実行していない</strong>と明記しています。</p></section>
+<section id="s5"><h2>研究者と Tailscale で、推奨する対処が食い違っている<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>緩和策の中身が、研究者とベンダーで異なります。</strong> 読者はまずこのずれを把握してから判断する必要があります（本記録の評価）。</p>
+<p><strong>Tailscale（管理者向けの案内）</strong></p>
+<ul>
+<li><strong>SSH のアクセス規則を点検し、必要な人員と機器だけにログインを許す</strong></li>
+<li><strong>転送が不要なら転送機能を無効化する</strong>（通常の Tailscale SSH ログインには影響しない）</li>
+<li><strong>SSH の再認証モード（check mode）を有効にすると防護を一段増やせるが、権限昇格そのものは解決しない</strong></li>
+<li><strong>全利用者に一律で Tailscale SSH を無効化することは勧めない</strong></li>
+</ul>
+<p><strong>研究者（レポート）</strong></p>
+<ul>
+<li><strong>SSH 規則は利用者単位・タグ単位の広い付与を避け、送信元と宛先の1対1の付与（per-pair grants）にする</strong></li>
+<li><strong>SaaS では転送フラグを個別に拒否できる。headscale 0.29.5 では転送を無効化できないため、headscale の SSH 付与はすべて root 相当として扱う</strong></li>
+<li><strong>ノードキーに有効期限を設定し、TPM や Secure Enclave を使う</strong></li>
+<li><strong>App Connector は権限を制限し、宛先を許可リストにし、Kubernetes ではegress を default-deny にする</strong></li>
+<li><strong>インシデント対応では再イメージ化だけでは不十分で、コントロールプレーン側でデバイスを削除する必要がある</strong></li>
+<li><strong>Tailscale SSH と App Connectors の無効化</strong></li>
+</ul>
+<p><strong>最後の1点が正面から衝突しています。</strong> 研究者は Tailscale SSH の無効化を勧め、Tailscale は一律の無効化を勧めないとしています。</p>
+<p><strong>両者が食い違うのは、評価の前提が違うためです</strong>（本記録の読み取り）。Shaver の初期評価は「問題は主に SSH 接続が<strong>認可された後</strong>に生じるもので、外部の攻撃者が未認可のまま任意のサーバにログインできるというものではない」というものです。つまり<strong>攻撃の起点として「すでに許可された1台の掌握」を要する</strong>という整理です。研究者の側は、その1台の掌握が成立する前提では被害が他のホストへ広がる、という点を重く見ています。</p>
+<p><strong>判断の分かれ目は、自組織で「許可されたデバイス1台の掌握」をどれだけありうることとして扱うかにあります</strong>（本記録の評価）。開発者の手元の端末やCIのランナーが tailnet に入っている構成では、その1台は日常的に外部のコードを実行しています。</p></section>
+<section id="s6"><h2>修正もCVEも出ておらず、再現も確認されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [4]</span></h2><p><strong>本記録の確認時点（2026年10月26日）の状態を、確定している順に並べます。</strong></p>
+<p><strong>確定していること。</strong></p>
+<ul>
+<li>レポートが2026年10月25日に公開された</li>
+<li>Tailscale が報告の受領を認め、修正に取り組んでいると述べた</li>
+<li><strong>Tailscale のセキュリティ公告一覧に本件の項目は無い</strong>（最新は TS-2026-013・2026年10月21日の eMudhra 中間証明書の件。その前は TS-2026-012・10月13日の libtailscale の不具合）</li>
+<li><strong>CVE 番号は発行されていない</strong></li>
+<li><strong>修正版は出ていない</strong>（報じられた <code>tailscale serve</code> の修正はマージであって出荷ではない）</li>
+</ul>
+<p><strong>確定していないこと。</strong></p>
+<ul>
+<li><strong>影響を受ける構成の範囲</strong>——Tailscale 側で特定が継続中</li>
+<li><strong>第三者による再現</strong>——11件はいずれも研究者のレポートに依拠しており、<strong>PoC は公開されていない。</strong> 具体的な再現手順も公開ページには含まれない</li>
+<li><strong>実環境での悪用</strong>——本記録が参照したいずれの資料にも観測は示されていない</li>
+<li><strong>ベンダーへの報告日</strong>——研究者は送付したと述べるが日付を示していない。したがって<strong>報告から公開までの日数は算出できない</strong></li>
+</ul>
+<p><strong>この状態の読み方について、本記録の立場を書きます。</strong> 未修正・CVE 未発行・再現未確認という3つが重なっているため、<strong>「深刻度を確定させてから動く」という進め方が取れません。</strong> Tailscale の初期評価を信じて待つか、研究者の推奨に従って機能を止めるかの判断を、材料が揃う前に下すことになります。</p>
+<p>本記録としては、<strong>どちらかを推すのではなく、判断の分岐を自組織の構成で決められる形にしておくことを勧めます</strong>（後述の lessons）。具体的には、<strong>「Tailscale SSH の転送を使っている経路がどれか」を先に把握することです。</strong> 使っていなければ、Tailscale の案内にある転送機能の無効化は副作用なく実行でき、研究者とベンダーの食い違いに巻き込まれずに済みます。</p></section>
+<section id="s7"><h2>開示は調整されていない——「報告はしたが調整はしていない」<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>本件は、調整開示（coordinated disclosure）の枠組みの外で公開されています。</strong></p>
+<p>研究者は、公開に先立ってレポートと PoC を Tailscale のセキュリティ窓口へ送ったとしつつ、その過程を <strong>「It was reported but not coordinated.」</strong>（報告はしたが調整はしていない／原文英語）と述べています。<strong>送付の日付は示されていません。</strong></p>
+<p>Hacker News では、研究者が「Tailworm」という名の意図——侵害された1台から他の許可済みホストへ広がりうるというワーム的な懸念——を説明した投稿が<strong>通報され、非表示になりました。</strong> また、<strong>従来の意味でのワーム化は考えにくい</strong>とするコメントも出ています。修正の提供前に詳細を公開したことを無責任とする批判に対し、研究者は、脆弱性はベンダーに通報済みであり、双方で公開時期を調整していなかったと応答しました。</p>
+<p><strong>読者にとっての実務上の意味は、「待てば情報が整う」という前提が崩れることです</strong>（本記録の評価）。調整開示であれば、公開の時点で CVE 番号・影響範囲・修正版が揃います。本件はその逆で、<strong>手口の方向性だけが先に公開され、影響範囲と修正はあとから来ます。</strong></p>
+<p>この順序は、<strong>攻撃側と防御側で使える情報の非対称を生みます。</strong> 攻撃側はレポートの記述（root 所有の Unix ソケットへの転送、Docker 管理ソケット、localapi 経由の authkey）から試行の方向を決められますが、防御側は「自社が影響を受けるか」を公式の情報で確認できません。<strong>PoC が非公開であることは試行の難度を上げますが、方向が示されている以上、難度の問題は時間の問題でもあります</strong>（本記録の評価）。</p>
+<p><strong>なお、本記録はこの開示の作法そのものを評価しません。</strong> 評価すべき材料——報告の日付、ベンダーの応答の経過、両者のやりとりの内容——が公表されていないためです。</p></section>
+<section id="s8"><h2>日本の読者にとっては「保守経路に入れた1台」の問題として読める<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [5]</span></h2><p>Tailscale は、拠点間の接続、開発環境へのアクセス、保守経路の構築といった用途で国内でも使われており、本件については日本語の注意喚起記事も出ています。</p>
+<p><strong>本記録として、日本の読者に向けた論点を1つに絞ります。</strong>本件の起点は「<strong>ポリシー上ログインを許可された1台の掌握</strong>」です。これは脆弱性の悪用ではなく、<strong>日常的に起きうる事象</strong>です——開発者の端末がマルウェアに当たる、CI のランナーが外部の依存を実行する、委託先の作業端末が持ち込まれる。</p>
+<p>そのうえで本件が示したのは、<strong>その1台から他のサーバの root に届きうるという主張</strong>です。つまり、<strong>tailnet に入れたデバイスの一覧が、そのまま「root を取れる候補の一覧」になりうる</strong>という読み方です（本記録の評価。研究者の主張に依拠しており、再現は未確認）。</p>
+<p>この読み方が正しければ、<strong>対策の軸は製品の修正を待つことではなく、「許可の粒度」に移ります。</strong> 研究者の推奨の中心が<strong>送信元と宛先の1対1の付与（per-pair grants）</strong>にあるのは、この理由です。タグ単位や利用者単位で広く付与していると、1台の掌握がその付与の範囲全体に効きます。</p>
+<p><strong>もう1つ、インシデント対応の手順に関わる指摘があります。</strong>研究者は、<strong>侵害されたノードの再イメージ化だけでは不十分で、コントロールプレーン側でデバイスを削除する必要がある</strong>としています。ノードキーが有効なまま残れば、再イメージ化した端末とは別に、鍵を持ち出した側が tailnet に残ります。<strong>これは本件の成否にかかわらず成り立つ運用上の論点です</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>**Tailscale 1.104.2**（tailscaled の Tailscale SSH サーバ（gliderssh ベース）・ serve/funnel・DERP クライアント・実験的機能の App Connector（conn25））、 および **headscale 0.29.5**（自己ホスト型のコントロールサーバ）。 **Tailscale のネットワークを経由して通常の SSH を使う場合は影響を受けない** （Shaver の説明）。**影響を受ける構成の特定は Tailscale 側で継続中。**</td></tr><tr><th>侵入経路</th><td>ポリシー上ログインを許可されたデバイス1台の掌握（脆弱性の悪用ではなく前提条件）</td></tr><tr><th>侵入経路の確度</th><td>報道による</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 転送が不要なら Tailscale SSH の転送機能を無効化する（Tailscale の案内。 通常の Tailscale SSH ログインには影響しない）　<b>副作用:</b> **転送を使っている経路が止まる**——リモート側のサービスへのトンネル、 ローカルへのポート転送に依存した運用（データベースへの接続、 管理画面への到達）が使えなくなる。 **headscale 0.29.5 では転送の無効化そのものができない**とされる。　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> SSH のアクセス規則を点検し、必要な人員と機器だけにログインを許す （Tailscale の案内）／送信元と宛先の1対1の付与にする（研究者の推奨）　<b>副作用:</b> **付与の数が増え、運用の手間が増える。** 1対1に割ると、人の異動・機器の入れ替えのたびに規則の更新が要る。 規則が追いつかないと、必要なアクセスが止まって業務に影響する。　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> SSH の再認証モード（check mode）を有効にする（Tailscale の案内）　<b>副作用:</b> **ログインのたびに追加の認証が入り、自動化された接続が壊れる。** 加えて、**これは防護を一段増やすだけで権限昇格そのものは解決しない** とされる——対策として数えると、効果を過大に見積もる。　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> Tailscale SSH と App Connectors を無効化する（研究者の推奨）　<b>副作用:</b> **Tailscale SSH に依存した接続経路が全面的に止まる。** Tailscale は**一律の無効化を勧めていない**（推奨策が食い違っている）。 代替の接続手段を用意せずに止めると、保守経路そのものを失う。　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> ノードキーに有効期限を設定し、TPM や Secure Enclave を使う（研究者の推奨）　<b>副作用:</b> **期限切れによる接続断が起きる。**無人で動く機器（サーバ・CI・IoT）では 期限切れが障害として現れるため、更新の運用を先に用意する必要がある。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 侵害されたノードは再イメージ化だけで済ませず、 コントロールプレーン側でデバイスを削除する（研究者の推奨）　<b>副作用:</b> **削除した機器の再登録が必要になり、復旧に時間がかかる。** 自動登録の仕組みを持たない環境では、手作業の再登録が発生する。　<b>出典:</b> 1</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**対象となった Tailscale 1.104.2 がリリースされた**（報道による）。 同じ日に Tailscale はセキュリティ公告 TS-2026-013（eMudhra の中間証明書の 秘密鍵漏えいに関するもので、本件とは別件）を公開しており、 その対応として 1.104.2 以降への更新を案内していた</td></tr><tr><td class="sm nowrap tw">2026年10月22日〜24日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**研究者のテスト期間。** レポートは「テスト期間: 2026-10-22 から 2026-10-24」と 記す。対象は Tailscale 1.104.2 と headscale 0.29.5 で、 **実際のネットワークへの攻撃ではなく研究室内の検証**であるとしている</td></tr><tr><td class="sm nowrap tw">公開前（具体的な日付は公表されていない）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**研究者は公開に先立ってレポートと PoC を Tailscale のセキュリティ窓口に 送ったとしているが、開示の時期は調整していない。** 「It was reported but not coordinated.」（報告はしたが調整はしていない／原文英語）。 **送付の日付は示されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**「Tailworm」レポートが公開された。** Tailscale 1.104.2 と headscale 0.29.5 に 対する11件の発見（Finding 1〜11）を、5つのクラスに分類して提示。 対象は tailscaled の Tailscale SSH サーバ（gliderssh ベース）、serve/funnel、 DERP クライアント、実験的機能の App Connector（conn25）、 headscale の自己ホスト型コントロールサーバである。 **PoC は公開されていない**</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Tailscale のエンジニアリング担当副社長 Mike Shaver が Reddit で応答した。** 報告を受け取っており、外部のセキュリティ専門家とともに同じ領域をすでに 検証していた、見つかった問題の修正に取り組んでいる、 影響を受ける構成の特定は継続中である、とした。 **初期の評価として、問題は主に「SSH 接続が認可された後」に生じるもので、 外部の攻撃者が未認可のまま任意のサーバにログインできるというものではない** と述べ、**全利用者に一律で Tailscale SSH を無効化することは勧めない** （「not recommending that everyone disable Tailscale SSH」／原文英語）とした</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Shaver は Reddit で、本件が Tailscale 内蔵の SSH サービスにのみ関わるもので、 Tailscale のネットワークを経由して通常の SSH を使う場合は影響を受けないことも 確認した**（報道による）</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Tailscale は管理者向けの緩和策として、SSH のアクセス規則を点検して必要な人員と 機器だけにログインを許すこと、転送が不要なら転送機能を無効化すること （通常の Tailscale SSH ログインには影響しない）を案内した。** **SSH の再認証モード（check mode）を有効にすると防護を一段増やせるが、 権限昇格そのものは解決しない**とされる</td></tr><tr><td class="sm nowrap tw">2026年10月25日ごろ</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Tailscale は `tailscale serve` に関する別の不具合の修正をマージしたと 報じられた。** ただし**マージされたコードは出荷された修正ではない** （報道の注記）</td></tr><tr><td class="sm nowrap tw">2026年10月25日〜26日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**開示の作法をめぐる議論が起きた。** 修正の提供前に詳細を公開したことを 無責任とする批判が出た一方、研究者は脆弱性をベンダーに通報済みであり、 双方で公開時期を調整していなかったと応答した。 Hacker News では、研究者が「Tailworm」の命名意図を説明した投稿が通報され 非表示になり、**従来の意味でのワーム化は考えにくいとするコメントも出た**</td></tr><tr><td class="sm nowrap tw">2026年10月26日（本記録の確認時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**Tailscale のセキュリティ公告一覧に本件の項目は無い。** 本記録が確認した時点での最新は **TS-2026-013（2026年10月21日・eMudhra の 中間証明書の秘密鍵漏えい）**、その前は TS-2026-012（10月13日・libtailscale が `SCM_RIGHTS` でファイルディスクリプタを受け渡す際に `tailscale_getremoteaddr` が別の接続のリモートアドレスを返す不具合）であった。 **「Tailworm」の語も一覧に見当たらず、CVE 番号も修正版も確認できなかった** （本記録の作成者による観測）</td></tr><tr><td class="sm nowrap tw">2026年10月26日時点</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**第三者による再現は確認されていない。** 11件の発見はいずれも研究者の レポートに依拠しており、**PoC は公開されていない。** 影響を受ける構成の特定も Tailscale 側で継続中である</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>研究者と Tailscale で、推奨する対処が食い違っている</span><div class=sm>**研究者は Tailscale SSH と App Connectors の無効化を勧め、 Tailscale は「全利用者に一律で Tailscale SSH を無効化することは勧めない」 （not recommending that everyone disable Tailscale SSH／原文英語）としている。** 前提の違いが背景にあると読める（本記録の読み取り）—— Shaver の初期評価は「問題は主に SSH 接続が認可された後に生じるもので、 外部の攻撃者が未認可のまま任意のサーバにログインできるというものではない」で、 攻撃の起点として「すでに許可された1台の掌握」を要するという整理である。 **本記録はどちらかを採らず、両方を併記する。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>11件の発見はいずれも研究者のレポートに依拠しており、再現が確認されていない</span><div class=sm>**PoC は公開されておらず、具体的な再現手順も公開ページには含まれていない。** 他の研究者による再現も確認されていない。 Hacker News では、**従来の意味でのワーム化は考えにくい**とするコメントも出た。 Tailscale は「報告を受け取り、外部のセキュリティ専門家とともに同じ領域を すでに検証していた」「見つかった問題の修正に取り組んでいる」と述べているが、 **研究者の個々の主張を是認したわけではなく、影響を受ける構成の特定も継続中** である。**本記録は、記述のすべてを「研究者の主張」として扱う。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>転送機能の既定値（既定で有効か）に、ベンダーの確認が取れていない</span><div class=sm>研究者は Hacker News の自身のコメントで**転送は既定で有効**だと述べたと 報じられているが、**本記録は Tailscale の文書・公告でこれを確認できていない。** 既定値は影響範囲の広さを左右する論点であるため、 **本記録は「既定で有効とされる」という留保付きの形でのみ記述する。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>ベンダーへの報告日が示されておらず、報告から公開までの日数が算出できない</span><div class=sm>研究者は公開前にレポートと PoC を Tailscale のセキュリティ窓口へ送ったと 述べているが、**日付を示していない。** Tailscale 側も受領日を公表していない。 **したがって、開示の作法を評価するための基本的な材料（何日の猶予があったか）が 存在しない。** 本記録は開示の作法そのものを評価しない。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>「Tailworm」という名称と、ワーム化の可能性の評価</span><div class=sm>**「Tailworm」はレポートの名称であって、ワーム化が実証されたことを示すものではない。** 研究者は、名称がワーム的な攻撃への関心に由来し、侵害された1台から他の許可済み ホストへ広がりうるという意味だと Hacker News で説明したが、 **その投稿は通報され非表示になった。** **本記録は、名称を事案の性質の記述として用いない。** 研究室内の検証で示されたのは、1台から他のホストの root に到達しうること （および認証鍵の取得）であり、自動的な拡散は示されていない。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>許可された1台から他サーバの root へ——転送処理が root 権限の tailscaled 内で動くという指摘</div><div class=svgwrap><svg viewBox="0 0 1202 284" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,142.0 C193.0,142.0 193.0,98.0 220,98.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,98.0 C295.0,98.0 295.0,186.0 220,186.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,186.0 C397.0,186.0 397.0,54.0 424,54.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,54.0 C499.0,54.0 499.0,142.0 424,142.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,142.0 C601.0,142.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C703.0,53.0 703.0,141.0 628,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C805.0,141.0 805.0,105.0 832,105.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C703.0,53.0 703.0,230.0 628,230.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,230.0 C805.0,230.0 805.0,186.0 832,186.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,230.0 C499.0,230.0 499.0,54.0 424,54.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,186.0 C1111.0,186.0 1111.0,91.0 1036,91.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,91.0 C805.0,91.0 805.0,54.0 424,54.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,186.0 C703.0,186.0 703.0,186.0 220,186.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="119.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者</text><rect x="220" y="61.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="83.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ポリシー上ログインを許可</text><text x="295.0" y="97.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されたデバイス1台</text><text x="295.0" y="110.0" text-anchor="middle" fill="#64b5f6" font-size="10">掌握が前提条件・脆弱性の</text><text x="295.0" y="122.0" text-anchor="middle" fill="#64b5f6" font-size="10">悪用ではない</text><rect x="220" y="149.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="171.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SSH のアクセス規則（</text><text x="295.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デバイスIDで評価）</text><text x="295.0" y="198.0" text-anchor="middle" fill="#f48fb1" font-size="10">利用者単位の認証を行わな</text><text x="295.0" y="210.0" text-anchor="middle" fill="#f48fb1" font-size="10">いという指摘</text><rect x="424" y="17.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="39.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SSH の転送機能（既定</text><text x="499.0" y="53.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で有効とされる）</text><text x="499.0" y="66.0" text-anchor="middle" fill="#f48fb1" font-size="10">一部の操作がログイン権限</text><text x="499.0" y="78.0" text-anchor="middle" fill="#f48fb1" font-size="10">で制限されていないという</text><rect x="424" y="105.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="127.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tailscaled（r</text><text x="499.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">oot 権限で動作）</text><text x="499.0" y="154.0" text-anchor="middle" fill="#f48fb1" font-size="10">転送処理がここで行われる</text><text x="499.0" y="166.0" text-anchor="middle" fill="#f48fb1" font-size="10">・パス検証と操作のあいだ</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">root 所有の Uni</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">x ソケット</text><text x="703.0" y="65.0" text-anchor="middle" fill="#f48fb1" font-size="10">到達および既存ソケットの</text><text x="703.0" y="77.0" text-anchor="middle" fill="#f48fb1" font-size="10">置き換えが報告された</text><rect x="628" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Docker の管理ソケ</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ット</text><text x="703.0" y="153.0" text-anchor="middle" fill="#f48fb1" font-size="10">研究室内でホストの ro</text><text x="703.0" y="165.0" text-anchor="middle" fill="#f48fb1" font-size="10">ot に到達・保護ファイ</text><rect x="832" y="68.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">他のサーバ（ポリシーで到</text><text x="907.0" y="104.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">達できる範囲）</text><text x="907.0" y="117.0" text-anchor="middle" fill="#64b5f6" font-size="10">最高管理権限の取得が指摘</text><text x="907.0" y="129.0" text-anchor="middle" fill="#64b5f6" font-size="10">された</text><rect x="628" y="192.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">localapi 経由の</text><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> authkey（デバイ</text><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ス追加用）</text><text x="703.0" y="255.0" text-anchor="middle" fill="#ffcc80" font-size="10">通信中の取得が報告された</text><rect x="832" y="156.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者が管理する機器</text><text x="907.0" y="191.0" text-anchor="middle" fill="#64b5f6" font-size="10">Tailnet Lock</text><text x="907.0" y="203.0" text-anchor="middle" fill="#64b5f6" font-size="10"> 無効の環境で参加・到達</text><rect x="1036" y="54.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="76.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Tailscale In</text><text x="1111.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">c.（提供者）</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#80cbc4" font-size="10">調査中・修正未公開・一律</text><text x="1111.0" y="115.0" text-anchor="middle" fill="#80cbc4" font-size="10">の SSH 無効化は勧め</text><rect x="1036" y="142.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="164.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Erica Windis</text><text x="1111.0" y="178.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ch（Cyberdion</text><text x="1111.0" y="192.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e Labs）</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#80cbc4" font-size="10">10/25 公開・報告は</text><text x="1111.0" y="217.0" text-anchor="middle" fill="#80cbc4" font-size="10">したが調整はしていない</text><rect x="424" y="193.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="215.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">headscale 0.</text><text x="499.0" y="229.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">29.5（自己ホスト型）</text><text x="499.0" y="242.0" text-anchor="middle" fill="#64b5f6" font-size="10">転送を無効化できず「SS</text><text x="499.0" y="254.0" text-anchor="middle" fill="#64b5f6" font-size="10">H 付与はすべて roo</text></svg></div><div class=fn>研究者のレポートによれば、Tailscale SSH は利用者単位の認証を行わずデバイスIDで ポリシーを評価するため、許可された1台を押さえた攻撃者はセッション中の転送機能を 使える。転送の処理は root 権限で動く tailscaled の内部で行われ、 パスの検証と実際の操作のあいだに競合（TOCTOU）があるため、 root 所有の Unix ソケットに到達できたとされる。 研究室内の検証では Docker の管理ソケット経由でホストの root に到達し、 localapi 経由でデバイス追加用の認証鍵を通信中に取得して、 Tailnet Lock が無効な環境で攻撃者の機器を同じネットワークに参加させたと報告された。 **修正・CVE・第三者による再現はいずれも本記録の確認時点で存在しない。**</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「許可されたデバイス1台の掌握」を、ありうる前提として扱う</div><div class=lw>本件の起点は脆弱性の悪用ではなく、**ポリシー上ログインを許可された1台を 押さえること**である。開発者の端末、CI のランナー、委託先の作業端末は 日常的に外部のコードを実行している。 **その1台が押さえられたときに何が起きるかを設計の前提に入れていないと、 本件のような指摘が出たときに影響範囲を自力で判断できない。**</div><div class=la><b>取るべき行動</b> **tailnet（あるいは同等の mesh VPN）に参加しているデバイスの一覧を出し、 「この1台が攻撃者の手に落ちたとき、どこまで届くか」を機器ごとに1行書く。** 書けない機器があれば、それが付与の粒度が粗い箇所である。 **一覧が「root を取れる候補の一覧」になっていないかで判断する。**</div></li><li><div class=lp>ベンダーと研究者で推奨策が食い違う局面の決め方を、あらかじめ持つ</div><div class=lw>本件では**研究者が Tailscale SSH の無効化を勧め、Tailscale は一律の 無効化を勧めないとしている。** CVE も修正も再現も無い状態で、 現場はどちらかに従う判断を迫られる。 **その場で合議を始めると、判断そのものが遅れる。**</div><div class=la><b>取るべき行動</b> **「ベンダーの評価と第三者の指摘が食い違ったときの決定者と判断軸」を 規程に1行で持つ。** 判断軸は自組織の構成に基づくものにする—— 本件なら「転送機能を実際に使っている経路があるか」。 **使っていなければベンダーの案内（転送の無効化）を副作用なく実行でき、 食い違いに巻き込まれない。**</div></li><li><div class=lp>調整されていない開示を前提に、情報が揃わないまま動く手順を持つ</div><div class=lw>本件は**調整開示の枠組みの外**で公開された。研究者は 「報告はしたが調整はしていない」と述べている。 **公開の時点で CVE 番号・影響範囲・修正版が揃うという前提が崩れる。** 手口の方向だけが先に出て、影響範囲と修正はあとから来る。</div><div class=la><b>取るべき行動</b> **脆弱性対応の手順に「CVE が無い・修正が無い・再現が無い」状態の 分岐を足す。** 最低限、①自組織が当該の機能を使っているかの確認手順、 ②使っている場合に止められるか／止めたら何が止まるかの評価、 ③ベンダーの公告一覧を定点観測する担当。 **「CVE が出てから」で始まる手順しか無い組織は、この種の公開に対応できない。**</div></li><li><div class=lp>製品のアクセス制御の「認可の単位」をベンダーに確認しておく</div><div class=lw>本件の指摘の核は、**Tailscale SSH が利用者単位の認証を行わず デバイスIDでポリシーを評価する**という点にある。 **認可の単位が「人」なのか「機器」なのかは、1台の掌握がどこまで効くかを決める。** 製品の選定時にこれを確認していないと、事後に影響範囲を見積もれない。</div><div class=la><b>取るべき行動</b> **保守・リモートアクセスに使っている製品について、 「認可の単位は人か機器か」「認可された後の操作はどの権限で動くか」を ベンダーの文書で確認し、記録に残す。** 文書に書かれていなければ問い合わせる。 **この2つが分かっていれば、同種の指摘が出たときに自力で影響を切れる。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>Tailscale SSH の転送を実際に使っている経路を棚卸しする</div><div class=lw>Tailscale の案内にある「転送が不要なら無効化する」は、 **使っていなければ副作用なく実行できる最も安い対策**である。 逆に、使っている経路を把握せずに無効化すると業務が止まる。 **棚卸しが対策の前提になる。**</div><div class=la><b>取るべき行動</b> **SSH のアクセス規則を出力し、転送を許可している付与を列挙する。** そのうえで、**実際に転送を使っている接続があるかを接続のログで確認する。** 使っていない付与から順に転送フラグを落とす。 **headscale 0.29.5 では転送の無効化ができないとされるため、 headscale 運用の環境は付与の削減のほうで対応する。**</div></li><li><div class=lp>SSH の付与を「送信元と宛先の1対1」に寄せる</div><div class=lw>研究者の推奨の中心がこれである。**タグ単位・利用者単位の広い付与は、 1台の掌握がその範囲の全体に効く。** 本件の成否が確定していなくても、付与の粒度を細かくすることは 他の侵害でも効く（本記録の評価）。</div><div class=la><b>取るべき行動</b> **広い付与（タグ→タグ、利用者→タグ）を洗い出し、 実際に発生している接続の組み合わせに置き換える。** 接続ログから「実際に使われた組み合わせ」を出し、 それだけを許可する形に寄せる。**使われていない付与は消す。**</div></li><li><div class=lp>root 相当のソケットを、転送で到達できる場所に置かない</div><div class=lw>研究室内の検証では **Docker の管理ソケット経由でホストの root に到達した** と報告されている。**Docker のソケットは触れれば root 相当であり、 到達できてしまえば昇格の工程は要らない。** これは Tailscale に限らない構成上の論点である。</div><div class=la><b>取るべき行動</b> **SSH でログインできるホストの上で、root 所有の Unix ソケットを列挙する** （`ss -xlp` 等）。Docker の管理ソケットがあれば、 **その到達をホスト内のアクセス制御（ファイル権限・名前空間・ rootless モード）でも絞る。** 「ネットワーク側で絞っているから大丈夫」という前提を外して確認する。</div></li><li><div class=lp>ノードキーの失効を、ホストの再構築とは別の操作として手順に書く</div><div class=lw>研究者は、**侵害されたノードの再イメージ化だけでは不十分で、 コントロールプレーン側でデバイスを削除する必要がある**としている。 **ノードキーが有効なまま残れば、再構築した端末とは別に、 鍵を持ち出した側が tailnet に残る。** これは本件の成否にかかわらず成り立つ（本記録の評価）。</div><div class=la><b>取るべき行動</b> **インシデント対応手順の「端末の初期化」の節に、 コントロールプレーン側でのデバイス削除を独立した手順として足す。** あわせて、**ノードキーに有効期限を設定しているかを確認する**—— 無期限であれば、失効は手動の削除だけが唯一の手段になる。</div></li><li><div class=lp>「防護を一段増やす」設定を、対策として数えない</div><div class=lw>Tailscale は **SSH の再認証モード（check mode）**で防護を一段増やせるとしつつ、 **権限昇格そのものは解決しない**と明言している。 **解決しない設定を対策表に「対応済み」と書くと、 残っているリスクが見えなくなる。**</div><div class=la><b>取るべき行動</b> **対策表の各行に「これで止まるのは何か／止まらないのは何か」を併記する。** 本件なら check mode は「認可の段階を厚くする」もので、 「認可された後の昇格」には効かない。 **効かない範囲が書かれていない対策表は、効果を過大に見積もる。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> mesh VPN のアクセス制御が、利用者単位ではなくデバイス単位で付与されている</td><td class=sm>本件の指摘の核がここにある。 認可の単位が機器であれば、1台の掌握がその付与の範囲全体に効く。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> SSH の付与がタグ単位・利用者単位で広く、送信元と宛先の1対1になっていない</td><td class=sm>研究者の推奨の中心が per-pair grants である。 広い付与は、1台の掌握をそのまま横展開に変える。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> SSH でログインできるホスト上に、root 所有の Unix ソケット（Docker 管理ソケット等）がある</td><td class=sm>研究室内の検証では Docker 管理ソケット経由でホストの root に到達したとされる。 到達できてしまえば昇格の工程は要らない。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Tailscale SSH の転送機能を使っている経路を把握していない</td><td class=sm>「転送が不要なら無効化する」はもっとも安い対策だが、 使っている経路を知らずに実行すると業務が止まる。把握が対策の前提になる。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 侵害端末の対応手順が「再イメージ化」で終わり、コントロールプレーン側のデバイス削除を含まない</td><td class=sm>ノードキーが有効なまま残れば、鍵を持ち出した側が tailnet に残る。 本件の成否にかかわらず成り立つ論点である。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性対応の手順が「CVE が発行されてから」で始まる</td><td class=sm>本件は CVE も公告も修正も無い状態で詳細が公開された。 CVE を起点にする手順しか無いと、この種の公開に対応できない。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月26日（本記録の確認時点） Tailscale Inc.</span> <a href="https://tailscale.com/security-bulletins" target="_blank" rel="noreferrer noopener nofollow">Security Bulletins</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(**本記録の確認時点で、本件に対応する項目が無いことを確認した資料。** 最新は **TS-2026-013（2026年10月21日）**——eMudhra Limited が所有する TLS 中間証明書8件の秘密鍵が漏えいした問題で、ホストの証明書ストアに これらが残っている端末が影響を受け、対応は v1.104.2 以降への更新。 その前は **TS-2026-012（10月13日）**——libtailscale が `SCM_RIGHTS` で ファイルディスクリプタを受け渡す際に `tailscale_getremoteaddr` が 別の接続のリモートアドレスを返す不具合で、修正は libtailscale 0.2.0 以降。 **Tailscale SSH の転送に関する項目、および「Tailworm」の語は 一覧に見当たらなかった)）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月（テスト期間 2026-10-22〜24） Erica Windisch（Cyberdione Labs Corporation）</span> <a href="https://tailworm.com/" target="_blank" rel="noreferrer noopener nofollow">Tailworm</a> <span class="b kind">調査レポート</span><span class=sm>（(本件の一次資料（指摘の側）。 **①対象は Tailscale v1.104.2 と headscale v0.29.5、テスト期間は2026-10-22〜24、 ②番号付きの発見は11件（Finding 1〜11・内部ラベル T1〜T3／C1〜C4／F-1〜F-5）で 5つのクラスに分類、Finding 6 には複数の問題を含む、 ③対象は tailscaled の Tailscale SSH サーバ（gliderssh ベース）・serve/funnel・ DERP クライアント・実験的機能の App Connector（conn25）・headscale、 ④Tailscale SSH は利用者単位の認証を行わずデバイスIDでポリシーを評価する、 ⑤転送処理は root で動く tailscaled 内で行われ、パス検証と操作のあいだに 競合（TOCTOU）がある、⑥`ssh -L`/`ssh -R` で root 所有の Unix ソケットに到達でき 既存ソケットの置き換えも可能だった、 ⑦「the allowlist is not a security boundary」（許可リストはセキュリティ境界では ない／原文英語）、⑧Docker ソケットに関してラボでホストの root に到達、 ⑨ソケット乗っ取りにより localapi 経由の authkey を通信中に取得し、 Tailnet Lock 無効の環境でラボ内の不正ノードがテナントに参加、 ⑩Tailnet Lock 有効時については 「the TKA disable-secret and signer-key material were captured in transit」 としつつ実際の無効化は実行していない、 ⑪緩和策（per-pair grants・転送フラグの個別拒否・headscale 0.29.5 では 転送を無効化できず「treat every headscale SSH grant as root-equivalent」・ ノードキーの期限と TPM／Secure Enclave・App Connector の権限制限と 宛先の許可リストと Kubernetes の default-deny egress・ 再イメージ化では不十分でコントロールプレーンでのデバイス削除が必要・ headscale のメモリ上限と再起動の監視と登録のレート制限）を確認した。 **ベンダーへの通知日・修正の有無・PoC はこのページには含まれていない。** **具体的な再現手順も含まれていない)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月26日 14:40 UTC iThome Security（台湾）</span> <a href="https://www.ithome.com.tw/news/179953" target="_blank" rel="noreferrer noopener nofollow">Tailscale SSH轉送功能遭揭權限提升漏洞，一般帳號恐取得伺服器最高權限</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事。 **①Tailscale 1.104.2 での検証、②SSH 接続を処理する背後のサービスが 最高システム権限を持ち一部の転送操作がログイン権限で制限されていないこと、 ③転送で Docker コンテナ管理サービスに接続して高権限のコマンドを実行し 保護されたシステムファイルを読み出したこと、 ④Tailnet Lock 未有効の検証環境でデバイス追加用の鍵を取得し攻撃者の機器を 同じネットワークに参加させたが、到達できる範囲は既存の権限設定で制限されること、 ⑤Mike Shaver（エンジニアリング担当副社長）の10月25日の応答—— 問題は主に SSH 接続が認可された後に生じ、外部の攻撃者が未認可のまま任意の サーバにログインできるものではない、影響を受ける設定を確認中で修正を準備中、 ⑥Tailscale の案内——SSH アクセス規則の点検、転送が不要なら無効化 （通常の Tailscale SSH ログインには影響しない）、check mode は防護を一段 増やすが権限昇格は解決しない、 ⑦Reddit での確認——本件は内蔵の SSH サービスにのみ関わり、Tailscale 経由で 通常の SSH を使う場合は影響しない、 ⑧「Tailworm」の命名意図の説明が Hacker News で通報され非表示になったこと、 ⑨修正前の詳細公開への批判と研究者の応答を確認した)）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月25日 Hacker News（news.ycombinator.com）</span> <a href="https://news.ycombinator.com/item?id=50227138" target="_blank" rel="noreferrer noopener nofollow">Tailworm（スレッド）</a> <span class="b kind">SNS投稿</span><span class=sm>（(開示の経緯を確認した資料。 **研究者本人（ewindisch）の「It was reported but not coordinated.」 （報告はしたが調整はしていない／原文英語）を確認した。** これは security@tailscale.com に連絡しなかったという指摘への返信である。 **研究者の最上位コメントは [flagged] 表示で本文が読めない状態であった。** Tailscale 側として読めるのは「tailscalar here」と名乗る投稿者の netmap trimming に関する説明と「we will have more details to follow」であり、 **Mike Shaver 本人の発言はこのページには見当たらない** （別の投稿者が Reddit 上の返信へのリンクを載せている）。 Tailnet Lock は別の投稿者が緩和策となりうる設定として言及している。 **報告日・対象バージョン・転送の既定値はこのページでは確認できなかった)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月（日付は本記録では特定していない） note.com（zephel01）</span> <a href="https://note.com/zephel01/n/nd4dde642b9d2" target="_blank" rel="noreferrer noopener nofollow">Tailscale はデフォルト設定で使うな——Tailworm の真相を待つあいだに何をすべきか（原題: Don&#x27;t use Tailscale with default settings—What to do while waiting for the truth about Tailworm）</a> <span class="b kind">ブログ</span><span class=sm>（(**日本語でも注意喚起が出ていることの確認に用いた資料。** 本記録は本文の主張を事実の根拠としては用いていない—— **個人の記事であり、研究者のレポートやベンダーの応答に対する一次的な裏付けには ならない。** 国内でも本件が読まれている事実の裏付けとしてのみ参照した)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月26日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月26日の日次ニュース（iThome Security・台湾）を起点に、 **一次資料にあたる研究者のレポート（tailworm.com）と、 Tailscale のセキュリティ公告一覧（tailscale.com/security-bulletins）、 および Hacker News のスレッドを取得して裏取りした。**
+**一次公表の確認でわかったこと。** **①Tailscale のセキュリティ公告一覧に本件の項目は無く、本記録の確認時点の 最新は TS-2026-013（2026年10月21日・eMudhra の中間証明書の件）であった。** CVE 番号も修正版も確認できなかった。 **②研究者のレポートには、ベンダーへの通知日・修正の有無・PoC・ 具体的な再現手順のいずれも含まれていない。** **③Hacker News では研究者本人の「It was reported but not coordinated.」を 確認できたが、Mike Shaver 本人の発言は同スレッドには見当たらず （Reddit 上の返信へのリンクのみ）、Shaver の発言は報道を経由した引用として 扱った。**
+**事実と評価の分け方。** 11件という発見の件数、対象バージョン、 転送処理が root 権限の tailscaled 内で動くという記述、Docker 管理ソケット経由で ホストの root に到達したという検証結果、authkey の取得と Tailnet Lock の扱い、 研究者の緩和策、Tailscale の案内（規則の点検・転送の無効化・check mode の限界・ 一律の無効化は勧めない）、Shaver の初期評価は **すべて出典の記述**として置いた。 **ただし、これらは「研究者の主張」と「ベンダーの応答」であって、 第三者が検証した事実ではない**——この留保を discrepancies と本文の両方に明記した。
+**本記録の評価として置いたのは次の5点である。** ①推奨策の食い違いが「許可された1台の掌握をどれだけありうることとして扱うか」 という前提の違いに由来すると読めること、②未修正・CVE 未発行・再現未確認の 3つが重なるため「深刻度を確定させてから動く」進め方が取れないこと、 ③転送を使っていない組織にとっては転送の無効化が副作用なく実行できる 最も安い対策であり、食い違いに巻き込まれずに済むこと、 ④調整されていない開示は手口の方向だけが先に出るため攻撃側と防御側で 使える情報が非対称になること、⑤ノードキーの失効をホストの再構築とは別の 操作として持つべきという点は本件の成否にかかわらず成り立つこと。
+**推定しなかったこと。** 影響を受ける構成の範囲、転送機能の既定値 （研究者の発言として報じられているが Tailscale の文書では確認できていない）、 実環境での悪用の有無、報告から公開までの日数、ワーム化の可能性。 **「Tailworm」という名称を事案の性質の記述として用いないことも決めた**—— 名称はレポートの題であって、自動的な拡散が実証されたわけではない。
+**japan_relevance を domestic-impact とした理由。** Tailscale は国内でも 拠点間接続・開発環境・保守経路に使われており、日本語の注意喚起記事も出ている。 **ただし国内の具体的な被害は確認していない**—— 当てはまるのは「影響を受けうる利用がある」という段階である。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Tailscale</span><span class="b tag">Tailscale SSH</span><span class="b tag">tailscaled</span><span class="b tag">headscale</span><span class="b tag">Tailworm</span><span class="b tag">Cyberdione Labs</span><span class="b tag">Erica Windisch</span><span class="b tag">権限昇格</span><span class="b tag">SSH転送</span><span class="b tag">ポートフォワーディング</span><span class="b tag">Unixソケット</span><span class="b tag">Dockerソケット</span><span class="b tag">TOCTOU</span><span class="b tag">Tailnet Lock</span><span class="b tag">authkey</span><span class="b tag">App Connector</span><span class="b tag">mesh VPN</span><span class="b tag">未修正</span><span class="b tag">CVE未発行</span><span class="b tag">調整されていない開示</span><span class="b tag">再現未確認</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-26 17:45 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
