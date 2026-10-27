@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Cloudflare Workers AI でKV混入 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0717</span>Cloudflare Workers AI でKV混入</h1>
+<header class="site-header">
+  <p class="subtitle">Cloudflare Workers AI の GLM-5.3 で、681,280トークンを超える長いプロンプトへの 応答155件に他の顧客の推論データが混入していた—— KVキャッシュプールの容量と公称コンテキスト長の不一致と、 SGLang の「拒否したはずのリクエストが生き残る」不具合が重なった</p>
+  <div><span class="b type">意図せぬ露出（設定不備等で外部から到達可能だった）</span><span class="b type2">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設定不備</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月26日（Cloudflare による公表日）</span>
+  <span>最終更新: 2026年10月27日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>Cloudflare は2026年10月26日、Workers AI で提供する GLM-5.3（<code>@cf/zai-org/glm-5.3</code>）にテナント分離の不具合があり、2026年8月27日から9月9日までの間、一部の応答に「直前に同じモデルへ送られた他の顧客のリクエストのデータ」が含まれていたと公表した</strong>（出典1）。<strong>影響を受けた応答は155件で、いずれも 681,280トークンを超える長さのプロンプトに対するものだった</strong>（出典1）。</p>
+<p><strong>この事案が読む価値を持つのは、原因が「攻撃」ではないからである</strong>（本記録の評価）。侵入も認証の突破も起きていない。起きたのは、<strong>GPU メモリ上の KVキャッシュのページが、前のリクエストの内容を保持したまま次のリクエストの注意（attention）に読まれた</strong>ことである（出典1）。<strong>推論エンジンは性能のためにページをゼロ化しない</strong>—— <strong>その前提の上で、ページの所有権を追う責任はエンジン側にある</strong>（出典1）。</p>
+<p><strong>公表は、外部研究者の報告から47日後に、上流の SGLang と協調して行われた</strong>（出典1）。封じ込め自体は速い。<strong>インシデント宣言から40分以内にモデルを非公開にし、同日中に復旧している</strong>（出典1）。<strong>一方で、影響を受けた顧客への個別通知の有無、混入したデータの内容、影響を受けた顧客の数は、いずれも公表文に書かれていない</strong>〈未確定1〉〈未確定2〉〈未確定4〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>影響を受けた顧客への個別通知の有無・時期・方法</span><span class="b rsn">公表されていない</span><div class=sm>**公表文には、顧客への通知に関する記述が一切ない**（本記録の確認）。 **155件という確定した件数を持っているということは、 どのリクエストが影響を受けたかを特定できているという意味である**（本記録の評価）〈重要〉 ——**特定できているのに通知に触れていないため、 「通知したが書かなかった」のか「通知していない」のかが読者には分からない。** **共有型の推論基盤を使う側にとっては、 「自分のプロンプトが他人に渡ったとき、提供者から知らされるのか」が 契約上の論点になる**（本記録の評価）。</div></li><li><span class=ui>混入したデータの内容・種類（プロンプト本文か、生成途中の出力か、どの程度の量か）</span><span class="b rsn">公表されていない</span><div class=sm>**公表文の技術的な説明からは、 予約された8ページのうち1ページだけが当該リクエストのもので、 残りが「以前のリクエストが残したもの——他の利用者のプロンプトと生成の一部」 （出典1。訳は本記録）だったことまでは分かる**（出典1）。 **しかし155件の応答に実際に何が現れたのかは示されていない**（本記録の確認）。 **GLM-5.3 は「エージェント的なコーディング作業のために作られた」モデルである**（出典1） ——**長いプロンプトの中身がソースコードや社内資料である可能性は高いが、 これは本記録の推測であり、公表資料は触れていない。**</div></li><li><span class=ui>155件の中に日本の利用者のリクエストが含まれていたか</span><span class="b rsn">公表されていない</span><div class=sm>**顧客の所在地・地域の内訳は公表されていない**（本記録の確認）。 **Workers AI は地域を限らず提供されるため、 国内の利用者が含まれていた可能性を否定する材料も、肯定する材料も無い**（本記録の評価）。</div></li><li><span class=ui>影響を受けた顧客の数</span><span class="b rsn">公表されていない</span><div class=sm>**「a small number of customers」（少数の顧客）という表現のみである**（出典1）。 **応答の件数（155件）は確定値で出ているのに、顧客数は出ていない**（本記録の確認） ——**1顧客が複数の長文プロンプトを送っていれば、顧客数は155よりはるかに小さくなる。**</div></li><li><span class=ui>露出したデータが Cloudflare 側のログや保存領域に残っていたか</span><span class="b rsn">公表されていない</span><div class=sm>**応答の内容が保存・記録されていたかについて、公表文は何も述べていない**（本記録の確認）。 **155件を特定できた根拠（リクエストのメタデータか、応答本体か）も示されていない** （本記録の評価）〈重要〉 ——**ここが分からないと、影響を受けた顧客が 「何が漏れたか」を提供者に照会できるのかも判断できない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Cloudflare, Inc.</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GLM-5.3 を長いプロンプトで利用していた Workers AI の顧客（人数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>SGLang プロジェクト</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Knostic（研究者 Gadi Evron）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Z.ai（GLM-5.3 の開発元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>他の顧客のデータが含まれていた応答の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>155<span class=fu>件</span></div><div class=fn>**「In total, 155 responses were affected, all to prompts longer than 681,280 tokens.」（合計155件の応答が影響を受けた。いずれも 681,280トークンを 超えるプロンプトに対するものである）**（出典1。原文英語。訳は本記録）。 **これは「混入した側の応答の数」であり、 「データを混入させられた顧客の数」でも「混入したデータの件数」でもない** （本記録の明示）〈重要〉。 **Cloudflare 自身の検証分と研究者の分を除いた後の数である**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>プリフィル側 KVキャッシュプールの容量（事案発生時）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>681,280<span class=fu>トークン</span></div><div class=fn>**SGLang はこのプールの大きさを設定値として取らず、 モデルの重みを読み込んだ後に残った GPU メモリから起動時に決める**（出典1）〈重要〉 ——**公称のコンテキスト長とは別の設定値であり、両者を一致させる仕組みは無い。** **「それを確認するのは我々の仕事である」と Cloudflare は書いている**（出典1。訳は本記録）。 **値は起動時のログに出力され、メトリクスとしても公開されていた**（出典1） ——**見えていたが、見ていなかった**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>GLM-5.3 の公称コンテキスト長</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1,048,576<span class=fu>トークン</span></div><div class=fn>**プールの 681,280トークンを超えるプロンプトは、 仕様上は受け付けられるのに物理的には載らなかった**（出典1） ——**この差（367,296トークン）が、本件の影響条件そのものである**（本記録の算出）。</div></div><div class=fig><div class=fh><span class=fl>修正後のプリフィル側 KVプール容量</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>2,040,000<span class=fu>トークン</span></div><div class=fn>**「about 2.04 million tokens, roughly twice the 1,048,576-token context length」 （約204万トークン。1,048,576トークンのコンテキスト長のおよそ2倍）** （出典1。原文英語。訳は本記録）。 **GLM-5.2 と同じ設定に合わせることで GPU メモリが空き、この容量が得られた**（出典1）。 **コンテキストに収まるプロンプトは必ずプールにも収まるため、 拒否の経路に入らない**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>露出が続いた日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>13<span class=fu>日</span></div><div class=fn>**2026年8月27日（公開＝露出の開始）から9月9日（復旧＝露出の解消）までの暦日差である** （本記録の算出）。 **Cloudflare 自身も「the exposure window ran from August 27 to September 9」 （露出の窓は8月27日から9月9日まで続いた）と書いている**（出典1。訳は本記録）。</div></div><div class=fig><div class=fh><span class=fl>インシデント宣言からモデル非公開までの時間</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>38<span class=fu>分</span></div><div class=fn>**13時22分（宣言）から14時00分（非公開）までの差である**（本記録の算出）。 **公表文の本文は「took the model offline within 40 minutes of declaring an incident」 （インシデント宣言から40分以内にモデルをオフラインにした）と丸めて書いている** （出典1。訳は本記録）——**時刻表と矛盾しない。**</div></div><div class=fig><div class=fh><span class=fl>インシデント宣言から公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>47<span class=fu>日</span></div><div class=fn>**2026年9月9日（インシデント宣言）から10月26日（公表）までの暦日差である** （本記録の算出）。 **この47日の内訳として公表文が示すのは、 上流 SGLang への修正の反映（9月16日〜10月12日）と v0.5.21（10月2日）・v0.5.22（10月19日）の公開である**（出典1） ——**修正が利用可能になるまで待って協調開示した形である**（本記録の整理）。 **ただし、顧客への個別通知をこの47日のどこで行ったか（行ったか否かも）は 書かれていない**〈未確定1〉。</div></div></div></div>
+<div class="blk " id="s4"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>露出の開始から外部報告まで</div><div class=mv>**12日**（本記録の算出）。 **2026年8月27日の公開から、9月8日23時11分（UTC）の HackerOne 報告まで**（出典1）。 **この12日間、Cloudflare 側の監視では気づいていない**（本記録の評価）〈重要〉 ——**気づいた主体は外部の研究者である。**</div></div><div class=met><div class=ml>インシデント宣言から封じ込め（モデル非公開）まで</div><div class=mv>**38分**（本記録の算出）。 **9月9日13時22分の宣言から14時00分の非公開まで**（出典1）。 **宣言の前に、2アカウントを使った再現が25分で済んでいる**（出典1） ——**「再現できる」ところまで研究者が持ってきていたことが効いている**（本記録の評価）。</div></div><div class=met><div class=ml>サービス停止から復旧まで</div><div class=mv>**5時間40分**（本記録の算出）。 **9月9日14時00分の非公開から19時40分の公開再開まで**（出典1） ——**設定の入れ替え（14時52分）、パッチ適用済み構成での再構築（19時04分）、 研究者の再現スクリプトと自前のカナリアマーカー試験による検証を経ている**（出典1）。</div></div><div class=met><div class=ml>インシデント宣言から公表まで</div><div class=mv>**47日**（本記録の算出）。 **9月9日の宣言から10月26日の公表まで**（出典1） ——**上流 SGLang の修正が v0.5.21（10月2日）・v0.5.22（10月19日）として 出るのを待ち、協調開示している**（出典1）。</div></div><div class=met><div class=ml>検知から顧客への通知まで</div><div class=mv>**測れない。** **通知に関する記述が公表文に無い**〈未確定1〉 ——**155件を特定できている一方で、 その顧客に伝えたかどうかが書かれていない**（本記録の確認）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>再現の直後にモデルを非公開へ切り替え、リクエストに HTTP 400 を返した（38分）</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 止めれば、そのモデルを使っている顧客の処理はすべて失敗する。 止めなければ、長文プロンプトを送る顧客のデータが他テナントへ流れ続ける</div></li><li><div class=ui>インシデントから47日後に、上流の SGLang と同日公開する協調開示を選んだ</div><div class=fn><b>トレードオフ:</b> 修正版が出るまで待てば、同じエンジンを使う他の事業者が 修正を適用した状態で読める。待てば、影響を受けた顧客が自分の露出を 知るのは47日後になる</div></li><li><div class=ui>件数（155件）・しきい値（681,280トークン）・原因の両方・ 上流の PR 番号・未完了の対策まで書いた</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 不具合の成立条件をここまで書けば、同種の構成を持つ事業者は自分の配備を 点検できる。一方、「自社は不一致を公開前から知っていた」と明記することは、 過失を自ら文書に残すことになる</div></li></ul></div>
+<section id="s5"><h2>攻撃は無い。正規のリクエストが、他人のメモリを読んだ<span class="b slot">原因・手口</span></h2><p>この事案には侵入者がいない（本記録の整理）。起きたことは、<strong>推論基盤の内部でメモリのページの持ち主が入れ替わった</strong>ことである。</p>
+<p>前提を2つ押さえる（出典1）。</p>
+<ol>
+<li><strong>KVキャッシュは固定サイズのページを持つ共有プールである。</strong>リクエストは受付時にページを割り当てられ、終了時に解放する。<strong>ページは解放時にゼロ化されない</strong>——次に使うリクエストが上書きするだけである。これは性能のために推論エンジンで一般的な設計であり、<strong>その代わりにページの所有権と寿命を追う責任がエンジン側に生じる。</strong></li>
+<li><strong>分離（disaggregated）構成では、プリフィル用 GPU とデコード用 GPU が分かれている。</strong>プリフィルがプロンプトから KVキャッシュを作り、Mooncake 経由の RDMA でデコードへ渡す。<strong>このときページの所有権は、ノードをまたいで共有される。</strong></li>
+</ol>
+<p>ここに2つの不備が重なった（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>内容</th>
+<th>単独では</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>設定</td>
+<td>プール 681,280トークン ＜ 公称コンテキスト長 1,048,576トークン</td>
+<td>超過分はエラーで返るはずだった</td>
+</tr>
+<tr>
+<td>エンジン</td>
+<td>拒否されたリクエストが受付キューを通過する</td>
+<td>有効なリクエストは拒否されないので到達しない</td>
+</tr>
+</tbody>
+</table>
+<p><strong>成立の経路はこうである</strong>（出典1。表は本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>段階</th>
+<th>起きたこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ブートストラップ</td>
+<td>ルータがデコードへプロンプト長を伝え、デコードが8ページを予約</td>
+</tr>
+<tr>
+<td>プリフィル受付</td>
+<td><code>req.finished()</code> が False なので、<strong>拒否済みのリクエストが受け付けられる</strong></td>
+</tr>
+<tr>
+<td>プリフィル実行</td>
+<td>プロンプトは既に1トークンのプレースホルダに差し替わっており、自明な順伝播が走る</td>
+</tr>
+<tr>
+<td>KV転送</td>
+<td><strong>1ページ分の KV だけを送り、「転送完了」を通知する</strong></td>
+</tr>
+<tr>
+<td>デコード受付</td>
+<td>同じ <code>finished()</code> 判定なので、受け渡しを受理する</td>
+</tr>
+<tr>
+<td>デコードの注意</td>
+<td><strong>予約済みの8ページすべてを読む。P0 以外は前のリクエストの中身</strong></td>
+</tr>
+<tr>
+<td>応答</td>
+<td>HTTP 400 ではなく <strong>HTTP 200</strong>。<code>prompt_tokens</code> は長いプロンプトと一致し、文章は自然</td>
+</tr>
+</tbody>
+</table>
+<p><strong>最後の行が、この事案のいちばん重い部分である</strong>（本記録の評価）〈重要〉。<strong>応答は「壊れた出力」として現れなかった。</strong> HTTP は 200 で、トークン数は整合し、文章は読める形をしていた。<strong>違っていたのは中身の持ち主だけである。</strong></p>
+<p>Cloudflare は、プールの大きさが設定値ではないことも明記している（出典1）。</p>
+<blockquote>
+<p>「SGLang はこのプールの大きさを、モデルの重みを読み込んだ後に残った GPU メモリから起動時に決める。モデルの公称コンテキスト長は別の設定値である。両者を一致させる仕組みは無く、一致を確認するのは我々の仕事である」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>「一致させる仕組みが無い」ことが、この構成の既定の状態である</strong>（本記録の評価）——<strong>同じエンジンを同じ構成で使う配備は、同じ前提の上にある。</strong></p></section>
+<section id="s6"><h2>検証は通っていた——HTTP 200 とトークン数の整合を見ていたため<span class="b slot">発覚の端緒</span></h2><p>公開前の検証について、Cloudflare は次のように書いている（出典1）。</p>
+<blockquote>
+<p>「公開前の試験では、長文のベンチマークにおいて成功を示す HTTP ステータスコードと、エラーフレームを含まないストリーミング本体を観測した。エンジンが、KVキャッシュのプールと要求されたコンテキスト窓の差を、ストリーミングか何らかの仕組みで穏当に処理できるものと想定した」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>この想定は、観測によって裏付けられていた</strong>（本記録の整理）。不一致は認識されていた。長文の試験は成功していた。<strong>したがって「エンジンが何とかしている」と読むことに矛盾は無かった。</strong></p>
+<p>矛盾が無かった理由は、<strong>検証項目の選び方</strong>にある（出典1）。</p>
+<ul>
+<li>見ていた: HTTP のステータスコード、エンジンの性能（スループット・遅延）</li>
+<li>見ていなかった: <strong>モデルの出力内容とその一貫性</strong></li>
+</ul>
+<p><strong>本件の不具合は、見ていた項目すべてで「正常」を返す</strong>（本記録の評価）〈重要〉。ステータスは 200、<code>prompt_tokens</code> は長いプロンプトと一致、しかも<strong>8ページ分のプリフィルにかかるはずの時間よりも応答が速い</strong>（出典1）——<strong>速いことは、性能の指標としては「良い」と読める。</strong></p>
+<p>対策として Cloudflare が挙げているのは、検証の追加ではなく<strong>検証の対象の変更</strong>である（出典1）。</p>
+<blockquote>
+<p>「いまは、稼働中のエンジンから KVプールの大きさを取得し、コンテキスト長と直接突き合わせている。応答コードから推測することはしない」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>ここが、自前で推論基盤を運用する国内の読者にそのまま移せる部分である</strong>（本記録の評価）。<strong>「エラーが返らないこと」を正常の根拠に使うと、本件のように『正常に見える誤り』は検証を通過する。</strong></p></section>
+<section id="s7"><h2>同じ不具合は3か月前に報告されていた——上流の課題管理が、自社配備の前提になる<span class="b slot">背景・過去事例</span></h2><p>時間の並びを置く（出典1。整理は本記録）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年7月6日</td>
+<td><strong>別の利用者が同じ不具合を SGLang の issue #30233 として報告</strong></td>
+</tr>
+<tr>
+<td>2026年8月27日</td>
+<td>Cloudflare が GLM-5.3 を公開（露出の開始）</td>
+</tr>
+<tr>
+<td>2026年9月6日</td>
+<td>関連する失敗経路の修正が SGLang の main に入る（#36988。未リリース）</td>
+</tr>
+<tr>
+<td>2026年9月8日</td>
+<td>研究者が Cloudflare へ報告</td>
+</tr>
+<tr>
+<td>2026年9月9日</td>
+<td>Cloudflare が<strong>調査中に #30233 の存在に気づく</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cloudflare は、v0.5.10 の頃からこの種の問題を SGLang へ申し送っていたとしている</strong>（出典1）。<strong>つまり「この領域が危ういこと」は認識の外ではなかった</strong>（本記録の整理）。それでも、<strong>3か月前に公開されていた同一の報告には当たっていない。</strong></p>
+<p><strong>本記録はこれを個別の見落としとして扱わない</strong>（本記録の評価）〈重要〉。オープンソースの推論エンジンを本番に置く構成では、<strong>上流の課題管理が自社の脆弱性情報源の一部になる。</strong>ところが、CVE が割り当てられない不具合は、<strong>脆弱性管理の仕組みには乗ってこない</strong>（本記録の評価）——<strong>#30233 には CVE 番号が無い。</strong></p>
+<p>読者が持ち帰れる問いは「自社が本番で使っている推論エンジン・ベクトルDB・エージェント基盤の issue を、誰が定期的に読んでいるか」である（本記録の提案）。</p></section>
+<section id="s8"><h2>155件は特定できている。それでも、通知のことは書かれていない<span class="b slot">未確定事項</span></h2><p>公表文には、<strong>顧客への通知に関する記述が無い</strong>（本記録の確認）〈未確定1〉。</p>
+<p>これを「書き忘れ」として読み流せない理由がある（本記録の評価）。</p>
+<ul>
+<li><strong>155件という確定値が出ている</strong>（出典1）——<strong>どのリクエストが影響を受けたかを特定できているという意味である。</strong></li>
+<li><strong>しきい値（681,280トークン）も出ている</strong> ——<strong>影響範囲の判定基準が明示されている。</strong></li>
+<li><strong>自社の検証分と研究者の分を除外した後の数である</strong>（出典1）——<strong>個々のリクエストの属性まで見分けられている。</strong></li>
+</ul>
+<p><strong>特定できているのに通知に触れていないため、読者には区別がつかない</strong>（本記録の評価）。</p>
+<ol>
+<li>通知したが、公表文には書かなかった</li>
+<li>通知していない</li>
+</ol>
+<p>併せて、<strong>混入したデータの内容も公表されていない</strong>〈未確定2〉。分かっているのは、<strong>予約された8ページのうち7ページに「他の利用者のプロンプトと生成の一部」が残っていた</strong>という構造の説明だけである（出典1）。</p>
+<p><strong>共有型の推論基盤を使う側にとって、ここは契約の論点になる</strong>（本記録の評価）〈重要〉。テナント分離が壊れたとき、<strong>提供者は「誰に何が渡ったか」を教えてくれるのか。</strong>本件は、<strong>教えられる状態にありながら、公表文では何も約束していない</strong>事例として記録に残る。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>**Cloudflare Workers AI 上の GLM-5.3（`@cf/zai-org/glm-5.3`）のみ**（出典1）。 **「We have confirmed that no other model hosted on Workers AI was affected.」 （Workers AI で提供する他のモデルに影響が無いことを確認した）** （出典1。原文英語。訳は本記録）。 構成は SGLang の分離（disaggregated）配備で、 **プリフィル用 GPU 群がプロンプトを処理して KVキャッシュを作り、 それを Mooncake 経由の RDMA でデコード用 GPU 群へ引き渡す**（出典1）。</td></tr><tr><th>直接原因</th><td>**2つの不備の重なりである**（出典1）。 ①**設定**: プリフィル側の KVプールが 681,280トークン、公称コンテキスト長が 1,048,576トークンで一致していなかった。 ②**エンジン**: プールに収まらないプロンプトを SGLang のスケジューラは拒否し、 `Req.set_finish_with_abort` でクライアントへ返すエラーを記録したうえで プロンプトを1トークンのプレースホルダに差し替える。 **ところが拒否は `to_finish` に入り `finished_reason` には入らないため、 `finished()` は False を返し続けた**（出典1） ——**プリフィルとデコードの受付キューはいずれも `finished()` しか見ていなかったので、 拒否されたリクエストが「生きている」として受け付けられた。** 結果、**プリフィルは1トークン分の KV だけを作って「転送完了」を通知し、 デコードは予約済みの8ページすべてを読んで応答を生成した**（出典1） ——**P0 以外のページには、前のリクエストの内容が残っていた。** **単一ノード構成ではプレースホルダがそのまま流れてクライアントにエラーが返るため、 この不具合は分離構成でのみ顕在化した**（出典1）。</td></tr><tr><th>露出期間</th><td><b>開始:</b> 2026年8月27日（GLM-5.3 の公開日）　<b>終了:</b> 2026年9月9日 19時40分 UTC（モデルの公開再開）　<b>解消:</b> はい　<b>解消（補足）:</b> **露出そのものは解消している**（本記録の評価）。 **プールを公称コンテキスト長の約2倍（約204万トークン）に拡大したため、 有効なリクエストで拒否の経路に入ることがなくなり、 さらにエンジン側でも拒否済みリクエストを転送の前に退場させるよう修正された**（出典1）。 **ただし「同種の不具合が他に無い」ことまでは示されていない**（本記録の評価） ——**Cloudflare 自身が「プールの大きさだけに頼るのは脆い。 量子化・テンソル並列・CUDAグラフのサイズ・将来のモデル版の変更で プールの大きさは容易に変わる」と書いている**（出典1。訳は本記録）。 **解放時のページのゼロ化は本公表の時点でまだ下書き（draft #46435）であり、 チェックサム検証をデコードの全ステップへ広げる作業も継続中である**（出典1）。　<b>補足:</b> **ここでいう「露出」は、外部から到達可能になったことではない**（本記録の明示）〈重要〉。 **正規の利用者が正規の経路で正規のリクエストを送った結果として、 他テナントのデータが応答に現れた。** **攻撃の痕跡を探しても何も出ない形の露出である**（本記録の評価） ——**条件は「681,280トークンを超えるプロンプトを送ること」だけだった。**</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月26日（公表時点）　<b>詳細:</b> **「We found no evidence of deliberate exploitation.」 （意図的な悪用の証拠は見つからなかった）**（出典1。原文英語。訳は本記録）。 根拠として示されているのは**リクエストの分布**である ——**「自社の検証分と研究者の分を除いた後に特定したリクエストは、 時刻と量の両面で通常の長文コンテキスト利用と整合し、 誰かが不具合を繰り返し突いている形とは異ならない」**（出典1。訳は本記録）。 **本記録はこれを「悪用が無かった」とは読まない**（本記録の明示）〈重要〉 ——**155件のうち何件が「他人のデータを受け取った」のかは示されており、 受け取った側がその内容をどう扱ったかは提供者側からは観測できない。** **意図せず受け取ったデータが保存・転用されていないことまでは、 提供者には確認できない**（本記録の評価）。</td></tr><tr><th>ログの有無</th><td>**影響の特定には足りていたが、悪用の有無を検証する記録としては不十分である** （本記録の評価）。 **足りていた側**: 155件という確定値と「681,280トークンを超えるプロンプトに限られる」 という条件を出せているため、**リクエスト側の記録は残っていた**（本記録の推定）。 **不十分な側**: 応答の内容が保存されていたかは公表されていない〈未確定5〉 ——**内容が残っていなければ、「何が漏れたか」を顧客に伝えることはできない。** **さらに、事後に導入した検知の仕組み（KVカナリア `--kv-canary`・ 転送ごとのチェックサム `--disaggregation-enable-kv-checksum`）は、 いずれも事案の後に入ったものである**（出典1） ——**事案の当時は、KVキャッシュの汚染を検知する手立てが無かった**（本記録の評価）〈重要〉。</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **KVプールの容量を公称コンテキスト長の約2倍（約204万トークン）に拡大し、 有効なリクエストが拒否の経路に入らないようにする**（出典1）。　<b>副作用:</b> **GPU メモリをプールに寄せるため、他の用途に使える余地が減る**（本記録の評価）。 **Cloudflare は GLM-5.2 と同じ設定に合わせることで余裕を作ったとしており**（出典1）、 **設定の自由度を下げることで安全側に寄せた形である。** **「これだけで不具合は踏まれなくなる」と書く一方、 「プールの大きさだけに頼るのは脆い」とも書いている**（出典1。訳は本記録）。</div><div class=sub><b>数え方:</b> **拒否を抱えたリクエストを、ブートストラップ・割り当て・KV転送の前に 受付キューで退場させる（本来のエラーを付けて返す）**（出典1。上流 #38704／#38935／#36988）。　<b>副作用:</b> **受付の判定が1段増えるため、受付経路に手が入る**（本記録の評価）。 **Cloudflare が上流へ提案した #38704 では、 デコード側が「転送されたトークン数が予約した数と一致するか」も検証する**（出典1） ——**検証を増やせば、その分だけ正常系の処理も増える。**</div><div class=sub><b>数え方:</b> **転送ごとの KVチェックサム（`--disaggregation-enable-kv-checksum`）と KVカナリア（`--kv-canary`）で、汚染を検知・記録する**（出典1）。　<b>副作用:</b> **いずれも既定では有効にならない設定であり、 KVカナリアの対応はすべてのモデル構造に及んでいない**（出典1）〈重要〉。 **検知の仕組みが「オプション」である限り、 同じ事故は設定を入れていない配備で再発しうる**（本記録の評価）。 **ページを解放時にゼロ化する案（#46435）は、 性能への影響のため本公表の時点でまだ下書きである**（出典1） ——**根本的な対策ほど性能と衝突する。**</div><div class=sub><b>数え方:</b> **配備の変更を出す前に、稼働中のエンジンから KVプールの大きさを取得し、 コンテキスト長と直接突き合わせる**（出典1）。　<b>副作用:</b> **確認の工程が増え、配備の速度は落ちる**（本記録の評価）。 **ただし本件で欠けていたのはまさにこの工程である** ——**「HTTPのステータスコードと長文時の性能しか検証しておらず、 モデルの出力と一貫性を検証していなかった」と Cloudflare は書いている** （出典1。訳は本記録）〈重要〉。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年8月27日</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>**GLM-5.3 が Workers AI で公開され、同日から露出が始まる**（出典1） ——**公開時点の設定で、プリフィル側の KVプールは 681,280トークン、 モデルの公称コンテキスト長は 1,048,576トークンだった。**</td></tr><tr><td class="sm nowrap tw">2026年9月8日 23時11分（UTC）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**研究者 Gadi Evron（Knostic）が HackerOne 経由で報告する**（出典1） ——**「非常に長いプロンプトを `@cf/zai-org/glm-5.3` に送ると、 他の利用者のセッションに属するテキストが返ることがある」。**</td></tr><tr><td class="sm nowrap tw">2026年9月9日 8時00分（UTC）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Cloudflare が報告の検証を開始する**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月9日 13時22分（UTC）</td><td class=nowrap><span class="b kind">検知</span></td><td>**セキュリティインシデントを宣言する**（出典1） ——**製品セキュリティチームが2つのアカウントを使い、25分以内に漏えいを再現した。**</td></tr><tr><td class="sm nowrap tw">2026年9月9日 14時00分（UTC）</td><td class=nowrap><span class="b kind">サービス停止</span></td><td>**GLM-5.3 を非公開（private）に切り替え、リクエストに HTTP 400 を返す。 ステータスページを更新する**（出典1） ——**インシデント宣言から38分後である**（本記録の算出）。</td></tr><tr><td class="sm nowrap tw">2026年9月9日 14時35分（UTC）</td><td class=nowrap><span class="b kind">判明</span></td><td>**根本原因を特定する**（出典1） ——**プリフィル側のプールがコンテキスト長より小さいこと。 プールを大きく取ったカナリアのプリフィルノードでは再現しないことを確認した。**</td></tr><tr><td class="sm nowrap tw">2026年9月9日 14時52分（UTC）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**すべてのプリフィルノードを修正後の設定に入れ替える**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月9日 19時04分（UTC）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正設定とエンジンへのパッチを当てた構成で、配備全体を再構築する**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月9日 19時40分（UTC）</td><td class=nowrap><span class="b kind">露出の解消</span></td><td>**モデルを公開に戻す**（出典1） ——**露出の解消。再現スクリプトと自前のカナリアマーカー試験で検証したうえで戻している。**</td></tr><tr><td class="sm nowrap tw">2026年9月10日 23時30分（UTC）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**SGLang のメンテナと会合を持つ**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月11日〜19日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**本番の SGLang 配備すべてに追加の堅牢化を展開する**（出典1） ——**転送の上限化、KVチェックサム、KVカナリア、解放の遅延（deferred KV release）など。**</td></tr><tr><td class="sm nowrap tw">2026年9月16日〜10月12日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**上流の SGLang が、受付キューでの修正・転送ごとのチェックサム・ 中止応答（abort-ACK）の保持・解放の遅延の既定有効化を取り込む**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月2日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**SGLang v0.5.21 が公開される**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月19日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**SGLang v0.5.22 が公開される**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Cloudflare が SGLang と協調して本件を公表する**（出典1） ——**インシデント宣言から47日後である**（本記録の算出）。</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>協調開示の相手である SGLang 側の記事</span><div class=sm>**出典1 は「我々はこの報告を、我々が使うオープンソースの推論エンジンである SGLang からの記事とあわせ、協調開示として公開する」と述べている** （出典1。原文英語。訳は本記録）。 **本記録は、その SGLang 側の記事を特定できていない**（本記録の確認） ——**検索では SGLang の分離構成に関する技術文書しか出てこなかった。** **したがって、上流側がこの事案をどう説明しているか（影響範囲の認識・ 他の利用者への案内の有無）は本記録では確認できていない。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>コンテキスト長とプール容量の差分（367,296トークン）</span><div class=sm>**「超過分の 367,296トークン」という差分は本記録の算出である** （1,048,576 − 681,280。本記録の算出）。 **出典1 は両方の値を示しているが、差分そのものは書いていない**（本記録の確認）。 **この差分の区間にあるプロンプト長が本件の影響条件に合致する、 という読み方も本記録の整理である。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>影響を受けた「顧客」と「応答」の数の関係</span><div class=sm>**出典1 は応答の件数を155件（確定値）とし、顧客については 「a small number of customers」（少数の顧客）としか書いていない**（出典1）〈重要〉。 **本記録は、155件を顧客数として読まない**（本記録の明示） ——**1顧客が長文プロンプトを複数回送っていれば、顧客数は155より小さい。** **さらに、「他人のデータを受け取った顧客」と 「自分のデータを他人の応答に現された顧客」は別の集団であり、 出典1 はこの2つを数で区別していない**（本記録の確認）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>露出の開始日が「公開日」と一致することの確からしさ</span><div class=sm>**出典1 は「2026年8月27日に始まるテナント分離の問題」と述べ、 露出の窓を「8月27日から9月9日まで」としている**（出典1。訳は本記録）。 **一方、8月27日に GLM-5.3 の公開そのものがあったのか、 公開済みのモデルに当該の設定が入った日なのかは明示されていない**（本記録の確認）。 **本記録は timeline T1 を「公開され、同日から露出が始まる」と書いたが、 公開日と設定投入日が同一である点は出典1 から直接は読み取れない** （本記録の明示）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>拒否されたはずのリクエストが受付を通り、予約済みの8ページのうち7ページを他人のまま読んだ</div><div class=svgwrap><svg viewBox="0 0 1814 184" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,92.0 C193.0,92.0 193.0,92.0 220,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,92.0 C601.0,92.0 601.0,131.0 832,131.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,92.0 C397.0,92.0 397.0,92.0 424,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,92.0 C1009.0,92.0 1009.0,131.0 1444,131.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,92.0 C601.0,92.0 601.0,92.0 628,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,92.0 C805.0,92.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1009.0,60.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,143.0 C1111.0,143.0 1111.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,131.0 C1111.0,131.0 1111.0,92.0 1240,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C1213.0,60.0 1213.0,92.0 1240,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,92.0 C1417.0,92.0 1417.0,53.0 1444,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,53.0 C1621.0,53.0 1621.0,92.0 1648,92.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="60.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="91.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者（681,280ト</text><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ークンを超えるプロンプト</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を送る）</text><rect x="220" y="67.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルータ（デコードへプロン</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プト長を伝える）</text><rect x="424" y="48.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プリフィルのスケジューラ</text><text x="499.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（長すぎるプロンプトを「</text><text x="499.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">拒否」と記録し、1トー…</text><text x="499.0" y="111.0" text-anchor="middle" fill="#f48fb1" font-size="10">拒否は to_finis</text><text x="499.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">h に入り、finish</text><rect x="628" y="48.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プリフィルの受付キュー（</text><text x="703.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">finished() が</text><text x="703.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> False なので受…</text><text x="703.0" y="111.0" text-anchor="middle" fill="#f48fb1" font-size="10">「拒否されたか」ではなく</text><text x="703.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">「完了したか」だけを見て</text><rect x="832" y="28.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="50.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プリフィル GPU（1ト</text><text x="907.0" y="64.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ークン分の KV だけを</text><text x="907.0" y="78.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">作る）</text><rect x="832" y="106.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デコードの受付キュー（同</text><text x="907.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">じ判定で受け渡しを受理）</text><rect x="1036" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デコード側の予約済み K</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Vページ P0〜P7（解</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">放時にゼロ化されない）</text><text x="1111.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">P0 のみ当該リクエスト</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">。P1〜P7 は前のリク</text><rect x="1036" y="118.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">直前の他テナントのプロン</text><text x="1111.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プトと生成の一部</text><rect x="1240" y="67.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">デコード GPU（8ペー</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジすべてを注意で読む）</text><rect x="1444" y="21.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="43.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">応答（HTTP 200・</text><text x="1519.0" y="57.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">prompt_token</text><text x="1519.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s は整合・文章は自然…</text><rect x="1444" y="99.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="121.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">本来返るはずだった HT</text><text x="1519.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TP 400（クライアン</text><text x="1519.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トエラー）</text><rect x="1648" y="60.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1723.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">他の 155件の応答を受</text><text x="1723.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">け取った顧客（人数非公表</text><text x="1723.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text></svg></div><div class=fn>Cloudflare の公表（出典1）が示す7段階を、データの流れとして整理した図である （整理は本記録）。 **太い経路が本件で実際に起きた流れ、点線が「本来起きるはずだった流れ」である。** **P0 は当該リクエストがプリフィルで書いた唯一のページ、 P1〜P7 は前のリクエストの内容が残っていたページを指す**（出典1）。 **攻撃者は図に現れない**——**正規の利用者の正規のリクエストだけで成立する。**</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>再現の直後にモデルを非公開へ切り替え、リクエストに HTTP 400 を返した（38分）</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** **テナント分離が壊れている状態では、止める以外の選択肢が実質的に無い** （本記録の評価）——**「長いプロンプトだけ拒否する」という部分的な緩和は、 しきい値の根拠（プールの大きさ）が起動時に決まる値であるため、 確実に線を引けない。** **38分という速さは、再現が済んでいたことに依っている**（出典1） ——**報告が「再現手順つき」で来たかどうかで、この数字は変わる**（本記録の評価）。</td></tr><tr><td>インシデントから47日後に、上流の SGLang と同日公開する協調開示を選んだ</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** **上流の修正を待つ判断自体は妥当である** ——**SGLang は広く使われるエンジンであり、 修正前に手口を公表すれば、同じ構成の他の配備が無防備なまま晒される** （本記録の評価）。**実際、修正は v0.5.20 で出てから v0.5.21・v0.5.22 で追補されている** （出典1）。 **評価を partial にとどめるのは、顧客への通知が協調開示の制約と別の問題である点を 公表文が切り分けていないためである**（本記録の評価）〈重要〉 ——**技術的な詳細の公開を遅らせることと、 「あなたの応答に他社のデータが混入していた」と当事者に伝えることは、 同じ時計で動かす必要がない。** **通知の記述が無いため、47日が通知の遅れでもあったのかは判定できない**〈未確定1〉。</td></tr><tr><td>件数（155件）・しきい値（681,280トークン）・原因の両方・ 上流の PR 番号・未完了の対策まで書いた</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の作成者の評価である。** **「We were aware of this mismatch before launch.」（この不一致は公開前から認識していた） と書いている点を、本記録は公表の質として高く評価する**（出典1。訳は本記録）〈重要〉 ——**ここを「想定外の事象」と書けば、読者は自分の配備を点検する動機を失う。** **「HTTPのステータスコードしか見ていなかった」という検証の穴まで書いているため、 読者が持ち帰れるのは対策ではなく検証の方法になっている**（本記録の評価）。 **未完了の対策（解放時のゼロ化が下書きであること、 KVカナリアが全構造に及んでいないこと）を隠していないことも同様である。**</td></tr></tbody></table></div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>共有型の推論基盤（マネージドLLM・推論API）に送っているプロンプトを、 「外部に預けたデータ」として棚卸しの対象に入れる。</div><div class=lw>**本件では、正規の利用者が正規のリクエストを送った結果として、 他テナントのデータが応答に現れた**（出典1）〈重要〉。 **攻撃も認証の突破も無く、条件は「681,280トークンを超えるプロンプトを送ったこと」だけだった。** **自社のプロンプトが他社の応答に現れた側は、自分では一切気づけない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **どの業務が、どのマネージド推論サービスへ、どんな内容を送っているかを一覧にする。** **とくに「長いコンテキストを送る使い方」（コードベース全体・社内資料の投入・ エージェント的なコーディング支援）を特定する** ——**本件の影響は長文プロンプトに限られていた**（出典1）。 **一覧の上で、ソースコード・顧客情報・未公表情報を含む経路に印を付け、 その経路について提供者の分離の仕組みと通知の約束を確認する**（本記録の提案）。</div></li><li><div class=lp>テナント分離が壊れたときに「誰に何が渡ったか」を提供者が通知するのかを、 事故の前に契約・仕様の側で確かめる。</div><div class=lw>**本件の公表文は、155件という確定値とそのしきい値を示しながら、 顧客への通知について一言も述べていない**〈未確定1〉（本記録の確認）〈重要〉。 **混入したデータの内容も公表されていない**〈未確定2〉。 **特定できているのに書かれていないため、 利用者側は「知らされる前提」を置けない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **利用中の推論サービスについて、 ①テナント間のデータ露出が起きた場合の通知義務と期限、 ②通知の粒度（自社が影響を受けたか／何が渡ったか）、 ③リクエストと応答の保存期間を、 契約書・DPA・セキュリティ仕様のどこに書かれているかを確認する。** **書かれていない場合は、書かれていないことを前提に、 その経路へ流すデータの種類を絞る**（本記録の提案） ——**通知が来ない前提なら、出せないものを出さない運用しか残らない。**</div></li><li><div class=lp>インシデントの公表の遅れと、当事者への通知の遅れを、別の時計で管理する。</div><div class=lw>**本件は上流の修正が出るのを待って47日後に公表されている**（出典1） ——**この判断自体は、同じエンジンを使う他の事業者を守るために妥当である** （本記録の評価）。 **しかし協調開示の都合は、影響を受けた当事者へ伝える時期を縛る理由にはならない** （本記録の評価）〈重要〉。 **公表文が両者を切り分けていないため、47日が通知の遅れでもあったのかが判定できない。**</div><div class=la><b>取るべき行動</b> **自社のインシデント対応手順で、「技術的詳細の公表」と「影響を受けた相手への通知」を 別の判断・別の期限として書き分ける。** **協調開示（上流のベンダ・OSS プロジェクトとの調整）が関わる場合に、 通知だけを先に出す経路があるかを確認する**（本記録の提案）。 **自社が公表する側になったときは、 「通知を行った／行っていない」を公表文に明記する** ——**本件で欠けていたのはこの一行である。**</div></li><li><div class=lp>「認識していた不一致を、期待で埋めて本番に出す」判断の記録を残す仕組みを持つ。</div><div class=lw>**Cloudflare は「この不一致は公開前から認識していた」と明記している**（出典1。訳は本記録） 〈重要〉。 **認識のうえで公開に進んだ根拠は、「エンジンがエラーを返すと期待した」ことと 「長文テストが成功応答を返したこと」だけだった**（出典1）。 **この形の判断は、記録が残らなければ再検討されない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **本番投入の判定で「既知の不一致・未解決の懸念を、何を根拠に許容したか」を 一行で残す欄を設ける。** **根拠が「期待」や「エラーが出なかったこと」である項目に印を付け、 期限を切って再検証する**（本記録の提案） ——**根拠が観測ではなく期待である項目は、 本件のように「正常に見える誤り」の前で無力になる。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>「エラーが返らないこと」を正常の根拠に使わない。出力の中身を検証項目に入れる。</div><div class=lw>**本件の不具合は、見ていた項目すべてで正常を返した**（出典1）〈重要〉 ——**HTTP 200、`prompt_tokens` は長いプロンプトと整合、文章は自然、 しかも8ページ分のプリフィルより応答が速い**（＝性能指標としては良い値）。 **Cloudflare 自身が「HTTPのステータスコードと性能だけを検証し、 モデルの出力と一貫性を検証していなかった」ことを検証の穴として挙げている** （出典1。訳は本記録）。</div><div class=la><b>取るべき行動</b> **推論基盤の受け入れ試験に「出力の正しさ」の検証を入れる。** **具体的には、プロンプトに一意の印（カナリアマーカー）を仕込み、 応答にその印だけが現れること、他の印が混ざらないことを確認する** ——**本件でも復旧前の検証にカナリアマーカー試験が使われている**（出典1）。 **境界値（コンテキスト長の上限付近・上限超過）を、 正常系と同じ丁寧さで試す**（本記録の提案）。</div></li><li><div class=lp>推論エンジンの KVキャッシュプールの実測値と、モデルの公称コンテキスト長を、 稼働中のエンジンから取得して突き合わせる。</div><div class=lw>**プールの大きさは設定値ではない**（出典1）〈重要〉 ——**モデルの重みを読み込んだ後に残った GPU メモリから起動時に決まる。** **公称コンテキスト長は別の設定値で、両者を一致させる仕組みは無い**（出典1）。 **値は起動時のログとメトリクスに出ていた**（出典1） ——**見えていたが、配備の判定には使われていなかった。**</div><div class=la><b>取るべき行動</b> **配備の変更を出す前に、稼働中のエンジンからプール容量を取得し、 コンテキスト長以上であることを機械的に検査する工程を入れる** （本件後の Cloudflare の運用がこれである。出典1）。 **量子化・テンソル並列度・CUDAグラフのサイズ・モデル版の変更を行ったときは、 プール容量が変わる前提で再測定する**（出典1 が挙げる変動要因）。 **分離（prefill／decode）構成では、プリフィル側のプールを見る。**</div></li><li><div class=lp>本番で使っているオープンソースの推論基盤について、上流の issue を読む担当を決める。</div><div class=lw>**同じ不具合は2026年7月6日に別の利用者から SGLang へ報告されており（issue #30233）、 Cloudflare はそれを本件の調査中に気づいた**（出典1）〈重要〉 ——**公開（8月27日）の約7週間前である。** **CVE が割り当てられない不具合は、脆弱性管理の仕組みには乗らない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **本番に置いている推論エンジン・KVキャッシュ関連の部品 （SGLang・vLLM・Mooncake・NIXL 等）のリポジトリについて、 issue と security advisory を定期的に見る担当と頻度を決める。** **「分離構成」「KV転送」「テナント」「cross-request」などの語での 検索を定型化する**（本記録の提案） ——**自社の構成に固有の語（disaggregated・prefill）を含めるのが要点である。**</div></li><li><div class=lp>KVキャッシュの汚染を検知する仕組み（チェックサム・カナリア）を、 既定で有効になっていない前提で確認する。</div><div class=lw>**本件の当時、KVキャッシュの汚染を検知する手立ては無かった**（本記録の評価）。 **転送ごとのチェックサム（`--disaggregation-enable-kv-checksum`）と KVカナリア（`--kv-canary`）は、いずれも事案の後に上流へ入った設定であり、 既定では有効にならない**（出典1）〈重要〉。 **KVカナリアの対応はすべてのモデル構造に及んでいない**（出典1）。 **ページを解放時にゼロ化する案は、性能への影響のため下書きのままである**（出典1）。</div><div class=la><b>取るべき行動</b> **自社の配備で、これらの検知設定が有効になっているかを確認する （有効化されていないのが既定である前提で見る）。** **有効化による性能の変化を測り、どこまで許容するかを決めておく。** **ゼロ化されないページを前提に、 「分離構成を使うか」「同一プールにどのテナントを載せるか」の判断に戻す** （本記録の提案） ——**検知はオプション、ゼロ化は未実装、という状態が現在の既定である。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社または委託先が、推論エンジンを分離（prefill／decode）構成で運用している、 あるいは複数テナント・複数利用部門のリクエストを同一の GPU プールで処理している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 推論基盤の受け入れ試験が、HTTP のステータスコードと性能指標で構成されており、 出力の内容・一貫性を検証していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> ソースコード・顧客情報・未公表情報を含む長いコンテキストを、 共有型の推論サービスへ送る使い方がある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 本番の推論基盤がオープンソースのエンジンに依存しており、 そのリポジトリの issue・advisory を定期的に見る担当が決まっていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 本番投入の判定で、「既知の不一致・未解決の懸念を何を根拠に許容したか」を 記録に残していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 利用している推論サービスについて、テナント間のデータ露出時の通知義務・粒度・ リクエストと応答の保存期間を把握していない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月26日 Cloudflare</span> <a href="https://blog.cloudflare.com/kv-cache-exposure-remediation/" target="_blank" rel="noreferrer noopener nofollow">Cross-request KV cache exposure in the GLM-5.3 Workers AI model, and our remediation with SGLang</a> <span class="b kind">ブログ</span><span class=sm>（**本事案の一次公表。** 影響範囲（GLM-5.3 のみ・155件の応答・681,280トークン超のプロンプト）、 露出の窓（2026年8月27日〜9月9日）、分単位の時刻表 （9月8日23時11分の HackerOne 報告、9日8時00分の検証開始、13時22分のインシデント宣言、 14時00分の非公開、14時35分の原因特定、14時52分の設定入れ替え、 19時04分の再構築、19時40分の復旧、10日23時30分の SGLang との会合）、 2つの原因（プール 681,280 対 コンテキスト長 1,048,576 の不一致／ `Req.set_finish_with_abort` と `finished()` 判定の不整合）、 成立の7段階、修正（プールを約204万トークンへ拡大・上流 #38704／#38935／#36988）、 事後の堅牢化（転送の上限化 #32758・KVチェックサム #39500・KVカナリア #38596／#40642・ 解放の遅延の既定有効化 #41023／#37454・メトリクス #41128）、 SGLang v0.5.20／v0.5.21（10月2日）／v0.5.22（10月19日）、 2026年7月6日の issue #30233 の存在、 検証の穴（HTTPステータスと性能のみを見ていた）、 意図的な悪用の証拠が無い旨を示す。 **本記録が2026年10月27日に直接取得して本文を確認した。** **顧客への通知、混入したデータの内容、影響顧客数、 応答内容の保存の有無は書かれていない**〈未確定1〉〈未確定2〉〈未確定4〉〈未確定5〉。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月26日（出典1 の記述による） SGLang</span> <a href="https://blog.cloudflare.com/kv-cache-exposure-remediation/" target="_blank" rel="noreferrer noopener nofollow">（協調開示として同日公開されたとされる SGLang 側の記事。本記録は特定できていない）</a> <span class="b kind">ブログ</span><span class=sm>（**出典1 は「我々はこの報告を、我々が使うオープンソースの推論エンジンである SGLang からの記事とあわせ、協調開示として公開する」と述べている** （出典1。原文英語。訳は本記録）。 **本記録は、この SGLang 側の記事を特定できていない**〈齟齬1〉 ——**availability は not_published とした（文書が存在しないという判断ではなく、 本記録が所在を確認できていないという意味である）。** **URL は出典1 のものを置いている**（本記録の明示）。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月26日 Cloudflare Blog (Security)</span> <a href="https://blog.cloudflare.com/kv-cache-exposure-remediation/" target="_blank" rel="noreferrer noopener nofollow">Cross-request KV cache exposure in the GLM-5.3 Workers AI model, and our remediation with SGLang（RSS 経由で収集した本文）</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点になった収集記事である**（`output/articles/20261027/` 所収）。 **内容は出典1 と同一の本文であり、別の資料ではない**（本記録の確認） ——**収集時点では末尾（事後の堅牢化の節）が切れていたため、 本記録は出典1 を直接取得して補っている。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月27日</span> <span class="b rev">新規作成</span> **2026年10月26日の Cloudflare の公表（出典1）を直接取得して裏を取り作成した。** **収集記事（`output/articles/20261027/0063_cloudflare-blog-security_cross-request-kv-cache-exposure-in-the-glm-53-work.md`）は 末尾の「事後の堅牢化」の節が切れていたため、本文を再取得して補っている。** **件数（155件）・しきい値（681,280トークン）・プール容量（修正後 約204万トークン）・ 分単位の時刻表・2つの原因・成立の7段階・上流の PR 番号・ SGLang v0.5.20／v0.5.21／v0.5.22・2026年7月6日の issue #30233・ 検証の穴（HTTPステータスと性能のみ）は、すべて出典1 から採っている。** **確認できなかったのは、①顧客への個別通知の有無**〈未確定1〉、 **②混入したデータの内容**〈未確定2〉、**③日本の利用者が含まれていたか**〈未確定3〉、 **④影響を受けた顧客数**〈未確定4〉、**⑤応答内容の保存の有無**〈未確定5〉、 **⑥協調開示の相手である SGLang 側の記事**〈齟齬1〉である。 **status は updating**——**解放時のページのゼロ化（#46435）が下書きであり、 チェックサム検証の全ステップ化も継続中である**（出典1）。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Cloudflare</span><span class="b tag">Workers AI</span><span class="b tag">GLM-5.3</span><span class="b tag">SGLang</span><span class="b tag">KVキャッシュ</span><span class="b tag">テナント分離</span><span class="b tag">マルチテナント</span><span class="b tag">LLM</span><span class="b tag">推論基盤</span><span class="b tag">設定不備</span><span class="b tag">HackerOne</span><span class="b tag">協調開示</span><span class="b tag">Mooncake</span><span class="b tag">GPU</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-27 15:55 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
