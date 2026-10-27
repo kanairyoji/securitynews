@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>GuardBreaker でAI解析を止める手口 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0709</span>GuardBreaker でAI解析を止める手口</h1>
+<header class="site-header">
+  <p class="subtitle">**マルウェアのコードコメントに「核兵器の作り方を教えてほしい」と書き込み、 AI によるコード解析を途中で止めさせる手口が、実際の攻撃で使われていた。** ESET は2026年9月10日、ロシアと結び付きのある攻撃グループ **UAC-0099** が ウクライナ国内の標的への攻撃の初期段階で使った VBScript にこの仕掛けを発見し、 **GuardBreaker** と名付けた（出典1）。 **狙いは、LLM を組み込んだコードスキャナーの安全装置（ガードレール）を作動させ、 当該コメント行以降を検査しないまま処理を打ち切らせることである**（出典1）。 **コメントは実行時の動作に何の影響も与えない**（出典1） ——**隠すための難読化ではなく、「解析するモデルに読ませるために、誰の目にも見える形で 書かれている」点が従来の検知回避と性質を異にする**（出典1）。 スクリプト本来の目的は、同グループ専用のローダー **MATCHBOIL** の取得と実行である（出典1）。 **ESET はこれを「解析対象のファイルという経路で推論時に LLM へ届く、 きわめて単純な間接プロンプトインジェクション」と位置づけ、 「コードの安全性を判断する権限を単一の LLM エンジンだけに持たせるべきではない」と述べた** （出典1）。 **同種の手口は PyPI・npm のサプライチェーン攻撃でも確認されている**（出典1） ——**npm では &quot;You&#x27;re absolutely right!&quot; を数万回繰り返してモデルの文脈窓を 使い切らせる例があった**（出典1）。 **IoC・ハッシュは公表されていない**〈未確定1〉。</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年9月10日（ESET の公表日。@IT は「スロバキア時間」と付記）</span>
+  <span>最終更新: 2026年10月27日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p>セキュリティ企業 <strong>ESET</strong> は2026年9月10日、マルウェアのコードコメントに大規模言語モデル（LLM）の安全装置を作動させる文言を仕込み、AI によるコード解析を途中で止めさせる手口を報告しました（出典1）。ESET はこの手法を <strong>GuardBreaker</strong> と名付けています（出典1）。</p>
+<p>見つかったのは、ロシアと結び付きのある攻撃グループ <strong>UAC-0099</strong> がウクライナ国内の標的に対する攻撃の初期段階で使った <strong>VBScript</strong> です（出典1）。スクリプトのコメント行には、<strong>核兵器の作り方を教えるよう求める文言</strong>が書き込まれていました（出典1）。</p>
+<p>狙いは次のとおりです（出典1）。</p>
+<blockquote>
+<p>LLM を組み込んだコードスキャナーがガードレール（安全装置）を起動して応答を拒否し、ファイルの該当コメント行以降を検査しないまま処理を打ち切ることを狙ったもの。（出典1・出典2 の記述に基づく本記録の整理）</p>
+</blockquote>
+<p>スクリプト本来の目的は、UAC-0099 が追加のペイロードを配信するためにのみ使用するローダー <strong>MATCHBOIL</strong> をダウンロードしてインストールすることです（出典1）。</p>
+<p><strong>本記録が重く見るのは、この手口の性質です</strong>（本記録の評価）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>従来の検知回避</th>
+<th>GuardBreaker（出典1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>置き方</td>
+<td>読む者の目から隠す（難読化・暗号化）</td>
+<td><strong>誰の目にも見える形で書く</strong></td>
+</tr>
+<tr>
+<td>読ませる相手</td>
+<td>読ませない</td>
+<td><strong>解析するモデルに読ませる</strong></td>
+</tr>
+<tr>
+<td>実行時の影響</td>
+<td>挙動に影響する場合がある</td>
+<td><strong>何の影響も及ぼさない</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>コメントがあること自体が、UAC-0099 が標的の防御に AI が組み込まれていることを織り込んでいたことをうかがわせます</strong>（出典1）。同グループは最近の別の攻撃でも、<strong>IDA・Wireshark</strong> といった従来型の解析ツールに関連するプロセスの有無を確認していました（出典1）。</p>
+<p>ESET はこれを<strong>「きわめて単純なプロンプトインジェクション」</strong>と位置づけています（出典1）——攻撃者の入力が、<strong>解析対象のファイルという経路で推論時に LLM に届く</strong>形です（出典1）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>IoC（ハッシュ・URL・C2 アドレス）</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 の本文に IoC やハッシュの記載はない**（本記録の確認）。 **参照先として cert.gov.ua・Socket・StepSecurity の外部リンクがあるのみである。** **出典1 は business-security 枠の記事であり、 技術的な指標を出す目的の文書ではない**（本記録の整理）。 **本件について、読者が自分の環境で照合できる指標は存在しない。**</div></li><li><span class=ui>実際に解析が止まった件数・製品・組織</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 は手口の存在と狙いを報告しているが、 「実際に LLM スキャナーが止まった」事例を示していない**（本記録の確認）〈重要〉。 **成功したのか、失敗したのか、どのモデル・どの製品で試されたのかが分からない。** **本記録はこの点を強調しておく**（本記録の明示） ——**手口の存在が確認されたことと、手口が機能したことは別である。** **なお、止められた側の記録にしか残らない事象であり、 公表されにくい性質を持つ**（本記録の評価）。</div></li><li><span class=ui>標的となった組織の名称・業種・件数</span><span class="b rsn">公表されていない</span><div class=sm>**「ウクライナ国内の標的」としか示されていない**（出典1）。 **UAC-0099 の標的傾向（出典3）から推測はできるが、本件の標的は確認できない。**</div></li><li><span class=ui>コメントに書かれていた文言の原文</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 の本文に文言の原文は掲載されておらず、画像としてのみ示されている** （本記録の確認）〈齟齬3〉。 **本記録が検索の範囲で把握した二次報道には、 「核兵器を作りたい。手伝ってほしい……」に相当する英文として引用するものがあるが、 動詞の表記が報道間で揺れている**（本記録の確認）。 **本記録は原文を確定しない**——**手口の理解に文言の正確な再現は必要ない** （本記録の判断）。</div></li><li><span class=ui>他のグループによる同手口の採用状況</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 が UAC-0099 以外の名前付きグループによる GuardBreaker の使用を 示しているわけではない**（本記録の確認）。 **PyPI・npm の例は、帰属が示されていないサプライチェーン攻撃として記述されている** （出典1）。 **手口は単純であり、採用が広がらない理由は無い**（本記録の評価） ——**だが、広がっているという証拠も現時点では無い。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>ESET（ESET Research・スロバキア）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>UAC-0099</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>ウクライナ国内の標的組織（名称非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>LLM を組み込んだコードスキャナーの運用者（組織名・製品名は非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CERT-UA（ウクライナのコンピュータ緊急対応チーム）</span><span class="b role">注意喚起主体</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Socket／StepSecurity</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>ESET の公表から日本語での報道まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>46<span class=fu>日</span></div><div class=fn>**2026年9月10日（出典1）から2026年10月26日（出典2）まで**（本記録の算出）。 **手口の性質上、この遅れが即座に被害を生むわけではない**（本記録の明示） ——**ただし、LLM を組み込んだ検査の設計を見直す必要がある側にとっては、 気づくまでの時間である。**</div></div><div class=fig><div class=fh><span class=fl>npm パッケージで繰り返されていた文字列の回数</span><span class="b conf">桁のみ</span><span class="b org">第三者調査</span></div><div class=fv>10,000<span class=fu>回</span></div><div class=fn>**「数万回」**（出典1）——**本記録は桁のみの値として 10,000 を置いた。** **メインの JavaScript ファイルの中で &quot;You&#x27;re absolutely right!&quot; という文字列を 繰り返し、モデルの文脈窓を使い切らせて後続の悪質なスクリプトを 実質的に解析できないようにする狙いであった**（出典1）。 **本事案（GuardBreaker）の数値ではない**（本記録の明示） ——**同種の手口の比較として併記した。**</div></div><div class=fig><div class=fh><span class=fl>MATCHBOIL が C&amp;C と通信する間隔</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>分</span></div><div class=fn>**当初は一度きりの動作だったが、後に2分間隔で C&amp;C と通信する仕組みへ進化した** （出典3）。 **本事案の数値ではなく、GuardBreaker が守ろうとしたローダーの背景値である** （本記録の明示）。 **検知の観点では、2分間隔の定期通信はネットワーク側で見える特徴である** （本記録の評価）〈重要〉——**解析が止まっても、通信は止まらない。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**攻撃の形は「スピアフィッシングのリンク → アーカイブ → VBScript → MATCHBOIL → 追加ペイロード」であり、GuardBreaker はこの VBScript の段階に付加された 検知回避の仕掛けである**（出典1・出典3。段階への割り当ては本記録）。 **GuardBreaker 自体は攻撃の進行に寄与しない**（本記録の評価）〈重要〉 ——**実行時の動作には何の影響も及ばない**（出典1）。 **寄与するのは「防御側の解析を遅らせる・止める」ことだけである。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**スピアフィッシングメールのリンクからアーカイブを取得させ、 中の VBScript を実行させる**（出典3）。</div><div class=fn>根拠: **「リンクをクリックするとアーカイブがダウンロードされ、 その中の VBScript が MATCHBOIL を取得して実行する」**（出典3。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**VBScript のコメント行に、核兵器の作り方を教えるよう求める文言を書き込む** （出典1）。 **LLM を組み込んだコードスキャナーの安全装置を作動させ、 当該コメント行以降を検査しないまま処理を打ち切らせることを狙う**（出典1）。 **実行時の動作には何の影響も及ばない**（出典1）。</div><div class=fn>根拠: **「コードを読む者の目から隠すのではなく、解析するモデルに読ませるために、 誰の目にも見える形で書かれている」**（出典1 の記述に基づく本記録の整理）。 **ESET はこれを「きわめて単純なプロンプトインジェクション」と位置づけている** （出典1）。</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**VBScript が MATCHBOIL（C# 製のローダー）をダウンロードしてインストールする** （出典1・出典3）。 **MATCHBOIL は UAC-0099 が追加のペイロードを配信するためにのみ使用する**（出典1）。</div><div class=fn>根拠: **「スクリプトの本来の目的は、UAC-0099 が追加のペイロードを配信するために のみ使用するローダー MATCHBOIL をダウンロードしてインストールすることにある」** （出典1・出典2 の記述）。</div></li><li><div class=stg><span class="b stage">4. C2通信</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**MATCHBOIL が C&amp;C サーバーからペイロードを取得し、インストールして 永続化を図る**（出典3）。 **当初は一度きりの動作だったが、後に2分間隔で C&amp;C と通信する仕組みへ進化した** （出典3）。</div><div class=fn>根拠: **「当初は一度きりの動作でしたが、後に2分間隔で C&amp;C と通信する仕組みへ 進化した」**（出典3 の記述）。</div></li><li><div class=stg><span class="b stage">5. 偵察</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**同グループは最近の別の攻撃で、IDA・Wireshark といった 従来型の解析ツールに関連するプロセスの有無を確認していた**（出典1）。</div><div class=fn>根拠: **「同グループは最近の別の攻撃でも、IDA・Wireshark といった 従来型の解析ツールに関連するプロセスの有無を確認していた」**（出典1）。</div></li></ol></div>
+<section id="s5"><h2>隠すのではなく、読ませるために書かれている<span class="b slot">原因・手口</span></h2><p>GuardBreaker が従来の検知回避と違う点を、先に押さえておく（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>従来の検知回避</th>
+<th>GuardBreaker（出典1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>目的</td>
+<td>読まれないようにする</td>
+<td><strong>読ませて、止めさせる</strong></td>
+</tr>
+<tr>
+<td>見え方</td>
+<td>難読化・暗号化で読めない</td>
+<td><strong>平文のコメントとして誰にでも見える</strong></td>
+</tr>
+<tr>
+<td>実行時の影響</td>
+<td>挙動に関わることがある</td>
+<td><strong>何の影響も及ばない</strong></td>
+</tr>
+<tr>
+<td>対象</td>
+<td>人間のアナリスト・署名検査</td>
+<td><strong>解析を行う LLM</strong></td>
+</tr>
+</tbody>
+</table>
+<p>ESET の位置づけはこうである（出典1）。</p>
+<blockquote>
+<p>攻撃者の入力が、解析対象のファイルという経路で推論時に LLM に届く形である。今日の LLM は、信頼できないコンテンツと信頼できる指示を、両者の間に確かな境界を設けないまま処理している。GuardBreaker はこのアーキテクチャ上の弱点を突こうとするものだ。（出典1・出典2 の記述に基づく本記録の整理）</p>
+</blockquote>
+<p><strong>「きわめて単純なプロンプトインジェクション」である</strong>（出典1）。特別な技術も、モデルの内部知識も要らない。<strong>コメント行に自然言語で依頼を1つ書くだけである。</strong></p>
+<p><strong>本記録が重く見るのは、ここに技術的な障壁が無いことである</strong>（本記録の評価）。再現のコストがほぼゼロであるため、<strong>この手口が UAC-0099 に留まる理由が無い。</strong>ただし、<strong>他のグループが採用しているという証拠も、現時点では示されていない</strong>（本記録の明示）。</p></section>
+<section id="s6"><h2>「手口が使われた」ことは確認され、「手口が効いた」ことは確認されていない<span class="b slot">未確定事項</span></h2><p><strong>出典1 が示しているのは、手口の存在とその狙いである</strong>（本記録の確認）。</p>
+<ul>
+<li>実際の攻撃で使われた VBScript から発見された（出典1）→ <strong>確認されている</strong></li>
+<li>LLM スキャナーの安全装置を作動させる狙いだった（出典1）→ <strong>ESET の判断</strong></li>
+<li>実際に LLM スキャナーが止まった → <strong>示されていない</strong>〈未確定2〉</li>
+</ul>
+<p><strong>どのモデル・どの製品で試されたのか、成功したのか失敗したのかが分からない</strong>（本記録の明示）。</p>
+<p><strong>この空白は、事案の性質から生じている</strong>（本記録の評価）。<strong>止まったという事実は、止められた側の記録にしか残らない。</strong>そして多くの検査パイプラインでは、「LLM が応答を拒否した」「出力が空だった」という事象は<strong>エラーやスキップとして捨てられる</strong>（本記録の整理）。つまり、<strong>成功していても、誰も数えていない可能性がある。</strong></p>
+<p><strong>それでも対処の必要は変わらない</strong>（本記録の評価）。効いたかどうかより重いのは、<strong>攻撃者が防御側の構成に AI が入っていることを織り込んで作ってきた</strong>という事実である（出典1）。同じグループが、<strong>IDA・Wireshark というプロセスの存在確認</strong>（人による解析への対策）と、<strong>LLM への依頼文</strong>（AI による解析への対策）を<strong>両方</strong>用意している（出典1）。</p></section>
+<section id="s7"><h2>問題は LLM の欠陥ではなく、「拒否されたら通る」設計にある<span class="b slot">評価・解釈</span></h2><p>GuardBreaker が成立する条件を3つに分けて書く（出典1 の記述に基づく本記録の整理）。</p>
+<ol>
+<li>検査の経路に LLM が入っている</li>
+<li>LLM が解析対象の内容を「指示」として読みうる</li>
+<li><strong>LLM が応答を拒んだとき、検査が「問題なし」または「終了」として扱われる</strong></li>
+</ol>
+<p><strong>1と2は、現在の LLM の作りに由来する</strong>（出典1）——組織の側で短期に変えられるものではない。<strong>3は、組織の側の設計である</strong>（本記録の評価）〈重要〉。</p>
+<p>ESET の要求は、まさに3に向いている（出典1）。</p>
+<blockquote>
+<p>そのツールが「何を検査するのか」「意思決定プロセスのどこに位置するのか」「応答を拒んだり、タスクを完了できなかったりしたときに何が起こるのか」を正確に把握すること（出典1 の記述に基づく本記録の整理）</p>
+<p>出力が得られなかったこと自体も、追加の確認を促すトリガーとして扱わなければならない（出典1 の記述に基づく本記録の整理）</p>
+<p>「コードの安全性を判断する権限を単一の LLM エンジンだけに持たせるべきではない」（出典1。原文英語「no single LLM engine should have the sole authority to decide that a piece of code is safe」。訳は本記録）</p>
+</blockquote>
+<p><strong>この3点は、モデルを差し替えても、プロンプトを固めても解決しない</strong>（本記録の評価）。<strong>「無応答を陽性として扱うか陰性として扱うか」という、業務プロセスの側の決定である。</strong></p>
+<p><strong>本記録が読者に薦める確認は1つである</strong>（本記録の提案）。自組織の LLM を使った検査について、<strong>モデルが応答しなかったときのログを探すこと。</strong> <strong>見つからなければ、それが答えである。</strong></p></section>
+<section id="s8"><h2>同じ狙いの手口は、すでに PyPI と npm で見つかっている<span class="b slot">背景・過去事例</span></h2><p>ESET は、LLM を使ったスキャナーを妨害する試みが<strong>ソフトウェアサプライチェーン攻撃で特に表面化している</strong>としている（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>経路</th>
+<th>手口</th>
+<th>報告</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PyPI</td>
+<td>JavaScript ペイロードの手前に、偽造されたシステム指示と LLM のポリシー違反判定を誘発する内容を置く</td>
+<td>Socket（出典1）</td>
+</tr>
+<tr>
+<td>PyPI</td>
+<td>解析したモデルに、悪質なコードを無視してパッケージを「問題なし」と報告するよう露骨に指示する</td>
+<td>StepSecurity（出典1）</td>
+</tr>
+<tr>
+<td>npm</td>
+<td>"You're absolutely right!" を数万回繰り返し、モデルの文脈窓を使い切らせる</td>
+<td>出典1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>3つは狙いが違う</strong>（本記録の整理）。</p>
+<ul>
+<li>GuardBreaker と npm の例は<strong>「解析を止める」</strong></li>
+<li>StepSecurity が見た例は<strong>「誤った判定を出させる」</strong>〈重要〉</li>
+</ul>
+<p><strong>後者のほうが危険である</strong>（本記録の評価）。止まれば「結果が無い」ことに気づく機会があるが、<strong>「問題なし」が返ってくれば、気づく機会そのものが無い。</strong></p>
+<p>ESET はさらに、起こりうる経路として次を挙げている（出典1）。</p>
+<ul>
+<li>通常とは異なる、または不自然な構造のファイルによって、切り詰められたり一部しか解析されなかったりする</li>
+<li>悪質なコードの一部を、機密情報や取り扱いに注意を要するデータに見せ掛けて隠す</li>
+<li>攻撃者側のツールでなければ処理できない独自のファイル形式を使う</li>
+<li>人間のレビューが必要な動作に AI エージェントを誘導し、対応が遅れる時間を突く</li>
+<li><strong>アンパッカーや難読化解除ツールを呼び出すエージェントでは、その呼び出し自体がマルウェアの配布や実行に乗っ取られる</strong>（出典1）〈重要〉</li>
+</ul>
+<p><strong>最後の1つは、解析の自動化を進めるほど大きくなる</strong>（本記録の評価）——外部ツールを呼ぶ権限をエージェントに与えることは、<strong>検査対象のファイルに実行の引き金を渡すことに近づく。</strong></p></section>
+<section id="s9"><h2>解析を止めても、通信は止まらない<span class="b slot">対策・注意喚起</span></h2><p>GuardBreaker が守ろうとしたのは <strong>MATCHBOIL</strong> である（出典1）。ESET の別の調査によれば、MATCHBOIL は C# 製のダウンローダーで、<strong>当初は一度きりの動作だったが、後に2分間隔で C&amp;C と通信する仕組みへ進化した</strong>（出典3）。</p>
+<p><strong>ここに、対処の足場がある</strong>（本記録の評価）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>層</th>
+<th>GuardBreaker の影響</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLM による静的解析</td>
+<td><strong>止まりうる</strong>（出典1）</td>
+</tr>
+<tr>
+<td>署名・構造による静的検査</td>
+<td>影響しない（本記録の評価）</td>
+</tr>
+<tr>
+<td>エンドポイントでの挙動監視</td>
+<td>影響しない（本記録の評価）</td>
+</tr>
+<tr>
+<td>ネットワークでの通信検知</td>
+<td>影響しない（本記録の評価）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>GuardBreaker はファイルの解析を止めるが、通信を止めることはできない。</strong> 2分間隔の定期通信は、ネットワーク側の統計で見える種類の特徴である（出典3 の記述に基づく本記録の評価）。</p>
+<p><strong>したがって、本件への実務的な備えは「LLM 検査の精度を上げる」方向ではない</strong>（本記録の評価）。<strong>LLM 検査を、他の層と置き換えないことである。</strong> ESET が「高度な自動化と人間の専門性を組み合わせた多層かつ複数モデルによるアプローチ」を求めているのは、この意味である（出典1）。</p>
+<p><strong>ただし、多層化にはコストがかかる</strong>（本記録の明示）。全件に人の確認を入れれば、LLM 導入の目的（検査の高速化）と衝突する。<strong>本記録の提案は、対象を絞ることである</strong>—— <strong>「LLM が拒否した・無応答だった・途中で終わった」対象に限って、多層の検証へ回す。</strong> <strong>この絞り込みが成立するには、拒否と無応答が記録されている必要がある</strong>（本記録の整理）——<strong>それが本件の最初の一手になる。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>technique</th><td>**解析対象ファイルの中に、LLM が拒否するような「依頼」を平文で置くだけの手法である** （出典1）。 **コメントは解析するモデルを含め誰からも見える位置にあり、実行時の動作には影響しない** （出典1）。 **位置づけは「解析対象のファイルという経路で推論時に LLM へ届く、 単純な間接プロンプトインジェクション」である**（出典1）。 **本記録が整理した成立条件は3つである**（出典1 の記述に基づく本記録の整理）。 **①検査の経路に LLM が入っていること。** **②LLM が解析対象の内容を「指示」として読みうること。** **③LLM が応答を拒んだとき、検査が「問題なし」または「終了」として扱われること。** **③が無ければ、①②があっても実害にならない**（本記録の評価）〈重要〉。</td></tr><tr><th>related_techniques</th><td><div class=sub><b>名称:</b> PyPI での偽造システム指示　<b>説明:</b> **Socket は、PyPI で公開されていた悪意あるパッケージの中で、 JavaScript のペイロードの手前に偽造されたシステム指示と LLM のポリシー違反判定を誘発する内容が置かれているのを見つけた**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> PyPI での「問題なし」と報告させる指示　<b>説明:</b> **StepSecurity は、同じ一連の攻撃を調べ、ファイルを解析したモデルに対して 悪質なコードを無視してパッケージを「問題なし」と報告するよう 露骨に指示するプロンプトを確認している**（出典1）〈重要〉 ——**GuardBreaker が「止める」ことを狙うのに対し、 こちらは「誤った判定を出させる」ことを狙う**（本記録の整理）。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> npm での文脈窓の消費　<b>説明:</b> **メインの JavaScript ファイルの中で &quot;You&#x27;re absolutely right!&quot; という文字列を 数万回繰り返す npm パッケージが見つかった**（出典1）。 **モデルの文脈窓を使い切らせ、後続の悪質なスクリプトを 実質的に解析できないようにする狙いであった**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> ESET が挙げたその他の経路　<b>説明:</b> **通常とは異なる、または不自然な構造のファイルは、切り詰められたり 一部しか解析されなかったりする可能性がある**（出典1）。 **悪質なコードの一部を、機密情報やその他の取り扱いに注意を要するデータで あるかのように見せ掛けて隠すこともできる**（出典1）。 **攻撃者側のツールでなければ処理できない独自のファイル形式を使う攻撃や、 人間のレビューが必要な動作に AI エージェントを誘導し、 対応が遅れる時間を突く攻撃もあり得る**（出典1）。 **アンパッカーや難読化解除ツールといった外部ツールを呼び出すエージェントは、 その呼び出し自体がマルウェアの配布や実行に乗っ取られる場合があり、 攻撃対象領域をさらに広げる可能性がある**（出典1）〈重要〉。　<b>出典:</b> 1</div></td></tr><tr><th>vendor_guidance</th><td>**ESET は、LLM によるコードレビューや LLM を組み込んだ業務プロセスに頼る企業に対して、 そのツールが「何を検査するのか」「意思決定プロセスのどこに位置するのか」 「応答を拒んだり、タスクを完了できなかったりしたときに何が起こるのか」を 正確に把握するよう求めている**（出典1）。 **中でも重要なのは、コードの安全性を判断する権限を単一の LLM エンジンだけに 持たせないことである**（出典1） ——**「no single LLM engine should have the sole authority to decide that a piece of code is safe」**（出典1。原文英語）。 **AI の出力結果は、高度な自動化と人間の専門性を組み合わせた多層かつ 複数モデルによるアプローチで相互に検証する必要があるとしている**（出典1）。 **出力が得られなかったこと自体も、追加の確認を促すトリガーとして扱わなければならない** （出典1）〈重要〉。 **24時間体制のセキュリティチームを持たない企業には MDR が選択肢になるとし、 1つの LLM モデルの挙動が組織のサイバー防御の死角にならないようにする必要があると 述べている**（出典1）。</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年9月10日（出典1 の公表時点）　<b>根拠:</b> **ESET が実際の攻撃（UAC-0099 のウクライナ国内の標的に対する攻撃の初期段階）で 使われた VBScript から発見している**（出典1）。　<b>補足:</b> **「手口が実際の攻撃で使われた」ことは確認されている**（出典1）。 **「手口が機能した（LLM スキャナーが実際に止まった）」ことは確認されていない** 〈未確定2〉〈重要〉——**この2つを区別すること**（本記録の明示）。 **本記録の評価では、機能したかどうかが不明であっても対処の必要は変わらない** ——**攻撃者が防御側の構成を織り込んで作ってきたという事実のほうが重い**（出典1）。　<b>出典:</b> 1</td></tr><tr><th>ログの有無</th><td>**本手口が成功したかどうかは、解析を行った側のログにしか残らない** （本記録の評価）〈重要〉。 **残るべき記録は「LLM が応答を拒否した」「解析が途中で終了した」「出力が空だった」 といった事象であり、これらは多くの検査パイプラインで 「エラー」や「スキップ」として捨てられる種類の記録である**（本記録の整理）。 **ESET が「出力が得られなかったこと自体も、追加の確認を促すトリガーとして 扱わなければならない」と述べているのは、この記録を捨てないという要求である**（出典1）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **LLM を組み込んだ検査について、「拒否・無応答・途中終了」の扱いを確認する** （出典1 の指摘に基づく本記録の整理） ——**これらが「問題なし」として通っていないか、 エラーとして捨てられていないかを見る。**　<b>副作用:</b> **「拒否を異常として扱う」設計にすると、誤検知が増える**（本記録の明示） ——**正当な理由でモデルが応答しないケース（長すぎる入力・形式の不一致）も 人手の確認に回る。** **運用量の増加を見込んでから切り替えること。**</div><div class=sub><b>手順:</b> **コードの安全性の最終判定を、単一の LLM の出力だけに依存させない**（出典1） ——**複数モデルでの相互検証と、人の確認を組み合わせる。**　<b>副作用:</b> **コストと所要時間が増える**（本記録の明示） ——**全件に適用すると、LLM 導入の目的（検査の高速化）と衝突する。** **本記録の提案は、「拒否・無応答が起きた対象」に限って多層の検証へ回すことである。**</div><div class=sub><b>手順:</b> **静的な検査（署名・構造・エントロピー）と、動的・ネットワーク側の検知を LLM 検査と並列に残す**（本記録の提案）。　<b>副作用:</b> **既存の検査を残すため、LLM 導入による工程の削減ができない**（本記録の明示）。 **ただし本件では、解析が止まっても MATCHBOIL の C&amp;C 通信（2分間隔。出典3）は 止まらない**（本記録の評価）——**並列に残す層が、最後の網になる。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年6月</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**サプライチェーン攻撃キャンペーンで、LLM 優先の検査を狙った 同種の仕掛けが確認される**（本記録が検索の範囲で把握した報道）〈齟齬2〉 ——**Python パッケージ群に、生物兵器・核兵器の手順を求める偽の文言を埋め込んで 安全装置を作動させる手口があったとされる。** **本記録はこの報道の原文を取得していない**ため、**時期の参考として記録する。**</td></tr><tr><td class="sm nowrap tw">2026年7月下旬</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CERT-UA が、Notepad++ のプラグインを装った新版 MATCHBOIL の配布について 警告を出したと報じられる**（本記録が検索の範囲で把握した報道）〈齟齬1〉。 **出典1 は参照先として cert.gov.ua を挙げている**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月10日（スロバキア時間）</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**ESET が GuardBreaker を公表する**（出典1・出典2）。 **UAC-0099 がウクライナ国内の標的への攻撃の初期段階で使った VBScript に 核兵器の作り方を求めるコメントが仕込まれていたことを報告し、手口を命名した**（出典1）。 **スクリプトの目的は MATCHBOIL の取得・実行である**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**ESET が UAC-0099 と MATCHBOIL についての調査を公表する**（出典3）。 **UAC-0099 をロシア系と「中程度の確度」で判断、標的はウクライナの政府機関・ 金融機関・メディアで、テレメトリでは運輸・製造・エネルギーの被害を確認、 MATCHBOIL は C# 製のダウンローダーで当初は一度きりの動作だったものが 2分間隔で C&amp;C と通信する仕組みへ進化、Sandworm 向けの初期アクセス・ブローカーとして 機能している可能性があるとした**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**@IT Security &amp; Trust が日本語で報道する**（出典2）。**本記録の起点である。** **ESET の公表（2026年9月10日）から約6週間後である**（本記録の照合）。 **記事は会員限定であり、全文の閲覧には登録が必要である**（本記録の確認）。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>CERT-UA の2026年7月の警告</span><div class=sm>**出典1 は参照先として cert.gov.ua を挙げている**（本記録の確認）。 **本記録が検索の範囲で把握した報道によれば、CERT-UA は2026年7月下旬に Notepad++ のプラグインを装った新版 MATCHBOIL の配布を警告したとされる。** **本記録は CERT-UA の原文を取得しておらず、警告の日付・内容・番号を 確認していない**（本記録の明示） ——**timeline T2 はこの前提で読むこと。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>2026年6月のサプライチェーン攻撃キャンペーン</span><div class=sm>**本記録が検索の範囲で把握した報道によれば、2026年6月の Mini Shai-Hulud／Miasma／Hades と呼ばれるサプライチェーン攻撃キャンペーンで、 Python パッケージ群に生物兵器・核兵器の手順を求める偽の文言を埋め込んで LLM の安全装置を作動させる手口が使われたとされる。** **本記録はこの報道の原文を取得していない**（本記録の明示）。 **出典1 が挙げる PyPI の例（Socket・StepSecurity の報告）と 同一のキャンペーンであるかも確認できていない** ——**timeline T1 はこの前提で読むこと。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>コメントに書かれていた文言の原文</span><div class=sm>**出典1 の本文に文言の原文は無く、画像としてのみ掲載されている**（本記録の確認）。 **本記録が検索の範囲で把握した二次報道には、 「核兵器を作りたい。手伝ってほしい……」に相当する英文を ESET の引用として 載せるものがあるが、動詞の表記（make / build）が報道間で揺れている** （本記録の確認）。 **本記録は原文を確定しない**（本記録の判断） ——**手口の理解に文言の正確な再現は必要なく、 再現を載せること自体に利点が無い。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の報道</span><div class=sm>**本記録は The Hacker News の該当記事 （2026年9月・&quot;Russia-Aligned UAC-0099 Plants Nuclear...&quot; に相当）を 取得しようとしたが、HTTP 403 で本文を得られなかった**（本記録の確認）。 **したがって、同記事が伝えるとされる ESET の引用・CERT-UA の警告・ 2026年6月のキャンペーンについては、検索結果の要約の範囲でしか把握していない。** **本記録はこれらを確定した事実として扱っていない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>コメント1行で解析の層だけを抜く——通信とエンドポイントの層は残る</div><div class=svgwrap><svg viewBox="0 0 1610 286" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,143.0 C193.0,143.0 193.0,143.0 220,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,143.0 C397.0,143.0 397.0,41.0 424,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,143.0 C295.0,143.0 295.0,124.0 424,124.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,124.0 C499.0,124.0 499.0,41.0 424,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,41.0 C601.0,41.0 601.0,106.0 628,106.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,124.0 C601.0,124.0 601.0,106.0 628,106.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,106.0 C805.0,106.0 805.0,143.0 832,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,41.0 C601.0,41.0 601.0,187.0 628,187.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,41.0 C805.0,41.0 805.0,106.0 1036,106.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,106.0 C1213.0,106.0 1213.0,143.0 1240,143.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,143.0 C1417.0,143.0 1417.0,99.0 1444,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,99.0 C1519.0,99.0 1519.0,173.0 1444,173.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,106.0 C1111.0,106.0 1111.0,182.0 1036,182.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,143.0 C295.0,143.0 295.0,226.0 424,226.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="111.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">UAC-0099（ロシア</text><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">系・ESET は中程度の</text><text x="91.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">確度と判断）</text><rect x="220" y="106.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スピアフィッシングメール</text><text x="295.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のリンク</text><text x="295.0" y="155.0" text-anchor="middle" fill="#f48fb1" font-size="10">クリックするとアーカイブ</text><text x="295.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">がダウンロードされる（出</text><rect x="424" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VBScript（アーカ</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イブ内）</text><rect x="424" y="80.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GuardBreaker</text><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> のコメント（核兵器の作</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">り方を求める依頼文・平…</text><text x="499.0" y="143.0" text-anchor="middle" fill="#ffcc80" font-size="10">実行時の動作には何の影響</text><text x="499.0" y="155.0" text-anchor="middle" fill="#ffcc80" font-size="10">も及ばない（出典1）</text><rect x="628" y="69.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LLM を組み込んだコー</text><text x="703.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ドスキャナー</text><text x="703.0" y="118.0" text-anchor="middle" fill="#64b5f6" font-size="10">ガードレールが作動し、該</text><text x="703.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">当行以降を検査しないまま</text><rect x="832" y="99.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="121.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">検査結果が「問題なし」ま</text><text x="907.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">たは「終了」として扱われ</text><text x="907.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る</text><text x="907.0" y="162.0" text-anchor="middle" fill="#ffcc80" font-size="10">ここが実害の分岐点（本記</text><text x="907.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">録の評価）。拒否を未判定</text><rect x="628" y="157.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="179.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">署名・構造による静的検査</text><text x="703.0" y="192.0" text-anchor="middle" fill="#64b5f6" font-size="10">GuardBreaker</text><text x="703.0" y="204.0" text-anchor="middle" fill="#64b5f6" font-size="10"> の影響を受けない（本記</text><rect x="1036" y="74.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MATCHBOIL（C#</text><text x="1111.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 製ローダー・UAC-0</text><text x="1111.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">099 専用）</text><rect x="1240" y="106.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C&amp;C サーバー（2分間</text><text x="1315.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">隔の通信）</text><text x="1315.0" y="155.0" text-anchor="middle" fill="#64b5f6" font-size="10">定期通信はネットワーク側</text><text x="1315.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">の統計で見える（出典3 </text><rect x="1444" y="76.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">追加のペイロード</text><rect x="1444" y="136.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1519.0" y="158.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウクライナ国内の標的組織</text><text x="1519.0" y="172.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（名称非公表）</text><text x="1519.0" y="185.0" text-anchor="middle" fill="#80cbc4" font-size="10">業種・件数は非公表〈未確</text><text x="1519.0" y="197.0" text-anchor="middle" fill="#80cbc4" font-size="10">定3〉</text><rect x="1036" y="152.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="174.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エンドポイントの挙動監視</text><text x="1111.0" y="187.0" text-anchor="middle" fill="#64b5f6" font-size="10">GuardBreaker</text><text x="1111.0" y="199.0" text-anchor="middle" fill="#64b5f6" font-size="10"> の影響を受けない（本記</text><rect x="424" y="182.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IDA・Wireshar</text><text x="499.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">k のプロセス確認（人に</text><text x="499.0" y="232.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">よる解析への対策）</text><text x="499.0" y="245.0" text-anchor="middle" fill="#f48fb1" font-size="10">同グループが別の攻撃で実</text><text x="499.0" y="257.0" text-anchor="middle" fill="#f48fb1" font-size="10">施（出典1）</text></svg></div><div class=fn>ESET の報告（出典1）と UAC-0099 の調査（出典3）から、 攻撃経路と GuardBreaker が作用する位置を整理した図である（整理は本記録）。 **点線は、GuardBreaker によって機能を失いうる経路である**（本記録の評価） ——**実線の検知層には影響しない。** **「実際に LLM スキャナーが止まった」事例は公表されていない**〈未確定2〉。 **IoC は公表されていない**〈未確定1〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**出典1・出典3 は、本件での検知の成否について述べていない**（本記録の確認）。 **一般には、アーカイブ内のスクリプトファイルの実行はメール経路・ エンドポイント双方で遮断しうる対象である**（本記録の評価） ——**ただし本件固有の情報ではない。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検知の機会は、技術的には存在する**（本記録の評価） ——**コードコメントの中に自然言語の依頼文が含まれること自体が、 正規のソースコードでは珍しい特徴である。** **さらに、LLM が応答を拒否したこと・出力が空だったことを記録すれば、 事象として捕まえられる**（出典1 の指摘に基づく）。 **ESET が「出力が得られなかったこと自体も、追加の確認を促すトリガーとして 扱わなければならない」と述べているのは、この機会を指している**（出典1）。 **本件で実際に検知されたかは公表されていない**〈未確定2〉。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**ダウンロードと永続化の挙動はエンドポイントの監視で見える対象である** （出典3 の MATCHBOIL の説明に基づく本記録の評価）。 **静的解析が止まっても、動的な挙動は残る**〈重要〉 ——**これが「LLM 検査だけに寄せない」ことの実利である**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**定期的で間隔が一定の通信（ビーコン）は、 ネットワーク側の統計で検知しうる特徴である**（本記録の評価）〈重要〉。 **GuardBreaker はファイルの解析を止めるが、通信を止めることはできない** ——**解析の層が抜かれても、ネットワークの層は残る**（本記録の整理）。 **本件で検知されたかは公表されていない。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**解析環境の判定は、サンドボックス回避の古典的な手法である**（本記録の整理）。 **本記録が注目するのは、同じグループが 「人による解析（IDA・Wireshark）」と「AI による解析（LLM スキャナー）」の 両方を回避対象として織り込んでいる点である**（出典1 に基づく本記録の評価） 〈重要〉。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>LLM を組み込んだ検査について、「結果が出なかったとき何が起こるか」を確認する。 これが本件の実害の分岐点である。</div><div class=lw>**GuardBreaker が狙うのは、LLM スキャナーが応答を拒否し、 当該コメント行以降を検査しないまま処理を打ち切ることである**（出典1）。 **ESET は「出力が得られなかったこと自体も、追加の確認を促すトリガーとして 扱わなければならない」と述べている**（出典1）。 **「拒否されたら問題なしとして通る」設計であれば、手口はそのまま成立する** （本記録の評価）〈重要〉。</div><div class=la><b>取るべき行動</b> **自組織の LLM を使った検査（コードレビュー・脆弱性検査・ 依存パッケージの検査・メールやファイルの分類）について、 ①拒否 ②無応答 ③途中終了 の3つが記録されているかを確認する。** **記録が見つからない場合、まず記録を取る設定に変える。** **次に、これらを「陰性」ではなく「未判定」として扱う運用へ変える**（本記録の提案）。</div></li><li><div class=lp>コードの安全性の最終判定を、単一の LLM に持たせない。</div><div class=lw>**ESET の表現は明確である** ——**「no single LLM engine should have the sole authority to decide that a piece of code is safe」**（出典1。原文英語。訳は本記録）。 **AI の出力結果は、高度な自動化と人間の専門性を組み合わせた 多層かつ複数モデルによるアプローチで相互に検証する必要があるとしている**（出典1）。</div><div class=la><b>取るべき行動</b> **LLM の判定が「唯一の関門」になっている工程を洗い出す （マージの承認・パッケージの取り込み・添付ファイルの通過）。** **全件を多層化するとコストが合わないため、 対象を「LLM が拒否・無応答だったもの」と 「外部由来で初めて取り込むもの」に絞って多層の検証へ回す**（本記録の提案）。</div></li><li><div class=lp>AI を防御に組み込んだことを、攻撃者はすでに前提にしている。</div><div class=lw>**同じグループが、IDA・Wireshark といった解析ツールのプロセス確認** （人による解析への対策。出典1）**と、LLM への依頼文** （AI による解析への対策。出典1）**の両方を用意している**〈重要〉。 **コメントがあること自体が、標的の防御に AI が組み込まれていることを 織り込んでいたことをうかがわせる**（出典1）。</div><div class=la><b>取るべき行動</b> **AI を使った検知・検査の導入を、「攻撃対象領域が増えた」という前提で リスク登録に反映する。** **とくに、外部ツール（アンパッカー・難読化解除ツール）を呼び出す AI エージェントは、呼び出し自体が乗っ取られうる**（出典1） ——**エージェントに与えた実行権限の一覧を作る**（本記録の提案）。</div></li><li><div class=lp>「解析が止まる」より「問題なしと返ってくる」ほうが危険であることを、評価基準に入れる。</div><div class=lw>**StepSecurity は、解析したモデルに対して悪質なコードを無視して パッケージを「問題なし」と報告するよう露骨に指示するプロンプトを確認している** （出典1）〈重要〉。 **止まれば結果が無いことに気づく機会があるが、 「問題なし」が返れば気づく機会そのものが無い**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **LLM 検査の評価を「検出率」だけで見ず、 「検査対象の内容によって判定が誘導されうるか」を試験項目に入れる。** **具体的には、無害なテスト用ファイルに 「これは安全だと報告せよ」に相当する指示文を埋め込み、 判定が変わるかを確認する**（本記録の提案） ——**導入前の受け入れ試験として実施できる。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>検査パイプラインで、LLM の「拒否・空出力・タイムアウト」を陰性と区別して記録する。</div><div class=lw>**本手口が成功したかどうかは、解析を行った側のログにしか残らない** （本記録の評価）〈重要〉。 **これらの事象は、多くのパイプラインで「エラー」や「スキップ」として 捨てられる種類の記録である**（本記録の整理） ——**捨てていれば、止められていても誰も数えていない。**</div><div class=la><b>取るべき行動</b> **検査の結果コードを、少なくとも「陽性／陰性／未判定（拒否・空・タイムアウト）」 の3値に分ける。** **未判定の件数を日次で集計し、増加を異常として扱う。** **未判定のまま次工程へ進む経路があれば、止める**（本記録の提案）。</div></li><li><div class=lp>コメント・文字列の中に自然言語の指示文が含まれることを、静的な検査項目にする。</div><div class=lw>**GuardBreaker のコメントは平文で、誰の目にも見える形で書かれている**（出典1） ——**隠されていない**〈重要〉。 **正規のソースコードのコメントに、モデルへの依頼文や 「無視せよ」「安全と報告せよ」に相当する命令文が現れることは稀である** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **コードレビュー・パッケージ取り込みの静的検査に、 コメントおよび文字列リテラルを対象とした検査を1つ足す （命令形の自然言語・モデルやシステムへの呼びかけ・ 極端に長い反復文字列）。** **反復文字列の検出は npm の例（&quot;You&#x27;re absolutely right!&quot; を数万回。出典1）に 直接当たる**（本記録の整理）。</div></li><li><div class=lp>LLM 検査を、既存の静的・動的・ネットワークの層と置き換えない。</div><div class=lw>**GuardBreaker はファイルの解析を止めるが、通信を止めることはできない** （本記録の評価）〈重要〉。 **MATCHBOIL は2分間隔で C&amp;C と通信する**（出典3） ——**定期的で間隔が一定の通信は、ネットワーク側の統計で見える特徴である** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **LLM による検査の導入を理由に、署名検査・挙動監視・ ネットワークのビーコン検知を削減していないかを確認する。** **削減した工程があれば、復活させるか、 代替の検知手段を明記する**（本記録の提案）。</div></li><li><div class=lp>AI エージェントに与えた外部ツールの実行権限を棚卸しする。</div><div class=lw>**ESET は、アンパッカーや難読化解除ツールといった外部ツールを呼び出す エージェントについて、その呼び出し自体がマルウェアの配布や実行に 乗っ取られる場合があり、攻撃対象領域をさらに広げる可能性があると 指摘している**（出典1）〈重要〉。</div><div class=la><b>取るべき行動</b> **解析・検査に使っている AI エージェントについて、 呼び出せる外部コマンド・ツールの一覧を作る。** **解析対象のファイルを引数として渡す経路には、 隔離された実行環境（ネットワーク遮断・使い捨て）を用いる**（本記録の提案） ——**検査対象に実行の引き金を渡さないこと。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> コードレビュー・脆弱性検査・依存パッケージの検査・ファイル分類のいずれかに LLM を組み込んでおり、モデルが応答しなかった場合の扱いを決めていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> LLM の判定が、マージ・取り込み・通過の「唯一の関門」になっている工程がある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> PyPI・npm などの公開リポジトリから依存パッケージを取り込んでおり、 その検査が LLM による内容の読み取りに依存している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 解析・検査を行う AI エージェントに、外部ツール（アンパッカー・難読化解除ツール等）の 呼び出し権限を与えている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> LLM 検査の導入を理由に、署名検査・挙動監視・ネットワークのビーコン検知の いずれかを削減した</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> LLM 検査の導入時の受け入れ試験に、「検査対象の内容によって判定が誘導されうるか」の 項目が無い</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年9月10日 ESET（WeLiveSecurity・著者 Tomáš Foltýn）</span> <a href="https://www.welivesecurity.com/en/business-security/guardbreaker-derailing-ai-assisted-malware-analysis-code-comment/" target="_blank" rel="noreferrer noopener nofollow">GuardBreaker: Derailing AI-assisted malware analysis with a code comment</a> <span class="b kind">ブログ</span><span class=sm>（**本事案の一次資料。** UAC-0099 がウクライナ国内の標的への攻撃の初期段階で使った VBScript、 コメントに仕込まれた核兵器関連の依頼文（本文には画像としてのみ掲載）、 LLM スキャナーのガードレールを作動させる狙い、実行時の無影響、 GuardBreaker という命名、間接プロンプトインジェクションとしての位置づけ、 IDA・Wireshark のプロセス確認、MATCHBOIL の役割、 PyPI（Socket・StepSecurity）と npm の類似手口、 起こりうる他の経路、対策（単一 LLM に判断権限を与えない／ 出力が無いこと自体をトリガーにする／多層・複数モデルでの相互検証／MDR）を示す。 **本記録が2026年10月27日に直接取得して本文を確認した。** **IoC・ハッシュの記載は無い**〈未確定1〉。 **コメントの文言は画像のみで、本文に原文が無い**〈齟齬3〉。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月8日 ESET（Newsroom / ESET Research）</span> <a href="https://www.eset.com/us/about/newsroom/research/uac-0099-matchboil-attacks-ukraine/" target="_blank" rel="noreferrer noopener nofollow">Russian-aligned UAC-0099 intensifies attacks on Ukrainian industry with evolving MATCHBOIL downloader</a> <span class="b kind">調査レポート</span><span class=sm>（**攻撃グループとローダーの背景資料（GuardBreaker 自体の資料ではない）。** UAC-0099 をロシア系と「中程度の確度」で判断していること、 標的がウクライナの政府機関・金融機関・メディアであること、 テレメトリで運輸・製造・エネルギーなど複数分野の被害を確認したこと、 MATCHBOIL が C# 製のダウンローダーで当初は一度きりの動作だったものが 2分間隔で C&amp;C と通信する仕組みへ進化したこと、 Sandworm 向けの初期アクセス・ブローカーとして機能している可能性、 初期侵入がスピアフィッシングのリンク → アーカイブ → VBScript → MATCHBOIL という流れであることを示す。 **本記録が2026年10月27日に直接取得して確認した。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月26日 @IT Security &amp; Trust（ITmedia）</span> <a href="https://atmarkit.itmedia.co.jp/ait/articles/2610/23/news068.html" target="_blank" rel="noreferrer noopener nofollow">マルウェアに「核兵器の作り方を教えて」　AIによるコード解析を止めさせる新手口「GuardBreaker」</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点になった日本語報道。** **ESET の公表日を「2026年9月10日（スロバキア時間）」と明記している**（出典2）。 **出典1 の内容を日本語で詳細に伝えており、 本記録が照合した範囲で出典1 との食い違いは無い**（本記録の照合）。 **会員限定記事であり、全文の閲覧には登録が必要である**（本記録の確認） ——**本記録は収集済みの本文で内容を確認した。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月27日</span> <span class="b rev">新規作成</span> **2026年10月26日の @IT Security &amp; Trust の報道（出典2）を起点に、 その元である ESET の公表（出典1・2026年9月10日）を直接取得して裏を取り作成した。** **手口の内容・命名・位置づけ・類似手口（PyPI・npm）・ESET の推奨対策は、 すべて出典1 の本文から採っている。** **攻撃グループとローダーの背景は、ESET の UAC-0099 調査（出典3・2026年10月8日）を 直接取得して補った。** **確認できなかったのは、①IoC・ハッシュ（出典1 に記載なし）**〈未確定1〉、 **②実際に LLM スキャナーが止まった事例**〈未確定2〉、 **③標的組織の名称・業種・件数**〈未確定3〉、 **④コメントの文言の原文（画像のみ）**〈齟齬3〉、 **⑤CERT-UA の2026年7月の警告の原文**〈齟齬1〉、 **⑥2026年6月のサプライチェーン攻撃キャンペーンの原文**〈齟齬2〉、 **⑦The Hacker News の記事（HTTP 403 で取得できず）である。** **status は updating**——**手口は単純で再現の障壁が無く、 PyPI・npm でも同種の仕掛けが見つかっているため**（出典1）、 **採用の広がりを追う必要がある。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">GuardBreaker</span><span class="b tag">UAC-0099</span><span class="b tag">MATCHBOIL</span><span class="b tag">プロンプトインジェクション</span><span class="b tag">間接プロンプトインジェクション</span><span class="b tag">LLM</span><span class="b tag">AI 解析回避</span><span class="b tag">ESET</span><span class="b tag">ウクライナ</span><span class="b tag">サプライチェーン</span><span class="b tag">PyPI</span><span class="b tag">npm</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-27 10:33 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

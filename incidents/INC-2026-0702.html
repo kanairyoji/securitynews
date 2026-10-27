@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Gheist、秘密情報をログに吐かせる — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0702</span>Gheist、秘密情報をログに吐かせる</h1>
+<header class="site-header">
+  <p class="subtitle">**盗んだ GitHub のトークンで、リポジトリの秘密情報を GitHub 自身のログに 吐き出させる**自動化キャンペーンが続いている。 Wiz Research が **Gheist** と名づけて2026年9月15日から追跡しており、 **850超のアカウント**から**13,500超の仕込まれたブランチ**を回収した。 手口は、盗んだトークンで到達できる全リポジトリに `ci-sync-` ＋6文字のブランチを作り、`.github/workflows/sync-check.yml` を コミットする——**走り出したワークフローが、環境変数と `secrets` コンテキストを base32 で符号化して自分のログに印字する**。 **GitHub が秘密情報を隠すのは「そのままの文字列」が出たときだけなので、 符号化された値はそのまま出る**。 **攻撃者は API でログを取得し、数秒後に実行記録を消す**。 **外部へ出ていく通信が無いので、遮断すべき攻撃者のドメインも存在しない。** **2026年7月28日から GitHub は公開リポジトリで疑わしいワークフローの実行を 承認待ちで止めており、Wiz が調べた公開リポジトリの実行はすべて `action_required` のまま動かなかった**。 **一方、この保護は非公開リポジトリと GitHub Enterprise Server には及ばず、 そこでは成功している**——監査ログには `ci-sync-*` ブランチでの実行完了と `gheist` の利用者エージェントによる削除が残り、 AWS CloudTrail には同じブランチでの AWS ロール引き受けが記録されていた。 **ブランチや実行記録を消しても露出は戻らない。 当該リポジトリが読めた秘密情報はすべて更新が必要である。**</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月25日（Wiz Research の公表日）</span>
+  <span>最終更新: 2026年10月27日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>外へ送信しないのに、情報は出ていきます。出口は GitHub 自身のログです。</strong></p>
+<p><strong>2026年10月25日、Wiz Research が Gheist と名づけたキャンペーンを公表しました</strong>（出典1）。<strong>名前の由来は、攻撃に使われている道具が GitHub の API へ送る利用者エージェント <code>gheist</code> です</strong>（出典1）。<strong>Wiz は2026年9月15日から追跡しており、850を超えるアカウントから13,500を超える仕込まれたブランチを回収しました</strong>（出典1）。</p>
+<p><strong>手口は次のとおりです</strong>（出典1）。</p>
+<ol>
+<li><strong>盗んだトークンで、そのトークンが到達できる全リポジトリを対象にする。</strong></li>
+<li><strong>各リポジトリに <code>ci-sync-</code> ＋6文字のブランチを作り、<code>.github/workflows/sync-check.yml</code> を <code>ci: sync config</code> というメッセージでコミットする</strong>（署名は無く、作成者はトークンの持ち主として記録される）。</li>
+<li><strong>push で走り出したワークフローが、環境変数と <code>secrets</code> コンテキストをbase32 で符号化して自分のログに印字する。</strong></li>
+<li><strong>道具が GitHub の API でそのログを取得する。</strong></li>
+<li><strong>数秒後に実行記録を消す。</strong></li>
+</ol>
+<p><strong>本記録が要点と見たのは、次の3点です。</strong></p>
+<ul>
+<li><strong>出口が基盤の内側にあるので、止める先が無い。</strong> <strong>Wiz は「データが GitHub 自身の API を通って出ていくため、攻撃者のドメインも外向きの接続も存在しない」としています</strong>（出典1。原文英語。訳は本記録）。<strong>送信先を遮断する、という防御の形がそもそも当てはまりません</strong>（本記録の評価）。</li>
+<li><strong>秘密情報を隠す仕組みは、符号化すると効かない。</strong> <strong>GitHub がログで秘密情報を隠すのは「そのままの文字列」が現れたときだけで、base32 で符号化された値は全部そのまま出ます</strong>（出典1）。<strong>さらに、ジョブの <code>permissions: {}</code> が制限するのは <code>GITHUB_TOKEN</code> であって、<code>secrets</code> コンテキストではありません</strong>（出典1）。<strong>どちらも設定の誤りではなく、仕様どおりの挙動です</strong>（本記録の評価）。</li>
+<li><strong>公開リポジトリでは止まり、非公開と Enterprise Server では止まらなかった。</strong> <strong>2026年7月28日から、GitHub は公開リポジトリで疑わしいワークフローの実行を共同作業者の承認まで保留しています</strong>（出典1）。<strong>Wiz が調べた公開リポジトリの実行はすべて <code>action_required</code> のままで、「この対策は機能し、悪性のペイロードは一度も走らなかった」とされています</strong>（出典1。原文英語。訳は本記録）。<strong>一方、この保留は非公開リポジトリと GitHub Enterprise Server には及びません</strong>（出典1）。<strong>そこでは、監査ログに <code>ci-sync-*</code> ブランチでの実行完了と<code>gheist</code> による削除が残っていました</strong>（出典1）。</li>
+</ul></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>被害組織の名称・国・業種</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 は組織名も国も業種も挙げていない**（本記録の確認）。 **日本の組織が含まれるかは分からない**（本記録の明示） ——**「含まれない」と書かれているわけでもない。**</div></li><li><span class=ui>秘密情報が実際に露出した組織の数と、その後どう使われたか</span><span class="b rsn">公表されていない</span><div class=sm>**Wiz は「分析は、いくつの組織で秘密情報が露出したかを示していない」としている** （出典1。原文英語。訳は本記録）。 **企業の環境では、数時間後に同じ組織のクラウド資格情報を使って AWS Secrets Manager の列挙が行われた例が記述されているが**（出典1）、 **その後何が持ち出されたかは示されていない。**</div></li><li><span class=ui>消えた約3分の2のアカウントが、停止されたのか削除されたのか</span><span class="b rsn">公表されていない</span><div class=sm>**「GitHub 上で利用できなくなっていた」という記述のみで、 誰の手によるものかは示されていない**（出典1）。 **Wiz は対応が行われた結果である可能性が高いとしている**（出典1）。</div></li><li><span class=ui>攻撃者の帰属と目的</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 は国家背景にも既知の集団との関係にも触れていない**（本記録の確認）。 **自動化の規模と、無料の計算資源の悪用（「Windows RDP Runner」）が 並行していることから金銭目的が想起されるが、 資料に目的の記述は無い**（本記録の留保）。 **GhostAction とは使うワークフローのファイルが違うとして区別されている**（出典1）。</div></li><li><span class=ui>GitHub 自身の見解と、非公開リポジトリ・GitHub Enterprise Server への保護の拡大予定</span><span class="b rsn">公表されていない</span><div class=sm>**出典1 には GitHub の声明が含まれていない**（本記録の確認）〈齟齬1〉。 **報道（出典2）は「現時点では github.com の公開リポジトリにのみ適用される」 という説明を引いているが、本記録は原文を確認できていない**〈齟齬2〉。 **拡大の予定があるかは分からない**（本記録の明示）。</div></li><li><span class=ui>トークンがどのように盗まれたか（個々の経路）</span><span class="b rsn">公表されていない</span><div class=sm>**出所として挙げられているのはインフォスティーラーのログと、 過去の供給網侵害（2026年3月の Trivy 侵害）で露出したトークンである**（出典1）。 **どのトークンがどちらの経路で得られたかの内訳は示されていない**（本記録の確認）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Wiz Research（Rami McCarthy 氏・Hila Ramati 氏）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GitHub（Microsoft）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>侵害された GitHub アカウントの保有者（850超・名称非公表）</span><span class="b role">被害組織</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>回収された仕込まれたブランチの数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>13,500<span class=fu>本</span></div><div class=fn>**「13,500超」であり上限ではない**（出典1）。 **ブランチの数であり、リポジトリの数でも組織の数でもない**（本記録の明示） ——1リポジトリに複数回仕込まれた場合の扱いは示されていない。 **2026年10月6日の改名で610本が副作用として消えている**（出典1）ため、 回収数は仕込まれた総数の下限である（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>侵害された GitHub アカウントの数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>850<span class=fu>アカウント</span></div><div class=fn>**「850超」であり上限ではない**（出典1）。 **アカウントの数であり、組織の数でも人の数でもない**（本記録の明示） ——自動化アカウント（人に紐づかないもの）も含まれる（出典1）。 **範囲は個人の趣味のプロジェクトから企業の非公開リポジトリまで**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>公表時点で GitHub 上に存在しなくなっていたアカウントの割合</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>66<span class=fu>％</span></div><div class=fn>**「およそ3分の2」を百分率にしたもの**（出典1。換算は本記録）。 **Wiz は対応（response activity）が行われた結果である可能性が高いとしている** （出典1）——**停止・削除のどちらかは示されていない**〈未確定3〉。 **「残り3分の1が未対応」という意味ではない**（本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>2026年10月6日に海賊版ソフトの誘い文句へ改名されたリポジトリの数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>1,461<span class=fu>リポジトリ</span></div><div class=fn>**391のアカウントによる「約1,461」**（出典1）。 **その副作用として `ci-sync` ブランチ610本が消えた**（出典1）。 **これは Gheist の目的（秘密情報の窃取）とは別の活動であり、 同じアカウント群で起きた併発事象として記録する**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>2026年10月18日に「Windows RDP Runner」を作ったアカウントの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>25<span class=fu>アカウント</span></div><div class=fn>**9分のあいだにそれぞれ1つずつ作成している**（出典1）。 **Actions を無料の計算資源として悪用する狙いとみられるとされる**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>Megalodon の被害者とも重なっていたアカウントの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>57<span class=fu>アカウント</span></div><div class=fn>**Gheist の第1段階に現れたアカウントのうち57が、 2026年5月に Megalodon の被害者でもあった**（出典1）。 **本記録は Megalodon の一次資料を確認していない**〈齟齬3〉。</div></div><div class=fig><div class=fh><span class=fl>Wiz の追跡開始から公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>40<span class=fu>日</span></div><div class=fn>2026年9月15日から2026年10月25日まで40日である（算出は本記録）。 **公表時点でも攻撃は継続している**（出典1）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**自動化された道具が、盗んだトークンで到達できる全リポジトリに 同じワークフローを仕込み、GitHub のログを出口にして秘密情報を回収する** （出典1）。 **以下は出典1 の記述を段階に割り当てたものである**（整理は本記録）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**インフォスティーラーのログと、過去の供給網侵害で露出したトークンを集める** （出典1）。 **Gheist の第1段階に現れた57アカウントは、 2026年5月に Megalodon の被害者でもあった**（出典1）。</div><div class=fn>根拠: **「資格情報の出所: インフォスティーラーのログと、 3月の Trivy 侵害のような過去の供給網侵害で露出したトークン」** （出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**盗んだトークンで到達できる全リポジトリを対象にし、 企業の組織では複数の利用者と自動化アカウントのトークンを 数分のあいだに次々と使う**（出典1）。 **ワークフローを仕込む前に、非公開リポジトリを複製していた**（出典1）。</div><div class=fn>根拠: **「企業の組織では、道具は数分のあいだに複数の利用者と 自動化アカウントのトークンを巡回し、 ワークフローを仕込む前に非公開リポジトリを複製した」** （出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">3. 永続化</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**各リポジトリに `ci-sync-` ＋6文字のブランチを作り、 `.github/workflows/sync-check.yml` を `ci: sync config` という メッセージでコミットする**（出典1）。 **コミットは署名されておらず、作成者はトークンの持ち主として記録される**（出典1）。</div><div class=fn>根拠: **指標として「ブランチ接頭辞 `ci-sync-` ＋6文字（`^ci-sync-[0-9a-z]{6}$`）」 「`.github/workflows/sync-check.yml` のみを追加するコミットメッセージ `ci: sync config`」が挙げられている**（出典1）。</div></li><li><div class=stg><span class="b stage">4. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**push がワークフローの実行を引き起こす**（出典1）。 **公開リポジトリでは2026年7月28日以降の承認保留により `action_required` のまま止まったが、 非公開リポジトリと GitHub Enterprise Server では実行された**（出典1）。</div><div class=fn>根拠: **「対策は機能し、悪性のペイロードは一度も走らなかった」（公開リポジトリ）** ／**「保留は適用されない。GitHub の監査ログには、`ci-sync-*` ブランチでの 実行が完了し、その後 `gheist` の利用者エージェントによって 削除されたことが示されていた」（非公開・Enterprise Server）** （出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">5. 収集</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**ワークフローが環境変数と `secrets` コンテキストを base32 で符号化して 自分のログに印字する**（出典1）。 **デプロイ環境を持つリポジトリでは、ジョブのマトリクスで 環境ごとの秘密情報も印字される**（出典1）。 **`self-hosted` ランナーで走る `sync-host` ジョブは、 ホスト・プロセス・コンテナ・クラウドのメタデータ・ランナー・ Kubernetes の資格情報も集める**（出典1）。</div><div class=fn>根拠: **「GitHub が秘密情報を隠すのは、それがそのままの形で現れたときだけなので、 符号化された値は全部印字される。 ジョブの `permissions: {}` が制限するのは `GITHUB_TOKEN` だけで、 `secrets` コンテキストではない」**（出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">6. 持ち出し</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**道具が GitHub の API で実行ログを取得する**（出典1）。 **外部へ出ていく通信は無く、遮断すべき攻撃者のドメインも存在しない**（出典1）。</div><div class=fn>根拠: **「データが GitHub 自身の API を通って出ていくため、 攻撃者のドメインも外向きの接続も存在しない」** （出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">7. 検知回避</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**実行記録を数秒後に削除する**（出典1）。 **道具 B は `timeout-minutes: 6` を追加し、 リポジトリごとにペイロードを変える**（出典1）。</div><div class=fn>根拠: **「実行は数秒後に削除される」／ 「`ci-sync-*` ブランチでの実行が完了して約1分以内に削除されたものを GitHub の監査ログで確認せよ」**（出典1。原文英語。訳は本記録）。</div></li><li><div class=stg><span class="b stage">8. 横展開</span><span class="b conf">確認済</span><span class=srcs></span></div><div>**企業の環境では、数時間後に同じ組織のクラウド資格情報を使って AWS Secrets Manager の列挙が行われた**（出典1）。</div><div class=fn>根拠: **「数時間後、同じ組織のクラウド資格情報を使って AWS Secrets Manager を列挙した」**（出典1。原文英語。訳は本記録）。</div></li></ol></div>
+<section id="s5"><h2>出口が GitHub の内側にあるので、遮断する先が存在しない<span class="b slot">原因・手口</span></h2><p>Wiz は手口を次の5段で説明している（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>動作</th>
+<th>使われるもの</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>盗んだトークンで到達できる全リポジトリを対象にする</td>
+<td>正規のトークン</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>ci-sync-</code>＋6文字のブランチに <code>.github/workflows/sync-check.yml</code> をコミット</td>
+<td>正規の push</td>
+</tr>
+<tr>
+<td>3</td>
+<td>走り出したワークフローが環境変数と <code>secrets</code> を base32 で符号化して印字</td>
+<td>正規の Actions</td>
+</tr>
+<tr>
+<td>4</td>
+<td>道具が GitHub の API でログを取得</td>
+<td>正規の API</td>
+</tr>
+<tr>
+<td>5</td>
+<td>数秒後に実行記録を削除</td>
+<td>正規の API</td>
+</tr>
+</tbody>
+</table>
+<p><strong>全段が正規の機能である</strong>（本記録の評価）。だから Wiz はこう書いている。</p>
+<blockquote>
+<p>「データが GitHub 自身の API を通って出ていくため、攻撃者のドメインも外向きの接続も存在しない」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>この1文が、本件で最も重い</strong>（本記録の判断）。秘密情報の持ち出しに対する防御は、<strong>たいてい「どこへ送られたか」を押さえる形で作られている</strong>——外向き通信の監視、DNS の遮断、プロキシでの制御、C2 ドメインのブロックリスト。<strong>本件はそのどれにも当たらない。</strong></p>
+<p><strong>秘密情報を隠す仕組みが効かない理由も、同じ性質である</strong>（出典1）。</p>
+<blockquote>
+<p>「GitHub が秘密情報を隠すのは、それがそのままの形で現れたときだけなので、符号化された値は全部印字される。ジョブの <code>permissions: {}</code> が制限するのは<code>GITHUB_TOKEN</code> だけで、<code>secrets</code> コンテキストではない」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong><code>permissions: {}</code> は、見た目には最も厳しい設定である。</strong>それでも <code>secrets</code> は読める。<strong>設定を間違えたのではなく、仕様どおりの挙動が組み合わさっている</strong>（本記録の評価）。</p></section>
+<section id="s6"><h2>公開リポジトリでは止まり、非公開と Enterprise Server では止まらなかった<span class="b slot">被害規模・影響範囲</span></h2><p>2026年7月28日から、GitHub は公開リポジトリで疑わしいワークフローの実行を共同作業者の承認まで保留している（出典1）。</p>
+<p><strong>Wiz が調べた公開リポジトリの実行は、変種を問わずすべて<code>action_required</code> のままだった</strong>（出典1）。Wiz の言い方はこうである。</p>
+<blockquote>
+<p>「対策は機能し、悪性のペイロードは一度も走らなかった」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>ところが、この保留は非公開リポジトリと GitHub Enterprise Server には及ばない</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>場所</th>
+<th>承認保留</th>
+<th>結果（出典1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>github.com の公開リポジトリ</td>
+<td>及ぶ</td>
+<td><strong>実行されなかった</strong>（<code>action_required</code> のまま）</td>
+</tr>
+<tr>
+<td>github.com の非公開リポジトリ</td>
+<td><strong>及ばない</strong></td>
+<td><strong>実行された</strong>（完了後に削除）</td>
+</tr>
+<tr>
+<td>GitHub Enterprise Server</td>
+<td><strong>及ばない</strong></td>
+<td><strong>実行された</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>成功の証拠として挙げられているのは2つである</strong>（出典1）。①GitHub の監査ログに、<code>ci-sync-*</code> ブランチでの実行完了と、その後の <code>gheist</code> による削除が残っていた。②<strong>AWS CloudTrail に、組織自身のワークフローがこれらのブランチで動き、AWS のロールを引き受けた記録が残っていた</strong>—— <strong>承認なしに Actions が実行されたことを示す。</strong></p>
+<p><strong>本記録が重く見るのは、この非対称である</strong>（本記録の評価）。<strong>公開リポジトリは、不特定多数に見られる代わりに基盤側の保護が厚い。非公開リポジトリは、見られない代わりに保護が薄い。</strong> <strong>「非公開だから安全」という直感と、実際の保護の厚みが逆を向いている。</strong></p>
+<p><strong>そして企業が機密を置くのは非公開リポジトリの側である</strong>（本記録の評価）。Wiz が記述している企業環境での動きは、<strong>複数の利用者と自動化アカウントのトークンを数分で巡回し、ワークフローを仕込む前に非公開リポジトリを複製し、数時間後に同じ組織のクラウド資格情報で AWS Secrets Manager を列挙した</strong> ——というものである（出典1）。</p></section>
+<section id="s7"><h2>消しても戻らない——「ブランチを削除して対応完了」にしてはいけない<span class="b slot">再発防止</span></h2><p>Wiz の対応の指針で最初に来るのはこれである（出典1）。</p>
+<blockquote>
+<p>「影響を受けたリポジトリが読めたリポジトリ・組織・環境のすべての秘密情報を更新せよ。実行やブランチを削除しても露出は元に戻らない」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>仕込まれたブランチを見つけたとき、最も手軽に見える対応は「ブランチを消す」である</strong>（本記録の評価）。<strong>しかし秘密情報はすでにログへ印字され、API で取得されている。</strong> <strong>残っている痕跡を消すことは、露出を取り消すことではない。</strong></p>
+<p><strong>攻撃者側も、実行記録を数秒後に消している</strong>（出典1）。<strong>つまり「痕跡が無い」は「何も起きなかった」の証拠にならない</strong>（本記録の評価）。</p>
+<p>対応として挙げられているのは次である（出典1）。</p>
+<ul>
+<li><strong>当該リポジトリから読めた秘密情報を、リポジトリ・組織・環境の全スコープで更新する</strong></li>
+<li><strong>コミットを push したトークンを無効化し、持ち主の端末をインフォスティーラーの観点で確認する</strong></li>
+<li><strong><code>ci-sync</code> ブランチが self-hosted ランナーで走った場合は、そのホストとインスタンスのロールを侵害済みとして扱う</strong></li>
+<li><strong>保留されている <code>sync-check</code> の実行を承認しない。<code>ci-sync</code> ブランチのコードを実行しない</strong></li>
+</ul>
+<p><strong>探索（hunt）で本記録が有用と見たのは、最後の1つである</strong>（出典1）。</p>
+<blockquote>
+<p>「クラウド事業者と OIDC を使っているなら、主体（subject）に <code>ci-sync-</code> を含むロールの引き受けやトークン交換をクラウドの監査ログで確認せよ。これは GitHub のログが無くてもこの活動を検知できる」（出典1。原文英語。訳は本記録）</p>
+</blockquote>
+<p><strong>GitHub 側のログは攻撃者が消しうる。クラウド側のログは消せない</strong>（本記録の評価）。<strong>自組織に残っている記録のうち、相手の手が届かないものはどれか——という問いの立て方が、本件では効く。</strong></p></section>
+<section id="s8"><h2>探すならこの形を探す——ただし本記録はこれらを検証していない<span class="b slot">対策・注意喚起</span></h2><p>Wiz が公表した指標は次である（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>種別</th>
+<th>値</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>利用者エージェント</td>
+<td><code>gheist</code></td>
+</tr>
+<tr>
+<td>ブランチ名</td>
+<td><code>ci-sync-</code> ＋6文字（<code>^ci-sync-[0-9a-z]{6}$</code>）</td>
+</tr>
+<tr>
+<td>コミットメッセージ</td>
+<td><code>ci: sync config</code>（<code>.github/workflows/sync-check.yml</code> のみを追加）</td>
+</tr>
+<tr>
+<td>文字列</td>
+<td><code>toJSON(secrets) }}' \| base32 -w 120</code></td>
+</tr>
+<tr>
+<td>文字列</td>
+<td><code>===== gdmp-pivot:</code></td>
+</tr>
+<tr>
+<td>self-hosted ランナー上のファイル</td>
+<td><code>.gdmp_pat</code> ／ <code>.gdmp_patg</code> ／ <code>.gdmp_sweep</code></td>
+</tr>
+<tr>
+<td>ワークフローの blob SHA（素のペイロード）</td>
+<td><code>f3da2b8b357dcda02fd455d314be2a95007516a6</code></td>
+</tr>
+<tr>
+<td>ワークフローの blob SHA（タイムアウト追加版）</td>
+<td><code>d09535857a741bbb976bdc084a9a021713133291</code></td>
+</tr>
+<tr>
+<td>ワークフローの blob SHA（区切り追加版）</td>
+<td><code>1dc5af9cce950aad1eb1546ecce8565b117540c4</code></td>
+</tr>
+<tr>
+<td>ワークフローの blob SHA（self-hosted ジョブ）</td>
+<td><code>c665b778b2d822453293003e7ca0bbb2cb08e39d</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録はこれらを独自に検証していない</strong>（本記録の明示）〈齟齬5〉。<strong>照合先のテレメトリを持たないため、本記録の記載を根拠に検知を組まないこと。</strong> <strong>使うなら出典1 を直接参照する。</strong></p>
+<p><strong>使うときの注意が2つある</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>変種ごとに形が違う。</strong> 道具 A は16進数の接尾辞、道具 B は base36 の接尾辞で、道具 B は初動の数時間のうちに <code>timeout-minutes: 6</code> と環境マトリクスを追加し、リポジトリごとにペイロードを変えている（出典1）。<strong>2026年10月19日には base32 の区切りも追加されている</strong>（出典1）。<strong>公表時点でなお変化し続けている</strong>（出典1）。</li>
+<li><strong>痕跡は消える。</strong> 実行記録は数秒後に削除され（出典1）、2026年10月6日の改名では <code>ci-sync</code> ブランチ610本が副作用で消えている（出典1）。<strong>ブランチ名での探索が空振りでも、「無かった」の証明にはならない。</strong></li>
+</ul>
+<p><strong>だから Wiz の探索の指針は、指標そのものよりも「振る舞いと、相手が消せない記録」に寄っている</strong>（本記録の整理。出典1）。</p>
+<ul>
+<li><strong>GitHub の監査ログで、<code>ci-sync-*</code> ブランチでの実行が完了から約1分以内に削除されたものを探す。</strong></li>
+<li><strong>OIDC を使っているなら、クラウドの監査ログで主体（subject）に <code>ci-sync-</code> を含むロールの引き受け・トークン交換を探す</strong> ——<strong>GitHub のログが無くても検知できる</strong>（出典1）。</li>
+<li><strong>self-hosted ランナーで、補助ファイルとジョブログ内の<code>gdmp-pivot</code> 文字列を探す。</strong></li>
+</ul></section>
+<section id="s9"><h2>同じアカウント群で、秘密情報の窃取とは別のことも起きている<span class="b slot">関係が否定された事象</span></h2><p>Wiz は、Gheist と同じアカウント群で起きた別の活動も記録している（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>活動</th>
+<th>規模（出典1）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年10月6日</td>
+<td>リポジトリを海賊版ソフトの誘い文句へ改名</td>
+<td>391アカウント・約1,461リポジトリ（副作用で <code>ci-sync</code> ブランチ610本が消滅）</td>
+</tr>
+<tr>
+<td>2026年10月18日</td>
+<td>「Windows RDP Runner」リポジトリの作成</td>
+<td>25アカウント・9分のあいだ（Actions を無料の計算資源として悪用する狙いとみられる）</td>
+</tr>
+<tr>
+<td>2026年10月19〜20日</td>
+<td>Gheist のコミットを <code>vite.config.js</code> にローダーを足して再 push（PolinRider）</td>
+<td>3件の被害者</td>
+</tr>
+<tr>
+<td>2026年5月</td>
+<td>Megalodon の被害者との重なり</td>
+<td>57アカウント（Gheist 第1段階のアカウント）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録がこれを独立した節にしたのは、2つの理由である</strong>（本記録の判断）。</p>
+<p><strong>①侵害されたアカウントは、1つのキャンペーンの資産では終わらない。</strong> 57アカウントは Megalodon の被害者でもあった（出典1）。<strong>盗まれた資格情報は使い回され、別の運用者の手にも渡る</strong>（出典1 の記述に基づく本記録の評価）。<strong>「あのキャンペーンの対応は済んだ」で終わらせられない。</strong></p>
+<p><strong>②痕跡は、別の活動によって失われることがある。</strong> 10月6日の改名は、<strong>副作用として <code>ci-sync</code> ブランチ610本を消した</strong>（出典1）。<strong>攻撃の証拠が、攻撃者側の別の操作で消える。</strong> <strong>回収された13,500本という数字は、仕込まれた総数の下限である</strong>（本記録の整理）。</p>
+<p><strong>なお Wiz は、Gheist を GhostAction とは区別している</strong> ——<strong>使うワークフローのファイルが違う</strong>（出典1）。</p></section>
+<section id="s10"><h2>露出した組織の数は、Wiz 自身も示していない<span class="b slot">未確定事項</span></h2><p><strong>本件で分かっているのは、攻撃側の広がりだけである</strong>（本記録の明示）。</p>
+<table>
+<thead>
+<tr>
+<th>分かっていること（出典1）</th>
+<th>分かっていないこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仕込まれたブランチ13,500超</td>
+<td><strong>秘密情報が露出した組織の数</strong>〈未確定2〉</td>
+</tr>
+<tr>
+<td>侵害されたアカウント850超</td>
+<td><strong>窃取された秘密情報の数</strong></td>
+</tr>
+<tr>
+<td>約3分の2のアカウントが GitHub 上で消滅</td>
+<td><strong>停止か削除か</strong>〈未確定3〉</td>
+</tr>
+<tr>
+<td>2026年9月15日から追跡、10月24日時点で継続</td>
+<td><strong>攻撃者の帰属と目的</strong></td>
+</tr>
+<tr>
+<td>トークンの出所（インフォスティーラー／過去の供給網侵害）</td>
+<td><strong>個々のトークンの経路の内訳</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Wiz 自身が「分析は、いくつの組織で秘密情報が露出したかを示していない」と述べている</strong>（出典1。原文英語。訳は本記録）。<strong>リポジトリの総数も示されていない</strong>（出典1）。</p>
+<p><strong>本記録が確認できなかったこともここに書く。</strong></p>
+<ul>
+<li><strong>GitHub 自身の声明</strong>〈齟齬1〉——<strong>出典1 には含まれていない。</strong>報道（出典2）は「現時点では github.com の公開リポジトリにのみ適用される」という説明を引いているが、<strong>本記録は原文を確認できていない</strong>〈齟齬2〉。</li>
+<li><strong>Trivy 侵害・Megalodon・PolinRider の各一次資料</strong>〈齟齬3〉——<strong>出典1 の記述を通じてのみ確認している。</strong></li>
+<li><strong>The Hacker News の記事本文</strong>〈齟齬4〉——<strong>本記録の取得では HTTP 403 が返り、収集済みの記事ファイルに保存された表題と冒頭部分しか読めていない。</strong></li>
+</ul>
+<p><strong>status は updating とする</strong>—— <strong>出典1 は2026年10月24日時点で攻撃が継続し、なお変化し続けているとしている</strong>（出典1）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>露出の仕組み</th><td>**秘密情報は、GitHub Actions の実行ログを出口にして出ていく**（出典1）。 **①ワークフローが環境変数と `secrets` コンテキストを base32 で符号化して印字する。 ②GitHub が秘密情報を隠すのは「そのままの文字列」が現れたときだけなので、 符号化された値は全部そのまま出る。 ③攻撃者の道具が GitHub の API でログを取得する。 ④数秒後に実行記録を消す。** **外部への接続が無いため、遮断すべき攻撃者のドメインが存在しない**（出典1）。</td></tr><tr><th>露出経路</th><td>**ジョブの `permissions: {}` が制限するのは `GITHUB_TOKEN` であって、 `secrets` コンテキストではない**（出典1）。 **デプロイ環境（environment）を持つリポジトリでは、 ジョブのマトリクスを使って環境ごとの秘密情報も印字される**（出典1）。</td></tr><tr><th>露出した項目</th><td>**リポジトリ・組織・環境の各スコープの秘密情報、および環境変数**（出典1）。 **`self-hosted` ランナーで走った場合は、さらにホスト・プロセス・コンテナ・ クラウドのメタデータ・ランナー・Kubernetes の資格情報**（出典1） ——**ただしこのジョブには不具合があり、GCP・Azure のトークンなど 取り逃がしがあるとされる**（出典1）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **当該リポジトリから読めた秘密情報を、リポジトリ・組織・環境の全スコープで更新する** （出典1）。　<b>副作用:</b> **本番の認証情報を一斉に差し替える作業であり、 更新漏れがそのまま障害になる**（本記録の評価）。 **出典1 自身が「実行やブランチを消しても露出は戻らない」と述べているため、 作業を避ける選択肢が無い。**</div><div class=sub><b>手順:</b> **コミットを push したトークンを無効化し、 その持ち主の端末をインフォスティーラーの観点で確認する**（出典1）。　<b>副作用:</b> **自動化アカウントのトークンを無効化すると、 そのトークンに依存する CI が止まる**（本記録の評価）。 **企業の環境では複数の利用者と自動化アカウントのトークンが 数分のあいだに使われていた**（出典1）ため、**対象が1本では済まない。**</div><div class=sub><b>手順:</b> **`ci-sync` ブランチが self-hosted ランナーで走った場合は、 そのホストとインスタンスのロールを侵害済みとして扱う**（出典1）。　<b>副作用:</b> **ビルド基盤そのものの再構築になり、開発が止まる**（本記録の評価）。</div><div class=sub><b>手順:</b> **保留されている `sync-check` の実行を承認しない。 `ci-sync` ブランチのコードを実行しない**（出典1）。　<b>副作用:</b> **承認待ちの実行が溜まり、正規の実行の承認作業に紛れる**（本記録の評価） ——**判別の手順を先に決めておかないと、取り違えが起きうる。**</div><div class=sub><b>手順:</b> **本番の秘密情報を持つ環境にレビュー担当者を必須にし、 OIDC の信頼方針を保護されたブランチ・環境に限定する**（出典1）。　<b>副作用:</b> **デプロイのたびに人の承認が入り、リリースの速度が落ちる**（本記録の評価）。</div><div class=sub><b>手順:</b> **個人アクセストークン（PAT）ではなく GitHub App または 短命の細粒度トークンを使う**（出典1）。　<b>副作用:</b> **既存の自動化の作り替えが必要になり、移行期間は両方の経路が並存する** （本記録の評価）。</div><div class=sub><b>手順:</b> **self-hosted ランナーを使い捨てのホストとして運用し、 Docker ソケットや無制限のメタデータへのアクセスを与えない**（出典1）。　<b>副作用:</b> **ビルドのキャッシュが効かなくなり、実行時間とコストが増える**（本記録の評価）。</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年3月</td><td class=nowrap><span class="b kind">発生</span></td><td>**トークンの出所のひとつ**——Trivy の侵害で露出したトークンが挙げられている （出典1）。**ほかにインフォスティーラーのログも出所として挙げられている**（出典1）。 **本記録は Trivy 侵害そのものを確認していない**〈齟齬3〉。</td></tr><tr><td class="sm nowrap tw">2026年5月</td><td class=nowrap><span class="b kind">発生</span></td><td>**Gheist の第1段階に現れた57アカウントは、同じ月に Megalodon の 被害者でもあった**とされる（出典1）。 **資格情報が複数のキャンペーンで使い回されていることを示す** （出典1 の記述に基づく本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年7月28日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>**GitHub が、公開リポジトリにおける疑わしいワークフローの実行を 共同作業者の承認まで保留する仕組みを導入する**（出典1）。 **これが後に Gheist の公開リポジトリでの実行を止めることになる**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月15日</td><td class=nowrap><span class="b kind">検知</span></td><td>**Wiz Research が本キャンペーンの追跡を開始する**（出典1）。 **命名の由来は、道具が GitHub の API へ送る利用者エージェント `gheist`**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年9月28日</td><td class=nowrap><span class="b kind">発生</span></td><td>**道具 B が初めて動く。その数時間のうちに `timeout-minutes: 6` と 環境（environment）のマトリクスを追加し、 リポジトリごとにペイロードを変えるようになる**（出典1）。 **道具 A は16進数の接尾辞と素のペイロード、 道具 B は base36 の接尾辞を使うという違いがある**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月6日</td><td class=nowrap><span class="b kind">発生</span></td><td>**391のアカウントが、約1,461のリポジトリを 海賊版ソフトの誘い文句に改名する**（出典1）。 **その副作用として、仕込まれていた `ci-sync` ブランチ610本が消えた**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月18日</td><td class=nowrap><span class="b kind">発生</span></td><td>**Gheist の25アカウントが、9分のあいだにそれぞれ 「Windows RDP Runner」というリポジトリを作る**（出典1）。 **Actions を無料の計算資源として悪用する狙いとみられる**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月19日</td><td class=nowrap><span class="b kind">発生</span></td><td>**道具 B が base32 の区切りを追加する**（出典1）—— **運用者側のログ解析器のためとみられる**（出典1）。 **同日の後刻、`self-hosted` ランナーで走る2つ目のジョブ `sync-host` を 押し込むようになる**（出典1）—— 補助ファイルを書き出し、ホスト・プロセス・コンテナ・クラウドのメタデータ・ ランナー・Kubernetes の資格情報を収集する。 **ただしこのジョブには不具合があり、GCP・Azure のトークンなど 取り逃がしがあるとされる**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月19日〜20日</td><td class=nowrap><span class="b kind">発生</span></td><td>**3件の被害者が、Gheist のコミットを `vite.config.js` にローダーを足したかたちで再び push する** （PolinRider として記述されている／出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月24日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**公表時点で攻撃は継続しており、なお変化し続けているとされる**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Wiz Research がブログで公表する**（出典1）—— 手口・変種・指標・狩り方（hunt）・対応（respond）・堅牢化（harden）の指針、 および公開リポジトリでの保留が機能したことを示す。</td></tr><tr><td class="sm nowrap tw">2026年10月26日 07:49（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が出典1 を基に報じる**（出典3）。 **非公開リポジトリと GitHub Enterprise 環境で成功していること、 GitHub の保護が公開リポジトリの実行を止めたことを伝える。** **本記録はこの記事を直接取得できていない（HTTP 403）**〈齟齬4〉—— **確認できたのは、収集済みの記事ファイルに保存された 表題と冒頭部分のみである。**</td></tr><tr><td class="sm nowrap tw">2026年10月27日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が出典1（Wiz のブログ）を直接取得して内容を確認する。** **確認できなかったのは、①GitHub 自身の声明**〈齟齬1〉〈齟齬2〉、 **②Trivy 侵害・Megalodon・PolinRider の各一次資料**〈齟齬3〉、 **③The Hacker News の記事本文（HTTP 403）**〈齟齬4〉である。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">当事者の公表なし</span><span class=ui>GitHub 自身の見解</span><div class=sm>**出典1 には GitHub の声明が含まれていない**（本記録の確認）。 **本記録も GitHub 自身の公表を確認していない。** **したがって、非公開リポジトリと GitHub Enterprise Server へ 保護を広げる予定があるかは分からない。** **基盤側の対応（アカウントの停止・トークンの無効化）の内容も 公表されていない**——**Wiz は約3分の2のアカウントが GitHub 上で利用できなくなっていたことから 「対応が行われた結果である可能性が高い」と推測しているにとどまる**（出典1）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>「保留は github.com の公開リポジトリにのみ適用される」という GitHub の説明</span><div class=sm>**この引用は報道（出典2）を通じて確認したものであり、 本記録は Infosecurity Magazine の記事本文も GitHub の原文も直接取得していない。** **出典1 は「保留は非公開リポジトリと GitHub Enterprise Server には 適用されない」という事実関係は述べているため、 内容そのものは一次資料と整合する**（本記録の整理） ——**引用の文言の正確さを本記録は保証しない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Trivy 侵害・Megalodon・PolinRider</span><div class=sm>**2026年3月の Trivy 侵害、2026年5月の Megalodon、 2026年10月19〜20日の PolinRider はいずれも 出典1 の記述を通じてのみ確認している。** **本記録は各事案の一次資料を取得していない。** **したがって、57アカウントの重なりや 「`vite.config.js` にローダーを足した再 push」の詳細は検証できていない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の記事本文</span><div class=sm>**本記録の起点になった記事（出典3）は、 取得を試みたところ HTTP 403 が返り、本文を直接読めていない。** **確認できたのは、収集済みの記事ファイル （`0229_the-hacker-news_gheist-uses-stolen-github-tokens-to-steal-private-.md`・ `content_source: fetch_failed`）に保存された表題と冒頭部分のみである。** **本記録の事実関係はすべて出典1 に当たって確認しており、 出典3 からは何も採っていない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>公表された指標（IoC）の検証</span><div class=sm>**本記録に記載した指標（利用者エージェント・ブランチ名の正規表現・ 文字列・ファイル名・blob SHA）は、出典1 が公表したものをそのまま写したものである。** **本記録はこれらを独自に検証していない** ——**照合先のテレメトリを持たないため、 本記録の記載を根拠に検知を組まないこと**（本記録の明示）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>回収されたブランチ13,500本という値の性質</span><div class=sm>**「13,500超のブランチ」はブランチの数であり、 リポジトリの数でも組織の数でもない**（出典1。本記録の明示）。 **1リポジトリに複数回仕込まれた場合の扱いは示されていない。** **また2026年10月6日の改名で610本が副作用として消えているため**（出典1）、 **この値は仕込まれた総数の下限である**（本記録の整理）。 **Wiz 自身が「分析はリポジトリの総数を示していない」としている**（出典1）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>秘密情報は外へ送られない——GitHub のログに置かれ、GitHub の API で取られる</div><div class=svgwrap><svg viewBox="0 0 1814 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C805.0,155.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,72.0 1036,72.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,162.0 1036,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C1213.0,162.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C1213.0,162.0 1213.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,60.0 C1417.0,60.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,162.0 C1417.0,162.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,111.0 C907.0,111.0 907.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C1009.0,111.0 1009.0,60.0 1648,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,60.0 C1723.0,60.0 1723.0,162.0 1648,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,162.0 C1417.0,162.0 1417.0,162.0 1648,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インフォスティーラーのロ</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グ／過去の供給網侵害（2</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">026年3月 Triv…</text><text x="91.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">トークンの出所（出典1）</text><text x="91.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">。個々の内訳は非公表</text><rect x="220" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者の自動化された道具</text><text x="295.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（利用者エージェント `</text><text x="295.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gheist`／道具A…</text><rect x="424" y="79.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">盗まれた GitHub </text><text x="499.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のトークン（850超のア</text><text x="499.0" y="129.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント）</text><rect x="628" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開リポジトリ（gith</text><text x="703.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ub.com）</text><text x="703.0" y="72.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年7月28日以降</text><text x="703.0" y="84.0" text-anchor="middle" fill="#64b5f6" font-size="10">の承認保留が及ぶ（出典1</text><rect x="628" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非公開リポジトリ／Git</text><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Hub Enterpri</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">se Server</text><text x="703.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">承認保留が及ばない。ここ</text><text x="703.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">で成功している（出典1）</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">仕込まれたブランチ `c</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">i-sync-`＋6文字</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（13,500超）</text><text x="907.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">`.github/wor</text><text x="907.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">kflows/sync-</text><rect x="1036" y="28.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="50.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">承認待ち（`action</text><text x="1111.0" y="64.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">_required`）で</text><text x="1111.0" y="78.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">停止</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">Wiz が調べた公開リポ</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#64b5f6" font-size="10">ジトリの実行はすべてここ</text><rect x="1036" y="130.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="152.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ワークフローの実行（`p</text><text x="1111.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ermissions: </text><text x="1111.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">{}` でも `sec…</text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Actions の実行ロ</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">グ（環境変数と `sec</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rets` を bas…</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">そのままの文字列でないた</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">め遮蔽が効かない（出典1</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">self-hosted </text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ランナー（`sync-h</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ost` ジョブ）</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">ホスト・クラウド・Kub</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">ernetes の資格情</text><rect x="1444" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitHub の API</text><text x="1519.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（ログ取得 → 数秒後に</text><text x="1519.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実行記録を削除）</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">外向きの通信が無いため遮</text><text x="1519.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">断先が存在しない（出典1</text><rect x="1648" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラウドの秘密情報（AW</text><text x="1723.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S Secrets Ma</text><text x="1723.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nager の列挙）</text><text x="1723.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">数時間後、同じ組織のクラ</text><text x="1723.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">ウド資格情報で実施（出典</text><rect x="1648" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AWS CloudTra</text><text x="1723.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">il／GitHub 監査</text><text x="1723.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログ</text><text x="1723.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">ロール引き受けと「完了→</text><text x="1723.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">約1分以内の削除」が残る</text></svg></div><div class=fn>Wiz が示した手口を、秘密情報の流れとして描いた図である（出典1。整理は本記録）。 **点線は、公開リポジトリで2026年7月28日以降の承認保留によって 止まった経路である**（出典1）。 **被害組織の名称・国は公表されていない**〈未確定1〉。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**同じアカウントが先行キャンペーン（Megalodon）の被害者でもあった** （出典1）——**その時点でトークンを更新していれば、 本件の前提が崩れていた**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**利用者エージェント `gheist` が GitHub の監査ログに残る**（出典1）。 **同一組織で短時間に複数のトークンが使われる挙動も手がかりになる** （本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**Wiz はブランチ名とコミットメッセージでの探索を推奨している**（出典1）。 **ただし2026年10月6日の改名で610本が消えており**（出典1）、 **痕跡が後から失われることがある**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**AWS CloudTrail には、組織自身のワークフローが これらのブランチで動き AWS のロールを引き受けた記録が残っていた**（出典1） ——**GitHub 側のログが無くても、 クラウド側の監査ログで気づける**（出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">検知した</span><div class=sm>**文字列 `toJSON(secrets) }}&#x27; | base32 -w 120` が指標として挙げられている** （出典1）。 **Wiz Defend の規則「Workflow Pushed With Secret Dump」も挙げられている** （出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">検知した</span><div class=sm>**ログの取得自体が API の呼び出しであり、 利用者エージェント `gheist` が監査ログに残る**（出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">検知した</span><div class=sm>**「完了から約1分以内の削除」という時間差そのものが検知の手がかりになる** （出典1）。 **Wiz Defend の規則「New Workflow Completed And Deleted In Short Time Span」** （出典1）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">検知した</span><div class=sm>**OIDC を使っている場合、クラウドの監査ログで `ci-sync-` を含む主体（subject）によるロール引き受け・ トークン交換を探せる**（出典1） ——**GitHub のログが無くてもこれで気づける**（出典1）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「非公開リポジトリだから安全」という前提を外す。保護の厚みは公開設定と逆を向いている。</div><div class=lw>**2026年7月28日以降の承認保留は github.com の公開リポジトリにのみ及び、 非公開リポジトリと GitHub Enterprise Server には及ばない**（出典1）。 **Wiz が調べた公開リポジトリの実行はすべて止まり、 非公開側では実行されている**（出典1）。 **企業が機密を置くのは非公開側である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織のリポジトリを公開設定と基盤の種別（github.com／Enterprise Server）で 分類し、基盤側の保護が及ぶ範囲を明示した表を作る。** **及ばない範囲については、承認を要する環境の設定・OIDC の信頼範囲の限定・ 監査ログの外部保持で埋める**（出典1 の推奨に基づく）。</div></li><li><div class=lp>秘密情報の持ち出しを「外向き通信」で捉える設計は、本件には当たらない。</div><div class=lw>**「データが GitHub 自身の API を通って出ていくため、 攻撃者のドメインも外向きの接続も存在しない」**（出典1。原文英語。訳は本記録）。 **外向き通信の監視・DNS の遮断・プロキシの制御・C2 のブロックリストは いずれも当たらない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **情報持ち出しの検知の棚卸しを、「出口の種類」で行う。** 外向き通信以外の出口——SaaS の API、基盤のログ、共有機能、 正規の同期機能——について、それぞれ何で気づけるかを書き出す。 **埋まらない欄が、本件と同じ形の穴である。**</div></li><li><div class=lp>個人アクセストークンの到達範囲が、そのまま被害範囲になる。</div><div class=lw>**手口は「盗んだトークンが到達できる全リポジトリ」を対象にする**（出典1）。 **企業の環境では、複数の利用者と自動化アカウントのトークンを 数分のあいだに巡回していた**（出典1）。 **トークン1本の到達範囲が広ければ、1本の漏えいで全部が露出する**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **PAT の棚卸しを、本数ではなく「1本あたりの到達範囲」で行う。** GitHub App または短命の細粒度トークンへの移行計画を、 到達範囲の広い順に作る（出典1 の堅牢化の推奨に基づく）。 **自動化アカウントのトークンを所有者不明のまま残さない。**</div></li><li><div class=lp>先行キャンペーンの被害者だったことは、次のキャンペーンの前提になる。</div><div class=lw>**Gheist の第1段階に現れた57アカウントは、 2026年5月に Megalodon の被害者でもあった**（出典1）。 **トークンの出所には2026年3月の Trivy 侵害も挙げられている**（出典1）。 **盗まれた資格情報は使い回され、別の運用者の手に渡る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **過去に自組織が関係した供給網侵害・インフォスティーラー感染について、 そのとき露出しえた資格情報が「いま無効になっているか」を遡って確認する。** **当時の対応記録に「更新した」とあるだけでは足りない—— 現在の有効性を確認する。**</div></li><li><div class=lp>「痕跡を消した」は対応ではない。露出は戻らない。</div><div class=lw>**「実行やブランチを削除しても露出は元に戻らない」** （出典1。原文英語。訳は本記録）。 **攻撃者側も実行記録を数秒後に消している**（出典1） ——**痕跡が無いことは、何も起きなかった証拠にならない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **CI/CD の秘密情報が露出しえた事象について、 「秘密情報の全スコープ更新」を完了条件とする手順を先に用意する。** リポジトリ・組織・環境の各スコープの一覧と、更新の順序、 更新漏れによる障害の戻し方を決めておく（出典1 の対応指針に基づく）。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>`permissions: {}` は `secrets` を守らない。</div><div class=lw>**「ジョブの `permissions: {}` が制限するのは `GITHUB_TOKEN` だけで、 `secrets` コンテキストではない」**（出典1。原文英語。訳は本記録）。 **さらに GitHub が秘密情報をログで隠すのは 「そのままの文字列」が現れたときだけで、base32 で符号化すると隠されない**（出典1）。</div><div class=la><b>取るべき行動</b> **ワークフローの審査項目に「`secrets` コンテキスト全体を参照する記述の有無」を 入れる**（`toJSON(secrets)` のような全体参照）。 **秘密情報は必要なものだけを個別に `env` へ渡し、 コンテキスト全体を触らせない。**</div></li><li><div class=lp>検知は「完了から約1分以内に削除された実行」という時間差で成立する。</div><div class=lw>**攻撃者はログを取得してから数秒で実行記録を消す**（出典1）。 **Wiz は「`ci-sync-*` ブランチでの実行が完了して約1分以内に 削除されたもの」を監査ログで探すよう推奨している**（出典1）。 **Wiz Defend の規則名も 「New Workflow Completed And Deleted In Short Time Span」である**（出典1）。</div><div class=la><b>取るべき行動</b> **GitHub の監査ログを外部へ保持し、 「実行の完了」と「実行の削除」の時間差が短い組を検出する問い合わせを置く。** **基盤側のログだけに頼ると、消えたあとに再構成できない**（本記録の評価）。</div></li><li><div class=lp>GitHub のログが無くても、クラウドの監査ログで気づける。</div><div class=lw>**AWS CloudTrail には、組織自身のワークフローが `ci-sync-` ブランチで動き AWS のロールを引き受けた記録が残っていた**（出典1）。 **Wiz は「これは GitHub のログが無くてもこの活動を検知できる」としている** （出典1。原文英語。訳は本記録）。</div><div class=la><b>取るべき行動</b> **OIDC を使っているなら、クラウドの監査ログで 主体（subject）に `ci-sync-` を含むロール引き受け・トークン交換を探す。** **併せて OIDC の信頼方針を、保護されたブランチ・環境に限定する**（出典1） ——**攻撃者が作ったブランチからロールを引き受けられる状態をやめる。**</div></li><li><div class=lp>self-hosted ランナーでは、被害が「そのジョブ」で終わらない。</div><div class=lw>**`sync-host` ジョブは self-hosted ランナー上で ホスト・プロセス・コンテナ・クラウドのメタデータ・ランナー・ Kubernetes の資格情報を集める**（出典1）。 **Wiz は「`ci-sync` ブランチが self-hosted ランナーで走った場合は、 そのホストとインスタンスのロールを侵害済みとして扱え」としている**（出典1）。</div><div class=la><b>取るべき行動</b> **self-hosted ランナーで `.gdmp_pat` / `.gdmp_patg` / `.gdmp_sweep` と ジョブログ内の `gdmp-pivot` 文字列を探す**（出典1）。 **運用は使い捨てのホストに変え、Docker ソケットと 無制限のメタデータへのアクセスを外す。**</div></li><li><div class=lp>指標は変種ごとに形が違う。接尾辞の形だけで絞らない。</div><div class=lw>**道具 A は16進数の接尾辞、道具 B は base36 の接尾辞を使う**（出典1）。 **道具 B は初動の数時間のうちに `timeout-minutes: 6` と 環境マトリクスを追加し、リポジトリごとにペイロードを変えている**（出典1）。 **2026年10月19日には base32 の区切りが追加されている**（出典1）。</div><div class=la><b>取るべき行動</b> **探索は `^ci-sync-[0-9a-z]{6}$` という正規表現とコミットメッセージ `ci: sync config` の組で行い、ワークフローの blob SHA 4種も併せて照合する** （出典1）。 **ただしこれらは本記録が検証していない指標である**〈齟齬5〉 ——**照合先のテレメトリがある環境で使う。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 非公開リポジトリまたは GitHub Enterprise Server で GitHub Actions を使っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 個人アクセストークン（PAT）が使われており、1本で複数リポジトリへ到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> GitHub Actions から OIDC でクラウドのロールを引き受けており、 信頼方針がブランチ・環境で絞られていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> GitHub の監査ログを GitHub の外に保持していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> self-hosted ランナーを常設のホストで運用しており、 Docker ソケットやクラウドのメタデータへ到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 秘密情報の露出への対応手順が「痕跡の削除」で完了とされている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月25日 Wiz Research（Rami McCarthy 氏・Hila Ramati 氏）</span> <a href="https://www.wiz.io/blog/gheist-attempted-scaled-abuse-of-stolen-github-tokens-stumbles" target="_blank" rel="noreferrer noopener nofollow">Gheist: Attempted Scaled Abuse of Stolen GitHub Tokens Stumbles</a> <span class="b kind">ブログ</span><span class=sm>（**本事案の一次資料。** 命名の由来、追跡開始日（2026年9月15日）、 手口の5段、数（ブランチ13,500超・アカウント850超）、変種（道具A／B）、 2026年7月28日以降の承認保留が公開リポジトリで機能したこと、 非公開リポジトリと GitHub Enterprise Server では実行されたこと、 AWS CloudTrail での裏付け、指標、狩り方・対応・堅牢化の指針を示す。 **本記録が2026年10月27日に直接取得して確認した。** **GitHub 自身の声明は含まれていない**（本記録の確認）〈齟齬1〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月（公開日は本記録では確認していない） Infosecurity Magazine</span> <a href="https://www.infosecurity-magazine.com/news/gheist-attackers-abuse-stolen/" target="_blank" rel="noreferrer noopener nofollow">Gheist Attackers Stumble in Attempt to Abuse GitHub Tokens</a> <span class="b kind">記事</span><span class=sm>（**出典1 を基にした報道。** 本記録が参照しているのは、 **GitHub の承認保留が「現時点では github.com の公開リポジトリにのみ適用される」 という説明を引いている点のみである。** **本記録はこの記事を直接取得しておらず、 引用の存在を検索結果の要約を通じて確認したにとどまる**〈齟齬2〉 ——**URL の到達性（HTTP 200）は確認した。**）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年10月26日 07:49（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/10/gheist-uses-stolen-github-tokens-to.html" target="_blank" rel="noreferrer noopener nofollow">Gheist Uses Stolen GitHub Tokens to Steal Private Repository Secrets via Actions Logs</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点になった記事**（収集日2026年10月26日）。 **本記録の取得では HTTP 403 が返り、本文を直接読めていない**〈齟齬4〉 ——**確認できたのは、収集済みの記事ファイルに保存された表題と冒頭部分 （非公開リポジトリと GitHub Enterprise 環境で成功していること、 Wiz の分析であること、GitHub の保護が実行を保留したこと）のみである。** **事実関係はすべて出典1 に当たって確認した。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月27日</span> <span class="b rev">新規作成</span> **2026年10月26日の The Hacker News の記事（出典3）を起点に、 その分析元である Wiz Research のブログ（出典1・2026年10月25日）を 直接取得して裏を取って作成した。** **起点の記事そのものは HTTP 403 で本文を読めていないため**〈齟齬4〉、 **事実関係はすべて出典1 から採っている。** **確認できなかったのは、①GitHub 自身の声明**〈齟齬1〉〈齟齬2〉、 **②Trivy 侵害・Megalodon・PolinRider の各一次資料**〈齟齬3〉、 **③秘密情報が露出した組織の数（Wiz 自身も示していない）**〈未確定2〉である。 **記載した指標は出典1 が公表したものの写しであり、 本記録は検証していない**〈齟齬5〉。 **status は updating**—— **出典1 は2026年10月24日時点で攻撃が継続し、 なお変化し続けているとしている。**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Gheist</span><span class="b tag">GitHub Actions</span><span class="b tag">CI/CD</span><span class="b tag">秘密情報</span><span class="b tag">トークン窃取</span><span class="b tag">サプライチェーン</span><span class="b tag">Wiz</span><span class="b tag">OIDC</span><span class="b tag">self-hosted ランナー</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-27 08:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
