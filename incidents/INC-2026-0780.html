@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>VMware ESX の記録不足をゼロデイ悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0780</span>VMware ESX の記録不足をゼロデイ悪用</h1>
+<header class="site-header">
+  <p class="subtitle">CISA は2026年10月28日、Broadcom VMware ESX の **CVE-2026-41709（ESX の記録不足の脆弱性）を KEV（悪用が確認された脆弱性カタログ）へ収載**し、 連邦機関に **2026年11月11日** までの対処を求めた。 収載の根拠は同日 CrowdStrike が公表した「2026 Legal Threat Landscape Report」で、 **中国系とみられるスパイ活動グループ WARP PANDA が、 米国の法務分野を含む複数の組織の VMware vCenter 環境に マルウェアを設置したうえで、この脆弱性を2026年初頭に至るまで ゼロデイとして悪用していた**と述べている。 **この脆弱性の CVSS v3.1 基本値は 2.7（Low）で、Broadcom は2026年7月29日の VMSA-2026-0006 で「Low」として修正していた**—— 悪用には ESX の管理者権限が必要で（PR:H）、 **単体では何の侵入も与えない。** **得られるのは「特定の操作を記録に残さずに実行できる」ことだけである**（Broadcom の記述）。 つまり攻撃者が使ったのは侵入の手段ではなく**侵入後の痕跡を消す手段**であり、 **影響は悪用された期間の ESXi のローカル記録が欠けていることにある**。 報告した Ian Barton は CrowdStrike の所属で、 **発見者のベンダーが3か月後に自ら悪用の事実を公表した**という経路をとっている。 どの操作が記録されないのか、どのように回避するのかは Broadcom も CrowdStrike も CISA も公表していない</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年7月29日（Broadcom の VMSA-2026-0006 公開）</span>
+  <span>最終更新: 2026年10月29日</span>
+</div>
+
+<div class="lead"><p><strong>深刻度 2.7 の「Low」が、CISA の悪用確認リストに載りました。</strong></p>
+<p><strong>CISA は2026年10月28日、Broadcom VMware ESX の脆弱性CVE-2026-41709 を KEV カタログへ収載し、連邦機関に2026年11月11日までの対処を求めました</strong>（出典2）。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>値</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE</td>
+<td><strong>CVE-2026-41709</strong></td>
+</tr>
+<tr>
+<td>CISA の呼称</td>
+<td>Broadcom VMWare ESX Insufficient Logging Vulnerability</td>
+</tr>
+<tr>
+<td>CVSS v3.1 基本値</td>
+<td><strong>2.7（Low）</strong>／AV:N/AC:L/<strong>PR:H</strong>/UI:N/S:U/C:N/<strong>I:L</strong>/A:N</td>
+</tr>
+<tr>
+<td>Broadcom のアドバイザリ</td>
+<td><strong>VMSA-2026-0006</strong>（2026年7月29日公開・8月19日改訂）</td>
+</tr>
+<tr>
+<td>報告者</td>
+<td><strong>Ian Barton（CrowdStrike）</strong></td>
+</tr>
+<tr>
+<td>KEV 収載</td>
+<td><strong>2026年10月28日</strong>（期限 2026年11月11日）</td>
+</tr>
+<tr>
+<td>ランサムウェアでの使用</td>
+<td><strong>Unknown</strong>（CISA の記載）</td>
+</tr>
+<tr>
+<td>悪用したとされる主体</td>
+<td><strong>WARP PANDA</strong>（中国系とみられるスパイ活動グループ）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>この脆弱性がもたらすのは侵入ではありません。</strong> Broadcom の記述は「悪意のある管理者が、特定の操作を記録に残さずに実行できる」というものです（出典1。原文英語を本記録が訳しました）。ベクタの <code>PR:H</code> が示すとおり<strong>悪用には ESX の管理者権限が必要</strong>で、機密性（C:N）と可用性（A:N）への影響は無く、完全性への影響が <code>I:L</code> ——<strong>壊されるのは監査記録です。</strong></p>
+<p><strong>CrowdStrike は2026年10月28日に公表した「2026 Legal Threat Landscape Report」で、WARP PANDA が被害組織の vCenter 環境に複数のマルウェアを設置したうえで、この「ESXi のコマンド記録の回避」を2026年初頭に至るまでゼロデイとして悪用していたと述べました</strong>（出典3）。<strong>CISA の収載は同日です</strong>（出典2）。</p>
+<p><strong>実務上の意味はひとつに絞られます</strong>（本記録の評価）—— <strong>CVSS 2.7 を理由に適用を後回しにしていた環境では、悪用された期間の ESXi のローカル記録が欠けている可能性があります。</strong> <strong>侵害の有無を後から確かめようとしたときに、見るべき記録が最初から残っていないという形で現れます。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>どの操作が記録に残らないのか、どのように回避するのか</span><span class="b rsn">公表されていない</span><div class=sm>**Broadcom の記述は「悪意のある管理者が特定の操作を記録に残さずに 実行できる」であり、「特定の操作」が何かは示されていない**（出典1）。 **CrowdStrike も「ESXi command logging bypass」と呼ぶだけで、 技術的な機構を述べていない**（出典3）。 **CISA の KEV の項目にも説明は無い**（出典2）。 **実務上の帰結は2つある**（本記録の評価）—— **①パッチを当てていない期間について、 どの記録を疑えばよいかが分からない、 ②侵害判定のための指標（IoC）が存在しないため、 過去の侵害を照合する手段が無い。** **「記録が無いこと」自体が痕跡になりうるが、 どの記録が無いのが異常なのかを判断する基準が公表されていない**</div></li><li><span class=ui>WARP PANDA が vCenter 環境へ最初に侵入した経路</span><span class="b rsn">公表されていない</span><div class=sm>**CrowdStrike は「被害組織の vCenter 環境に複数のマルウェアファミリを 設置した」と述べているが、どうやってそこへ到達したかは 本記録が確認した資料には無い**（出典3）。 **本件の脆弱性は悪用に管理者権限を必要とする（PR:H）ため、 攻撃者はこれを使う前に既に管理者相当の位置にいた**（出典1。整理は本記録）—— **その前段が分からない限り、防御側が「入口を塞ぐ」判断はできない。** **設置されたマルウェアファミリの名称も公表されていない**</div></li><li><span class=ui>被害組織の数・名称・業種の内訳</span><span class="b rsn">公表されていない</span><div class=sm>**公表されているのは「米国に所在する組織」「法務分野を含む」 「いくつかの事例で（in several cases）」という表現だけである**（出典3）。 **「いくつか」が何件かは示されていない。** **法務分野以外にどの業種が含まれるかも示されていない**（本記録の確認）。 **被害組織自身による公表も、本記録が確認した時点では見当たらない**—— **スパイ活動の被害は、情報が持ち出されても 法令上の通知義務が生じないことが多く、公表されにくい**（本記録の補足）</div></li><li><span class=ui>悪用の事実が判明した後の Broadcom の対応</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が確認した VMSA-2026-0006 は revision .2（2026年8月19日改訂）で、 CVE-2026-41709 の深刻度は「Low」（2.7）のままである**（出典1。本記録の確認）。 **2026年10月28日の KEV 収載を受けて Broadcom が 深刻度を見直したか、追加の案内を出したかは確認できていない**—— **本記録が取得した時点のアドバイザリにその記載は無い。** **また、本 CVE について ESX 7.0 の対応表の行が無い理由 （影響を受けないのか、評価されていないのか）も明示されていない**</div></li><li><span class=ui>CISA が対処期限を14日に設定した理由</span><span class="b rsn">公表されていない</span><div class=sm>**KEV の標準的な猶予は収載から3週間（21日）である**（本記録の補足）。 **本件は2026年10月28日の収載に対し期限が2026年11月11日で、14日である**（出典2）—— **理由は KEV の項目に書かれていない。** **BOD 26-04 の指針に従うとされているため、 その指針が期限の算定を定めている可能性があるが、 本記録は BOD 26-04 の本文を確認していない**〈齟齬3〉</div></li><li><span class=ui>CrowdStrike が脆弱性を特定した経緯（悪用の観測が先か、脆弱性の発見が先か）</span><span class="b rsn">公表されていない</span><div class=sm>**Broadcom のアドバイザリは報告者を Ian Barton（CrowdStrike）と 記載している**（出典1）。 **同社は3か月後に悪用の事実を公表した**（出典3）。 **本記録は「悪用の痕跡から脆弱性を特定した経路」と読んだが、 これは推定である**（本記録の明示）—— **同社は経緯を述べていない。** **もし悪用の観測が先であったなら、 7月29日のアドバイザリに悪用の記載が無かったことの意味が変わる** （本記録の評価）—— **ただし、調整された開示の過程で悪用の事実を伏せる判断は 一般的に行われるものであり、それ自体を問題とは言えない**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Broadcom（VMware）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CrowdStrike</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>WARP PANDA</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>米国の法務分野の組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS v3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2.7<span class=fu>点</span></div><div class=fn>**Broadcom が VMSA-2026-0006 で付与した値である**（出典1）—— **ベクタは AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:L/A:N で、 深刻度帯は「Low」。** **数値の性質の欄を便宜的に「事象の件数」としたのは、 スキーマの語彙に深刻度スコアに当たる区分が無いためである** （本記録の明示）—— **件数ではないので、他の値と合算してはならない。** **値が低いのは評価の誤りではなく、この脆弱性が単体でできることの 少なさを正しく映している**（本記録の整理）—— **管理者権限が必要（PR:H）で、機密性と可用性への影響は無く（C:N・A:N）、 完全性への影響が低（I:L）。** **それでも KEV に載った**</div></div><div class=fig><div class=fh><span class=fl>修正の公開から KEV 収載までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>91<span class=fu>日</span></div><div class=fn>**2026年7月29日（VMSA-2026-0006 公開）から 2026年10月28日（KEV 収載）までを本記録が数えた**（出典1・2）。 **この91日間に、適用を促す材料は「CVSS 2.7 の Low」だけだった** （本記録の評価）—— **悪用の事実が示されたのは収載と同じ日である。** **つまり深刻度に基づいて適用順を決める運用では、 この91日間に当てる理由を作れない**</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から連邦機関の対処期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**2026年10月28日の収載に対し、期限は2026年11月11日である**（出典2）—— **本記録が差を数えた。** **KEV の標準的な猶予は3週間（21日）であり、 本件はそれより短い**（本記録の整理）。 **ただし CISA が期限を短くした理由は公表されていない**〈未確定5〉</div></div><div class=fig><div class=fh><span class=fl>リークサイトに掲載された法務分野の組織数（2026年の報告書の集計）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>455<span class=fu>件</span></div><div class=fn>**CrowdStrike の「2026 Legal Threat Landscape Report」が示した値で、 前年比39%増とされる**（出典3）。 **これは本件（WARP PANDA の活動）の被害数ではない**（本記録の明示）—— **同報告書が法務分野全体の脅威環境を示すために挙げた背景値であり、 金銭目的の攻撃者（big game hunting）による掲載件数である。** **scope を background としたのはこのためである。** **同報告書は、法務分野に対して観測された活動の82%が 金銭目的の攻撃者によるものであり、 スパイ活動（WARP PANDA を含む中国系）は少数派であるとも述べている**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本記録が書けるのは、攻撃鎖の中の1段だけである**（本記録の明示）。 **CrowdStrike が公表したのは「vCenter 環境に複数のマルウェアを設置したうえで、 いくつかの事例で CVE-2026-41709 をゼロデイとして悪用した」という範囲で、 その前段（どう入ったか）も後段（何を取ったか）も述べられていない**（出典3） 〈未確定2・3〉。 **確かなのは順序である**—— **この脆弱性の悪用には ESX の管理者権限が必要（PR:H）であるため、 攻撃者は悪用の時点で既に管理者相当の位置にいた**（出典1。整理は本記録）。 **したがって本件は初期侵入の事案ではなく、 侵入後の検知回避の事案として読むべきものである。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">third_party_research</span><span class=srcs>[1] [3]</span></div><div>被害組織の vCenter 環境へ到達する段。 **経路・手口・使われた脆弱性はいずれも公表されていない。** 本記録が言えるのは、攻撃者が最終的に ESX の管理者権限を 行使できる位置に至ったという結果だけである</div><div class=fn>根拠: 出典3 の記述「WARP PANDA は、米国に所在する組織（法務分野を含む）での 複数の侵入において、被害組織の VMware vCenter 環境に いくつかのマルウェアファミリを設置した」（原文英語を本記録が訳した）。 出典1 の CVSS ベクタ `PR:H`（悪用には高い特権が必要）</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">third_party_research</span><span class=srcs>[1] [2] [3]</span></div><div>CVE-2026-41709 を悪用し、ESX 上の特定の操作を 記録に残さずに実行する段。 **これが本件の中心であり、CrowdStrike が 「ゼロデイとして悪用した」と述べているのはこの段である。** **どの操作が記録から漏れるのかは公表されていない**</div><div class=fn>根拠: 出典3 の記述「いくつかの事例では、2026年初頭に至るまで、 ESXi のコマンド記録の回避の脆弱性 CVE-2026-41709 を ゼロデイとして悪用した」（原文英語を本記録が訳した）。 出典1 の記述「悪意のある管理者が、特定の操作を、 それらの操作が記録に残らない形で実行できる可能性がある」 （原文英語を本記録が訳した）。 出典2（CISA が2026年10月28日に KEV へ収載）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">third_party_research</span><span class=srcs>[1] [3]</span></div><div>**攻撃者が何を取ったか、何をしたかは公表されていない。** 本記録が書けるのは、記録を残さずに実行された操作の内容が 誰にも分からないという状態そのものが影響であるという点である</div><div class=fn>根拠: 出典3 は被害の内容を述べていない（本記録の確認）。 出典1 の影響評価は C:N（機密性への影響なし）・I:L（完全性への影響は低）・ A:N（可用性への影響なし）であり、 影響を受けるのは監査記録である</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Broadcom は2026年7月29日に VMSA-2026-0006 で CVE-2026-41709 を「Low」（CVSS 2.7）として修正し、 悪用についての記載を置かなかった。 悪用の事実は3か月後の2026年10月28日に、 報告者である CrowdStrike 自身が年次報告書の中で公表した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **得られたのは、未修正の環境を追加の攻撃者から守る時間である** （本記録の整理）—— **悪用の事実を伏せたまま修正を配ることで、 模倣の攻撃を遅らせられる。** **捨てられたのは、利用組織が優先順位を正しく付ける材料である** （本記録の評価）—— **「CVSS 2.7 の Low」だけを見せられた組織に、 91日以内にこれを当てる理由を作る手立ては無い。** **とくに本件は、悪用されても被害が顕在化しない種類の脆弱性である**—— **後回しにした組織は、後回しにした影響を自力では観測できない。**</div></li><li><div class=ui>CISA は KEV の項目に、呼称・ベンダー・製品・収載日・対処・期限・ ランサムウェアでの使用（Unknown）のみを記載し、 脅威アクターの名前・悪用の内容・収載の根拠を書かなかった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **得られているのは機械可読性と一貫性である**（本記録の整理）—— **KEV は自動的に取り込んで資産台帳と突き合わせることを 前提とした形式になっている。** **捨てられているのは文脈である**（本記録の評価）—— **「ESX の Low が KEV に載った」という事実から、 自組織の記録を疑うべきかどうかは判断できない。** **判断に要る情報（記録が残らない種類の脆弱性であり、 スパイ活動の主体が侵入後の痕跡隠しに使っていた）は、 CrowdStrike の報告書を読まないと得られない**〈齟齬1〉。</div></li></ul></div>
+<section id="s6"><h2>CVSS 2.7 は過小評価ではない——この脆弱性は単体では何もできないのに、KEV に載った<span class="b slot">原因・手口</span></h2><p><strong>公表されている属性を並べると、この脆弱性の性質がはっきりする</strong>（出典1・2）。</p>
+<table>
+<thead>
+<tr>
+<th>要素</th>
+<th>値</th>
+<th>意味</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>AV（攻撃元区分）</td>
+<td><strong>N</strong>（ネットワーク）</td>
+<td>遠隔から到達できる</td>
+</tr>
+<tr>
+<td>AC（攻撃条件の複雑さ）</td>
+<td><strong>L</strong>（低）</td>
+<td>特殊な条件は要らない</td>
+</tr>
+<tr>
+<td><strong>PR（必要な特権）</strong></td>
+<td><strong>H（高）</strong></td>
+<td><strong>ESX の管理者権限が必要</strong></td>
+</tr>
+<tr>
+<td>UI（利用者の関与）</td>
+<td>N（不要）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>S（スコープ）</td>
+<td>U（変更なし）</td>
+<td>影響は ESX の内側に留まる</td>
+</tr>
+<tr>
+<td>C（機密性への影響）</td>
+<td><strong>N（なし）</strong></td>
+<td><strong>情報は取れない</strong></td>
+</tr>
+<tr>
+<td>I（完全性への影響）</td>
+<td><strong>L（低）</strong></td>
+<td><strong>記録が改変される</strong></td>
+</tr>
+<tr>
+<td>A（可用性への影響）</td>
+<td><strong>N（なし）</strong></td>
+<td><strong>止められない</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Broadcom の記述はこうである</strong>（出典1。原文英語を本記録が訳した）—— <strong>「悪意のある管理者が、特定の操作を、それらの操作が記録に残らない形で実行できる可能性がある。」</strong></p>
+<p><strong>ここから読めることは明確である</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>この脆弱性は侵入の手段ではない。</strong> 使うには既に管理者権限が要る</li>
+<li><strong>情報は取れない</strong>（C:N）。<strong>システムも止まらない</strong>（A:N）</li>
+<li><strong>できるのは、操作の記録を残さないことだけである</strong>（I:L）</li>
+</ul>
+<p><strong>CVSS 2.7 という値は、この性質を正しく映している</strong>（本記録の評価）—— <strong>CVSS は「この脆弱性ひとつで何ができるか」を測る尺度であり、単体で何もできないものには低い値が付く。</strong> <strong>評価が間違っていたのではない。</strong></p>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>問題は、CVSS を適用順の唯一の軸にしている運用の側にある。</strong> <strong>攻撃者は脆弱性を単体では使わない。</strong> <strong>CrowdStrike が述べているのは、WARP PANDA が「vCenter 環境に複数のマルウェアを設置したうえで」この脆弱性を悪用したという順序である</strong>（出典3）—— <strong>つまりこれは攻撃鎖の最初ではなく、最初より後の段にある道具である。</strong></p>
+<p><strong>MITRE ATT&amp;CK の語彙で言えば、これは初期侵入（initial access）ではなく検知回避（defense evasion）の技術に当たる</strong>（本記録の整理）。<strong>検知回避の脆弱性は、定義上、単体での CVSS が低くなる</strong>—— <strong>機密性も可用性も侵さないからである。</strong> <strong>深刻度で並べる運用は、この種の脆弱性を構造的に最後に回す。</strong></p></section>
+<section id="s7"><h2>発見したベンダーが、3か月後に自ら「あれは悪用されていた」と公表した<span class="b slot">発覚の端緒</span></h2><p><strong>時系列を並べると、本件の特異な点が出てくる</strong>（出典1・2・3）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+<th>出所</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>2026年7月29日</strong></td>
+<td>Broadcom が VMSA-2026-0006 を公開。報告者は <strong>Ian Barton（CrowdStrike）</strong></td>
+<td>出典1</td>
+</tr>
+<tr>
+<td>2026年8月19日</td>
+<td>同アドバイザリを改訂（本 CVE の扱いは変わらず）</td>
+<td>出典1</td>
+</tr>
+<tr>
+<td><strong>2026年10月28日</strong></td>
+<td><strong>CrowdStrike</strong> が報告書で「WARP PANDA がゼロデイ悪用していた」と公表</td>
+<td>出典3</td>
+</tr>
+<tr>
+<td><strong>2026年10月28日</strong></td>
+<td><strong>CISA</strong> が KEV へ収載（期限 11月11日）</td>
+<td>出典2</td>
+</tr>
+</tbody>
+</table>
+<p><strong>報告者と悪用の公表者が同一である</strong>（本記録の整理）—— <strong>CrowdStrike の Ian Barton が Broadcom へ報告し、その3か月後に CrowdStrike が自社の年次報告書の中で悪用の事実を明かした。</strong></p>
+<p><strong>この順序が意味することを本記録の評価として書く。</strong></p>
+<p><strong>①7月29日の時点で、CrowdStrike は悪用を知っていた可能性が高い。</strong> <strong>同社の報告書は「WARP PANDA がゼロデイとして悪用していた」と述べており、ゼロデイ悪用の観測はインシデント対応の現場から出る</strong>—— <strong>脆弱性の存在を先に見つけたのではなく、悪用の痕跡から脆弱性を特定した経路だと読むのが自然である。</strong> <strong>ただしこれは推定であり、同社はその経緯を述べていない</strong>〈未確定6〉。</p>
+<p><strong>②7月29日のアドバイザリには、悪用の記載が無い。</strong> <strong>Broadcom は「Low」として、通常の四半期的なアドバイザリの一項目として公開した</strong>（出典1。本記録の確認）—— <strong>「実際に悪用されている」と書かれていれば、2.7 という数値を見た利用組織の判断は変わったはずである</strong>（本記録の評価）。</p>
+<p><strong>③CISA の KEV の項目には、主体も根拠も書かれていない。</strong> <strong>収載された項目に記載があるのは、呼称・ベンダー・製品・収載日・求める対処・期限・ランサムウェアでの使用（Unknown）だけである</strong>（出典2。本記録の確認）—— <strong>「WARP PANDA が悪用した」という情報は、CrowdStrike の報告書を読まないと得られない</strong>〈齟齬1〉。</p>
+<p><strong>本記録が実務の論点として挙げるのはここである。</strong> <strong>KEV を監視している組織は10月28日に「ESX の Low が載った」ことを知るが、なぜ載ったのかは KEV だけでは分からない。</strong> <strong>そして「なぜ載ったのか」が、自組織の記録を疑うべきかどうかの判断材料である。</strong></p></section>
+<section id="s8"><h2>実害は侵害そのものではなく、侵害を後から確かめられないことである<span class="b slot">被害規模・影響範囲</span></h2><p><strong>公表されている被害の情報は、次の範囲に限られる</strong>（出典3）。</p>
+<ul>
+<li><strong>対象は「米国に所在する組織」で、「法務分野を含む」</strong></li>
+<li><strong>攻撃者は被害組織の </strong>vCenter 環境<strong>に複数のマルウェアファミリを設置した</strong></li>
+<li><strong>「いくつかの事例で」、</strong>2026年初頭に至るまで<strong>この脆弱性をゼロデイ悪用した</strong></li>
+</ul>
+<p><strong>公表されていないものを並べる</strong>（本記録の確認）。</p>
+<ul>
+<li>組織名・件数・業種の内訳〈未確定3〉</li>
+<li>悪用の開始時期〈未確定1〉</li>
+<li>どの操作が記録から隠されたか〈未確定1〉</li>
+<li>侵害判定のための指標（IoC）〈未確定1〉</li>
+<li>vCenter 環境への最初の侵入経路〈未確定2〉</li>
+</ul>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>この事案の被害は、数で測れる形をしていない。</strong> <strong>情報は取れず（C:N）、システムも止まらない（A:N）。</strong> <strong>失われたのは「何が起きたかを後から確かめる能力」である。</strong></p>
+<p><strong>ハイパーバイザは、その上で動く全ての仮想マシンを見下ろす位置にある。</strong> <strong>ESX の管理者権限を持つ者は、仮想マシンの中の OS の統制を一切通らずに、ディスクイメージの複製・スナップショットの取得・メモリのダンプができる</strong>（本記録の補足）。<strong>ゲスト OS 側の EDR には何も映らない。</strong> <strong>そのうえで ESX 側の操作記録も残らないのであれば、どこにも痕跡が無いことになる。</strong></p>
+<p><strong>だから本件で問うべきは「侵害されたか」ではない</strong>（本記録の評価）—— <strong>「侵害されていたとして、それを示す記録が自分の環境に残っているか」である。</strong> <strong>そして CVSS 2.7 を根拠に91日間パッチを当てなかった環境では、その答えは「残っていない可能性がある」になる。</strong></p>
+<p><strong>なお、これは本件に限った話ではない</strong>（本記録の整理）—— <strong>監査記録の不足という種類の脆弱性は、悪用されても被害が顕在化しないため、「悪用されたかどうかを判定する方法が無い」という性質を常に持つ。</strong></p></section>
+<section id="s9"><h2>ベンダーごとの呼称が揺れており、同一主体かどうかは本記録では断定できない<span class="b slot">帰属</span></h2><p><strong>公表されている帰属の情報は一行である</strong>（出典3）—— <strong>CrowdStrike が WARP PANDA を「中国系（China-nexus）」として追跡しており、この脆弱性をゼロデイ悪用したと述べている。</strong></p>
+<p><strong>当局は帰属を公表していない</strong>（本記録の確認）—— <strong>CISA の KEV の項目に主体の記載は無い</strong>（出典2）〈齟齬1〉。<strong>したがって本件の帰属は、単一のベンダーの評価である。</strong></p>
+<p><strong>ここで呼称の問題が生じる</strong>（本記録の整理）。<strong>本DBの別レコード INC-2026-0561（BeyondTrust Remote Support のCVE-2026-102764 のゼロデイ悪用）では、Mandiant が ARMORY CASTLE（旧 UNC5221）と呼ぶ主体について、「CrowdStrike は同じアクターを Warp Panda と呼ぶ」と記録している。</strong> <strong>そのレコードは同時に、Mandiant の表記が「Armory Castle（previously UNC5221 or Warp Panda）」であり、Warp Panda を旧称として扱うか別ベンダーの呼称として扱うかで記述が揺れている点も齟齬として記録している。</strong></p>
+<p><strong>本記録の立場を明示する。</strong> <strong>本件（VMware ESX）と INC-2026-0561（BeyondTrust）が同一主体の活動であるとは断定しない</strong>〈齟齬2〉—— <strong>理由は2つである。</strong></p>
+<ul>
+<li><strong>①呼称の対応関係そのものがベンダー間で確定していない</strong></li>
+<li><strong>②本記録が確認した出典3 は、WARP PANDA について「中国系」「米国の組織（法務分野を含む）」「vCenter 環境」「CVE-2026-41709 のゼロデイ悪用」以外の属性を述べていない</strong>—— <strong>BeyondTrust の事案との接点を示す記述は無い</strong></li>
+</ul>
+<p><strong>それでも並べて見る価値はある</strong>（本記録の評価）—— <strong>両方とも、①公表前の脆弱性を使い、②管理基盤（Remote Support アプライアンス／vCenter）を足場にし、③記録の抹消または記録の回避を行っている。</strong> <strong>INC-2026-0561 では「ログの systematic な削除」が記録されている。</strong> <strong>本件では、削除ではなく「最初から記録させない」形である。</strong> <strong>後者のほうが、防御側には気づきにくい</strong>—— <strong>削除された記録には欠落という痕跡が残るが、記録されなかった操作には何も残らない。</strong></p>
+<p><strong>この比較は本記録の評価であり、同一主体の根拠ではない</strong>（本記録の明示）。</p></section>
+<section id="s10"><h2>【背景】同じ報告書は、法務分野への攻撃の8割が金銭目的だと述べている<span class="b slot">背景・過去事例</span></h2><p><strong>本件の出所である CrowdStrike の「2026 Legal Threat Landscape Report」は、WARP PANDA の話だけを扱ったものではない</strong>（出典3）。<strong>対象期間は2025年9月1日〜2026年8月31日である。</strong></p>
+<p><strong>同報告書が示した法務分野についての数値を挙げる</strong>（出典3）。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>値</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>観測された活動のうち金銭目的の攻撃者によるもの</td>
+<td><strong>82%</strong></td>
+</tr>
+<tr>
+<td>リークサイトに掲載された法務分野の組織</td>
+<td><strong>455件</strong>（前年比 <strong>39%増</strong>）</td>
+</tr>
+<tr>
+<td>法務分野への侵入の増加（2023年→2026年）</td>
+<td><strong>およそ倍増</strong></td>
+</tr>
+<tr>
+<td>CHATTY SPIDER の活動の増加（2026年の8か月 vs 2024年通年）</td>
+<td><strong>129%増</strong></td>
+</tr>
+<tr>
+<td>同グループの被害に占める法律事務所の割合</td>
+<td><strong>ほぼ90%</strong>（ほぼ米国の事務所のみ）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>中国系の活動についても、本件以外に3つが挙げられている</strong>（出典3）。</p>
+<ul>
+<li><strong>TITAN PANDA</strong> — 2026年4月、法務分野固有のソフトウェアを初めて標的にした。<strong>Intapp Time Server のハードコードされた IIS のマシンキーを悪用した</strong></li>
+<li><strong>MURKY PANDA</strong> — ORB28 のパスワードスプレー攻撃で<strong>340を超える組織</strong>に影響。ほぼ米国の組織で、<strong>法務分野が最も影響を受けた</strong>。ある法律事務所では<strong>30日間で約500件の失敗したログインが、ほぼ同数のアカウントに対して記録された</strong></li>
+<li><strong>OVERCAST PANDA</strong> — 2025年9月〜10月に<strong>英国の法律事務所の経営層を標的にした</strong></li>
+</ul>
+<p><strong>ここから先は本記録の評価である。</strong></p>
+<p><strong>これらの数値は本件の被害数ではない</strong>（本記録の明示）—— <strong>scope を background とした理由である。</strong></p>
+<p><strong>それでも並べたのは、WARP PANDA の活動が「法務分野を狙う攻撃の主流ではない」ことを示すためである。</strong> <strong>主流は82%を占める金銭目的の攻撃者で、リークサイトへの掲載という形で可視化される。</strong> <strong>本件のようなスパイ活動は少数派で、しかも可視化されない形（記録を残させない）を選んでいる。</strong></p>
+<p><strong>日本の読者への含意を一点書く</strong>（本記録の整理）—— <strong>法律事務所・会計事務所・コンサルティング会社といった専門サービス業は、顧客企業の最も機密性の高い情報（M&amp;A・訴訟・内部調査）を集約して保持している。</strong> <strong>「自社の情報は守れている」と判断している企業が、同じ情報を預けた先の統制を確認していないことがある。</strong> <strong>この報告書が示しているのは、その預け先が現に狙われているという事実である。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**VMware ESX（ハイパーバイザ）の記録（logging）機構**（出典1・2）。 **Broadcom の対応表に挙がっているのは次の系列である**（出典1）—— **ESX 9.1.x.x（VMware Cloud Foundation / vSphere Foundation）、 ESX 9.0.x.x（同）、ESX 8.0（単体）、ESX 5.x（VMware Cloud Foundation）、 ESX 5.0.x および 5.1.x（VMware Telco Cloud Platform）。** **本 CVE については ESX 7.0 の行が対応表に無い**（出典1。本記録の確認）—— **「影響を受けない」のか「評価されていない」のかは明示されていない**〈未確定4〉。 **CrowdStrike は悪用の場を「被害組織の vCenter 環境」と述べているが、 脆弱性そのものは ESX 側にある**（出典1・3。整理は本記録）。</td></tr><tr><th>finding_name</th><td>**CISA の KEV での呼称は 「Broadcom VMWare ESX Insufficient Logging Vulnerability」**（出典2）。 **Broadcom は VMSA-2026-0006 の中で 「VMware ESX insufficient logging vulnerability」として扱っている**（出典1）。 **CrowdStrike は「ESXi command logging bypass vulnerability」と 表記している**（出典3）—— **「記録が不足している（insufficient logging）」と 「コマンドの記録を回避できる（command logging bypass）」は、 同じ現象を防御側の視点と攻撃側の視点から言ったものである** （本記録の整理）。 **固有の通称（愛称）は付いていない。**</td></tr><tr><th>exploit_status</th><td>**悪用は確認されている**（出典2・3）。 **CrowdStrike は「WARP PANDA が、いくつかの事例で、 2026年初頭に至るまでこれをゼロデイとして悪用した」と述べ、 CISA は同日これを KEV へ収載した**（出典2・3。原文英語を本記録が訳した）。 **ただし公表されているのはこの一文に相当する範囲だけである** （本記録の明示）—— **悪用の開始時期、対象組織の数、どの操作を記録から隠したのか、 侵害判定のための指標（IoC）はいずれも示されていない**〈未確定1・3〉。 **ランサムウェアキャンペーンでの使用について CISA は「Unknown」と 記載している**（出典2）。 **概念実証コードや悪用ツールの公開についての記述も、 本記録が確認した資料には無い**（本記録の確認）。</td></tr><tr><th>exploit_status_as_of</th><td>2026年10月29日</td></tr><tr><th>patch_status</th><td>**修正は2026年7月29日から提供されている**（出典1）。 **Broadcom が示した修正版は次のとおりである**（出典1）—— **ESX 9.1.x.x は ESXi-9.1.0.0-25370933、 ESX 9.0.x.x は ESXi-9.0.2.0100-25595025、 ESX 8.0 は ESXi80U3j-25429389、 ESX 5.x（VMware Cloud Foundation）は 5.2.4、 ESX 5.0.x・5.1.x（Telco Cloud Platform）は KB449886。** **回避策（workaround）は「None」と明記されている**（出典1）—— **つまりパッチ以外の手が無い。** **CISA が求める対処も「ベンダーの緩和策を適用する」であり、 緩和策が無いクラウドサービスでは「使用を中止する」とされている**（出典2）。</td></tr><tr><th>patch_status_as_of</th><td>2026年10月29日</td></tr><tr><th>ログの有無</th><td>**本件の核心がここにある**（本記録の整理）—— **悪用が成立した期間については、ESX のローカルな操作記録が 欠けていると考えるべきである。** **Broadcom の記述が「特定の操作が記録に残らずに実行できる」である以上、 ESXi 側の記録は「操作が無かった」ように見える**（出典1）。 **どの操作が漏れるかは公表されていないため、 どの記録を疑えばよいかも分からない**〈未確定1〉。 **実務上の帰結は、ESXi のローカル記録を外部へ転送していた組織 （syslog 転送・SIEM への集約）だけが、 改変されていない側の記録を持ちうるという点である**（本記録の評価）—— **ただしこれも「記録に残らずに実行される」操作には効かない。** **効くのは、ハイパーバイザの外側で観測できる痕跡 （ネットワーク通信、vCenter 側の記録、認証基盤の記録）である。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 修正版の ESX へ更新する（回避策は提供されていない）　<b>副作用:</b> **ハイパーバイザの更新であり、ゲスト仮想マシンの移動または停止を伴う** （本記録の補足）—— **ESX 5.0.x・5.1.x（Telco Cloud Platform）については Broadcom が KB449886 を参照先として示しており、 単純なビルド番号の提示ではない**（出典1）。 **本件の深刻度が 2.7 であるため、 停止枠を確保する稟議の材料が弱い**（本記録の指摘）—— **「悪用が確認されている」ことを根拠に出し直す必要がある。**</div><div class=sub><b>item:</b> ESXi のローカル記録を外部へ転送し、改変されない側に残す　<b>副作用:</b> **転送基盤の運用負荷と保存容量が増える**（本記録の補足）。 **さらに、これは本件に対する完全な対策ではない**（本記録の明示）—— **「記録に残らずに実行される」操作は、転送しても現れない。** **意味があるのは、記録の欠落そのものを検知する材料になる点である。**</div><div class=sub><b>item:</b> ハイパーバイザの管理者権限の付与と使用を、別の層で記録・監視する　<b>副作用:</b> **特権アクセス管理の導入・運用の負荷が増える**（本記録の補足）。 **本件の悪用には ESX の管理者権限が必要（PR:H）であるため、 その権限がいつ誰に使われたかを ESX の外側で持っていれば、 ESX 側の記録が欠けても突き合わせができる**（本記録の評価）。</div><div class=sub><b>item:</b> vCenter 環境を「業務システム」ではなく「認証基盤と同格の管理面」として扱う　<b>副作用:</b> **ネットワークの分離・踏み台の導入により、運用の手数が増える** （本記録の補足）。 **CrowdStrike が述べているのは「vCenter 環境にマルウェアを設置した」ことであり、 攻撃者が管理面に到達している前提である**（出典3）。</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月29日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Broadcom が VMSA-2026-0006 を公開し、CVE-2026-41709 を 「Low」（CVSS v3.1 基本値 2.7）として修正する。 報告者は Ian Barton（CrowdStrike）。回避策は「None」</td></tr><tr><td class="sm nowrap tw">2026年8月19日</td><td class=nowrap><span class="b kind">訂正</span></td><td>Broadcom が VMSA-2026-0006 を改訂（revision .2）する。 改訂内容は Critical 項目向けの ESX / vCenter 7.0 の案内の追加であり、 本 CVE の扱いは変わっていない</td></tr><tr><td class="sm nowrap tw">2026年初頭に至るまで（CrowdStrike の表現。開始時期は公表されていない）</td><td class=nowrap><span class="b kind">発生</span></td><td>WARP PANDA が、米国に所在する複数の組織の vCenter 環境に マルウェアを設置したうえで、CVE-2026-41709 をゼロデイとして悪用する。 悪用が「いくつかの事例で」行われたとされる。 開始時期・終了時期・対象組織数はいずれも公表されていない</td></tr><tr><td class="sm nowrap tw">2026年10月28日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>CrowdStrike が「2026 Legal Threat Landscape Report」を公表し、 WARP PANDA による CVE-2026-41709 のゼロデイ悪用を明かす。 報告書の対象期間は2025年9月1日〜2026年8月31日</td></tr><tr><td class="sm nowrap tw">2026年10月28日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>CISA が CVE-2026-41709 を KEV カタログへ収載する。 期限は2026年11月11日。対処は「ベンダーの緩和策を BOD 26-04 の 指針に従って適用する」。ランサムウェアでの使用は Unknown</td></tr><tr><td class="sm nowrap tw">2026年10月29日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が、Broadcom のアドバイザリ（出典1）・ CISA の KEV カタログ（出典2）・CrowdStrike の報告書の記事（出典3）を 取得して内容を確認した。 The Hacker News の記事（出典4）は HTTP 403 で取得できず、 NVD の CVE 詳細ページも自動取得では本文に到達できなかった</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>CISA の KEV の項目には、脅威アクターも悪用の内容も収載の根拠も書かれていない</span><div class=sm>**本記録が2026年10月29日に取得した KEV の項目に記載があるのは、 呼称（Broadcom VMWare ESX Insufficient Logging Vulnerability）・ ベンダー（Broadcom）・製品（VMware ESX）・収載日（2026年10月28日）・ 求める対処・期限（2026年11月11日）・ ランサムウェアキャンペーンでの使用（Unknown）だけである**（出典2。本記録の確認）。 **WARP PANDA という名前も、 「ゼロデイとして悪用されていた」という経緯も、 収載の根拠が CrowdStrike の報告書であることも記載が無い。** **実務上の問題は、KEV を自動で取り込んで資産台帳と突き合わせている 組織が、「ESX の Low が載った」という事実しか得られない点である** （本記録の評価）—— **本件で必要な行動は「当てる」だけではなく 「当てる前の期間について記録が欠けている前提で侵害調査の方針を見直す」 であり、その必要性は KEV の項目からは読み取れない。** **なお、KEV が定型の項目で構成されるカタログであること自体は 本件に固有の事情ではない**（本記録の補足）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>WARP PANDA と ARMORY CASTLE（旧 UNC5221）の対応関係が確定していない</span><div class=sm>**本DBの INC-2026-0561（BeyondTrust Remote Support の CVE-2026-102764 のゼロデイ悪用）は、 Mandiant が ARMORY CASTLE（旧 UNC5221）と呼ぶ主体について 「CrowdStrike は同じアクターを Warp Panda と呼ぶ」と記録しており、 同時に Mandiant の表記が 「Armory Castle（previously UNC5221 or Warp Panda）」であって Warp Panda を旧称として扱うか別ベンダーの呼称として扱うかで 記述が揺れている点も齟齬として残している**（本記録の確認）。 **本記録が確認した出典3 は、WARP PANDA について 「中国系」「米国の組織（法務分野を含む）」「vCenter 環境への マルウェア設置」「CVE-2026-41709 のゼロデイ悪用」以外の属性を 述べていない**—— **BeyondTrust の事案との接点を示す記述は無い。** **したがって本記録は、本件と INC-2026-0561 が 同一主体の活動であるとは断定しない**（本記録の判断）。 **links.incidents には related として置き、 関係の性質を註に書いた。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>CISA の対処期限が標準の3週間より短い14日である理由が示されていない</span><div class=sm>**KEV の標準的な猶予は収載から3週間（21日）である**（本記録の補足）。 **本件は2026年10月28日の収載に対し期限が2026年11月11日で、 14日である**（出典2。日数は本記録が数えた）。 **KEV の項目は求める対処として 「ベンダーの緩和策を、CISA の BOD 26-04 の指針に従って適用する」と 述べており、期限の算定が BOD 26-04 に由来する可能性がある** （本記録の推定）—— **ただし本記録は BOD 26-04 の本文を確認しておらず、 これは裏が取れていない。** **「クラウドサービスで緩和策が無い場合は当該製品の使用を中止する」 という文言も、通常の KEV の定型文より強い**（本記録の整理）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の記事と NVD の CVE 詳細を自動取得できなかった</span><div class=sm>**本記録の起点となった記事（出典4・The Hacker News）は、 収集時点で本文の取得に失敗しており （`content_source: fetch_failed`）、 本記録の作成者が2026年10月29日に再取得を試みた際も HTTP 403 Forbidden が返った**（本記録の確認）—— **収集済みの本文は先頭2文で途切れ、CVSS 値の記述は 「CVSS score:」で切れている。** **また NVD の CVE 詳細ページ （`nvd.nist.gov/vuln/detail/CVE-2026-41709`）も、 自動取得ではトップページの内容しか返らず到達できなかった。** **したがって CWE の分類と NVD 側の CVSS 評価は本記録では確認していない。** **一方、事実関係は Broadcom のアドバイザリ（出典1）・ CISA の KEV（出典2）・CrowdStrike の報告書の告知（出典3）の 3つを取得して確認しており、 本記録の記述はこの3つで裏が取れている**（本記録の明示）—— **出典4 に依拠した記述は無い。** **実務上の注意として付け加えると、 記事サイトとデータベースの自動取得の失敗は、 脆弱性情報の収集の自動化からの取りこぼしを生む**（本記録の指摘）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>深刻度 2.7 の脆弱性が、攻撃鎖のどこで何を消したか</div><div class=svgwrap><svg viewBox="0 0 998 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C295.0,60.0 295.0,155.0 220,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,155.0 C295.0,155.0 295.0,257.0 220,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,257.0 C397.0,257.0 397.0,118.0 424,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,118.0 C499.0,118.0 499.0,213.0 424,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,257.0 C499.0,257.0 499.0,74.0 628,74.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,213.0 C601.0,213.0 601.0,169.0 628,169.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,169.0 C703.0,169.0 703.0,257.0 628,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C907.0,60.0 907.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C703.0,162.0 703.0,118.0 424,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C907.0,60.0 907.0,264.0 832,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,264.0 C703.0,264.0 703.0,118.0 424,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WARP PANDA（中</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">国系とみられるスパイ活動</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="91.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">CrowdStrike </text><text x="91.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">の呼称。当局は帰属を公表</text><rect x="220" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵入経路（公表されていな</text><text x="295.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い）</text><text x="295.0" y="72.0" text-anchor="middle" fill="#f48fb1" font-size="10">どうやって vCente</text><text x="295.0" y="84.0" text-anchor="middle" fill="#f48fb1" font-size="10">r 環境に到達したかは示</text><rect x="220" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害組織の VMware</text><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> vCenter 環境（</text><text x="295.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">複数のマルウェアを設置）</text><text x="295.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">マルウェアファミリの名称</text><text x="295.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">は公表されていない</text><rect x="220" y="213.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ESX の管理者権限（悪</text><text x="295.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用の前提・CVSS の </text><text x="295.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PR:H）</text><text x="295.0" y="276.0" text-anchor="middle" fill="#f48fb1" font-size="10">この脆弱性は単体では何の</text><text x="295.0" y="288.0" text-anchor="middle" fill="#f48fb1" font-size="10">権限も与えない</text><rect x="424" y="74.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-417</text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">09 / ESX の記録</text><text x="499.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不足 / CVSS 2…</text><text x="499.0" y="137.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年7月29日に </text><text x="499.0" y="149.0" text-anchor="middle" fill="#f48fb1" font-size="10">VMSA-2026-00</text><rect x="424" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ESXi のローカルな操</text><text x="499.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">作記録</text><text x="499.0" y="225.0" text-anchor="middle" fill="#ffcc80" font-size="10">特定の操作が残らない。ど</text><text x="499.0" y="237.0" text-anchor="middle" fill="#ffcc80" font-size="10">の操作かは公表されていな</text><rect x="628" y="30.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ESX 上の全仮想マシン</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（ディスク・スナップショ</text><text x="703.0" y="80.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ット・メモリ）</text><text x="703.0" y="93.0" text-anchor="middle" fill="#64b5f6" font-size="10">ゲスト OS の統制を通</text><text x="703.0" y="105.0" text-anchor="middle" fill="#64b5f6" font-size="10">らずに操作できる。EDR</text><rect x="628" y="132.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">事後の侵害調査（何が起き</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">たかの確認）</text><text x="703.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">本件の実害。記録が無いた</text><text x="703.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">め成立しない</text><rect x="628" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">米国に所在する組織（法務</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">分野を含む）</text><text x="703.0" y="269.0" text-anchor="middle" fill="#80cbc4" font-size="10">組織名・件数・業種の内訳</text><text x="703.0" y="281.0" text-anchor="middle" fill="#80cbc4" font-size="10">は公表されていない</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CrowdStrike（</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">報告者 Ian Bart</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">on／悪用の公表者）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#80cbc4" font-size="10">2026年7月29日に </text><text x="907.0" y="91.0" text-anchor="middle" fill="#80cbc4" font-size="10">Broadcom へ報告</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Broadcom VMS</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">A-2026-0006（</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026年7月29日・…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#80cbc4" font-size="10">アドバイザリに悪用の記載</text><text x="907.0" y="193.0" text-anchor="middle" fill="#80cbc4" font-size="10">は無い</text><rect x="832" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV 収載（</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026年10月28日・</text><text x="907.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">期限11月11日）</text><text x="907.0" y="283.0" text-anchor="middle" fill="#b0bec5" font-size="10">主体も悪用の内容も根拠も</text><text x="907.0" y="295.0" text-anchor="middle" fill="#b0bec5" font-size="10"> KEV の項目には書か</text></svg></div><div class=fn>layer 0 は攻撃主体。layer 1 は到達した位置（vCenter 環境と ESX の管理者権限）で、そこへ至る経路は公表されていない。 layer 2 が本件の脆弱性（CVE-2026-41709）で、 これが作用するのは ESXi のローカルな操作記録に対してである。 layer 3 は、記録が欠けた結果として確かめられなくなるもの。 layer 4 は公表の経路（発見者であるベンダーが3か月後に自ら悪用を公表し、 当局が同日 KEV へ収載した）。 **破線に相当する部分（侵入経路・設置されたマルウェア・ 持ち出されたもの）はいずれも公表されていない。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** 侵入経路が示されていないため、 どこで気づけたかを論じる材料が無い（本記録の確認）〈未確定2〉—— **ただし、本件の構造から一般論として言えることがある** （本記録の評価）—— **vCenter は管理面であり、 そこへの到達は「業務の正常な通信」として説明しにくい。** **管理面への接続元・接続時刻・認証を独立に記録していれば、 異常として浮かぶ余地がある**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>vCenter / ESX の管理面を業務ネットワークから分離し、踏み台経由に限定する<span class=sm>　**本記録の評価。** 攻撃者が vCenter 環境に到達していたことは 公表されている（出典3）—— **到達できる位置を狭めることが、 この攻撃鎖のどの段よりも前に効く統制である。** **ただし侵入経路が不明なため、 これが本件を防げたとは言えない**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>ハイパーバイザの管理者権限を常時付与せず、使用のたびに払い出す<span class=sm>　**本記録の評価。** 本件の悪用には ESX の管理者権限が必要である （出典1 の `PR:H`）—— **常時有効な管理者資格が存在しなければ、 攻撃者はこの脆弱性を使う前に別の壁に当たる。** **実装の負荷は小さくない**</span></div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）〈未確定1〉。 **ただし本記録は、この段の検知可能性について 構造上の指摘をしておく**（本記録の評価）—— **ESX のローカル記録では原理的に検知できない。** **この脆弱性の効果そのものが「ローカル記録に残らないこと」だからである。** **残る手は、ハイパーバイザの外側で観測することである**—— **①ESXi からの外向き通信、 ②vCenter 側の操作記録（ESX 側とは別の系統）、 ③認証基盤の記録（管理者資格がいつ使われたか）、 ④記録の「欠落そのもの」の検知 （時刻の連続性が途切れる、想定される定期的な記録が無い）。** **④は現実には難しい**—— **どの操作が漏れるのか公表されていないため、 何が欠けているのが異常なのか判断する基準が無い**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版の ESX を適用する（回避策は提供されていない）<span class=sm>　**2026年7月29日から提供されている**（出典1）—— **悪用が公表されたのは3か月後の10月28日である。** **深刻度 2.7 の「Low」を根拠に後回しにした環境は、 この91日間を無防備で過ごした**（本記録の評価）</span></div><div class=ctl><span class="b eff">検知できた</span>ESXi のローカル記録を外部（syslog / SIEM）へ即時転送する<span class=sm>　**本記録の評価。効果は限定的である。** **「記録に残らずに実行される」操作は、転送しても現れない**—— **転送が効くのは、攻撃者が事後に記録を削除する場合である。** **それでも価値がある理由は、 記録の欠落・時刻の跳びを外部側で観測できる点にある**</span></div><div class=ctl><span class="b eff">検知できた</span>ハイパーバイザの管理者権限の払い出しと使用を、ESX の外側で記録する<span class=sm>　**本記録の評価。** 本件の悪用には管理者権限が要る（出典1 の `PR:H`）—— **「権限が使われた事実」を ESX とは別の系統で持っていれば、 ESX 側に対応する操作記録が無いという突き合わせができる。** **これは本件の脆弱性の効果を外側から打ち消す唯一の形である** （本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）〈未確定3〉。 **本記録の評価を書く**—— **ハイパーバイザの管理者権限があれば、 仮想マシンの中の統制を一切通らずに ディスクイメージの複製・スナップショットの取得・ メモリのダンプができる**（本記録の補足）。 **ゲスト OS 側の EDR には映らない。** **そのうえで ESX 側の操作記録も残らないのであれば、 事後の侵害調査で辿れる痕跡が無い。** **これが本件の実害である**</div></td><td><div class=ctl><span class="b eff">検知できた</span>仮想ディスク・スナップショット・バックアップの複製と持ち出しを、ストレージ側で記録する<span class=sm>　**本記録の評価。** ハイパーバイザの記録が欠けても、 ストレージ・バックアップ基盤・ネットワークの側で 大容量の複製と転送は観測できる—— **ゲスト OS の中でもハイパーバイザの中でもない層に 記録を持つことが、この種の攻撃に対する備えになる**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>重要な仮想マシンのディスクを暗号化し、鍵をハイパーバイザの外で管理する<span class=sm>　**本記録の評価。** ディスクイメージを複製されても、 鍵がハイパーバイザの管理者の手に無ければ中身は読めない—— **ただし稼働中の仮想マシンのメモリからは鍵を取り得るため、 完全な防御ではない**（本記録の注意）</span></div><div class=ctl><span class="b eff">復旧を早められた</span>侵害を想定した記録の保全方針を、パッチ適用の前に実行する<span class=sm>　**本記録の評価。** パッチを当てると、 悪用されていた期間の状態は上書きされる—— **「当てる前に記録と構成を取っておく」ことで、 後から技術的な詳細や IoC が公表されたときに遡れる。** **いま照合する材料は存在しない**〈未確定1〉</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Broadcom は2026年7月29日に VMSA-2026-0006 で CVE-2026-41709 を「Low」（CVSS 2.7）として修正し、 悪用についての記載を置かなかった。 悪用の事実は3か月後の2026年10月28日に、 報告者である CrowdStrike 自身が年次報告書の中で公表した</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>**評価できる材料がない**（本記録の判断）。 **Broadcom と CrowdStrike のどちらがどの判断をしたのか、 悪用の事実をいつから知っていたのかが公表されていない**〈未確定6〉。 **本記録が指摘できるのは構造だけである**（本記録の評価）—— **監査記録の不足という種類の脆弱性は、 ①単体での CVSS が構造的に低くなり、 ②悪用されても被害が顕在化しないため、 ③「悪用されている」という情報が無い限り適用の動機が生まれない。** **この3つが重なると、修正があっても当たらないまま放置される。**</td></tr><tr><td>CISA は KEV の項目に、呼称・ベンダー・製品・収載日・対処・期限・ ランサムウェアでの使用（Unknown）のみを記載し、 脅威アクターの名前・悪用の内容・収載の根拠を書かなかった</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価である。** KEV の役割は「悪用されている脆弱性を 機械可読な形で列挙し、期限を付ける」ことであり、 その役割は果たしている（出典2）。 **partial としたのは、本件が「KEV の載り方」と 「必要な行動」がずれる類型だからである**（本記録の指摘）—— **多くの KEV 項目では「当てる」が必要な行動の全部である。** **本件はそれに加えて「当てる前の期間について、 記録が欠けている前提で侵害調査の方針を見直す」が要る。** **その必要性は KEV の項目からは読み取れない。**</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>深刻度の低い脆弱性のうち「監査記録に関わるもの」だけは別枠で扱う</div><div class=lw>**本件の CVSS v3.1 基本値は 2.7（Low）で、 機密性（C:N）と可用性（A:N）への影響は無い**（出典1）—— **それでも KEV に載った。** **理由は、攻撃者がこれを単体で使っていないことにある** （本記録の評価）—— **CrowdStrike は「vCenter 環境にマルウェアを設置したうえで」 これを悪用したと述べている**（出典3）。 **監査記録に関わる脆弱性は、 単体では何もできないので CVSS が必ず低くなり、 かつ攻撃鎖の中では攻撃者の痕跡を消す位置に立つ。** **深刻度で並べる運用は、この種を構造的に最後に回す。**</div><div class=la><b>取るべき行動</b> **脆弱性管理の分類に「記録・監査・検知に影響するもの」という 区分を1つ作り、CVSS とは別の軸で適用順を決める。** ①CVE の説明文に logging / audit / telemetry / event / detection / bypass が現れるものを拾う、 ②該当したら深刻度にかかわらず「次の保守枠まで」を上限にする、 ③当てられない場合は、その期間の当該システムの記録を 外部へ転送する手当てを並行して行う。 **「Low だから次の四半期」という既定の扱いから外す。**</div></li><li><div class=lp>ハイパーバイザを「サーバの一種」ではなく「認証基盤と同格の管理面」として予算と統制を付ける</div><div class=lw>**攻撃者が居たのは被害組織の vCenter 環境である**（出典3）。 **ESX の管理者権限があれば、その上の全仮想マシンに対して ゲスト OS の統制を一切通らずに操作できる**（本記録の補足）—— **ゲスト側に入れた EDR には何も映らない。** **多くの組織で、EDR・特権アクセス管理・多要素認証への投資は ゲスト OS 側とドメイン側に集中しており、 ハイパーバイザの管理面は「インフラチームの領分」として 統制の対象から外れていることがある**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **ハイパーバイザの管理面を、Active Directory や ID 基盤と 同じ統制水準に引き上げる。** ①vCenter / ESX の管理者アカウントの一覧と、 常時付与されているものの数を出す、 ②管理面への到達経路（どの端末・どのネットワークから届くか）を 実測して文書化する、 ③管理操作の記録を ESX の外側（SIEM・特権アクセス管理）に 独立して持つ、 ④ハイパーバイザのパッチ適用のための停止枠を、 年間の運用計画に最初から確保する。 **本件のパッチが91日当たらなかったのは、 停止枠が無かったことも理由になりうる**（本記録の評価）。</div></li><li><div class=lp>「侵害されたか」ではなく「侵害を示す記録が残っているか」を定期的に確認する</div><div class=lw>**本件の実害は、悪用された期間の ESXi のローカル記録が 欠けていることである**（本記録の評価）—— **Broadcom の記述が「特定の操作が記録に残らずに実行できる」である以上、 ESXi 側の記録は「操作が無かった」ように見える**（出典1）。 **攻撃者が2026年初頭まで使っていたと公表されたのは10月28日であり、 その時点で記録の保存期間を過ぎている組織もありうる**（本記録の指摘）。</div><div class=la><b>取るべき行動</b> **半年に1回、「いま侵害調査を依頼されたら、どこまで遡れるか」を 机上で確認する。** ①主要システムごとに記録の保存期間と保存場所を一覧にする、 ②そのうち「システム自身が書いている記録」と 「外部に転送された記録」を区別する、 ③前者しか無いシステムを洗い出す—— **本件のような脆弱性では、前者は信用できない。** ④ハイパーバイザ・ネットワーク機器・認証基盤については、 保存期間を最低1年に揃える。</div></li><li><div class=lp>顧客情報を預ける専門サービス事業者（法律事務所・会計事務所）の統制を確認する</div><div class=lw>**CrowdStrike の報告書が示しているのは、 法務分野への侵入が2023年から2026年でおよそ倍増し、 リークサイトへの掲載が455件（前年比39%増）に達し、 中国系のスパイ活動も複数が法務分野を狙っているという状況である** （出典3）—— **TITAN PANDA は法務分野固有のソフトウェア（Intapp Time Server）を 狙い、MURKY PANDA のパスワードスプレーでは340を超える組織のうち 法務分野が最も影響を受けた。** **自社の統制を固めても、M&amp;A・訴訟・内部調査の資料を預けた先が 同じ水準でなければ、情報はそちらから出る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **外部の専門サービス事業者へ機密情報を渡す手続きに、 最低限の統制の確認を組み込む。** ①多要素認証の有無（パスワードスプレーに対する唯一の実効策）、 ②預けた資料の保存期間と削除の手順、 ③侵害時の通知義務と期限を契約に書く、 ④案件ごとに専用の受け渡し手段を使い、 事務所の共有環境に長期間置かない。 **「相手が大手だから」は統制の確認にならない**—— **報告書が示す被害のほぼ90%は法律事務所である**（出典3）。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>ESXi のローカル記録を「改変されうる記録」として扱い、外部へ転送する</div><div class=lw>**本件の効果は、ESXi のローカル記録に操作が残らないことである** （出典1）。 **ローカル記録しか持っていない環境では、 この脆弱性の悪用を原理的に検知できない**（本記録の評価）—— **検知しようとしている記録そのものが欠落するからである。** **転送しておいても「記録されなかった操作」は現れないが、 記録の欠落・時刻の跳び・定期的に出るはずの記録が出ていないことは 外部側で観測できる。**</div><div class=la><b>取るべき行動</b> **全 ESXi ホストの syslog 転送先を設定し、転送が実際に届いているかを監視する。** ①`Syslog.global.logHost` の設定値を全ホストで棚卸しする、 ②転送先で、ホストごとの単位時間あたりの記録件数を監視し、 ゼロまたは急減をアラートにする、 ③ESXi のローカル記録と転送先の記録を定期的に突き合わせる、 ④転送の経路（ネットワーク・ポート）がハイパーバイザの 管理者から止められない位置にあるかを確認する。 **「設定した」ではなく「届き続けている」を監視対象にする。**</div></li><li><div class=lp>パッチを当てる前に、当該ホストの記録と構成を保全する</div><div class=lw>**本件には侵害判定のための指標（IoC）が存在しない**（本記録の確認） 〈未確定1〉—— **どの操作が記録から漏れるのかが公表されていないため、 いま照合する手段が無い。** **一方で、技術的な詳細が後から公表される可能性はある** （本記録の評価）—— **そのときに遡れるのは、いま記録と構成を取ってある環境だけである。** **パッチを当てれば、悪用されていた期間の状態は上書きされる。**</div><div class=la><b>取るべき行動</b> **ESX のパッチ適用の手順書に「適用前の保全」を1項目足す。** ①ESXi のローカル記録（`/var/log/` 配下）を外部へ退避する、 ②稼働中のプロセス一覧・起動時の設定・インストール済み VIB の一覧を取る、 ③vCenter 側のイベント記録を同じ期間ぶん別途保存する、 ④退避先を、本番環境の管理者権限では消せない場所にする。 **保存期間は最低1年を目安にする**—— **本件は修正から悪用の公表まで91日かかっている**（出典1・2）。</div></li><li><div class=lp>ハイパーバイザの外側に「管理者権限が使われた記録」を独立に持つ</div><div class=lw>**本件の悪用には ESX の管理者権限が必要である**（出典1 の `PR:H`）—— **攻撃者はこれを使う前に既に管理者相当の位置にいた。** **ESX 側の操作記録は信用できないが、 「その権限がいつ誰に払い出され、いつ使われたか」を 別の系統で持っていれば、突き合わせができる**（本記録の評価）—— **権限が使われた時間帯に ESX 側の記録が何も無いという状態が、 この脆弱性の悪用の唯一の外形的な兆候になりうる。**</div><div class=la><b>取るべき行動</b> **ハイパーバイザの管理者アクセスを、特権アクセス管理（PAM）または 踏み台の経由に限定し、そこで記録を取る。** ①ESX / vCenter への直接のログインを、 ネットワーク側で踏み台からのみに制限する、 ②踏み台のセッション記録（接続元・時刻・操作）を ハイパーバイザとは別の保存先に置く、 ③常時有効な管理者資格を廃し、使用のたびに払い出す、 ④払い出しの記録と ESX 側の記録の件数を定期的に突き合わせる。</div></li><li><div class=lp>ゲスト OS の中でもハイパーバイザの中でもない層に、検知の目を置く</div><div class=lw>**ハイパーバイザの管理者権限があれば、 ゲスト OS の統制を通らずにディスクイメージの複製・ スナップショットの取得・メモリのダンプができる**（本記録の補足）—— **ゲスト側の EDR には映らない。** **そのうえで本件により ESX 側の記録も残らない。** **残るのは、ストレージ・バックアップ基盤・ネットワークの側の観測だけである** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **大容量のデータ移動を、仮想化基盤の外側で検知できるようにする。** ①データストアに対するスナップショット作成・削除を ストレージ側のイベントとして取得する、 ②バックアップ基盤の復元・複製の操作を独立に記録する、 ③ESXi の管理インタフェースからの外向き通信の量と宛先を ネットワーク側で監視する（平常時の量を先に測っておく）、 ④仮想ディスクの暗号化を導入し、鍵をハイパーバイザの外で管理する。</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> VMware ESX 9.1.x.x / 9.0.x.x / 8.0、VMware Cloud Foundation 5.x、 または VMware Telco Cloud Platform 5.0.x・5.1.x を運用しており、 2026年7月29日以降の修正版（ESXi-9.1.0.0-25370933 / ESXi-9.0.2.0100-25595025 / ESXi80U3j-25429389 / VCF 5.2.4 / KB449886）を 適用していない</td><td class=sm>**CISA が2026年10月28日に KEV へ収載した対象である**（出典1・2）—— **連邦機関の期限は2026年11月11日。** **日本の組織に適用義務は無いが、悪用が確認されている事実は共通である** （本記録の明示）。 **回避策（workaround）は提供されていない**（出典1）—— **パッチ以外の手が無い。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の適用順を CVSS の値だけで決めており、 「Low」の扱いが次の定期保守枠まで待つ運用になっている</td><td class=sm>**本件の CVSS v3.1 基本値は 2.7（Low）である**（出典1）—— **深刻度を唯一の軸にしている運用では、 修正の公開から KEV 収載までの91日間に、 これを当てる理由を作れない**（本記録の評価）。 **監査記録に関わる脆弱性は、単体では何もできないため CVSS が構造的に低くなる**—— **攻撃者にとっての価値は、攻撃鎖の中の位置にある。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ESXi のローカル記録を外部（syslog / SIEM）へ転送しておらず、 ハイパーバイザ上の操作の記録がホスト自身の中にしかない</td><td class=sm>**本件の効果は、特定の操作が ESXi のローカル記録に残らないことである** （出典1）。 **ローカル記録しか無い環境では、悪用の有無を原理的に確かめられない** （本記録の評価）—— **検知に使うはずの記録そのものが欠落する。** **転送しておいても「記録されなかった操作」は現れないが、 記録の欠落や時刻の跳びは外部側で観測できる。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> vCenter / ESX の管理者権限が常時有効なアカウントに付与されており、 その権限の使用を ESX の外側で記録していない</td><td class=sm>**本件の悪用には ESX の管理者権限が必要である**（出典1 の `PR:H`）—— **攻撃者はこれを使う前に既に管理者相当の位置にいた。** **ESX 側の記録が信用できない以上、 「権限がいつ使われたか」を別の系統で持っていることが、 外側から突き合わせる唯一の手になる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 仮想化基盤の管理面（vCenter / ESX）が業務ネットワークから到達でき、 専用の踏み台や分離された管理網を経由していない</td><td class=sm>**CrowdStrike は攻撃者が被害組織の vCenter 環境に マルウェアを設置していたと述べている**（出典3）—— **侵入経路は公表されていない**〈未確定2〉**が、 管理面に到達できる範囲が広いほど、そこへ至る経路も増える** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> M&amp;A・訴訟・内部調査などの機密情報を外部の法律事務所・会計事務所・ コンサルティング会社へ渡しているが、 預け先の多要素認証の有無や侵害時の通知義務を確認していない</td><td class=sm>**CrowdStrike の報告書は、法務分野への侵入が2023年から2026年で およそ倍増し、リークサイト掲載が455件（前年比39%増）に達し、 中国系の複数のグループが法務分野を狙っていると述べている**（出典3）。 **MURKY PANDA のパスワードスプレーでは340を超える組織が影響を受け、 法務分野が最も影響を受けた**—— **ある法律事務所では30日間で約500件の失敗したログインが記録された。** **これらは本件の被害数ではなく、同報告書の背景値である**（本記録の明示）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年7月29日（2026年8月19日改訂・revision .2） Broadcom</span> <a href="https://support.broadcom.com/web/ecx/support-content-notification/-/external/content/SecurityAdvisories/0/38017" target="_blank" rel="noreferrer noopener nofollow">VMSA-2026-0006</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料（製品ベンダーのアドバイザリ）。 **本記録の作成者が2026年10月29日に取得して内容を確認した。** 確認した事項—— CVE-2026-41709 の CVSS v3.1 基本値 2.7（Low）、 ベクタ AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:L/A:N、 「悪意のある管理者が特定の操作を記録に残さずに実行できる可能性がある」 という known attack vector の記述、 対象系列（ESX 9.1.x.x / 9.0.x.x / 8.0 / VCF 5.x / Telco Cloud Platform 5.0.x・5.1.x）、 修正版（ESXi-9.1.0.0-25370933 / ESXi-9.0.2.0100-25595025 / ESXi80U3j-25429389 / VCF 5.2.4 / KB449886）、 回避策が「None」であること、 報告者が Ian Barton（CrowdStrike）であること、 本 CVE については ESX 7.0 の対応表の行が無いこと。 **悪用についての記述は、本記録が取得した版には無い**)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月28日（KEV 収載日） CISA（米サイバーセキュリティ・インフラセキュリティ庁）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog?search_api_fulltext=CVE-2026-41709" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog — CVE-2026-41709</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(一次資料（当局のカタログ）。 **本記録の作成者が2026年10月29日に取得して内容を確認した。** 確認した事項—— 呼称「Broadcom VMWare ESX Insufficient Logging Vulnerability」、 ベンダー Broadcom、製品 VMware ESX、 収載日 2026年10月28日、期限 2026年11月11日、 求める対処「ベンダーの緩和策を CISA の BOD 26-04 の指針に従って適用する。 クラウドサービスで緩和策が無い場合は当該製品の使用を中止する」、 ランサムウェアキャンペーンでの使用「Unknown」。 **脅威アクターの名前、悪用の内容、収載の根拠はいずれも この項目には記載されていない**〈齟齬1〉)）</span></li><li><span class=rid>[5]</span> <span class=sm>公開日は確認できていない NVD（米国国家脆弱性データベース）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41709" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-41709</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(一次資料（公的な脆弱性データベース）。 **本記録の作成者が2026年10月29日に取得を試みたが、 自動取得では NVD のトップページの内容しか返らず、 CVE の詳細に到達できなかった**〈齟齬4〉。 **したがって CWE の分類、NVD 側の CVSS 評価、 公開日・更新日はいずれも本記録では確認していない。** **availability を live としたのは、資料自体は公開されており 人がブラウザで開けば読めると考えられるためである**—— **自動取得が機能しないことを示すために本註を置いた)）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月28日 CrowdStrike</span> <a href="https://www.crowdstrike.com/en-us/blog/crowdstrike-2026-legal-threat-landscape-report/" target="_blank" rel="noreferrer noopener nofollow">CrowdStrike 2026 Legal Threat Landscape Report: eCrime Leads Attacks, China Activity Intensifies</a> <span class="b kind">調査レポート</span><span class=sm>（(本件の悪用の事実の唯一の出所。 **本記録の作成者が2026年10月29日に取得して内容を確認した。** 確認した事項—— WARP PANDA（中国系）が米国に所在する組織（法務分野を含む）の vCenter 環境に複数のマルウェアファミリを設置したこと、 いくつかの事例で2026年初頭に至るまで 「ESXi command logging bypass vulnerability CVE-2026-41709」を ゼロデイとして悪用したこと、 報告書の対象期間が2025年9月1日〜2026年8月31日であること、 法務分野についての数値（金銭目的の攻撃者が82%、 リークサイト掲載455件・前年比39%増、 CHATTY SPIDER の129%増とその被害のほぼ90%が法律事務所、 2023年から2026年で侵入がおよそ倍増）、 中国系の他の活動（TITAN PANDA の Intapp Time Server、 MURKY PANDA の ORB28 と340超の組織・ある事務所で30日間に約500件の失敗ログイン、 OVERCAST PANDA の英国法律事務所の経営層）。 **脆弱性の技術的な機構、被害組織の数・名称、 設置されたマルウェアの名称、侵入経路はいずれも述べられていない**。 **報告書本体（PDF）ではなくブログの告知を取得した**)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月29日 The Hacker News</span> <a href="https://thehackernews.com/2026/10/china-linked-hackers-exploited-vmware.html" target="_blank" rel="noreferrer noopener nofollow">China-Linked Hackers Exploited VMware ESX Zero-Day to Reduce Audit Trail Visibility</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった記事（2026年10月29日収集分）。 **本記録の作成者が2026年10月29日に全文の取得を試みたが HTTP 403 Forbidden で取得できなかった**〈齟齬4〉—— **収集済みの本文も先頭2文で途切れている** （`content_source: fetch_failed`）。 確認できた範囲——CISA が Broadcom VMware ESX の脆弱性を KEV へ収載したこと、CrowdStrike が WARP PANDA による 武器化を明かしたこと、標的が米国の法務分野であること、 CVE が CVE-2026-41709 であること。 **CVSS 値の記述は「CVSS score:」で途切れている。** **したがって本記録はこの記事の内容に依拠しておらず、 事実関係はすべて出典1・2・3 で裏を取った**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月29日</span> <span class="b rev">新規作成</span> 新規作成。2026年10月29日収集分の The Hacker News（出典4）を起点に裏取りした。 **起点の記事は本文の取得に失敗しており（収集時・再取得時とも）、 確認できたのは先頭2文だけだった**—— **そのため事実関係はすべて一次資料で取り直した。** **取得して内容を確認できたのは3つである**—— **①Broadcom の VMSA-2026-0006（出典1）**： CVSS v3.1 基本値 2.7（Low）、 ベクタ AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:L/A:N、 「悪意のある管理者が特定の操作を記録に残さずに実行できる」という記述、 対象系列（ESX 9.1.x.x / 9.0.x.x / 8.0 / VCF 5.x / Telco Cloud Platform 5.0.x・5.1.x）、修正版のビルド番号、 回避策が「None」であること、報告者が Ian Barton（CrowdStrike）であること、 本 CVE には ESX 7.0 の対応表の行が無いこと、 本記録が取得した版（revision .2・2026年8月19日改訂）に 悪用の記載が無いこと。 **②CISA の KEV カタログ（出典2）**： 呼称・収載日2026年10月28日・期限2026年11月11日・ 求める対処（BOD 26-04 の指針に従う／クラウドで緩和策が無ければ使用中止）・ ランサムウェアでの使用「Unknown」、 そして**脅威アクター名も悪用の内容も収載の根拠も記載が無いこと**。 **③CrowdStrike の「2026 Legal Threat Landscape Report」の告知（出典3）**： WARP PANDA（中国系）が米国の組織（法務分野を含む）の vCenter 環境に 複数のマルウェアファミリを設置し、いくつかの事例で2026年初頭に至るまで CVE-2026-41709 をゼロデイ悪用したこと、 報告書の対象期間（2025年9月1日〜2026年8月31日）、 法務分野の背景値（金銭目的82%・リークサイト掲載455件・前年比39%増・ CHATTY SPIDER 129%増・侵入が2023年から2026年でおよそ倍増）、 中国系の他の活動（TITAN PANDA / MURKY PANDA / OVERCAST PANDA）。 **NVD の CVE 詳細ページは自動取得では到達できず、 CWE の分類と NVD 側の CVSS 評価は確認していない**〈齟齬4〉。
+**本記録が中心に据えたのは、深刻度と実害の乖離である**—— **CVSS 2.7（Low）は過小評価ではなく、 この脆弱性が単体では何もできないことを正しく映している。** **にもかかわらず KEV に載ったのは、 攻撃者がこれを単体で使っていないためである**（本記録の評価）。 **悪用には ESX の管理者権限が必要（PR:H）で、 得られるのは「特定の操作を記録に残さず実行できる」ことだけ—— つまり初期侵入ではなく検知回避の道具である。** **実害は侵害そのものではなく、 悪用された期間の ESXi のローカル記録が欠けていることにある**として、 log_availability・attack.chain の defense-evasion 段・ lessons・applicability をその線で組んだ。
+**修正の公開（2026年7月29日）から KEV 収載（10月28日）までの91日間を derived の figure として置いた**—— **この91日間、適用を促す材料は「CVSS 2.7 の Low」だけだった** （本記録の評価）。
+**帰属は単一ベンダーの評価であり、当局は公表していない**ため link_confidence を presumed とし、 **ARMORY CASTLE（旧 UNC5221）との呼称の対応関係が ベンダー間で確定していない点を齟齬に記した**—— **本DBの INC-2026-0561 と同一主体とは断定せず、 links.incidents に related として置いた。**
+どの操作が記録に残らないのか、vCenter 環境への侵入経路、 被害組織の数・名称・業種、悪用判明後の Broadcom の対応、 CISA が期限を14日にした理由、CrowdStrike が脆弱性を特定した経緯は いずれも unknowns に記した。 **侵害判定のための指標（IoC）が存在しないため、 いま照合する手段は無い**—— **パッチ適用の前に記録と構成を保全しておくことを engineer 向けの lessons に置いた。** **status は new。** 被害組織の公表も、技術的な詳細の追加公表も無い。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">VMware ESX</span><span class="b tag">ESXi</span><span class="b tag">vCenter</span><span class="b tag">Broadcom</span><span class="b tag">CVE-2026-41709</span><span class="b tag">VMSA-2026-0006</span><span class="b tag">CISA KEV</span><span class="b tag">BOD 26-04</span><span class="b tag">WARP PANDA</span><span class="b tag">CrowdStrike</span><span class="b tag">中国系</span><span class="b tag">ゼロデイ</span><span class="b tag">検知回避</span><span class="b tag">監査記録</span><span class="b tag">ログ</span><span class="b tag">ハイパーバイザ</span><span class="b tag">法務分野</span><span class="b tag">CVSS</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-29 18:12 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
