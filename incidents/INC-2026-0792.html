@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Linux TCP の UAF で遠隔root — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0792</span>Linux TCP の UAF で遠隔root</h1>
+<header class="site-header">
+  <p class="subtitle">**Linux カーネルの CNA は2026年10月15日、IPv4 の TCP 処理にある use-after-free の 脆弱性 CVE-2026-98432 を公開した。認証不要・ネットワーク経由で到達でき、 CNA の評価は CVSS 3.1 で 9.8（Critical）である。 発見・報告は Anthropic で、同社は10月27日の研究レポートで、 MPTCP のリスナーを持つ Linux サーバに対し認証なしで root 権限のコマンド実行に 至る実証を公表した。影響は 4.4 以降の全系列に及び、上流では8系列で修正済みだが、 2026年10月30日時点で Ubuntu と Red Hat は修正版の提供が完了していない。 CISA KEV（2026.10.29 版）には収載されていない。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月15日（Linux カーネル CNA による CVE の公開）</span>
+  <span>最終更新: 2026年10月30日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>Linux カーネルの CNA は2026年10月15日、CVE-2026-98432 を公開した</strong>（出典1・3）。 <strong>IPv4 の TCP 接続処理で、要求ソケットの IP オプションが解放された後も 別の CPU が参照しうる use-after-free である</strong>（出典1）。 <strong>認証は不要で、接続を受け付けているサーバにネットワーク経由で到達できる相手が 対象になる</strong>（出典1）。 <strong>CNA の評価は CVSS 3.1 で 9.8（Critical）、ベクタは AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H である</strong>（出典1。本記録が CVE レコードを 取得して確認）〈重要〉。 <strong>発見と報告は Anthropic である</strong>（出典2・3）—— <strong>同社は2026年10月27日の研究レポートで、MPTCP（multipath TCP）のリスナーを持つ Linux サーバにパケットを送るだけで、認証なしに任意のコマンドを root で実行できる 実証を公表した</strong>（出典2）。 <strong>実証は2段階で、まず競合を利用してカーネルポインタを応答に載せさせ 遠隔から KASLR を突破し、次に同じ use-after-free でコールバックポインタを 書き換えて既存のカーネル関数を連ねる</strong>（出典2）。 <strong>PoC ではカーネルポインタの漏えいに約48分、そこからコマンド実行までさらに約5分を 要した</strong>（出典2）。 <strong>競合に負けてもハンドシェイクが失敗するだけでシステムは落ちないため、 攻撃側は成功するまで再試行できる</strong>（出典2）〈重要〉。 <strong>影響は 4.4 以降のカーネルで、上流の修正版は 5.10.272・5.15.223・6.1.190・ 6.6.159・6.12.113・6.18.56・7.2.10・7.3 の8系列である</strong>（出典1）。 <strong>2026年10月30日時点で、Ubuntu は修正版を提供しておらず作業中、 Red Hat は RHEL 8・9・10 を影響ありとしている</strong>（出典3）。 <strong>CISA の Known Exploited Vulnerabilities カタログ（2026.10.29 版・1,764件）には 収載されていない</strong>（出典6。本記録が取得して確認）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>実環境における悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録が2026年10月30日に CISA KEV の JSON フィードを取得して確認した結果、 catalogVersion 2026.10.29・収載1,764件に CVE-2026-98432 は含まれていない** （出典6）〈重要〉。 **Anthropic のレポートが示したのは研究環境での PoC であり、 実環境での攻撃の報告ではない**（出典2。本記録の明示）。 **出典3・4・5 のいずれにも、実環境での悪用の観測に関する記述は無い** （本記録の確認）。 **「確認されていない」は「起きていない」ではない**（本記録の明示）。</div></li><li><span class=ui>Ubuntu と Red Hat の修正版の提供時期</span><span class="b rsn">公表されていない</span><div class=sm>**2026年10月30日時点で、Ubuntu は標準の linux パッケージについて 26.10・26.04 LTS・24.04 LTS・22.04 LTS で作業中とし、修正版は無い** （出典3）〈重要〉—— **20.04 LTS・18.04 LTS・16.04 LTS も脆弱とされている**（出典3）。 **Red Hat は RHEL 8・9・10（kernel-rt を含む）と OpenShift 4 の RHCOS を 影響ありとしており、CVE ページは preliminary である**（出典3）。 **いずれも提供予定時期は示されていない**（本記録の確認）。</div></li><li><span class=ui>侵害の兆候（IoC）と検知方法</span><span class="b rsn">公表されていない</span><div class=sm>**公表されている対処は修正版への更新までであり、 侵害の兆候や検知方法は示されていない**（出典3。本記録の確認）〈重要〉。 **Red Hat は基準を満たす緩和策は無いとしている**（出典3）。 **MPTCP の無効化や、IP オプション付き SYN の遮断が有効かどうかも 示されていない**（出典3）—— **攻撃が成功した場合は root 権限でのコマンド実行に至るため、 痕跡の消去も可能である**（本記録の評価）。</div></li><li><span class=ui>Anthropic の実証に用いられたモデルの名称</span><span class="b rsn">公表されていない</span><div class=sm>**レポートは全体の作業に「unreleased, internal research model （未公開の社内研究用モデル）」を用いたと説明している**（出典2）—— **本 CVE の実証に使われたモデルの名称は明示されていない** （本記録の確認）。 **レポート末尾で言及される Claude Opus 5.5・Sonnet 5.5・Mythos 5.1 は Cyber Verification Program の説明に登場するもので、 この実証に使われたとは書かれていない**（出典2。本記録の確認）〈重要〉。</div></li><li><span class=ui>報告から修正までの経緯と日付</span><span class="b rsn">公表されていない</span><div class=sm>**Anthropic のレポートには、本 CVE についての報告日や修正日の具体的な 記載が無い**（出典2。本記録の確認）—— **同社は一般的な方針として、調整された脆弱性開示のもとで報告し、 ベンダーに90日の修正期間とその後45日を与えるとしているが、 本件に適用されたかは明示されていない**（出典2）。 **CVE の予約（2026年9月25日とされる）より前に報告が行われたと 読めるが、確認できない**（本記録の推定）。</div></li><li><span class=ui>MPTCP 以外の経路で root 権限のコマンド実行まで到達できるか</span><span class="b rsn">検証できない</span><div class=sm>**Anthropic の実証の条件は MPTCP のリスナーである**（出典2）—— **一方、CVE の記述が挙げる条件は接続を受け付ける IPv4 の TCP サービスである** （出典1）〈重要〉。 **CVE の説明文と修正コミットには MPTCP の記載が無い** （出典1・3。本記録の確認）。 **したがって、MPTCP を使わない通常の TCP サービスで 同じ水準の悪用（root でのコマンド実行）に至れるかは、 公表資料からは判断できない**（本記録の留保）。 **CNA が挙げる影響は、ヒープ内容の漏えい、境界外書き込みと制御フローの破壊の 可能性、カーネルの停止である**（出典1・3）。</div></li><li><span class=ui>影響を受ける機器の台数と国内の分布</span><span class="b rsn">公表されていない</span><div class=sm>**4.4 以降の Linux カーネルが対象であり、サーバ・コンテナ基盤・ ネットワーク機器・組込み機器に広く及ぶ**（出典1。本記録の整理）—— **台数や国内の分布を示す資料は本記録の確認した範囲では存在しない** （本記録の確認）〈重要〉。 **特に、ベンダーがカーネルを固定している組込み機器・ネットワーク機器では、 上流の修正が届かないまま残る恐れがある**（本記録の評価）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Linux カーネル CNA／Linux カーネル CVE チーム</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Anthropic</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Red Hat</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Canonical（Ubuntu）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>SUSE</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Debian</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Oracle（Oracle Linux）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Amazon Web Services（Amazon Linux）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（Cybersecurity and Infrastructure Security Agency）</span><span class="b role">注意喚起主体</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>上流で修正版が出された stable 系列の数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>系列</span></div><div class=fn>**5.10.272・5.15.223・6.1.190・6.6.159・6.12.113・6.18.56・7.2.10・7.3 を 本記録が数えた**（出典1）〈重要〉—— **これだけの系列に修正が出ているということは、 影響が 4.4 以降の全系列に及ぶことの裏返しである**（本記録の整理）。 **Anthropic は、上流で修正され、メンテナンス中の全 stable ブランチに バックポートされたとしている**（出典2）。</div></div><div class=fig><div class=fh><span class=fl>修正コミットから CVE 公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>10<span class=fu>日</span></div><div class=fn>**2026年10月5日のコミット（出典3）から10月15日の CVE 公開（出典1・3）までを 本記録が算出した**〈重要〉—— **修正が先に公開リポジトリへ入り、CVE が後から出る順序である** （本記録の整理）。 **Linux カーネルの CVE 運用では一般的な順序だが、 修正コミットは公開された時点で差分として読めるため、 CVE 公開を待たずに内容を把握できる相手がいる**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>CVE 公開から悪用実証の公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>12<span class=fu>日</span></div><div class=fn>**2026年10月15日の CVE 公開（出典1・3）から10月27日の Anthropic の レポート公表（出典2）までを本記録が算出した**〈重要〉—— **この12日間のうち、Ubuntu と Red Hat は修正版の提供を完了していない** （出典3。本記録の整理）。 **実証が公表された時点で、主要なディストリビューションの利用者が 更新できない状態にあった。**</div></div><div class=fig><div class=fh><span class=fl>PoC でカーネルポインタの漏えいに要した時間</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>48<span class=fu>分</span></div><div class=fn>**Anthropic のレポートが示した PoC の所要時間である**（出典2）〈重要〉—— **競合に負けてもハンドシェイクが失敗するだけでシステムは落ちないため、 攻撃側は成功するまで再試行できる**（出典2）。 **48分は「長い」のではなく「止められない限り必ず到達する」ことを 意味する**（本記録の評価）—— **再試行が失敗しても痕跡が残りにくく、 気づかれないまま続けられる恐れがある。** **測定の環境（CPU・負荷・ネットワーク）は本記録の確認した範囲では 示されていない**（本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>PoC でカーネルポインタの漏えいからコマンド実行までに要した時間</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>分</span></div><div class=fn>**Anthropic のレポートが示した PoC の所要時間である**（出典2）—— **第1段階（約48分）に比べて短い**（本記録の整理）。 **KASLR を突破してアドレス空間のレイアウトが判明すれば、 残りの工程は速いという構造を示す**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>本記録が確認した CISA KEV カタログの収載件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1,764<span class=fu>件</span></div><div class=fn>**本記録が2026年10月30日に CISA KEV の JSON フィードを取得し、 catalogVersion 2026.10.29・収載1,764件のうちに CVE-2026-98432 が含まれないことを確認した**（出典6）〈重要〉—— **この値は背景（分母）であり、本脆弱性の被害を表す数値ではない。** **KEV 未収載は「実環境での悪用が CISA により確認されていない」状態を示す** （本記録の整理）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**認証不要・ネットワーク経由で到達できる use-after-free である**（出典1）。 **CNA が挙げる影響は、ヒープ内容の漏えい、境界外書き込みと制御フローの破壊の 可能性、カーネルの停止である**（出典3）。 **Anthropic は、MPTCP のリスナーを持つ Linux サーバに対し、 パケットを送るだけで認証なしに任意のシェルコマンドを root で実行する 2段階の実証を公表した**（出典2）—— **第1段階で遠隔から KASLR を突破し、第2段階で制御フローを奪う。** **本節は研究環境での実証の整理であり、実環境での攻撃の記録ではない** （本記録の明示）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**攻撃者が IPv4 の Record Route または Timestamp オプション付きの TCP SYN を送り、続けて同じ要求への再送 SYN を送る**（出典3）—— **オプションが要求ソケットの ireq_opt に保存され、 別の CPU で SYNACK の組み立てが始まる**（出典3）。</div><div class=fn>根拠: **CNA の記述（出典3 が整理したもの）。関数名まで示されている** （ip_rcv_options()・tcp_v4_save_options()・tcp_v4_rcv()・ tcp_check_req()・tcp_rtx_synack()・tcp_v4_send_synack()）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [3]</span></div><div>**SYNACK の組み立ての間に同じ接続の確立と破棄が進み、 子ソケットが解放される。tcp_v4_syn_recv_sock() はオプションを複製せず 子ソケットへ渡し、inet_sock_destruct() が通常の kfree() で解放するため、 ip_options_build() で解放済みの領域を読む**（出典3）〈重要〉—— **競合が成立すると、隣接するカーネルヒープの内容が SYNACK に載って 攻撃者へ返る**（出典3）。</div><div class=fn>根拠: **CNA の記述（出典3）と、修正内容（kfree() から kfree_rcu() への変更）** （出典1・3）</div></li><li><div class=stg><span class="b stage">3. 内部探索</span><span class="b conf">確認済</span><span class=srcs>[2]</span></div><div>**攻撃者が制御する長さフィールドをカーネルに読ませ、 余分なバイトを応答に載せて返させる。 応答にカーネルポインタが含まれれば、遠隔から KASLR を突破できる** （出典2）〈重要〉—— **Anthropic の PoC では、この段階に約48分を要した**（出典2）。</div><div class=fn>根拠: **Anthropic の研究レポートの記述**（出典2）。 **研究環境での実証であり、実環境の攻撃ではない**（本記録の明示）</div></li><li><div class=stg><span class="b stage">4. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[2]</span></div><div>**同じ use-after-free でバッファをあふれさせ、 コールバックのポインタを、通常のプロトコル機能で事前にカーネルメモリへ 置いたペイロードのアドレスに書き換える**（出典2）〈重要〉—— **カーネルがコールバックを呼ぶと、既存のカーネル関数の呼び出しを連ねて、 攻撃者が選んだシェルコマンドを root で実行する**（出典2）。 **PoC では第1段階からこの段階までに約5分を要した**（出典2）。</div><div class=fn>根拠: **Anthropic の研究レポートの記述**（出典2）</div></li><li><div class=stg><span class="b stage">5. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[2] [3]</span></div><div>**CNA が挙げる影響は、①隣接するカーネルヒープの内容が SYNACK に載って 相手へ送られる ②境界外のカーネルへの書き込みと制御フローの破壊の可能性 ③skb_under_panic() や oops によるカーネルの停止 である**（出典3）。 **Anthropic の実証では、認証なしでの root 権限コマンド実行に至っている** （出典2）〈重要〉。</div><div class=fn>根拠: **CNA の記述（出典3）と Anthropic のレポート（出典2）**</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 永続化 / 検知回避 / 認証情報アクセス / 横展開 / 収集 / C2通信 / 持ち出し</span><div class=sm>**本節は脆弱性と公表された実証の整理であり、 実環境での攻撃の記録ではない**（本記録の明示）〈重要〉—— **したがって偵察から持ち出しまでの段階は、 本件については存在しない（観測されていない）。** **root 権限でのコマンド実行に至った後に何ができるかは、 攻撃者の目的次第である**（本記録の整理）。</div></li></ul></div></div>
+<section id="s5"><h2>認証も操作も要らず、パケットを送るだけで成立する競合である<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p>CVE レコードの説明の要点は次のとおりである（出典1。原文英語を本記録が訳した）。</p>
+<blockquote>
+<p>TCP の SYN 受信時に IPv4 オプション（inet_opt / ireq_opt）の所有権が子ソケットに移るが、同じ要求ソケットへの再送 SYN による SYNACK 生成と並行して、子ソケットが解放される可能性がある。その結果、<code>ip_options_build()</code> で解放済みメモリを読む use-after-free が起きる。同様の問題が要求ソケットの移行経路にもある。修正として <code>inet_sock_destruct()</code> と <code>tcp_v4_reqsk_destructor()</code> で<code>kfree()</code> の代わりに <code>kfree_rcu()</code> を使う。IPv6 は最初の問題の影響を受けない。</p>
+</blockquote>
+<p><strong>CNA の評価は CVSS 3.1 で 9.8（Critical）、ベクタはAV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H である</strong>（出典1。本記録が CVE レコードを取得して確認）〈重要〉。</p>
+<p><strong>この評価の意味を分解すると次になる</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>AV:N</strong> — ネットワーク経由で到達できる</li>
+<li><strong>AC:L</strong> — 攻撃の複雑さは低い</li>
+<li><strong>PR:N</strong> — 権限は不要</li>
+<li><strong>UI:N</strong> — 利用者の操作は不要</li>
+<li><strong>C:H / I:H / A:H</strong> — 機密性・完全性・可用性のすべてに高い影響</li>
+</ul>
+<p><strong>攻撃に必要なのは、対象サーバへ TCP SYN を送れることだけである</strong>（本記録の整理）。つまり<strong>インターネットに TCP ポートを開いているすべての Linux サーバが対象になりうる</strong>（本記録の評価）。</p>
+<p>CNA が攻撃の複雑さを Low とした根拠は、<strong>接続を受け付けるサーバでの競合について、競合の両側が攻撃者の誘発によるものであり、マルチコアのスケジューリングやヒープ整形は攻撃者の制御外の条件には当たらない</strong>という判断である（出典3）。</p>
+<p><strong>起点となったのは、要求ソケットをリスナーのロックなしで処理するようにした 4.4 系のコミット 079096f103fa である</strong>（出典1）〈重要〉—— <strong>性能のためにロックを外した変更が、解放と参照の競合を生んだ</strong>（本記録の評価）。修正は<strong>解放を待たせる方（kfree_rcu()）に寄せたもので、ロックを戻すものではない</strong>（出典1。本記録の整理）。</p></section>
+<section id="s6"><h2>競合に負けても落ちないため、攻撃側は成功するまで再試行できる<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>Anthropic のレポートが示した実証は2段階である（出典2）。</p>
+<p><strong>第1段階（遠隔からの KASLR 突破・約48分）</strong>競合を利用して、カーネルに攻撃者が制御する長さフィールドを読ませ、余分なバイトを応答に載せて返させる。その返信にカーネルポインタが含まれれば、カーネルアドレス空間のレイアウトが分かる（出典2）。</p>
+<p><strong>第2段階（制御フローの乗っ取りと root でのコマンド実行・約5分）</strong>同じ use-after-free でバッファをあふれさせ、コールバックポインタを、通常のプロトコル機能で事前にカーネルメモリへ置いたペイロードのアドレスで上書きする。カーネルがコールバックを呼ぶと、既存のカーネル関数を連鎖させ、攻撃者が指定したシェルコマンドが root として実行される（出典2）。</p>
+<p><strong>この実証で最も重いのは所要時間ではなく、失敗したときに何も起きないという性質である</strong>（本記録の評価）〈重要〉。レポートは次のように述べている（出典2。原文英語の要旨）。</p>
+<blockquote>
+<p>競合に負けても失敗するのはハンドシェイクだけで、システム全体はクラッシュしない。そのため、攻撃者は成功するまで繰り返し試行できる。</p>
+</blockquote>
+<p><strong>カーネルの競合を狙う攻撃は、通常は失敗すると panic や oops を起こし、標的に異常として現れる</strong>（本記録の整理）。本件では失敗が「接続が1回失敗した」としか見えない。<strong>48分という数字は「時間がかかるので現実的でない」ではなく、「止められない限り必ず到達する」ことを意味する</strong>（本記録の評価）。</p>
+<p><strong>なお、実証に用いられたモデルの名称は公表されていない</strong>〈未確定4〉。レポートは全体の作業に「未公開の社内研究用モデル」を用いたと説明しており、末尾で言及される Claude Opus 5.5・Sonnet 5.5・Mythos 5.1 はCyber Verification Program の説明に登場するもので、この実証に使われたとは書かれていない（出典2。本記録の確認）。</p>
+<p><strong>また、実証の条件（MPTCP のリスナー）は、CVE の記述が挙げる条件（接続を受け付ける IPv4 の TCP サービス）より狭い</strong>〈未確定6〉。<strong>CVE の説明文と修正コミットには MPTCP の記載が無い</strong>（出典1・3）。<strong>したがって「すべての Linux サーバで root を取れる」とは読めない</strong>（本記録の明示）。</p></section>
+<section id="s7"><h2>実証が公表された時点で、Ubuntu と Red Hat の利用者は更新できなかった<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>日付を並べると次になる（出典1・2・3）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年10月5日</td>
+<td>修正コミット</td>
+</tr>
+<tr>
+<td>2026年10月15日</td>
+<td>CVE 公開・CNA の告知</td>
+</tr>
+<tr>
+<td>2026年10月16日</td>
+<td>Oracle Linux がエラータをリリース</td>
+</tr>
+<tr>
+<td>2026年10月24日</td>
+<td>Amazon Linux が AL2023 kernel6.18 向けを公開</td>
+</tr>
+<tr>
+<td>2026年10月27日</td>
+<td>Anthropic が root でのコマンド実行の実証を公表</td>
+</tr>
+<tr>
+<td>2026年10月29日</td>
+<td>SUSE がアドバイザリ、Amazon Linux が kernel6.12 向けを公開</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CVE 公開から実証の公表までは12日である</strong>（本記録の算出）〈重要〉。その時点での配布元の状態は次のとおりである（出典3。2026年10月30日時点）。</p>
+<ul>
+<li><strong>Ubuntu</strong>: 標準の linux は 26.10・26.04 LTS・24.04 LTS・22.04 LTS で作業中。20.04 LTS・18.04 LTS・16.04 LTS も脆弱。<strong>修正版はなし</strong></li>
+<li><strong>Red Hat</strong>: RHEL 8・9・10（kernel-rt 含む）と OpenShift 4 の RHCOS が<strong>影響あり（Affected）</strong>。RHEL 6・7 は影響なし。<strong>基準を満たす緩和策は無いとしている</strong></li>
+<li><strong>SUSE</strong>: 全体の状態は Pending。製品ごとに提供済み・影響あり・作業中が混在</li>
+<li><strong>Debian</strong>: security リポジトリでは修正済み。<strong>通常リポジトリの bookworm 6.1.176-1 と trixie 6.12.107-1 は脆弱</strong></li>
+<li><strong>Oracle Linux</strong>: UEK 向けにリリース済み（10月16日）</li>
+<li><strong>Amazon Linux</strong>: AL2023 の kernel6.18・kernel6.12 は修正済み。AL2023 の kernel と AL2 の各系列は <strong>修正待ち（Pending Fix）</strong></li>
+</ul>
+<p><strong>つまり、遠隔から root を取れる実証が公表された時点で、企業用途で最も使われている2つのディストリビューションの利用者は更新できる状態になかった</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>しかも、代わりに取れる手が無い</strong>（本記録の整理）。Red Hat は基準を満たす緩和策が無いとしている（出典3）。<strong>MPTCP の無効化や IP オプション付き SYN の遮断の有効性も示されていない</strong>（出典3）。<strong>公表されている対処は修正版への更新までであり、侵害の兆候（IoC）や検知方法も示されていない</strong>〈未確定3〉。</p>
+<p><strong>この状況で組織が取れるのは、①到達できる面を減らす ②配布元の提供を待つ ③oops・panic を監視対象に入れる の3つに限られる</strong>（本記録の評価）。いずれも脆弱性を解消しない。</p></section>
+<section id="s8"><h2>評価が 9.8 と 8.1 に割れているのは、攻撃の複雑さの見方だけである<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p>2026年10月30日時点の評価は次のとおりである（出典1・3）。</p>
+<table>
+<thead>
+<tr>
+<th>出所</th>
+<th>評価</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux カーネル CNA</td>
+<td><strong>9.8（Critical）</strong>。C:H/I:H/A:H、攻撃の複雑さは Low</td>
+</tr>
+<tr>
+<td>NVD</td>
+<td>独自のスコアなし。CNA の 9.8 を表示</td>
+</tr>
+<tr>
+<td>Ubuntu</td>
+<td>priority は High。CVSS 3 は 9.8、CVSS 4.0 は 8.3（High）</td>
+</tr>
+<tr>
+<td>Red Hat</td>
+<td>Important、<strong>8.1</strong>（preliminary）</td>
+</tr>
+<tr>
+<td>SUSE</td>
+<td>important。CVSS 3.1 は <strong>8.1</strong>、CVSS 4.0 は <strong>9.2</strong></td>
+</tr>
+<tr>
+<td>Oracle Linux</td>
+<td>Important、<strong>8.1</strong>（preliminary）</td>
+</tr>
+<tr>
+<td>Amazon Linux</td>
+<td>Important、<strong>8.1</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>CNA の 9.8 と、Red Hat・SUSE・Oracle・Amazon の 8.1 は、ベクタの違いが攻撃の複雑さ（Low か High か）だけである</strong>（出典3）〈重要〉。つまり<strong>「競合を勝ち取るのが簡単か難しいか」の一点で、Critical と Important が分かれている</strong>（本記録の整理）。</p>
+<p><strong>Anthropic の実証は、この一点に答えを出している</strong>（本記録の評価）。<strong>48分の試行で到達でき、失敗してもシステムは落ちず、再試行を続けられる</strong>（出典2）。<strong>これを「難しい」と呼ぶかは判断の問題だが、「攻撃者が到達できない」とは言えない</strong>（本記録の評価）。</p>
+<p><strong>SUSE の CVSS 4.0 が 9.2 で、CVSS 3.1 の 8.1 より高い点も見ておく必要がある</strong>（出典3）〈重要〉。<strong>同じ出所の評価が、版の違いで 8.1 と 9.2 に分かれる</strong>（本記録の整理）。<strong>社内の優先度判定にスコアを使う組織は、どの出所のどの版を使うかを決めていなければ、同じ脆弱性が Important にも Critical にもなる。</strong></p>
+<p><strong>本DBは CVSS の値を figures に置かない</strong>（本記録の方針）。<strong>指標値であって被害の大きさではないためである</strong>—— <strong>本件のように同じ脆弱性に 8.1・8.3・9.2・9.8 が並ぶ状況では、数値を集計の対象にすると意味を失う</strong>（本記録の整理）。</p></section>
+<section id="s9"><h2>KEV には収載されておらず、実環境での悪用は確認されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [2] [3] [6]</span></h2><p><strong>本記録の作成者は2026年10月30日に CISA の Known Exploited Vulnerabilitiesカタログの JSON フィードを取得し、catalogVersion 2026.10.29・収載1,764件のうちに CVE-2026-98432 が含まれないことを確認した</strong>（出典6。本記録の観測）〈重要〉。</p>
+<p><strong>KEV への収載は、実際の悪用が確認されたことを意味する</strong>（本記録の整理）。<strong>したがって未収載は「実環境での悪用が CISA により確認されていない」状態を示す。</strong></p>
+<p><strong>Anthropic が公表したのは研究環境での PoC であり、実環境での攻撃の報告ではない</strong>（出典2。本記録の明示）。<strong>出典3・4・5 のいずれにも、実環境での悪用の観測に関する記述は無い</strong>（本記録の確認）。</p>
+<p><strong>ただし「確認されていない」は「起きていない」ではない</strong>（本記録の明示）〈重要〉。<strong>本件では、侵害の兆候（IoC）と検知方法が公表されていない</strong>〈未確定3〉。<strong>攻撃が成功すれば root 権限でのコマンド実行に至るため、痕跡の消去も可能である</strong>（本記録の評価）。<strong>つまり、悪用されていたとしても気づく手段が示されていない。</strong></p>
+<p><strong>実務上の意味は次になる</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>KEV 未収載を「急がなくてよい」と読んではならない。</strong> KEV は観測の結果であり、観測の手段が無い脆弱性では収載が遅れる構造がある</li>
+<li><strong>逆に、KEV に入っていないことを根拠に優先度を下げる運用をしている組織は、本件のような「検知できないが到達できる」脆弱性を取り落とす</strong></li>
+</ul>
+<p><strong>PoC のコードが公開されているかどうかは、本記録の確認した範囲では示されていない</strong>（本記録の確認）。</p></section>
+<section id="s10"><h2>修正コミットが CVE 公開の10日前に公開リポジトリへ入っていた<span class="b slot">背景・過去事例</span><span class=srcs>出典 [1] [3]</span></h2><p>日付の順序は次のとおりである（出典1・3）。</p>
+<ul>
+<li>2026年9月25日: CNA が CVE-2026-98432 を予約（出典3）</li>
+<li>2026年10月1日: 修正パッチを作成（出典3）</li>
+<li>2026年10月5日: 修正をコミット（出典1・3）</li>
+<li>2026年10月15日: CVE を公開（出典1・3）</li>
+</ul>
+<p><strong>修正コミットから CVE 公開までは10日である</strong>（本記録の算出）〈重要〉。</p>
+<p><strong>Linux カーネルの CVE 運用ではこの順序が一般的である</strong>（本記録の整理）——修正が stable へ入ってから CVE が採番・公開される。<strong>しかし修正コミットは、公開リポジトリに入った時点で差分として読める</strong>（本記録の評価）。<strong>コミットメッセージには「free inet_opt and ireq_opt after an RCU grace period」とあり、何を直したかが書かれている</strong>（出典1・3）。<strong>Fixes には起点のコミット（079096f103fa と c905dee62232）も記されている</strong>（出典1・3）。</p>
+<p><strong>つまり、コミットを監視している相手は、CVE 公開を待たずに脆弱性の存在と性質を把握できる</strong>（本記録の評価）。<strong>この10日間は、防御側が CVE を見て動き出す前の期間である。</strong></p>
+<p><strong>また、CNA の告知の初版には CVSS 9.8 が含まれておらず、修正版も4系列にとどまっていた</strong>（出典3）〈重要〉。<strong>CVE レコードの dateUpdated は10月24日で、10月30日時点の告知とレコードは 9.8 と修正版8系列を記載している</strong>（出典1・3）。<strong>公開初日に告知を見て優先度を決めた組織は、CVSS の無い情報で判断していたことになる</strong>（本記録の評価）—— <strong>脆弱性情報は、公開時点の内容で固定されない。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Linux カーネル（IPv4 TCP 処理）　<b>ベンダー:</b> Linux カーネル（CNA: Linux）　<b>CVE番号:</b> CVE-2026-98432　<b>バージョン:</b> **影響: 4.4 以降で各系列の修正版より前（4.4 未満は影響を受けない）** （出典1・3）。 **上流の修正版: 5.10.272・5.15.223・6.1.190・6.6.159・6.12.113・ 6.18.56・7.2.10・7.3**（出典1）〈重要〉—— **問題の起点は、要求ソケットをリスナーのロックなしで処理するようにした コミット 079096f103fa（4.4 系）である**（出典1）。 **CPE の適用範囲は 4.4 以上から各修正版未満である**（出典1）。　<b>概要:</b> **IPv4 の TCP 接続処理における use-after-free**（出典1）—— **TCP の SYN 受信時に IPv4 オプション（inet_opt / ireq_opt）の所有権が 子ソケットに移るが、同じ要求ソケットへの再送 SYN による SYNACK 生成と 並行して子ソケットが解放されうる。 その結果 ip_options_build() で解放済みメモリを読む**（出典1）。 **同様の問題が要求ソケットの移行（migration）経路にもある**（出典1）。 **IPv6 は1つ目の経路の影響を受けない**（出典1）。　<b>症状:</b> **CNA が挙げる影響は次の3つである**（出典3）〈重要〉—— **①隣接するカーネルヒープの内容が SYNACK に載って相手へ送られる ②境界外のカーネルへの書き込みと、制御フローの破壊の可能性 ③skb_under_panic() や oops によるカーネルの停止。** **Anthropic はこれに加えて、MPTCP のリスナーを持つサーバに対する 認証なしの root 権限コマンド実行を実証したとしている**（出典2）。　<b>手法:</b> **CNA の記述にある経路は2つである**（出典3）。 **1つ目は、認証なしの相手が送る IPv4 の Record Route または Timestamp オプション付きの TCP SYN から始まる**—— **①オプションが ip_rcv_options() と tcp_v4_save_options() を経て 要求ソケットの ireq_opt に保存される ②同じ要求への再送 SYN が tcp_v4_rcv()・tcp_check_req()・ tcp_rtx_synack() を経て tcp_v4_send_synack() に進み、 別の CPU で SYNACK の組み立てが始まる ③組み立ての間に同じ接続の確立と破棄が進んで子ソケットが解放される。 tcp_v4_syn_recv_sock() はオプションを複製せず子ソケットへ渡し、 inet_sock_destruct() が通常の kfree() で解放するため、 ip_options_build() で解放済みの領域を読む**（出典3）。 **2つ目は要求ソケットの移行を使う経路で、 net.ipv4.tcp_migrate_req=1 または BPF_SK_REUSEPORT_SELECT_OR_MIGRATE プログラムの設定下で、 reqsk_timer_handler() が inet_reqsk_clone() で複製した要求ソケットと 元のソケットが同じ ireq_opt を共有する**（出典3）。　<b>内容:</b> **漏えいするのは隣接するカーネルヒープの内容であり、 SYNACK に載って攻撃者へ返る**（出典3）〈重要〉—— **応答にカーネルポインタが含まれれば、遠隔から KASLR を突破できる** （出典2・3）。 **特定の利用者データが狙って読めるという記述は無い**（本記録の確認）。　<b>preconditions:</b> **認証は不要（PR:N）で、ネットワーク経由で到達する（AV:N）、 利用者の操作も不要（UI:N）である**（出典1）〈重要〉。 **必要なのは、対象サーバが IPv4 の TCP 接続を受け付けていることである** （出典1）。 **2つ目の経路には net.ipv4.tcp_migrate_req=1 または BPF_SK_REUSEPORT_SELECT_OR_MIGRATE の設定が要る**（出典3）。 **Anthropic の実証が成立した条件は MPTCP のリスナーである**（出典2） ——**CVE の説明文と修正コミットには MPTCP の記載が無い**〈未確定6〉。</div></td></tr><tr><th>cvss_assessments</th><td><div class=sub><b>source:</b> Linux カーネル CNA　<b>score:</b> 9.8　<b>バージョン:</b> CVSS 3.1　<b>severity:</b> Critical　<b>vector:</b> CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H　<b>補足:</b> **本記録が CVE レコードを取得して確認した**（出典1。2026年10月30日）。 **攻撃の複雑さを Low としている**（出典1）。</div><div class=sub><b>source:</b> NVD　<b>バージョン:</b> CVSS 3.1　<b>補足:</b> **独自のスコアは付けず、CNA の 9.8 を表示している**（出典3）。</div><div class=sub><b>source:</b> Ubuntu　<b>score:</b> 9.8　<b>バージョン:</b> CVSS 3　<b>severity:</b> High（Ubuntu priority）　<b>補足:</b> **CVSS 4.0 では 8.3（High）としている**（出典3）。</div><div class=sub><b>source:</b> Red Hat　<b>score:</b> 8.1　<b>バージョン:</b> CVSS 3.1　<b>severity:</b> Important　<b>補足:</b> **CNA の 9.8 との差は攻撃の複雑さ（Low か High か）だけである**（出典3） 〈重要〉。 **CVE ページは preliminary、Security Data API は draft、 VEX は2026年10月29日更新**（出典3）。</div><div class=sub><b>source:</b> SUSE　<b>score:</b> 8.1　<b>バージョン:</b> CVSS 3.1　<b>severity:</b> important　<b>補足:</b> **CVSS 4.0 では 9.2 としており、3.1 より高い**（出典3）〈重要〉—— **版によって順序が逆転する例である**（本記録の整理）。</div><div class=sub><b>source:</b> Oracle Linux　<b>score:</b> 8.1　<b>バージョン:</b> CVSS 3.1　<b>severity:</b> Important　<b>補足:</b> **preliminary である**（出典3）。</div><div class=sub><b>source:</b> Amazon Linux　<b>score:</b> 8.1　<b>バージョン:</b> CVSS 3.1　<b>severity:</b> Important　<b>補足:</b> **CVE ページは2026年10月29日更新**（出典3）。</div><span class="b rsn">stated</span><div class=fn>**本記録が一次資料で直接確認したのは CNA の 9.8（出典1）だけである** （本記録の明示）〈重要〉—— **ほかの評価はすべて出典3（piyolog の整理）から採っており、 各配布元のページを直接確認していない**（discrepancies に記載）。</div></td></tr><tr><th>exploitation_status</th><td>**研究環境での PoC が公表されている**（出典2）〈重要〉—— **Anthropic が2026年10月27日のレポートで、MPTCP のリスナーを持つ Linux サーバに対する認証なしの root 権限コマンド実行を実証したとしている。** **実環境での悪用は、CISA KEV（2026.10.29 版・収載1,764件）に 収載されておらず、本記録が確認した範囲では報告が無い**（出典6）〈未確定1〉。 **PoC のコードが公開されているかどうかは、本記録の確認した範囲では 示されていない**（本記録の確認）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **各系列の修正版以降のカーネルへ更新する**（出典1・3）—— **Linux カーネル CVE チームは最新の stable への更新を勧め、 個別コミットの cherry-pick は推奨していない**（出典3）。　<b>副作用:</b> **カーネルの更新は再起動を要するため、 稼働中のサービスに停止時間が生じる**（本記録の評価）—— **ライブパッチの対象になるかは配布元ごとに異なる。** **また、2026年10月30日時点で Ubuntu は修正版を提供しておらず、 Red Hat も RHEL 8・9・10 を影響ありとしているため、 この対処を今すぐ実行できない利用者がいる**（出典3）〈重要〉。</div><div class=sub><b>手順:</b> **IPv4 の TCP 接続を受け付ける面を、必要な送信元に限定する** （本記録の推奨）—— **攻撃には対象サーバへ TCP SYN を送れることが要る**（出典1）。　<b>副作用:</b> **公開サービス（Web・メール・DNS over TCP 等）では送信元を 限定できない**（本記録の評価）〈重要〉—— **限定できるのは管理用の面や内部向けサービスに限られる。** **また、この対処は脆弱性を解消しない。**</div><div class=sub><b>手順:</b> **要求ソケットの移行に関する2つ目の経路については、 net.ipv4.tcp_migrate_req の設定値を確認する**（出典3。本記録の推奨）。　<b>副作用:</b> **tcp_migrate_req は、リスナーの入れ替え時に確立前の接続を 引き継ぐための機能である**（本記録の整理）—— **無効化すると、無停止でのリスナー更新を行っている構成で 接続が失われる恐れがある。** **なお、この設定を変えても1つ目の経路（IP オプション付き SYN）は 残るため、脆弱性は解消しない**（本記録の明示）〈重要〉。</div><div class=sub><b>手順:</b> **MPTCP を使っていない場合、カーネルで有効になっていないかを確認する** （本記録の推奨）—— **Anthropic の実証が成立した条件は MPTCP のリスナーである**（出典2）。　<b>副作用:</b> **MPTCP の無効化が本脆弱性への対策として有効であることは 公表されていない**（出典3）〈重要〉—— **CVE の記述が挙げる条件は接続を受け付ける IPv4 の TCP サービスであり、 MPTCP に限らない**（出典1）。 **したがってこの確認は、実証された経路を狭めるだけで、 脆弱性を解消しない**（本記録の明示）。 **また MPTCP を業務で使っている場合は無効化できない。**</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月25日</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Linux カーネル CNA が CVE-2026-98432 を予約した**（出典3）—— **本記録はこの日付を出典3（piyolog の整理）から採っており、 一次資料で直接確認していない**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw">2026年10月1日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正パッチが作成された**（出典3）—— **本記録はこの日付を出典3 から採っている**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw">2026年10月5日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正コミット「ipv4: free inet_opt and ireq_opt after an RCU grace period」が コミットされた**（出典3）〈重要〉—— **inet_sock_destruct() と tcp_v4_reqsk_destructor() での解放を kfree() から kfree_rcu() に変える内容である**（出典1・3）。 **Fixes は2件で、要求ソケットをリスナーのロックなしで処理するようにした 4.4 のコミット（079096f103fa）と、要求ソケットの移行に関する c905dee62232 である** （出典1・3）。</td></tr><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">公表</span></td><td>**CVE-2026-98432 が公開され、Linux カーネル CVE チームが linux-cve-announce に告知を投稿した**（出典1・3）—— **修正コミットから10日後である**（本記録の算出）。 **告知の初版には CVSS 9.8 が含まれておらず、修正版も4系列にとどまっていた** （出典3）〈重要〉—— **CVE レコードの dateUpdated は10月24日で、 10月30日時点の告知とレコードは CVSS 3.1 の 9.8 と修正版8系列を記載している** （出典1・3）。</td></tr><tr><td class="sm nowrap tw">2026年10月16日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Oracle Linux が UEK 向けエラータ ELSA-2026-500397（OL7・OL8）、 ELSA-2026-500398（OL8・OL9）、ELSA-2026-500399（OL9・OL10）を リリースした**（出典3）—— **CVE 公開の翌日であり、本記録が確認した配布元の中で最も早い** （本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年10月24日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Amazon Linux が AL2023 の kernel6.18 向けアドバイザリ ALAS2023-2026-3251 を公開した（6.18.56-125.164 で修正）**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月27日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Anthropic が研究レポート「Discovering and exploiting vulnerabilities in critical, real-world software with Claude」を公表し、 本脆弱性を用いた遠隔での root 権限コマンド実行の実証を示した**（出典2） 〈重要〉—— **MPTCP のリスナーを持つ Linux サーバにパケットを送るだけで、 認証情報もユーザー操作も不要で任意のシェルコマンドを root で実行できる。** **PoC ではカーネルポインタの漏えいに約48分、 そこからコマンド実行までさらに約5分を要した**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年10月29日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**SUSE がアドバイザリ SUSE-SU-2026:24386-1 と SUSE-SU-2026:24422-1 を公開し、 Amazon Linux が AL2023 の kernel6.12 向け ALAS2023-2026-3335 を公開した** （出典3）。 **同日、The Hacker News と Dark Reading が報じた**（出典4・5）。 **Red Hat の VEX も同日に更新されている**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月30日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が CVE レコード（CVE Services API 経由）、 Anthropic の研究レポート、CISA KEV カタログの JSON フィードを取得して 現況を確認した**〈重要〉—— **CVE レコードの CVSS 3.1 は 9.8（AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H）、 CWE の記載と謝辞の記載は無い。** **KEV カタログは catalogVersion 2026.10.29・収載1,764件で、 CVE-2026-98432 は含まれていない**（出典6）。 **同日、piyolog が関連情報をまとめた記事を公開した**（出典3）。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>同一の脆弱性に 8.1・8.3・9.2・9.8 の評価が並んでいる</span><div class=sm>**CNA は CVSS 3.1 で 9.8（Critical）、 Red Hat・SUSE・Oracle・Amazon は 8.1（Important）である**（出典1・3） 〈重要〉—— **ベクタの違いは攻撃の複雑さ（Low か High か）だけである**（出典3）。 **さらに SUSE は CVSS 4.0 で 9.2、Ubuntu は CVSS 4.0 で 8.3 としており、 同じ出所でも版によって順序が逆転する**（出典3）。 **これは深刻度が改定されたのではなく、評価主体と版の違いである** （本記録の明示）。 **本DBは CVSS を数値として集計しない**（本記録の方針）—— **引用するときは出所と版を必ず明記する。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>実証の条件（MPTCP）が CVE の記述する条件より狭い</span><div class=sm>**Anthropic のレポートが示す対象は MPTCP のリスナーを動かす Linux サーバである**（出典2）。 **一方、CVE の記述が挙げる条件は接続を受け付ける IPv4 の TCP サービスであり、CVE の説明文と修正コミットには MPTCP の記載が無い** （出典1。本記録の確認）〈重要〉。 **したがって「すべての Linux サーバで root を取れる」とは読めない** （本記録の明示）〈未確定6〉。 **逆に「MPTCP を使っていなければ安全」とも読めない**—— **CNA はヒープ内容の漏えい、境界外書き込みと制御フローの破壊の可能性、 カーネルの停止を影響として挙げている**（出典3）。 **MPTCP 以外の経路で root でのコマンド実行まで到達できるかは、 公表資料からは判断できない**（本記録の留保）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>配布元ごとの状態と評価を本記録は直接確認していない</span><div class=sm>**本記録が一次資料で直接取得・確認したのは、 ①CVE レコード（CVE Services API 経由・出典1） ②Anthropic の研究レポート（出典2） ③CISA KEV の JSON フィード（出典6）の3つである** （本記録の明示）〈重要〉。 **Debian・Ubuntu・Red Hat・SUSE・Oracle Linux・Amazon Linux の 修正提供状況、各社の CVSS 評価、アドバイザリ番号 （SUSE-SU-2026:24386-1、ELSA-2026-500397 ほか、 ALAS2023-2026-3251・3335）、 および2026年9月25日の CVE 予約・10月1日のパッチ作成という日付は、 すべて出典3（piyolog の整理）に依拠しており、 本記録は各配布元のページを確認していない。** **出典3 は一次資料へのリンクを備えた番号つきの整理であるが、 本記録としては二次情報である**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>報道記事の本文を本記録は十分に取得できていない</span><div class=sm>**出典4（The Hacker News）について、本記録が取得した本文は 冒頭の数文のみである**（本記録の確認）—— **記事全体の内容は確認していない。** **出典5（Dark Reading）については、RSS の要約のみを取得しており、 本文は取得していない**（本記録の明示）〈重要〉—— **このため本記録は出典5 から事実を採っていない。** **出典5 を references に残しているのは、 本件が「Linux 単独の脆弱性」ではなく 「Chrome・Safari・Android・Windows・Linux にまたがる一連の研究の一部」 として報じられていることを示すためである**（本記録の判断）。</div></li><li><span class="b dk">一次資料が改訂された</span><span class=ui>CVE の告知とレコードが公開後に改訂されている</span><div class=sm>**CNA の告知の初版には CVSS 9.8 が含まれておらず、 記載されていた修正版は4系列にとどまっていた**（出典3）〈重要〉—— **2026年10月30日時点の告知と CVE レコード（dateUpdated は10月24日）は、 CVSS 3.1 の 9.8 と修正版8系列を記載している**（出典1・3）。 **同一の CVE 番号で内容が改訂されている**（本記録の整理）。 **公開初日に告知を見て優先度を決めた組織は、 CVSS の無い情報で判断していたことになる**（本記録の評価）。 **本記録が確認したのは2026年10月30日時点のレコードである** （本記録の明示）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>CVE レコードに CWE と謝辞の記載が無い</span><div class=sm>**本記録が CVE Services API 経由で取得したレコードには、 CWE の記載も謝辞（credits）の記載も無い**（出典1。本記録の確認） 〈重要〉—— **CWE-825（Expired Pointer Dereference）を割り当てたのは Red Hat である** （出典3）。 **発見・報告が Anthropic であることは、 Anthropic 自身のレポート（出典2）と出典3 の整理から確認できるが、 CVE レコードには記載されていない**（本記録の整理）。 **CVE レコードだけを見ると、誰が報告したかが分からない** （本記録の評価）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>PoC の所要時間の測定環境が示されていない</span><div class=sm>**Anthropic のレポートは、カーネルポインタの漏えいに約48分、 そこからコマンド実行までさらに約5分としている**（出典2）—— **測定に用いた環境（CPU のコア数・負荷・ネットワークの条件・ 対象カーネルの版）は、本記録が確認した範囲では示されていない** （本記録の確認）〈重要〉。 **このため、他の環境で同じ時間になるとは限らない**（本記録の留保）。 **本記録が重視するのは所要時間の値ではなく、 失敗してもシステムが落ちず再試行できるという性質である** （本記録の整理）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>IPオプション付きSYNの競合で解放済み領域を読ませ、KASLR突破からrootでのコマンド実行に至る</div><div class=svgwrap><svg viewBox="0 0 1202 252" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,126.0 C193.0,126.0 193.0,87.0 220,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,126.0 C193.0,126.0 193.0,165.0 220,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,87.0 C397.0,87.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,165.0 C397.0,165.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C499.0,48.0 499.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C601.0,48.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C703.0,48.0 703.0,165.0 832,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,87.0 C805.0,87.0 805.0,87.0 832,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,165.0 C805.0,165.0 805.0,87.0 832,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,87.0 C1009.0,87.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,126.0 C601.0,126.0 601.0,126.0 16,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,204.0 C499.0,204.0 499.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="101.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="123.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（認証情報・利用者</text><text x="91.0" y="137.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">操作は不要）</text><rect x="220" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第1経路 IPv4 の </text><text x="295.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Record Route</text><text x="295.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> / Timestam…</text><rect x="220" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第2経路 要求ソケットの</text><text x="295.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">移行（tcp_migra</text><text x="295.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">te_req=1 また…</text><rect x="424" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">use-after-fr</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ee（ip_option</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s_build() が…</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Linux サーバ（4.</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4 以降・各系列の修正版</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">より前）</text><rect x="628" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">隣接するカーネルヒープの</text><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内容が SYNACK に</text><text x="703.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">載って返る</text><rect x="832" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第1段階 遠隔からの K</text><text x="907.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ASLR 突破（PoC </text><text x="907.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で約48分）</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第2段階 コールバックポ</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">インタの書き換えと ro</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ot でのコマンド実行…</text><rect x="628" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Anthropic の実</text><text x="703.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">証条件 MPTCP のリ</text><text x="703.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スナー</text><rect x="832" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カーネルの停止（skb_</text><text x="907.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">under_panic(</text><text x="907.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">) / oops）＝攻…</text><rect x="424" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正 kfree() か</text><text x="499.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ら kfree_rcu(</text><text x="499.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">) へ（inet_so…</text></svg></div><div class=fn>CVE レコード（出典1）、CNA の記述（出典3 が整理したもの）、 Anthropic の研究レポート（出典2）から、攻撃の経路を整理した図である （整理は本記録）。 **左側の第1経路と第2経路は CNA が記述したもの、 右側の2段階は Anthropic が実証したものである**（本記録の整理）。 **点線は、実証の条件（MPTCP のリスナー）が CVE の記述する条件より 狭いことを示す**〈未確定6〉—— **CVE の説明文と修正コミットには MPTCP の記載が無い。** **「修正」のノードは kfree() から kfree_rcu() への変更であり、 読み手が終わるまで解放を待たせる**（出典1）。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵害の兆候（IoC）や検知方法は公表されていない**〈未確定3〉—— **IP オプション付き SYN の遮断が有効かどうかも示されていない** （出典3。本記録の確認）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>IPv4 の TCP 接続を受け付ける面を必要な送信元に限定する （公開サービスでは適用できない）</div><div class=ctl><span class="b eff">侵入を防げた</span>各系列の修正版以降のカーネルへ更新する（kfree_rcu() により 読み手が終わるまで解放を待たせる）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**競合に負けた場合に生じるのはハンドシェイクの失敗だけで、 システムは落ちない**（出典2）〈重要〉—— **したがって失敗が目立たず、攻撃側は成功するまで再試行できる** （本記録の評価）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>カーネルの更新（kfree_rcu() により解放を遅延させる）</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**48分にわたる再試行が外形的に観測できるかは公表されていない** （本記録の確認）—— **多数のハンドシェイク失敗として見える可能性はあるが、 検知方法は示されていない**〈未確定3〉（本記録の推定）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>同一送信元からの異常な数のハンドシェイク失敗を、 接続ログから集計して警報する（検知方法としての有効性は 公表されていない）</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>**root 権限でのコマンド実行に至るため、痕跡の消去も可能である** （本記録の評価）〈重要〉—— **侵害の兆候（IoC）は公表されていない**〈未確定3〉。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>カーネルの更新（本脆弱性を解消する唯一の公表された対処）</div><div class=ctl><span class="b eff">影響を限定できた</span>サーバからの外向き通信を既定で拒否し、 root でのコマンド実行後の次の動作（追加ペイロードの取得・ 外部への通信）を妨げる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**カーネルの停止（oops・panic）は観測できるが、 それは攻撃が失敗した場合の現れである**（本記録の整理）—— **成功した場合の検知方法は公表されていない**〈未確定3〉。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>カーネルの更新</div><div class=ctl><span class="b eff">検知できた</span>カーネルの oops・panic を監視対象に加え、 原因不明の停止を侵害の疑いとして扱う運用にする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>KEV 未収載を「急がなくてよい」と読まない。検知手段が無い脆弱性では、 悪用の観測そのものが遅れる。</div><div class=lw>**本記録が確認した時点（2026年10月30日）で、CVE-2026-98432 は CISA KEV（2026.10.29 版・収載1,764件）に含まれていない**（出典6） 〈重要〉—— **一方で、侵害の兆候（IoC）と検知方法は公表されていない**〈未確定3〉。 **攻撃が成功すれば root 権限でのコマンド実行に至るため、 痕跡の消去も可能である**（本記録の評価）。 **つまり、悪用されていても気づく手段が示されていない。**</div><div class=la><b>取るべき行動</b> **脆弱性の優先度付けで KEV を使っている場合、 「KEV 未収載かつ認証不要の遠隔実行」に該当するものを別枠で扱う。** **KEV は観測の結果であり、優先度の唯一の根拠にしない。**</div></li><li><div class=lp>配布元が修正版を出せていない期間に取れる手を、事前に決めておく。 待つしかない局面は実際に起きる。</div><div class=lw>**実証が公表された2026年10月27日の時点で、 Ubuntu は修正版を提供しておらず、Red Hat は RHEL 8・9・10 を 影響ありとしていた**（出典2・3）〈重要〉—— **Red Hat は基準を満たす緩和策は無いとしている**（出典3）。 **MPTCP の無効化や IP オプション付き SYN の遮断の有効性も 示されていない**（出典3）。</div><div class=la><b>取るべき行動</b> **「修正版が無く緩和策も無い」状況の手順を平時に決める。** **具体的には、①到達できる面の緊急縮小（送信元制限・不要ポートの閉鎖） ②業務影響を承知した上での一時的なサービス停止の判断者 ③配布元の提供を監視する担当 の3点を割り当てておく。**</div></li><li><div class=lp>スコアの出所と版を社内で1つに決める。同じ脆弱性が 8.1 と 9.8 に分かれる。</div><div class=lw>**本件の評価は CNA が 9.8（Critical）、Red Hat・SUSE・Oracle・Amazon が 8.1（Important）で、差は攻撃の複雑さの見方だけである**（出典3）〈重要〉。 **さらに SUSE は CVSS 4.0 で 9.2、Ubuntu は CVSS 4.0 で 8.3 としている** （出典3）—— **同じ出所でも版が違えば順序が変わる**（本記録の整理）。 **出所を決めていなければ、同じ脆弱性が Important にも Critical にもなる。**</div><div class=la><b>取るべき行動</b> **社内の脆弱性管理で使うスコアの出所（CNA か NVD か配布元か）と CVSS の版を規程で1つに決める。** **決めた出所と異なる評価が出たときに、どちらを採るかの判断手順も書く。**</div></li><li><div class=lp>ベンダーがカーネルを固定している機器を、別の台帳で管理する。 上流の修正は届かない。</div><div class=lw>**影響は 4.4 以降の Linux カーネル全系列に及ぶ**（出典1）〈重要〉—— **上流では8系列で修正されているが**（出典1）、 **ネットワーク機器・組込み機器・アプライアンスはベンダーが カーネルを固定していることが多い**（本記録の評価）。 **影響を受ける機器の台数と分布は公表されていない**〈未確定7〉。</div><div class=la><b>取るべき行動</b> **自社の資産台帳で「カーネルを自前で更新できる機器」と 「ベンダーの提供を待つ機器」を分けて管理する。** **後者について、ベンダーへの問い合わせ窓口と サポート期限を台帳に持つ。**</div></li><li><div class=lp>AI による脆弱性発見と悪用実証が、公表の時間軸を変えている。 自社の対応計画をその速さに合わせる。</div><div class=lw>**本件は発見・報告が Anthropic であり**（出典2・3）、 **CVE 公開（10月15日）から12日後に、 遠隔での root 権限コマンド実行の実証が公表された**（出典2。本記録の算出） 〈重要〉—— **その時点で主要なディストリビューションの利用者は更新できなかった** （出典3）。 **実証の公表が、配布元の修正提供より先に来る状況が現実に起きている** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **カーネル・ミドルウェアの重大脆弱性について、 「CVE 公開から2週間以内に悪用実証が出る」前提で対応計画を見直す。** **CVE 公開から修正適用までの社内の目標日数を決め、 達成できない系を事前に把握する。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>外部から TCP 接続を受け付けている Linux サーバのカーネル版を、 系列ごとの修正版と突き合わせて一覧化する。</div><div class=lw>**影響は 4.4 以降で各系列の修正版より前のカーネルである**（出典1） 〈重要〉—— **修正版は 5.10.272・5.15.223・6.1.190・6.6.159・6.12.113・6.18.56・ 7.2.10・7.3 の8系列で、系列ごとに境界が違う**（出典1）。 **「6.1 系だから安全」ではなく「6.1.190 以降か」で判定する必要がある** （本記録の整理）。</div><div class=la><b>取るべき行動</b> **`uname -r` の収集結果を、上記8系列の境界と突き合わせる 判定表を作って一覧化する。** **コンテナのホストカーネルも対象に含める （コンテナ内のカーネル版はホストのものである）。**</div></li><li><div class=lp>MPTCP と tcp_migrate_req の設定を確認する。ただしどちらも 脆弱性を解消しないことを前提に扱う。</div><div class=lw>**Anthropic の実証が成立した条件は MPTCP のリスナーである**（出典2） ——**2つ目の攻撃経路には net.ipv4.tcp_migrate_req=1 または BPF_SK_REUSEPORT_SELECT_OR_MIGRATE の設定が要る**（出典3）。 **一方で CVE の記述が挙げる条件は接続を受け付ける IPv4 の TCP サービスであり、MPTCP に限らない**（出典1）〈重要〉。 **MPTCP の無効化が本脆弱性への対策として有効であることは 公表されていない**（出典3）。</div><div class=la><b>取るべき行動</b> **`sysctl net.mptcp.enabled` と `sysctl net.ipv4.tcp_migrate_req` の 値を収集し、業務で使っていない場合は無効化を検討する。** **ただしこれを「対策済み」とは記録せず、 カーネル更新までの暫定措置として扱う。**</div></li><li><div class=lp>カーネルの oops・panic を監視対象に入れる。攻撃の失敗は停止として現れる。</div><div class=lw>**CNA は影響の1つとして skb_under_panic() や oops による カーネルの停止を挙げている**（出典3）〈重要〉—— **一方で Anthropic は、競合に負けても失敗するのはハンドシェイクだけで システムはクラッシュしないとしている**（出典2）。 **2つは矛盾しない**（本記録の整理）—— **解放済み領域の再利用の仕方によって、停止に至る場合と 至らない場合がある。** **停止が観測できるなら、それは攻撃の痕跡になりうる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **kernel の oops・panic・BUG を監視基盤へ送り、 原因不明の停止を侵害の疑いとして扱う運用にする。** **特に、ネットワークスタック（skb 関連）での停止を区別して拾う。**</div></li><li><div class=lp>修正コミットは CVE 公開より先に公開リポジトリへ入る。 コミットの監視を脆弱性情報の入口に加える。</div><div class=lw>**本件は修正コミット（2026年10月5日）から CVE 公開（10月15日）まで 10日ある**（出典1・3。本記録の算出）〈重要〉—— **コミットメッセージは「free inet_opt and ireq_opt after an RCU grace period」で、Fixes に起点のコミットも記されている**（出典1・3）。 **コミットを監視している相手は、CVE 公開を待たずに 脆弱性の性質を把握できる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自社が依存するカーネル系列の stable のコミットログを定期的に確認する （少なくとも net/ipv4・net/ipv6 など攻撃面に関わる領域）。** **CVE 公開を待つ運用だけにしない。**</div></li><li><div class=lp>サーバからの外向き通信を既定で拒否する。root を取られた後の次の動作を 妨げる層になる。</div><div class=lw>**本件の実証は root 権限でのシェルコマンド実行に至っている**（出典2） 〈重要〉—— **カーネルレベルの脆弱性に対して、カーネルより上の対策は効かない** （本記録の評価）。 **ただし、root を取った後に攻撃者が行う動作 （追加ペイロードの取得・情報の外部送信・C2 への接続）は 通信の出口で妨げられる。**</div><div class=la><b>取るべき行動</b> **サーバのアウトバウンド通信を既定で拒否し、 必要な宛先だけを許可する。** **許可リストの変更を構成管理の対象にし、 想定外の宛先への接続試行を警報する。**</div></li><li><div class=lp>脆弱性情報は公開時点で固定されない。初期の評価で決めた優先度を 見直す手順を持つ。</div><div class=lw>**CNA の告知の初版には CVSS 9.8 が含まれておらず、 修正版も4系列にとどまっていた**（出典3）〈重要〉—— **CVE レコードの dateUpdated は2026年10月24日で、 10月30日時点の告知とレコードは 9.8 と修正版8系列を記載している** （出典1・3）。 **公開初日に見て判断した組織は、CVSS の無い情報で決めていた** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **重大脆弱性については、公開から1週間後・2週間後に CVE レコードと配布元の状態を再確認する手順を入れる。** **初回の判定結果に「再確認予定日」を併記して記録する。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> インターネットまたは信頼できないネットワークから到達できる位置に、 IPv4 の TCP 接続を受け付ける Linux サーバを置いている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 資産台帳でカーネルのマイナー版（例: 6.1.190）まで把握しておらず、 系列単位（6.1 系）でしか管理していない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> ネットワーク機器・組込み機器・アプライアンスでベンダーがカーネルを固定しており、 自前で更新できない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性の優先度判定で CISA KEV への収載を主たる根拠にしている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 社内の脆弱性管理で使う CVSS の出所と版を1つに決めていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> カーネルの oops・panic を監視基盤へ送っておらず、 原因不明の停止を侵害の疑いとして扱う運用になっていない。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月15日（dateUpdated は2026年10月24日） CVE Program（CNA: Linux）</span> <a href="https://www.cve.org/CVERecord?id=CVE-2026-98432" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-98432 ipv4: free inet_opt and ireq_opt after an RCU grace period</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料（CVE レコード）。本記録の主たる根拠である。** **採番・公開したのは影響を受けるソフトウェア側である Linux カーネルの CNA であり、本記録は当事者の公表として扱う** （本記録の整理）——**CVE Program は記録の登録先である。** **本記録は CVE Services API（cveawg.mitre.org/api/cve/CVE-2026-98432）経由で レコードの内容を取得して確認した**（2026年10月30日）〈重要〉—— **https://www.cve.org/CVERecord の HTML ページは取得しても 本文が描画されなかったため、API 経由で確認している**（本記録の明示）。 **確認した内容: 説明文（use-after-free の経路と修正内容）、 CVSS 3.1 の 9.8（CRITICAL）とベクタ CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H、 起点のコミット 079096f103faca2dd87342cca6f23d4b34da8871、 修正版 5.10.272・5.15.223・6.1.190・6.6.159・6.12.113・6.18.56・7.2.10・7.3、 CPE の適用範囲（4.4 以上から各修正版未満）。** **CWE の記載と謝辞（credits）の記載は無い**（本記録の確認）。）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年10月29日（catalogVersion 2026.10.29） CISA（Cybersecurity and Infrastructure Security Agency）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料（KEV カタログ）。本記録が JSON フィードを取得して確認した** （2026年10月30日）〈重要〉—— **取得先は https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json。** **catalogVersion は 2026.10.29、収載件数は1,764件で、 CVE-2026-98432 は含まれていない**（本記録の観測）。 **未収載は「実環境での悪用が CISA により確認されていない」状態を示す** （本記録の整理）。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月27日 Anthropic</span> <a href="https://www.anthropic.com/research/discovering-vulnerabilities-with-claude" target="_blank" rel="noreferrer noopener nofollow">Discovering and exploiting vulnerabilities in critical, real-world software with Claude</a> <span class="b kind">調査レポート</span><span class=sm>（**発見・報告者による研究レポート。悪用の実証に関する一次資料である。** **原文英語。本記録が引用した箇所は本記録が訳した**（本記録の注記）。 **確認した内容: 対象は MPTCP のリスナーを動かす Linux サーバ、 攻撃者はパケットを送るだけで認証情報もユーザー操作も不要、 2段階の攻撃（遠隔からの KASLR 突破 → 制御フローの乗っ取りと root でのコマンド実行）、PoC の所要時間（ポインタ漏えいに約48分、 そこからコマンド実行までさらに約5分）、 競合に負けても失敗するのはハンドシェイクだけでシステムはクラッシュせず 再試行できること、上流で修正されメンテナンス中の全 stable ブランチへ バックポートされ公開開示されたこと。** **本 CVE についての報告日・修正日の具体的な記載は無く、 実証に用いられたモデルの名称も明示されていない**（本記録の確認）。 **全体の作業には「未公開の社内研究用モデル」を用いたとしている。**）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月30日 piyolog</span> <a href="https://piyolog.hatenadiary.jp/entry/2026/10/30/120732" target="_blank" rel="noreferrer noopener nofollow">Linuxカーネルの脆弱性 CVE-2026-98432 についてまとめてみた</a> <span class="b kind">ブログ</span><span class=sm>（**第三者による整理。本記録の起点となった記事であり、 配布元ごとの状態と評価の一覧の根拠である。** **確認した内容: CNA の記述による2つの攻撃経路（関数名つき）、 攻撃の複雑さを Low とした根拠、評価の一覧 （CNA 9.8／NVD スコアなし／Ubuntu 9.8・CVSS 4.0 8.3／Red Hat 8.1／ SUSE 8.1・CVSS 4.0 9.2／Oracle 8.1／Amazon 8.1）、 配布元ごとの修正提供状況（Debian・Ubuntu・Red Hat・SUSE・Oracle・Amazon）、 関連タイムライン（9月25日の CVE 予約、10月1日のパッチ作成、 10月5日のコミット、10月16日の Oracle エラータ、10月24日・29日の Amazon アドバイザリ、10月29日の SUSE アドバイザリ）、 CNA の告知の初版に CVSS 9.8 が無かったこと、 IoC や検知方法が示されていないこと。** **本記録は、各配布元のページを直接確認していない** （discrepancies に記載）〈重要〉—— **配布元ごとの状態と評価は本出典に依拠している。** **出典を番号で明示し、一次資料へのリンクを備えた整理である** （本記録の評価）。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年10月29日 The Hacker News</span> <a href="https://thehackernews.com/2026/10/linux-kernel-tcp-flaw-with-98-cvss.html" target="_blank" rel="noreferrer noopener nofollow">Linux Kernel TCP Flaw With 9.8 CVSS Score Affects Ubuntu, Red Hat and Other Distributions</a> <span class="b kind">記事</span><span class=sm>（**報道。原文英語。** **CVE-2026-98432 が Ubuntu・RHEL ほかのディストリビューションに影響し、 カーネルの CVE チームが 9.8 と評価していること、 Anthropic が10月27日に、AI モデルが本脆弱性を用いて 認証情報を持たない遠隔の攻撃者が Linux サーバで root としてコマンドを 実行できるエクスプロイトを書いたと述べたことを伝えている。** **本記録が取得した本文は冒頭のみで、全文は取得できていない** （discrepancies に記載）。）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年10月29日 Dark Reading</span> <a href="https://www.darkreading.com/application-security/claude-model-exploits-major-browsers-oses" target="_blank" rel="noreferrer noopener nofollow">Claude Model Builds Exploits Across Major Browsers &amp; OSes</a> <span class="b kind">記事</span><span class=sm>（**報道。原文英語。** **Anthropic のレポート全体（Chrome・Safari・Android・Windows・Linux に またがる脆弱性の発見と連鎖）を扱ったもので、 本 CVE に特化した記事ではない**（本記録の整理）。 **本記録が取得したのは RSS の要約のみで、本文は取得していない** （discrepancies に記載）—— **本記録はこの出典から事実を採っていない。** **本件が「Linux 単独の脆弱性」ではなく 「複数OS・ブラウザにまたがる一連の研究の一部」として報じられている ことを示すために挙げている。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年10月30日</span> <span class="b rev">新規作成</span> **2026年10月30日の piyolog の記事（出典3）と、 10月29日の The Hacker News（出典4）・Dark Reading（出典5）を起点に、 一次資料を取得して作成した。** **本記録が直接取得・確認したのは、 ①CVE レコード（CVE Services API 経由。CVSS 3.1 の 9.8・ベクタ・ 修正版8系列・起点コミット・CWE と謝辞の記載が無いこと） ②Anthropic の研究レポート（MPTCP のリスナー・2段階の実証・ PoC の所要時間48分と5分・競合に負けてもシステムは落ちないこと・ モデル名が明示されていないこと） ③CISA KEV の JSON フィード（catalogVersion 2026.10.29・収載1,764件に CVE-2026-98432 が含まれないこと）の3つである。** **配布元ごとの修正提供状況、各社の CVSS 評価、アドバイザリ番号、 9月25日の CVE 予約と10月1日のパッチ作成の日付は出典3 に依拠しており、 各配布元のページは確認していないため discrepancies に self_unverified として明示した。** **出典5 は本文を取得していないため、事実の根拠としては用いていない。** **実環境での悪用、Ubuntu と Red Hat の修正提供時期、IoC と検知方法、 MPTCP 以外の経路で root に至れるか、影響機器の台数は いずれも公表されていないため unknowns に残した。**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Linux カーネル</span><span class="b tag">CVE-2026-98432</span><span class="b tag">use-after-free</span><span class="b tag">IPv4 TCP</span><span class="b tag">MPTCP</span><span class="b tag">KASLR</span><span class="b tag">遠隔コード実行</span><span class="b tag">Anthropic</span><span class="b tag">CWE-825</span><span class="b tag">CISA KEV</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-10-30 14:50 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
