@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>LXD に CVSS 10.0 の認証バイパス — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0825</span>LXD に CVSS 10.0 の認証バイパス</h1>
+<header class="site-header">
+  <p class="subtitle">Canonical は2026年10月28日、LXD と MicroCloud の相互 TLS 認証に 「クライアントが送ってきた証明書チェーンの全ピア証明書を信頼ストアと照合する」 不備（CVE-2026-112816）があり、 署名鍵の所有を証明できるのはリーフ証明書だけであるため、 攻撃者は信頼済みの公開証明書を中間証明書としてチェーンに挿入するだけで 別の身元として認証できると公表した—— 公開証明書は秘密ではないので秘密鍵は要らず、 なりすました相手の権限によってはホストの root を取れる。 Canonical は CVE 採番機関として CVSS 4.0 で 10.0 を付けたが、 Ubuntu の CVE ページの優先度は Medium であり、 Canonical 自身の告知には CVSS の記載が無い</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月28日17時50分（Canonical による Ubuntu Discourse 上の告知）</span>
+  <span>最終更新: 2026年11月3日（本記録の作成。Canonical の告知と Ubuntu の CVE ページを直接確認）</span>
+</div>
+
+<div class="lead"><p><strong>公開証明書は、秘密ではありません。この脆弱性は、それを認証に使ってしまいます。</strong></p>
+<p><strong>Canonical は2026年10月28日、LXD と MicroCloud に重大な脆弱性（CVE-2026-112816）があると公表しました</strong>（出典1）。<strong>LXD の HTTPS API に到達できる攻撃者は、信頼済みクライアントの</strong>公開<strong>証明書を持っているだけで、そのクライアントとして認証されます</strong>（出典1）。<strong>秘密鍵は要りません。</strong></p>
+<p><strong>仕組みは一文で説明できます</strong>（出典1。原文英語）。<strong>「相互 TLS 認証において、我々はクライアントが提示したすべてのピア証明書を信頼ストアと照合していた。しかし署名鍵の所有を証明できるのはリーフ証明書だけである。攻撃者は、自分が信頼されている公開証明書を中間証明書としてチェーンに挿入し、別の身元として認証できる」。</strong></p>
+<p><strong>つまり、検証の対象を1枚に絞っていなかったことが不備です</strong>（本記録の整理）。<strong>TLS が鍵の所有を証明するのはリーフ証明書についてだけで、チェーンの中間に何を入れるかはクライアント側が自由に決められます。</strong> <strong>そこを信頼の判定に使えば、「公開されている証明書を知っているか」が認証になってしまいます。</strong></p>
+<p><strong>影響の範囲は、なりすました相手の権限で決まります</strong>（出典1・3）。<strong>Canonical は「侵害されたアカウントの権限によっては、ホストの root アクセスを得られる可能性がある」としています</strong>（出典1）。<strong>CVE の記録は「認証されていない攻撃者が信頼済みクライアントとして認証され、クラスタと管理対象の仮想マシンへ完全にアクセスできる可能性がある」と記しています</strong>（出典2）。</p>
+<p><strong>MicroCloud には固有の条件があります</strong>（出典1）。<strong>クラスタメンバーが MicroCloud に参加している最中に、そのメンバーの公開 TLS 証明書を攻撃者が傍受できる場合、後にその証明書を使ってそのメンバーとして認証できる、というものです。</strong></p>
+<p><strong>修正は全サポート系列に出ています</strong>（出典1）。<strong>LXD 6.10.1（6/stable）・5.21.9（5.21/stable）・5.0.11（5.0/stable）・4.0.15（4.0/stable）、MicroCloud 2.1.5（2/stable）・3.4.1（3/stable）。Canonical はすべての利用者に直ちに各チャネルの最新版へ更新することを求めています（<code>sudo snap refresh lxd</code> / <code>sudo snap refresh microcloud</code>）。</strong> <strong>修正版は candidate から stable へ段階的に配信中とされています</strong>（出典1）。</p>
+<p><strong>一方で、深刻度の表示が資料の間で揃っていません</strong>（本記録の確認）〈齟齬1〉。<strong>Canonical は CVE の採番機関として CVSS 4.0 で 10.0（Critical）を付け、報道もその数字を見出しに使っています</strong>（出典3・4）。<strong>しかし Ubuntu の CVE ページの優先度は Medium です</strong>（出典2）。<strong>そして Canonical 自身の告知には CVSS の記載がありません</strong>（出典1。本記録の確認）。<strong>本記録は、この不一致自体を記録に残します。</strong></p>
+<p><strong>報告は Incus プロジェクトから持ち込まれました</strong>（出典1）。<strong>Canonical は、Incus で見つかった問題が LXD にも影響することを確認したとし、謝辞で stgraber の継続的な協力に触れています。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s8" title="事案の詳細">事案の詳細</a></li><li><a href="#s9" title="経過">経過</a></li><li><a href="#s10" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s11" title="波及の構造">波及の構造</a></li><li><a href="#s12" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s13" title="対応の評価">対応の評価</a></li><li><a href="#s14" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s15" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s16" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s17" title="出典">出典</a></li><li><a href="#s18" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s19" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**第三者の解説は「本記事の時点で悪用は報告されていない」とし、 CISA の KEV カタログに収載されていないことも記している**（出典3）。 **Canonical の告知と Ubuntu の CVE ページは悪用に言及していない** （出典1・2。本記録の確認）。 **一方、同じ検索で「公開 PoC が存在する」とする情報源が1つあり、 本記録はこれを裏づけられていない**〈齟齬5〉。</div></li><li><span class=ui>影響を受ける環境の数・国・業種</span><span class="b rsn">公表されていない</span><div class=sm>**Canonical は公表していない**（出典1）。 **LXD は snap で配布されるため、 Ubuntu の CVE ページは各リリースを「Not in release」または 「Not affected」としており、 ディストリビューションのパッケージ経路では規模が追えない**（出典2。本記録の整理）。</div></li><li><span class=ui>CVSS のベクタ文字列と CWE の分類</span><span class="b rsn">公表されていない</span><div class=sm>**Canonical の告知にも Ubuntu の CVE ページにも ベクタ文字列と CWE の記載が無い**（出典1・2。本記録の確認）。 **第三者の解説は CWE-295（不適切な証明書検証）と記している**（出典3）〈齟齬3〉 ——**本記録は一次資料でこれを確認できていない。**</div></li><li><span class=ui>報告から公表までの経過（報告日・調整期間）</span><span class="b rsn">公表されていない</span><div class=sm>**Canonical の告知は、本件が Incus プロジェクトから持ち込まれ LXD にも影響することが確認されたと記すのみで、 報告日も調整の経過も書いていない**（出典1。本記録の確認）。 **報告者の個人名も明記されていない。**</div></li><li><span class=ui>影響を受けるバージョンの正確な範囲</span><span class="b rsn">見解が分かれる</span><div class=sm>**Ubuntu の CVE ページは脆弱なバージョンを LXD 4.0.14・5.0.10・5.21.8・6.9 と列挙している**（出典2）。 **第三者の解説は LXD 4.0.14・5.0.10・5.21.8・6.9.0 とし、 さらに「Canonical の CVE 記録では 6.9 から 6.10.0 までとされている」と 併記している**（出典3）〈齟齬6〉。 **Canonical 自身の告知には影響バージョンの記載が無く、 修正版だけが示されている**（出典1。本記録の確認）。 **MicroCloud については、第三者の解説が 2.x と 3.x としている**（出典3）。</div></li><li><span class=ui>Incus 側の告知の内容と対応バージョン</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は Incus 側の告知を直接確認していない**〈齟齬2〉。 **検索では Incus の勧告として GHSA-xg75-xf37-cph9 を挙げる情報源があったが、 本記録はこれを裏づけられていない。** **LXD の GitHub Security Advisory（GHSA-99jp-jwmc-65p4）も 2026年11月3日の取得で 404 を返した。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Canonical（LXD・MicroCloud の開発元。CVE 採番機関）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Incus プロジェクト（報告元）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>LXD / MicroCloud の利用組織（名称・数はいずれも公表されていない）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Canonical（CVE 採番機関）が付けた CVSS 4.0 のスコア</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>10.0<span class=fu>点</span></div><div class=fn>**Canonical が CVE の採番機関として CVSS 4.0 で 10.0（Critical）を付けたとされる** （出典3・4）。 **ただし本記録は、Canonical 自身の告知（出典1）にも Ubuntu の CVE ページ（出典2）にも スコアとベクタ文字列の記載が無いことを確認した**〈齟齬1〉。 **値の出所を「報道が示した値」とする根拠** ——**この数値を本記録が確認できたのは第三者の解説と報道だけである** （本記録の明示）。 **ベクタ文字列は本記録が確認できていない。**</div></div><div class=fig><div class=fh><span class=fl>LXD の修正版の系列数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>系列</span></div><div class=fn>**6/stable（6.10.1）・5.21/stable（5.21.9）・ 5.0/stable（5.0.11）・4.0/stable（4.0.15）の4系列**（出典1）。 **サポート中の全チャネルに修正が出ている**（本記録の整理） ——**4.0 系（最も古い LTS）まで含まれている点は、 対象の広さを示す**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>第三者の解説が示す EPSS（30日の悪用確率）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>0.3<span class=fu>%</span></div><div class=fa>2026年11月3日（本記録が解説を確認した時点） 時点</div><div class=fn>**第三者の解説に記載された値**（出典3）。 **EPSS は予測値であり、観測された悪用ではない**（本記録の明示）。 **CVSS 10.0 という深刻度の表示と、 この 0.3% という予測値が同じ脆弱性について並ぶ**（本記録の整理） ——**前者は「成功したときの影響と容易さ」、 後者は「30日以内に悪用が観測される確率の予測」であり、 測っているものが違う**（本記録の評価）。</div></div></div></div>
+<section id="s4"><h2>検証の対象を1枚に絞らなかった——鍵の所有を証明するのはリーフだけである<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>不備の説明は、Canonical の告知の一文に尽きている</strong>（出典1。原文英語）。</p>
+<blockquote>
+<p><strong>相互 TLS 認証において、我々はクライアントが提示したすべてのピア証明書を信頼ストアと照合していた。しかし署名鍵の所有を証明できるのはリーフ証明書だけである。攻撃者は、自分が信頼されている公開証明書を中間証明書としてチェーンに挿入し、別の身元として認証できる。</strong></p>
+</blockquote>
+<p><strong>ここで前提を分けておく</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>要素</th>
+<th>攻撃者が持っている必要があるか</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>信頼済みクライアントの<strong>公開</strong>証明書</td>
+<td><strong>必要</strong>（ただし公開情報である）</td>
+</tr>
+<tr>
+<td>信頼済みクライアントの<strong>秘密鍵</strong></td>
+<td><strong>不要</strong></td>
+</tr>
+<tr>
+<td>HTTPS API へのネットワーク到達</td>
+<td><strong>必要</strong></td>
+</tr>
+<tr>
+<td>認証情報（パスワード・トークン）</td>
+<td><strong>不要</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>「公開証明書を持っていること」は、本来なにも証明しない</strong>（本記録の評価）。<strong>TLS のクライアント認証が身元の証明になるのは、クライアントがリーフ証明書に対応する秘密鍵で署名できるからである。</strong> <strong>チェーンの中間に何を入れるかは、クライアントが自由に決められる。</strong> <strong>そこを信頼の判定に使えば、認証の条件が「秘密鍵を持っているか」から「公開証明書を知っているか」へ下がる。</strong></p>
+<p><strong>影響の範囲は、なりすました相手の権限で決まる</strong>（出典1・2）。<strong>Canonical は「侵害されたアカウントの権限によっては、ホストの root アクセスを得られる可能性がある」とする</strong>（出典1）。<strong>Ubuntu の CVE ページは「認証されていない攻撃者が信頼済みクライアントとして認証され、クラスタと管理対象の仮想マシンへ完全にアクセスできる可能性がある」とする</strong>（出典2）。</p>
+<p><strong>MicroCloud には固有の条件が付く</strong>（出典1）。<strong>クラスタメンバーが MicroCloud に参加している最中に、そのメンバーの公開 TLS 証明書を攻撃者が傍受できる場合、後にその証明書を使ってそのメンバーとして認証できる。</strong> <strong>本記録の整理——参加（join）の瞬間に証明書が流れるため、そのときにネットワーク上にいられるかが条件になる。</strong></p></section>
+<section id="s5"><h2>同じ脆弱性に CVSS 10.0 と優先度 Medium が併存している<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p><strong>深刻度の表示が、資料の間で揃っていない</strong>（本記録の確認）〈齟齬1〉。</p>
+<table>
+<thead>
+<tr>
+<th>資料</th>
+<th>深刻度の表示</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Canonical の告知（出典1）</td>
+<td><strong>記載なし</strong>（「Critical vulnerability」と題にあるのみ）</td>
+</tr>
+<tr>
+<td>Ubuntu の CVE ページ（出典2）</td>
+<td><strong>Priority: Medium</strong></td>
+</tr>
+<tr>
+<td>第三者の解説・報道（出典3・4）</td>
+<td><strong>CVSS 4.0 で 10.0（Critical）。Canonical が CNA として付与</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録はこの不一致を解消しない</strong>（本記録の方針）。<strong>一次資料にスコアが書かれておらず、10.0 という数字を本記録が確認できたのは第三者経由だけである</strong>（出典3・4）。</p>
+<p><strong>ただし、読み方は整理できる</strong>（本記録の評価）。<strong>CVSS は「成功したときの影響と、成功までの容易さ」を測る。本件は認証不要・ネットワーク越し・影響は管理面の完全掌握であり、その軸では上限に近い。</strong> <strong>一方、Ubuntu の優先度は、Ubuntu のパッケージとしての実際のリスクを踏まえた運用上の指標である。LXD は snap で配布され、Ubuntu の各リリースは「Not in release」または「Not affected」と記録されている</strong>（出典2）——<strong>ディストリビューションのパッケージとしては影響が無いことが、優先度の低さに反映されているとみられる</strong>（本記録の推定）。</p>
+<p><strong>さらに別の軸の数字もある</strong>（出典3）。<strong>EPSS（30日）は 0.3% で、CISA の KEV カタログには収載されていない。</strong> <strong>これは「30日以内に悪用が観測される確率の予測」であり、CVSS とは測っているものが違う</strong>（本記録の明示）。</p>
+<p><strong>本記録の評価——読者にとっての実務上の結論は、どの数字を採るかではない</strong>（本記録の判断）。<strong>①自組織に LXD / MicroCloud があるか、②その HTTPS API にどこから到達できるか、③信頼ストアに何が登録されているか。</strong> <strong>この3点が決まれば、スコアの議論は要らない</strong>（本記録の評価）。</p></section>
+<section id="s6"><h2>修正は全サポート系列に出ており、4.0 系（最古の LTS）まで含む<span class="b slot">再発防止</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>修正版は6つである</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>製品</th>
+<th>チャネル</th>
+<th>修正版</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LXD</td>
+<td>6/stable</td>
+<td>6.10.1</td>
+</tr>
+<tr>
+<td>LXD</td>
+<td>5.21/stable</td>
+<td>5.21.9</td>
+</tr>
+<tr>
+<td>LXD</td>
+<td>5.0/stable</td>
+<td>5.0.11</td>
+</tr>
+<tr>
+<td>LXD</td>
+<td>4.0/stable</td>
+<td>4.0.15</td>
+</tr>
+<tr>
+<td>MicroCloud</td>
+<td>2/stable</td>
+<td>2.1.5</td>
+</tr>
+<tr>
+<td>MicroCloud</td>
+<td>3/stable</td>
+<td>3.4.1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>リリース日は2026年10月29日、告知の投稿は前日の10月28日17時50分である</strong>（出典1）。<strong>Canonical はすべての利用者に直ちに各チャネルの最新版へ更新することを求め、手順を<code>sudo snap refresh lxd</code> / <code>sudo snap refresh microcloud</code> と示している</strong>（出典1）。<strong>修正版は candidate から stable へ段階的に配信中とされている</strong>（出典1）——<strong>本記録の注記：段階配信のため、<code>snap refresh</code> が即座に修正版を取得するとは限らない。</strong></p>
+<p><strong>本記録が積極的に評価する点は、4.0 系が含まれていることである</strong>（本記録の評価）。<strong>LXD 4.0 は最も古いサポート中の LTS であり、ここまで修正が出ているのは、「更新対象外の系列が取り残される」というよくある結果を避けている</strong>（本記録の判断）。</p>
+<p><strong>Canonical の告知には回避策（ワークアラウンド）の記載が無い</strong>（出典1。本記録の確認）。<strong>第三者の解説は、更新に加えて「API の露出を制限し、信頼ストアを監査する」ことを挙げている</strong>（出典3）——<strong>本記録はこれを Canonical の推奨とは区別して記録する。</strong></p></section>
+<section id="s7"><h2>報告は Incus から来た——フォーク同士で同じ不備を共有していた<span class="b slot">背景・過去事例</span><span class=srcs>出典 [1]</span></h2><p><strong>Canonical の告知は、本件が Incus プロジェクトから持ち込まれ、LXD にも影響することが確認されたと記している</strong>（出典1）。<strong>謝辞では stgraber の継続的な協力に触れている</strong>（出典1）。</p>
+<p><strong>Incus は LXD からフォークされた同系のプロジェクトである</strong>（本記録の注記）。<strong>相互 TLS の検証処理という、フォークの前から存在していたとみられる箇所に不備があったため、両方に影響したという構図になる</strong>（本記録の推定）。</p>
+<p><strong>本記録は Incus 側の告知を直接確認していない</strong>〈齟齬2〉。<strong>LXD の GitHub Security Advisory（GHSA-99jp-jwmc-65p4）も、2026年11月3日の取得で 404 を返した</strong>（本記録の確認）——<strong>Canonical の告知が参照している識別子であるため、非公開か、場所が変わった可能性がある。</strong></p>
+<p><strong>本記録の評価——読者が持ち帰れるのは、「フォーク関係にある製品を使っているなら、片方の告知を両方の確認の契機にする」という運用である</strong>（本記録の判断）。<strong>本件は Incus 側の発見が LXD に波及した例であり、逆向きも起こりうる。</strong></p></section>
+<div class="blk " id="s8"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**Canonical LXD および MicroCloud の HTTPS API（相互 TLS のリスナー）** （出典1・2）。 **Ubuntu の CVE ページの表現は「HTTPS リスナーにおける証明書検証の不備」である** （出典2）。 **影響を受けるバージョンとして Ubuntu の CVE ページが列挙するのは LXD 4.0.14・5.0.10・5.21.8・6.9**（出典2）〈齟齬6〉。 **MicroCloud については一次資料に影響バージョンの記載が無く、 修正版（2.1.5・3.4.1）のみが示されている**（出典1）。</td></tr><tr><th>finding_name</th><td>**CVE-2026-112816**（出典1・2）。 **Canonical の告知は GitHub Security Advisory GHSA-99jp-jwmc-65p4 も識別子として挙げている**（出典1） ——**本記録はこれを確認できていない**〈齟齬2〉。 **固有の呼称（愛称）は付けられていない**（本記録の確認）。</td></tr><tr><th>root_cause_technical</th><td>**相互 TLS 認証において、クライアントが提示したすべてのピア証明書を 信頼ストアと照合していた**（出典1）。 **署名鍵の所有を証明できるのはリーフ証明書だけであるため、 攻撃者は自分が信頼されている公開証明書を中間証明書としてチェーンに挿入し、 別の身元として認証できる**（出典1）。 **Ubuntu の CVE ページは「細工された証明書チェーンが利用される」と記す**（出典2）。 **第三者の解説は CWE-295（不適切な証明書検証）に分類されるとしている** （出典3）〈齟齬3〉。</td></tr><tr><th>exploit_status</th><td>**実環境での悪用は報告されていない**（出典3）〈未確定1〉。 **第三者の解説は、CISA の KEV カタログに収載されておらず、 EPSS（30日）が 0.3% であることも記している**（出典3）。 **Canonical の告知と Ubuntu の CVE ページは、 悪用にも実証コードにも言及していない**（出典1・2。本記録の確認）。 **本記録の検索結果には公開 PoC が存在するとする情報源が1つあったが、 裏づけられていない**〈齟齬5〉。</td></tr><tr><th>exploit_status_as_of</th><td>2026年11月3日（本記録の確認時点）</td></tr><tr><th>patch_status</th><td>**全サポート系列に提供されている**（出典1）。 **LXD 6.10.1（6/stable）・5.21.9（5.21/stable）・ 5.0.11（5.0/stable）・4.0.15（4.0/stable）、 MicroCloud 2.1.5（2/stable）・3.4.1（3/stable）。 リリース日は2026年10月29日と記載されている**（出典1）。 **Canonical はすべての利用者に直ちに各チャネルの最新版へ更新することを求め、 修正版は candidate から stable へ段階的に配信中としている**（出典1） ——**本記録の注記：段階配信のため、 `snap refresh` が即座に修正版を取得するとは限らない。**</td></tr><tr><th>patch_status_as_of</th><td>2026年11月3日（本記録の確認時点）</td></tr><tr><th>mitigation</th><td>**Canonical が示したのは更新のみである**（出典1）。 **①`sudo snap refresh lxd`、②`sudo snap refresh microcloud`。** **回避策（ワークアラウンド）の記載は無い**（本記録の確認）。 **第三者の解説は、更新に加えて 「API の露出を制限し、信頼ストアを監査する」ことを挙げている**（出典3） ——**これは Canonical の推奨ではない**（本記録の明示）。 **本記録の評価として追加すべき点が1つある** ——**MicroCloud で過去にクラスタ参加作業を 業務ネットワーク上で行った環境では、 更新だけでは既に傍受された証明書が信頼ストアに残るため、 証明書の入れ替えを検討する必要がある**（出典1。本記録の判断）。</td></tr><tr><th>disclosure_process</th><td>**Incus プロジェクトから本件が持ち込まれ、 Canonical が LXD にも影響することを確認した**（出典1）。 **Canonical は2026年10月28日17時50分に Ubuntu Discourse で告知し、 翌10月29日に全サポート系列の修正版をリリースした**（出典1）。 **2026年10月30日に Ubuntu の CVE ページが公開された**（出典2）。 **報告日・調整の期間・報告者の個人名はいずれも公表されていない** （本記録の確認）〈未確定3〉。 **謝辞では stgraber の継続的な協力に触れている**（出典1）。 **本記録の評価——告知と修正版のリリースが1日差であり、 利用者が「知ったときに適用できる」状態で情報が出ている**（本記録の判断）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s9"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">日付は公表されていない（2026年10月28日より前）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**Incus プロジェクトから本件が持ち込まれ、 Canonical が LXD にも影響することを確認した**（出典1）。 **報告日・報告者の個人名・調整の経過はいずれも公表されていない** （本記録の確認）〈未確定3〉。</td></tr><tr><td class="sm nowrap tw">2026年10月28日17時50分（Ubuntu Discourse の投稿時刻）</td><td class=nowrap><span class="b kind">公表</span></td><td>**Canonical が Ubuntu Discourse に 「Security advisory: Critical vulnerability found in Canonical LXD and MicroCloud」 （Canonical の LXD と MicroCloud に重大な脆弱性が見つかった旨の セキュリティ告知。原文英語）を公表した**（出典1）。 **内容——CVE-2026-112816、GitHub Security Advisory GHSA-99jp-jwmc-65p4、 不備の説明（相互 TLS でクライアント提示の全ピア証明書を信頼ストアと照合していた）、 影響（公開証明書だけで任意の信頼済みクライアントになりすませる。 権限によってはホストの root）、 MicroCloud 固有の条件（参加中のメンバーの公開 TLS 証明書を傍受できる場合）、 修正版の一覧、更新の手順。** **CVSS スコアとベクタ、および影響を受けるバージョンの明記は無い** （本記録の確認）〈齟齬1〉。</td></tr><tr><td class="sm nowrap tw">2026年10月29日（告知に記載された修正版のリリース日）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正版がリリースされた**（出典1）。 **LXD 6.10.1（6/stable）・LXD 5.21.9（5.21/stable）・ LXD 5.0.11（5.0/stable）・LXD 4.0.15（4.0/stable）・ MicroCloud 2.1.5（2/stable）・MicroCloud 3.4.1（3/stable）。** **Canonical は修正版が candidate から stable へ 段階的に配信されているとしている**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月30日（Ubuntu の CVE ページの公開日・最終更新日）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Ubuntu の CVE ページ（`ubuntu.com/security/CVE-2026-112816`）が 公開された**（出典2）。 **説明——HTTPS リスナーにおける証明書検証の不備により、 認証されていない攻撃者が信頼済みクライアントとして認証され、 クラスタと管理対象の仮想マシンへ完全にアクセスできる可能性がある。 細工された証明書チェーンが利用される。 脆弱なバージョンは LXD 4.0.14・5.0.10・5.21.8・6.9、 修正版は 4.0.15・5.0.11・5.21.9・6.10.1。** **優先度（Priority）は Medium**（出典2）〈齟齬1〉。 **CVSS スコアとベクタ、CWE の記載はこのページには無い**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月1日08時51分 UTC（The Hacker News による報道）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が 「CVSS 10.0 LXD, MicroCloud Flaw Lets Attackers Impersonate Trusted Clients Without a Private Key」（CVSS 10.0 の LXD・MicroCloud の不備により 攻撃者が秘密鍵なしで信頼済みクライアントになりすませる。原文英語）を公開した** （出典4）。 **本DBはこの記事を2026年11月1日収集分として取得したが、 本文の取得に失敗しており（`content_source: fetch_failed`）、 保存されているのは冒頭のみである**（本記録の確認）。 **本記録が2026年11月3日に同記事の取得を試みたところ 403 を返した** （本記録の確認）〈齟齬4〉。</td></tr><tr><td class="sm nowrap tw">2026年11月3日（本記録による現況確認）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が Canonical の告知と Ubuntu の CVE ページを直接確認した** （出典1・2）。 **あわせて GitHub Security Advisory（GHSA-99jp-jwmc-65p4）の取得を試みたが 404 を返した**（本記録の確認）〈齟齬2〉。 **第三者の解説（出典3）は、本件が CISA の KEV カタログに 収載されていないこと、EPSS（30日）が 0.3% であること、 および報告時点で悪用の報告が無いことを記している。**</td></tr></tbody></table></div></div>
+<div id="s10"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**①Canonical の告知（出典1）には CVSS スコアとベクタ文字列の記載が無く、 題に「Critical vulnerability」とあるだけである**（本記録の確認）。 **②Ubuntu の CVE ページ（出典2）の優先度は Medium である。** **③第三者の解説と報道（出典3・4）は、 Canonical が CVE 採番機関として CVSS 4.0 で 10.0（Critical）を付けたとする。** **本記録はこの不一致を解消しない**（本記録の方針）。 **読み方の整理——CVSS は成功時の影響と容易さを測り、 Ubuntu の優先度は Ubuntu のパッケージとしての運用上のリスクを示す。 LXD は snap で配布され、Ubuntu の各リリースは 「Not in release」または「Not affected」と記録されているため、 パッケージとしての影響の無さが優先度に反映されているとみられる** （出典2。本記録の推定）。</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**Canonical の告知と Ubuntu の CVE ページがともに参照している識別子だが** （出典1・2）、 **本記録が2026年11月3日に `https://github.com/canonical/lxd/security/advisories/GHSA-99jp-jwmc-65p4` の 取得を試みたところ 404 を返した**（本記録の確認）。 **非公開なのか、場所が変わったのか、 識別子が別のリポジトリのものなのかを区別できない。** **そのため CVSS のベクタ文字列・影響バージョン範囲・ クレジットの詳細を一次資料で確認できていない。** **Incus 側の告知（検索では GHSA-xg75-xf37-cph9 を挙げる情報源があった）も 確認していない。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**第三者の解説は本件を CWE-295（不適切な証明書検証）に分類されるとしている** （出典3）。 **しかし Canonical の告知（出典1）にも Ubuntu の CVE ページ（出典2）にも CWE の記載が無い**（本記録の確認）。 **本記録は本文で CWE-295 に触れるときは 「とされる」と留保を付けている。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本DBが2026年11月1日収集分として取得した The Hacker News の記事は 本文の取得に失敗しており（`content_source: fetch_failed`）、 保存されているのは冒頭の1段落のみである**（出典4。本記録の確認）。 **本記録が2026年11月3日に同記事の取得を試みたところ 403 を返した。** **references の availability を paywalled としたのは 到達できない状態を記録するためであり、 有料会員制であることを確認したものではない**（本記録の明示）。 **本記録は一次資料（出典1・2）で事実関係を確認しているため、 この記事の本文が無くても記録の内容に欠落は生じていない。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><div class=sm>**本記録の検索結果に、本件の公開 PoC が存在するとする情報源が1つあった** （本記録の確認）。 **一方、別の第三者の解説は「本記事の時点で悪用は報告されておらず、 CISA の KEV カタログにも収載されていない」としている**（出典3）。 **Canonical の告知と Ubuntu の CVE ページは 悪用にも PoC にも言及していない**（出典1・2）。 **本記録は PoC の存在を事実として扱わず、 当該の情報源を references に立てない**（本記録の方針）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**①Ubuntu の CVE ページは LXD 4.0.14・5.0.10・5.21.8・6.9 と列挙する**（出典2）。 **②第三者の解説は LXD 4.0.14・5.0.10・5.21.8・6.9.0 とし、 「Canonical の CVE 記録では 6.9 から 6.10.0 まで」と併記する**（出典3）。 **③Canonical 自身の告知には影響バージョンの記載が無く、 修正版だけが示されている**（出典1。本記録の確認）。 **本記録の整理——「6.9 のみ」と「6.9 から 6.10.0 まで」では、 6.10.0 を使っている環境の扱いが変わる。** **実務上は、修正版（6.10.1 以上）へ上げれば差は生じない**（本記録の評価）。 **MicroCloud については、第三者の解説が 2.x と 3.x としている**（出典3） ——**一次資料には修正版（2.1.5・3.4.1）のみが示されている。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**Canonical の告知の投稿日時は2026年10月28日17時50分である**（出典1）。 **Ubuntu の CVE ページの公開日・最終更新日は2026年10月30日である**（出典2）。 **告知には修正版のリリース日として2026年10月29日が記載されている**（出典1）。 **本記録は初報の日付を2026年10月28日（告知の投稿）とした** ——**根拠は、開発元が最初に公に記述した時点であること**（本記録の判断）。 **CVE ページの公開は、同じ内容を脆弱性データベースへ反映した時点とみられる** （本記録の推定）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s11"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>攻撃者（信頼済みクライアントの公開証明書を入手。秘密鍵は不要） → LXD / MicroCloud の HTTPS API へ相互 TLS 接続 → 自分のリーフ証明書＋信頼済み公開証明書を中間位置に挿入したチェーンを提示 → サーバが全ピア証明書を信頼ストアと照合してチェーンを受理 → 信頼済みクライアントとして認証 → クラスタと仮想マシンへの完全アクセス → 権限によってはホストの root</div><div class=svgwrap><svg viewBox="0 0 1202 208" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,104.0 C193.0,104.0 193.0,53.0 220,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,148.0 C295.0,148.0 295.0,53.0 220,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,53.0 C397.0,53.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C703.0,60.0 703.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,104.0 832,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,104.0 C1009.0,104.0 1009.0,104.0 1036,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（前提は①API </text><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">へのネットワーク到達 ②</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">信頼済みクライアントの…</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">秘密鍵・パスワード・トー</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">クンはいずれも不要。公開</text><rect x="220" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">信頼済みクライアントの公</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開証明書（秘密ではない）</text><text x="295.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">構成管理・手順書・バック</text><text x="295.0" y="77.0" text-anchor="middle" fill="#ffcc80" font-size="10">アップ・クラスタ参加時の</text><rect x="220" y="104.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">MicroCloud の</text><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタ参加（join）</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の最中の通信</text><text x="295.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">Canonical は参</text><text x="295.0" y="179.0" text-anchor="middle" fill="#ffcc80" font-size="10">加中のメンバーの公開証明</text><rect x="424" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工した証明書チェーン（</text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自分のリーフ＋信頼済み公</text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開証明書を中間位置に挿…</text><text x="499.0" y="123.0" text-anchor="middle" fill="#ffcc80" font-size="10">署名鍵の所有を証明できる</text><text x="499.0" y="135.0" text-anchor="middle" fill="#ffcc80" font-size="10">のはリーフだけ。中間はク</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LXD / MicroC</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">loud の HTTPS</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> API（相互 TLS…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">不備は「提示された全ピア</text><text x="703.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">証明書を信頼ストアと照合</text><rect x="628" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">信頼ストア（登録済みのク</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ライアント証明書）</text><text x="703.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">登録が多いほど、なりすま</text><text x="703.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">し可能な身元が増える</text><rect x="832" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタと管理対象の仮想</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">マシン</text><text x="907.0" y="116.0" text-anchor="middle" fill="#64b5f6" font-size="10">Ubuntu の CVE</text><text x="907.0" y="128.0" text-anchor="middle" fill="#64b5f6" font-size="10"> ページは「完全にアクセ</text><rect x="1036" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ホストの root（なり</text><text x="1111.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">すました相手の権限による</text><text x="1111.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="1111.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">Canonical の告</text><text x="1111.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">知の記述による</text></svg></div><div class=fn>Canonical のセキュリティ告知（2026年10月28日・出典1）と Ubuntu の CVE ページ（出典2）にもとづく。 **実環境での悪用は報告されていない**（出典3）〈未確定1〉。 **破線は MicroCloud 固有の前提（参加中の証明書の傍受）を示す。**</div></div></div>
+<div class="blk " id="s12"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s13"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s14"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「公開情報だから秘密にしなくてよい」ものが、認証に使われていないか問い直す**</div><div class=lw>**本件の攻撃条件は、信頼済みクライアントの公開証明書を持っていることだけである** （出典1）。 **公開証明書は秘密ではない** ——**構成管理リポジトリ、手順書、チケット、 バックアップ、クラスタ参加時の通信など、 秘密として扱われていない場所に置かれている可能性が高い**（本記録の評価）。 **本件は、製品側がその前提を崩したために、 「公開情報の管理」が突然認証の強度になった例である。**</div><div class=la><b>取るべき行動</b> **①自組織で「公開情報だから管理不要」と整理している資産 （公開鍵・公開証明書・エンドポイントの一覧・内部ドメイン名）を棚卸しし、 それが認証や認可の判断に使われていないかを確認する。** **②クラスタ参加や機器登録の手順で、 証明書・公開鍵が平文で流れる区間を洗い出す。** **③基盤製品の信頼ストアに何が登録されているかを定期的に見直し、 不要な登録を外す運用を作る。**</div></li><li><div class=lp>**深刻度の数字が資料間で揃わないことを前提に、判断の軸を自組織側に置く**</div><div class=lw>**本件は、Canonical の告知に CVSS の記載が無く**（出典1）、 **Ubuntu の CVE ページの優先度は Medium**（出典2）、 **第三者と報道は CVSS 4.0 の 10.0 を伝える**（出典3・4）、 **EPSS（30日）は 0.3%**（出典3）—— **という状態である**〈齟齬1〉。 **どの数字を採るかを議論しても、自組織の露出は決まらない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①脆弱性の優先度判断の社内基準を、 外部スコア単独ではなく「自組織での到達可能性」と 「侵害されたときに取られる権限」の2軸で書く。** **②ベンダーの告知・ディストリビューションの CVE ページ・ 第三者の解説で数値が食い違う場合の扱い（どれを採るか、誰が決めるか）を あらかじめ決めておく。** **③EPSS と CVSS が測っているものの違いを、 経営向け資料の定型注記として持つ。**</div></li><li><div class=lp>**仮想化・コンテナの管理 API は、侵害されたときに取られるものが段違いである**</div><div class=lw>**本件でなりすまされた先の権限によっては、 クラスタと管理対象の仮想マシンへの完全なアクセス、 さらにホストの root アクセスまで到る**（出典1・2）。 **管理面（コントロールプレーン）は、 その配下の全ワークロードを一度にまとめて失う経路である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①LXD・MicroCloud・その他の仮想化／コンテナ基盤の管理 API について、 どこから到達できるかを外部からの観測で確認する。** **②管理 API を管理専用の経路（管理 VLAN・踏み台・VPN）に限定し、 業務ネットワークから直接到達できない状態にする。** **③管理 API への認証の成功・失敗と、 クライアント証明書の追加・削除を監査ログとして保持する。**</div></li><li><div class=lp>**フォーク関係にある製品は、片方の告知を両方の確認の契機にする**</div><div class=lw>**本件は Incus プロジェクトから持ち込まれ、 Canonical が LXD にも影響することを確認した**（出典1）。 **相互 TLS の検証処理という、 フォーク前から存在していたとみられる箇所の不備である**（本記録の推定）。 **自組織が LXD だけを使っていても、 Incus 側の告知が先に出る構図になりうる。**</div><div class=la><b>取るべき行動</b> **①利用している基盤製品について、 フォーク元・フォーク先の関係にあるプロジェクトを把握する。** **②それらのセキュリティ告知も購読対象に含める。** **③片方の告知が出たときに、 もう片方への影響をベンダーへ照会する窓口を決めておく。**</div></li></ul></div></div>
+<div id="s15"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**クライアント証明書の検証は、リーフ1枚だけを信頼ストアと照合する**</div><div class=lw>**本件の不備は、クライアントが提示したすべてのピア証明書を 信頼ストアと照合していたことである**（出典1）。 **署名鍵の所有を証明できるのはリーフ証明書だけであり、 チェーンの中間に何を入れるかはクライアント側が自由に決められる**（出典1）。 **CVE の記録は細工された証明書チェーンが利用されるとしている**（出典2）。</div><div class=la><b>取るべき行動</b> **①自社で相互 TLS を実装している箇所について、 信頼の判定に使っている証明書がリーフ1枚に限定されているかを コードで確認する（`PeerCertificates` の全要素を走査していないか）。** **②「証明書をピン留めしている」実装では、 ピン留めの比較対象がリーフであることを確認する。** **③中間証明書を複数入れたチェーン、 信頼済み証明書を中間位置に入れたチェーンを試験項目に加える。**</div></li><li><div class=lp>**段階配信（candidate → stable）があるため、`snap refresh` の結果を確認する**</div><div class=lw>**Canonical は修正版が candidate から stable へ 段階的に配信されているとしている**（出典1・3）。 **つまり `sudo snap refresh lxd` を実行しても、 その時点で stable に修正版が届いていなければ更新されない**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①更新後に `snap list lxd` / `snap list microcloud` で 実際のバージョンを確認する（LXD は 6.10.1 / 5.21.9 / 5.0.11 / 4.0.15、 MicroCloud は 2.1.5 / 3.4.1 以上）。** **②まだ届いていない場合の扱い（待つか、 candidate を明示的に指定するか）を決めてから作業する。** **③複数ノードのクラスタでは、全ノードのバージョンを確認する ——1台残るとその1台がなりすましの経路になる。**</div></li><li><div class=lp>**信頼ストアの棚卸しを、更新とセットで行う**</div><div class=lw>**本件では、信頼ストアに登録されている証明書の公開部分を 知っているだけで、その身元になりすませた**（出典1）。 **第三者の解説も、更新に加えて 「API の露出を制限し、信頼ストアを監査する」ことを挙げている**（出典3） ——**ただしこれは Canonical の推奨ではない**（本記録の明示）。</div><div class=la><b>取るべき行動</b> **①`lxc config trust list` 相当の操作で 信頼済みクライアント証明書の一覧を取り、 用途が説明できないものを削除する。** **②削除した場合の影響（自動化・CI・監視からの接続断）を 事前に洗い出す。** **③今後、証明書の追加を申請と記録を伴う手順に変える。**</div></li><li><div class=lp>**MicroCloud では「参加の瞬間」が条件になる。参加作業の経路を分ける**</div><div class=lw>**Canonical は、クラスタメンバーが MicroCloud に参加している最中に そのメンバーの公開 TLS 証明書を攻撃者が傍受できる場合、 後にその証明書を使ってそのメンバーとして認証できるとしている**（出典1）。 **つまり攻撃の窓は、恒常的ではなく参加作業の最中にある**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①MicroCloud のクラスタ参加作業を、 業務ネットワークではなく管理専用の経路で行う。** **②参加作業の時刻を記録し、 その時間帯の管理ネットワーク上の通信を後から確認できるようにする。** **③過去に参加作業を業務ネットワーク上で行っていた場合は、 更新後に当該メンバーの証明書を入れ替えることを検討する ——更新だけでは、既に傍受された証明書が信頼ストアに残る。**</div></li></ul></div></div>
+<div class="blk " id="s16"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> LXD（4.0・5.0・5.21・6 系）または MicroCloud（2.x・3.x）を運用しており、まだ修正版へ更新していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> LXD / MicroCloud の HTTPS API が、管理専用の経路以外（業務ネットワーク・インターネット）から到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 信頼済みクライアント証明書の一覧を把握しておらず、用途が説明できない登録が残っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> MicroCloud のクラスタ参加作業を、業務ネットワーク上で行ったことがある</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 自社開発の実装で相互 TLS を使っており、信頼の判定がリーフ証明書1枚に限定されているかを確認していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 管理 API への認証の成功・失敗、およびクライアント証明書の追加・削除が監査ログとして残っていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月28日17時50分 Canonical（Ubuntu Discourse）</span> <a href="https://discourse.ubuntu.com/t/security-advisory-critical-vulnerability-found-in-canonical-lxd-and-microcloud/90557" target="_blank" rel="noreferrer noopener nofollow">Security advisory: Critical vulnerability found in Canonical LXD and MicroCloud</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（原文英語。**本事案の一次資料。開発元自身による告知である。**
+**記載されていること**——**①CVE-2026-112816 と
+GitHub Security Advisory GHSA-99jp-jwmc-65p4 の識別子、
+②不備の説明（相互 TLS 認証でクライアント提示の全ピア証明書を
+信頼ストアと照合していたが、署名鍵の所有を証明できるのはリーフ証明書だけであり、
+攻撃者は信頼されている公開証明書を中間証明書としてチェーンに挿入して
+別の身元として認証できる）、
+③影響（LXD の HTTPS API に到達できる攻撃者が公開証明書だけで
+任意の信頼済みクライアントになりすませる。
+侵害されたアカウントの権限によってはホストの root アクセスを得られる可能性）、
+④MicroCloud 固有の条件（参加中のクラスタメンバーの公開 TLS 証明書を
+攻撃者が傍受できる場合、後にそのメンバーとして認証されうる）、
+⑤修正版（LXD 6.10.1 / 5.21.9 / 5.0.11 / 4.0.15、
+MicroCloud 2.1.5 / 3.4.1。リリース日は2026-10-29 と記載）、
+⑥更新手順（`sudo snap refresh lxd` / `sudo snap refresh microcloud`）と
+candidate から stable への段階配信、
+⑦本件が Incus プロジェクトから持ち込まれ LXD にも影響することを確認した旨、
+⑧謝辞（stgraber の継続的な協力）。**
+**記載されていないもの**——**CVSS スコアとベクタ文字列、
+CWE の分類、影響を受けるバージョンの明記、
+回避策（ワークアラウンド）、報告日と調整の経過、
+悪用の有無、影響環境の規模。**
+**本記録は2026年11月3日に本文を直接取得し、
+上記の記載・不記載を確認した。**）
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月30日（公開日・最終更新日） Canonical（Ubuntu Security）</span> <a href="https://ubuntu.com/security/CVE-2026-112816" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-112816</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（原文英語。**開発元の脆弱性データベース上の記録。**
+**記載されていること**——**①説明（HTTPS リスナーにおける証明書検証の不備により、
+認証されていない攻撃者が信頼済みクライアントとして認証され、
+クラスタと管理対象の仮想マシンへ完全にアクセスできる可能性がある。
+細工された証明書チェーンが利用される）、
+②脆弱なバージョン（LXD 4.0.14・5.0.10・5.21.8・6.9）、
+③修正版（4.0.15・5.0.11・5.21.9・6.10.1）、
+④優先度 Medium、
+⑤Ubuntu の各リリースの状態（26.10・26.04 LTS・24.04 LTS・22.04 LTS は
+Not in release、20.04 LTS・18.04 LTS・16.04 LTS は Not affected）、
+⑥参照リンク（MITRE・NVD・Launchpad・Debian・CVE.org・
+GitHub Security Advisory GHSA-99jp-jwmc-65p4・
+各 LXD リリースの Discourse 投稿）。**
+**記載されていないもの**——**CVSS スコアとベクタ文字列、CWE の分類、
+MicroCloud のバージョン、悪用の有無。**
+**本記録の注記——同じ Canonical の資料で、
+告知の題は「Critical」、CVE ページの優先度は「Medium」であり、
+第三者が伝える CVSS 10.0 はいずれにも書かれていない**〈齟齬1〉。
+**本記録は2026年11月3日に本文を直接取得した。**）
+）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年10月下旬〜11月上旬（正確な日付は本記録が特定していない） SecurityOnline.info</span> <a href="https://securityonline.info/lxd-vulnerability-cve-2026-112816/" target="_blank" rel="noreferrer noopener nofollow">LXD Vulnerability CVE-2026-112816 (CVSS 10) Lets Attackers Impersonate Trusted Clients</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**第三者の解説。一次資料に無い情報を補うために参照した。**
+**本記録が確認した記載**——**①CVSS は 10.0（Critical、CVSS v4）とだけ記され、
+ベクタ文字列は記載が無い、
+②影響バージョンは LXD 4.0.14・5.0.10・5.21.8・6.9.0 とし、
+「Canonical の CVE 記録では 6.9 から 6.10.0 まで」と併記、
+MicroCloud は 2.x と 3.x、
+③修正版は LXD 4.0.15・5.0.11・5.21.9・6.10.1、
+MicroCloud 2.1.5 または 3.4.1、
+④技術的な説明（リーフ証明書だけが署名鍵の所有を証明する／
+攻撃者は信頼されたユーザーの公開証明書を中間証明書として追加できる／
+公開証明書は秘密でないため攻撃の条件は低い／
+被害者の権限によってはホストの root）、
+⑤Incus プロジェクトが最初に報告し Canonical が LXD にも
+同じ問題があると認めた旨（個人名の記載は無い）、
+⑥記事時点で悪用は報告されておらず、
+CISA の KEV カタログにも収載されていない、EPSS（30日）は 0.3%、
+⑦推奨対応（直ちに更新する／`snap refresh` を実行する／
+修正版は candidate から stable へ段階配信中）。**
+**本記録の注記——CVSS 10.0 と CWE-295 は、
+本記録が一次資料で確認できていない値である**〈齟齬1・3〉。
+**本記録は2026年11月3日に本文を取得した。**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月1日08時51分 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/11/critical-lxd-and-microcloud-flaw-cvss.html" target="_blank" rel="noreferrer noopener nofollow">CVSS 10.0 LXD, MicroCloud Flaw Lets Attackers Impersonate Trusted Clients Without a Private Key</a> <span class="b kind">記事</span><span class=sm>（（原文英語。**本記録の起点になった収集記事。**
+**本DBが2026年11月1日収集分として取得したが、
+本文の取得に失敗しており（`content_source: fetch_failed`）、
+保存されているのは冒頭の1段落のみである。**
+**保存されている範囲の記載（本記録による日本語訳）**
+——**「Canonical の LXD と MicroCloud の重大な不備により、
+攻撃者は信頼済みクライアントの秘密鍵を持たずに
+そのクライアントとしてログインできた。
+そのためには、ネットワーク越しにその HTTPS API に到達し、
+信頼済みクライアントの公開証明書を持っている必要があった。
+入り込めば、攻撃者はそのクライアントとして振る舞い、
+クラスタとその仮想マシンにアクセスできる」。**
+**本記録が2026年11月3日に同記事の取得を試みたところ 403 を返した**
+——**availability を paywalled としたのは、
+到達できない状態を記録するためであり、
+有料会員制であることを確認したものではない**〈齟齬4〉。
+**収集記事としての保存先は
+`output/articles/20261101/0055_the-hacker-news_cvss-100-lxd-microcloud-flaw-lets-attackers-impers.md`。**）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s18"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月3日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月1日収集分の記事 〈output/articles/20261101/0055_the-hacker-news_cvss-100-lxd-microcloud-flaw-lets-attackers-impers.md〉を 起点に作成した。 **収集記事は本文の取得に失敗していたため （`content_source: fetch_failed`・再取得でも 403）、 一次資料として Canonical のセキュリティ告知（Ubuntu Discourse）と Ubuntu の CVE ページを直接取得して裏を取った。** **GitHub Security Advisory（GHSA-99jp-jwmc-65p4）は 404 で確認できず、 CVSS 10.0 と CWE-295 は第三者経由の値として記録した**〈齟齬1〜3〉。</li></ul></div></div>
+<div class="blk " id="s19"><h3>タグ</h3><span class="b tag">CVE-2026-112816</span><span class="b tag">LXD</span><span class="b tag">MicroCloud</span><span class="b tag">Canonical</span><span class="b tag">Incus</span><span class="b tag">相互TLS</span><span class="b tag">証明書検証</span><span class="b tag">CWE-295</span><span class="b tag">認証バイパス</span><span class="b tag">なりすまし</span><span class="b tag">コントロールプレーン</span><span class="b tag">信頼ストア</span><span class="b tag">snap</span><span class="b tag">CVSSの不一致</span><span class="b tag">EPSS</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-03 02:24 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

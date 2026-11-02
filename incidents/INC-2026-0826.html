@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>IR 現場でエージェント型攻撃基盤を確認 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0826</span>IR 現場でエージェント型攻撃基盤を確認</h1>
+<header class="site-header">
+  <p class="subtitle">Google Threat Intelligence Group と Mandiant は2026年10月30日、 2026年8月下旬以降のインシデント対応の現場で、 オープンソースのエージェント型ペンテストフレームワーク ARTEX・PentAGI・CAIRN・Hexstrike が 実際の侵入に使われていることを確認したと公表した—— 横展開・データベースの悪用・持ち出しの準備といった工程を エージェントが自律的に実行し、1回の実行は2〜25秒の塊で走り、 23秒間に27イベント、AD で11万超のオブジェクト列挙、 C2 に491個の使い捨て webhook.site URL という痕跡を残す。 GTIG は「ステルス性を犠牲にして速度と規模を得た」と評価し、 検知の容易さゆえに今後も使われ続けると高い確信度で述べている</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月30日（GTIG・Mandiant によるブログ公開）</span>
+  <span>最終更新: 2026年11月3日（本記録の作成。公表記事の全文を直接確認）</span>
+</div>
+
+<div class="lead"><p><strong>手口は変わっていません。変わったのは、同じ手口が回る速さです。</strong></p>
+<p><strong>Google Threat Intelligence Group（GTIG）と Mandiant は2026年10月30日、インシデント対応の現場で、オープンソースのエージェント型ペンテストフレームワークが実際の侵入に使われていることを確認したと公表しました</strong>（出典1）。<strong>確認されたのは ARTEX・PentAGI・CAIRN・Hexstrike、および独自のエージェント基盤とみられるものです</strong>（出典1）。<strong>観測は2026年8月下旬以降です。</strong></p>
+<p><strong>GTIG 自身の言葉で、何が変わったかがはっきり書かれています</strong>（出典1。原文英語）。<strong>「侵害された認証情報を使うこと、未修正のシステムを狙うことといった侵入の仕組みは変わらないままである。変わったのは、フレームワークがこうした既知の弱点を突く速度と規模である。」</strong></p>
+<p><strong>その速度は、ログに人のものではない形で残ります</strong>（出典1）。<strong>①個々の実行は2〜25秒の圧縮された塊（バースト）で走る。一方で工程の間には長い停止がある。</strong> <strong>②あるオペレーションでは、23秒の実動時間に27イベントが記録され、複数のセキュリティグループをまたいで AWS の権限を高速に探っていた。</strong> <strong>③持ち出し用スクリプトの準備中、「スクリプトが大きすぎる」というエラーを自力で解釈してスクリプトを削り、再実行して約10秒で17スナップショットのインスタンスを展開した。</strong></p>
+<p><strong>そして、痕跡が多いのです</strong>（出典1）。<strong>GTIG の評価は「熟練した人間の攻撃者と比べて、ARTEX はきわめてフォレンジック上騒がしい形でコード実行に到った。高速で反復的な試行錯誤に依存するためである」です。</strong></p>
+<p><strong>その騒がしさが具体的に現れた例が、Weaver OA への侵入です</strong>（出典1）。<strong>正規の認証情報を与えられた ARTEX は、外部公開の Linux 上の Weaver OA の Web サーバに到達し、公開された API 呼び出しを通じて SQL コマンドを実行しました。</strong> <strong>技術的な困難に当たりながらも部分的なコマンド実行を達成してさらなる探索を行いましたが、この過程で240件のログイベントを生み、複数のサブエージェントが同じ目的を追って互いを上書きしたとみられるエラーも出ています</strong>（出典1）。</p>
+<p><strong>データベースの文脈からシステムの文脈へ移る試みは、MySQL のログ汚染でした</strong>（出典1）。<strong><code>SET GLOBAL general_log_file = '&lt;webshell のパス&gt;'</code> の後に<code>SET GLOBAL general_log = 1;</code> を実行し、以降の SQL が指定したパスに書かれるようにする。そのうえで <code>SELECT '&lt;% [webshell の内容] %&gt;'</code> という形のSELECT 文を走らせる—— Java のサーブレットが JSP を扱う仕組み上、<code>&lt;% %&gt;</code> の中の Java コードが解析・コンパイルされてプロセスのメモリ空間に入り、実行の手段になります。</strong></p>
+<p><strong>ここに ARTEX の学習の痕跡が残りました</strong>（出典1）。<strong>ログには上記の手順の反復が記録されており、WebShell の候補ごとに <code>cl1217.jsp</code>・<code>f1219a.jsp</code>・<code>z1219.jsp</code> という短命で半ば連番のファイル名が付けられ、それぞれが別のコマンドを実行していました。</strong> <strong>WebShell の実行時のエラー（「変数 <code>t</code> は既に定義されている」など）が失敗を招き、ARTEX はおそらく手法を練り直して、目的の異なる複数の WebShell を書き、一部は前の誤りを訂正し、最終的に <code>.jsp</code> の WebShell が正常に実行され有効なコマンド出力を ARTEX に返すまで続きました</strong>（出典1）。</p>
+<p><strong>GTIG の見通しは、両面を含んでいます</strong>（出典1）。<strong>「ARTEX のようなフレームワークは攻撃速度を機械の速さまで引き上げる一方、ステルス性を犠牲にしている。自律実行はフォレンジックな痕跡、識別しやすい識別子、コードレベルの痕跡を残す。」</strong> <strong>そのうえで「サイバー犯罪者は自律型攻撃ツールを使い続ける」と高い確信度で評価しています</strong> ——<strong>キャンペーンの到達範囲の拡大が成功率の低下を補うためです</strong>（出典1）。<strong>逆に、ステルス性を重視し長期の滞留を狙うアクターが公開版のツールを使う可能性は低いとされています</strong>（出典1）。</p>
+<p><strong>そして、防御の提言は長年の定石に戻ります</strong>（出典1）。<strong>GTIG 自身が「提案する防御戦略——コントロールプレーンの分離、短命な認証情報、最小権限、セグメント化、挙動ベースの検知——はいずれも長年のセキュリティのベストプラクティスである」と書いています。</strong> <strong>本記録がこの事案を記録する理由はここにあります</strong>（本記録の評価）——<strong>新しい攻撃基盤に対して、新しい対策が提示されていない。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>日本の組織が被害を受けたかどうか</span><span class="b rsn">公表されていない</span><div class=sm>**記事に日本への言及が無い**（出典1。本記録の確認）。 **示されている地域は米国・欧州・アジアで、 アジアについては「金融セクターを狙ったとする公開報告」 および「システムインテグレーターと大手通信企業」 「航空宇宙セクター」という記述にとどまる**（出典1）。 **本記録は、アジアという記述から日本を含むとは読まない**（本記録の方針）。</div></li><li><span class=ui>UNC7228 と STORM-0940 の関係の確信度、および帰属の確信度</span><span class="b rsn">公表されていない</span><div class=sm>**GTIG は「Microsoft が PRC 系のアクターとする STORM-0940 として 追跡する活動と重なる（overlaps）」という表現を使っており、 同一であると断定していない**（出典1）。 **帰属についての確信度（高・中・低）は記事に明示されていない** （本記録の確認）。 **「PRC 系と疑われる追加のクラスタ」という記述も、 疑いの水準にとどまる**（出典1）。</div></li><li><span class=ui>ARTEX を使用した脅威アクターの個々の名称と数</span><span class="b rsn">公表されていない</span><div class=sm>**記事は「金銭目的の恐喝グループと、PRC 系と疑われる追加のクラスタを含む 複数の脅威アクター」としており、 個々の追跡名も数も示していない**（出典1）。 **公表されているのは UNC7228 のみである**（本記録の確認）。</div></li><li><span class=ui>ARTEX の GitHub 公開時期と、リポジトリ削除の正確な日付、フォークの数</span><span class="b rsn">公表されていない</span><div class=sm>**記事は「元のリポジトリは2026年10月に、 脅威アクターによる広範な悪用を理由に作者によって削除された」とするのみで、 公開時期も削除の正確な日付も示していない**（出典1）。 **フォークの数も示されていない**（本記録の確認）。 **本記録の検索結果には「2026年7月に GitHub に初登場し、 作者が閉じるまでに12,000を超えるフォークがあった」と Wiz を引用する第三者の記述があったが、 本記録はこれを裏づけられていない**〈齟齬1〉。</div></li><li><span class=ui>ARTEX の6つの専門サブエージェントの名称と役割</span><span class="b rsn">公表されていない</span><div class=sm>**記事は「ARTEX は攻撃ライフサイクルを 6つの専門サブエージェントに抽象化する」と述べるのみで、 個々の名称と役割を記載していない**（出典1。本記録の確認）。 **本記録は推測で補わない**（本記録の方針）。</div></li><li><span class=ui>Hexstrike と CAIRN の機能・構成</span><span class="b rsn">公表されていない</span><div class=sm>**記事では、両者はインシデント対応案件で悪用が確認された エージェント型ペンテストフレームワークとして名前が挙がるだけで、 詳細な機能の説明が無い**（出典1。本記録の確認）。 **説明があるのは ARTEX と PentAGI の2つである。**</div></li><li><span class=ui>被害組織の数・被害金額・業務影響</span><span class="b rsn">公表されていない</span><div class=sm>**記事はインシデント対応案件の観測を整理したものであり、 被害組織の数も金額も業務影響も示していない**（出典1。本記録の確認）。 **記事の性格上、個別の事案の対応・復旧・公表についても記述が無い。**</div></li><li><span class=ui>使用された LLM の提供元・モデル名</span><span class="b rsn">公表されていない</span><div class=sm>**記事は ARTEX が「フロンティアおよびオープンソースのモデルの API を 活用する」とし、PentAGI についても「公開ツール（metasploit・nmap・SQLmap など）を 使う」と記すのみで、 具体的なモデル名・提供元を示していない**（出典1。本記録の確認）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Google Threat Intelligence Group（GTIG）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Mandiant（Google Cloud。インシデント対応・コンサルティング）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Wiz（ARTEX 関連キャンペーンの調査を公表）</span><span class="b role">報告したベンダー</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>UNC7228（GTIG の追跡名。Microsoft の STORM-0940 と重なる）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>ARTEX・PentAGI・CAIRN・Hexstrike を使用した他の脅威アクター（名称は公表されていない）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Microsoft（STORM-0940 の追跡主体）</span><span class="b role">報告したベンダー</span><span class="b lc">間接言及</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>ARTEX の個々の実行シーケンスが走る時間の幅</span><span class="b conf">範囲</span><span class="b org">第三者調査</span></div><div class=fv>2〜25<span class=fu>秒</span></div><div class=fn>**ログファイルとタイムスタンプに基づく GTIG の観測**（出典1）。 **「人間の攻撃者にとってはきわめて不規則な活動の塊（バースト）を特定した。 いずれの侵入も工程中に長い停止を示したが、 ARTEX の個々の実行シーケンスはおよそ2秒から25秒の 圧縮されたバーストで走った」**（原文英語。出典1）。 **本記録の整理——この「長い停止と短いバーストの組み合わせ」が、 人の操作と機械の実行を分ける特徴である**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>1回のバーストで記録されたイベント数（AWS 権限の探索）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>27<span class=fu>件</span></div><div class=fn>**「少なくとも1つのオペレーションで、 23秒の実動バースト時間に27イベントを観測し、 複数のセキュリティグループをまたいで AWS の権限を高速に探っていた」** （原文英語。出典1）。 **本記録の算出——1秒あたり約1.17イベントである**（本記録の算出）。</div></div><div class=fig><div class=fh><span class=fl>Weaver OA への侵入で生成されたログイベント数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>240<span class=fu>件</span></div><div class=fn>**正規の認証情報を与えられた ARTEX が、 外部公開の Linux 上の Weaver OA の Web サーバに対し 公開された API 呼び出しを通じて SQL コマンドを実行した事例での数**（出典1）。 **「この過程は240件のログイベントを生み、 複数のサブエージェントが同じ目的を追って互いを上書きしたことに 起因しうるエラーを示した」**（原文英語。出典1）。 **本記録の評価——サブエージェント同士の衝突は、 多エージェント構成の副作用であり、検知の手がかりにもなる**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>Active Directory で列挙されたオブジェクト数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>110,000<span class=fu>個</span></div><div class=fn>**記事の数値一覧に「AD 列挙：110,000 超のオブジェクト」として 示されている**（出典1）。 **「超」であるため confidence を min とした**（本記録の判断）。 **本記録の評価——人の操作では到達しない規模であり、 列挙の量そのものが検知条件になりうる**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>C2 として使われた使い捨ての webhook.site URL の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>491<span class=fu>個</span></div><div class=fn>**記事の数値一覧に「C2：491 の rotating webhook.site URL」として 示されている**（出典1）。 **Google SecOps の検知ルールにも 「Suspicious Webhook.Site Interaction」（webhook.site との疑わしい通信）が 含まれている**（出典1）。 **本記録の評価——正規サービスを C2 に使うため、 ドメイン単位の遮断は業務影響を伴う**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>テスト通知として送信された社内ユーザー数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>1,300<span class=fu>ユーザー</span></div><div class=fn>**記事の数値一覧に「内部メール：テスト通知で 1,300 超の社内ユーザーに送信」として 示されている**（出典1）。 **「超」であるため confidence を min とした**（本記録の判断）。 **本記録の評価——Mandiant Consulting の提言に 「高影響 API（メール・通知・ユーザー作成・アクセス変更など）に 受信者数やレート制限を設ける」が含まれているのは、 この種の挙動に対応するものである**（出典1。本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>「スクリプトが大きすぎる」エラーから自力で修正し17スナップショットのインスタンスを展開するまでの時間</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>10<span class=fu>秒</span></div><div class=fn>**「持ち出し用スクリプトの準備中、 ARTEX は『スクリプトが大きすぎる』というエラーを引用して 自力で適応し、スクリプトを削って再起動し、 約10秒で17スナップショットのインスタンスの展開に成功した」** （原文英語。出典1）。 **本記録の評価——エラーからの自己修正が成立している点が、 従来の自動化ツールとの違いである**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>Azure の一時 Blob の書き込み・削除に要した時間</span><span class="b conf">範囲</span><span class="b org">第三者調査</span></div><div class=fv>330〜400<span class=fu>ミリ秒</span></div><div class=fn>**記事の数値一覧に示されている**（出典1）。 **あわせて「ARM の validate sweep は8秒で11リソースタイプ」とされる**（出典1）。 **本記録の評価——ミリ秒単位の連続操作は、 管理 API の呼び出し頻度を検知条件にする根拠になる**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>最初の侵害アカウントから深いシステムアクセスまでの最短時間（Wiz の観測）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>15<span class=fu>分</span></div><div class=fn>**Wiz の調査による**（出典1）。 **「このアクターはきわめて速く動いており、 通常は最初の侵害アカウントから深いシステムアクセスまで約4時間、 ある事例では15分という速さだった」**（原文英語。出典1）。 **本記録の明示——この数値は Wiz の観測であり、 本記録は Wiz 自身の報告を直接確認していない**〈齟齬1〉。</div></div><div class=fig><div class=fh><span class=fl>最初の侵害アカウントから深いシステムアクセスまでの通常の時間（Wiz の観測）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>時間</span></div><div class=fn>**Wiz の調査による**（出典1）。 **本記録の評価——4時間は、人による対応の着手が間に合わない幅ではないが、 「検知してから判断して遮断する」工程が 自動化されていない組織では間に合わない**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>SQL の抽出量（クエリ数と取得量）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>400<span class=fu>KB</span></div><div class=fn>**記事の数値一覧に「SQL 抽出：約20クエリで約400KB」として示されている** （出典1）。 **本記録の明示——これは1つの事案での抽出量であり、 キャンペーン全体の被害量ではない。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**侵入の手口そのものは既知のものである**（出典1）
+——**侵害済みの認証情報と未修正のシステムを使う。**
+**変わったのは、それらを突く工程をエージェントが自律的に実行し、
+エラーから回復しながら攻撃経路を自動で連鎖させることである**（出典1）。
+**以下の chain は、GTIG・Mandiant がインシデント対応の現場で
+観測した工程を段階別に整理したものである**（出典1）。
+**複数の事案の観測が混在しており、
+1つの侵入がこの順序で全段階を通ったことを示すものではない**
+（本記録の明示）。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**ARTEX は Active Directory の自動偵察、権限昇格、
+標的のクラウド基盤のプロファイリング（Azure のストレージキーの収集など）を
+行う**（出典1）。
+**観測された規模——AD で110,000を超えるオブジェクトの列挙、
+Web の探索で500回を超えるリクエスト**（出典1）。
+**PentAGI では、観測の大半が WHOIS によるアセットマッピングと
+脆弱性スキャンにとどまっていた**（出典1）。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件のログおよび GTIG のリサーチテレメトリ（出典1）</div></li><li><div class=stg><span class="b stage">2. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**複数の事案で、攻撃者が ARTEX に標的組織の
+侵害済み認証情報を与えて後続の工程を指示していた**（出典1）。
+**ARTEX 自身も、クラウド基盤のプロファイリングの一部として
+Azure のストレージキーを収集する機能を持つことが観測されている**（出典1）。
+**記事の数値一覧には、
+複数のセキュリティグループをまたいだ AWS 権限の高速な探索
+（23秒で27イベント）が示されている**（出典1）。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件の観測（出典1）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**データベースの実行文脈からシステムの実行文脈へ移る試みが
+詳細に記述されている**（出典1）。
+**正規に公開されているアプリケーション固有の SQL API を使い、
+`SET GLOBAL general_log_file = &#x27;&lt;webshell のパス&gt;&#x27;` の後に
+`SET GLOBAL general_log = 1;` を実行して
+以降の SQL を Web からアクセスできる場所に書かせ、
+`SELECT &#x27;&lt;% [webshell の内容] %&gt;&#x27;` という形の SELECT 文を走らせる。
+Java のサーブレットが JSP を扱う仕組み上、
+`&lt;% %&gt;` の中の Java コードが解析・コンパイルされて
+プロセスのメモリ空間に入り、実行の手段になる**（出典1）。
+**ARTEX は独自の WebShell の合成と展開も行う**（出典1）。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件のログ（SQL コマンドの記録・WebShell のファイル名）（出典1）</div></li><li><div class=stg><span class="b stage">4. 横展開</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**GTIG と Mandiant は、インシデント対応の調査で
+複数の脅威アクターが侵害後の偵察・横展開・権限昇格に
+ARTEX を使っていたことを観測した**（出典1）。
+**エージェントは複数の攻撃経路を自律的に探索し、
+エラーに対処し、秒・分の単位で目的を達成する**（出典1）。
+**Wiz の観測では、最初の侵害アカウントから深いシステムアクセスまで
+通常約4時間、ある事例では15分であった**（出典1）〈齟齬1〉。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件の観測／Wiz の調査（出典1）</div></li><li><div class=stg><span class="b stage">5. C2通信</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**ARTEX は攻撃用コマンド＆コントロール（C2）の機能を内蔵する
+プラットフォームである**（出典1）。
+**記事の数値一覧には、C2 として491個の
+使い捨て（rotating）の webhook.site URL が使われたことが示されている**
+（出典1）。
+**Wiz の観測では、このアクターは
+標的ごとの構成に合わせてツールをカスタマイズし、
+当初の基盤が遮断された場合はオープンプロキシへ切り替えていた**（出典1）。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件の観測／Wiz の調査（出典1）</div></li><li><div class=stg><span class="b stage">6. 持ち出し</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**持ち出しの準備の工程が観測されている**（出典1）。
+**持ち出し用スクリプトの準備中、
+ARTEX は「スクリプトが大きすぎる」というエラーを引用して
+自力で適応し、スクリプトを削って再実行し、
+約10秒で17スナップショットのインスタンスの展開に成功した**（出典1）。
+**記事の数値一覧には、
+100GB ボリュームの作成とルートディスクの60GB への拡張、
+約20クエリで約400KB の SQL 抽出が示されている**（出典1）。
+**Wiz は、米国と欧州の複数組織で
+標的化・侵害・データ窃取を特定したとしている**（出典1）。
+**金銭目的の脅威アクターがデータ窃取型の恐喝のために
+同フレームワークを使ったとも記されている**（出典1）。
+</div><div class=fn>根拠: Mandiant のインシデント対応案件の観測／Wiz の調査（出典1）</div></li></ol></div>
+<section id="s5"><h2>侵入の仕組みは変わっていない——変わったのは既知の弱点を突く速度と規模である<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p><strong>GTIG 自身が、この点を最初に書いている</strong>（出典1。原文英語）。</p>
+<blockquote>
+<p><strong>「侵害された認証情報を使うこと、未修正のシステムを狙うことといった侵入の仕組みは変わらないままである。変わったのは、フレームワークがこうした既知の弱点を突く速度と規模である。これは、拡張可能で自律的なソフトウェアに対抗するために、セキュリティチーム・開発者・システム管理者が防御戦略を根本から考え直す必要があるという、新しい防御上の課題をもたらす。」</strong></p>
+</blockquote>
+<p><strong>そして、提言も定石に戻る</strong>（出典1。原文英語）。</p>
+<blockquote>
+<p><strong>「提案する防御戦略——コントロールプレーンの分離、短命な認証情報、最小権限、セグメント化、挙動ベースの検知——はいずれも長年のセキュリティのベストプラクティスである。」</strong></p>
+</blockquote>
+<p><strong>本記録の評価——ここに読者が持ち帰るべき構図がある</strong>（本記録の判断）。<strong>新しい攻撃基盤に対して、新しい対策は提示されていない。</strong> <strong>提示されているのは、既存の対策を「隙間が生じないように組み合わせる」ことと、挙動で検知することである</strong>（出典1）。</p>
+<p><strong>歴史的な位置づけも記事が整理している</strong>（出典1）。<strong>「歴史的に、サイバースパイや金銭目的の脅威アクターは、Cobalt Strike や Metasploit のようにセキュリティ専門家向けに作られたペンテスト・レッドチーミングのプラットフォームを利用してきた。今日、攻撃者は LLM を動力源とする攻撃フレームワークへ軸足を移している。」</strong></p>
+<p><strong>本記録の整理——Cobalt Strike のときと同じ構図が、エージェント型のフレームワークで繰り返されている</strong>（本記録の評価）——<strong>防御側のために作られた道具が、攻撃側に転用される。</strong> <strong>違いは、その道具が自律的に判断し、エラーから回復することである。</strong></p></section>
+<section id="s6"><h2>機械の実行は、人の操作とログの形が違う——長い停止と2〜25秒のバースト<span class="b slot">帰属</span><span class=srcs>出典 [1]</span></h2><p><strong>GTIG は「人間の攻撃者と AREX の活動の主要な違い」をログから整理している</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>観測</th>
+<th>値</th>
+<th>出典の記述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>個々の実行シーケンス</td>
+<td><strong>2〜25秒</strong>の圧縮されたバースト</td>
+<td>工程の間には長い停止がある</td>
+</tr>
+<tr>
+<td>1バーストのイベント密度</td>
+<td>23秒で<strong>27イベント</strong></td>
+<td>複数のセキュリティグループをまたぐ AWS 権限の探索</td>
+</tr>
+<tr>
+<td>エラーからの自己修正</td>
+<td>約<strong>10秒</strong>で17スナップショットのインスタンスを展開</td>
+<td>「スクリプトが大きすぎる」を引用して削って再実行</td>
+</tr>
+<tr>
+<td>Azure の一時 Blob 操作</td>
+<td><strong>330〜400ミリ秒</strong></td>
+<td>ARM の validate sweep は8秒で11リソースタイプ</td>
+</tr>
+<tr>
+<td>Weaver OA への侵入</td>
+<td><strong>240件</strong>のログイベント</td>
+<td>サブエージェント同士の上書きによるエラー</td>
+</tr>
+<tr>
+<td>Web の探索</td>
+<td><strong>500回超</strong>のリクエスト</td>
+<td>—</td>
+</tr>
+<tr>
+<td>C2</td>
+<td><strong>491個</strong>の使い捨て webhook.site URL</td>
+<td>—</td>
+</tr>
+<tr>
+<td>SQL の抽出</td>
+<td>約20クエリで約<strong>400KB</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>AD の列挙</td>
+<td><strong>110,000超</strong>のオブジェクト</td>
+<td>—</td>
+</tr>
+<tr>
+<td>内部メール</td>
+<td>テスト通知で<strong>1,300超</strong>の社内ユーザー</td>
+<td>—</td>
+</tr>
+<tr>
+<td>ディスク</td>
+<td>100GB ボリュームの作成、ルートディスクを60GB へ拡張</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>GTIG の評価は明快である</strong>（出典1。原文英語）。<strong>「熟練した人間の攻撃者と比べて、ARTEX はきわめてフォレンジック上騒がしい形でコード実行に到った。高速で反復的な試行錯誤に依存するためである。」</strong></p>
+<p><strong>本記録の整理——ここに検知の設計が含まれている</strong>（本記録の評価）。<strong>①「長い停止 ＋ 短い高密度バースト」という時間の形は、人の操作では現れにくい。②240件・491個・110,000個という量は、量そのものが条件として書ける。③サブエージェントが互いを上書きして出すエラーは、多エージェント構成に特有の痕跡である。</strong></p>
+<p><strong>Mandiant Consulting の提言の第5層（検知）が、まさにこの3点に対応している</strong>（出典1）——<strong>「ID の速度、API のバースト、ボリュームの異常を監視する」。</strong></p></section>
+<section id="s7"><h2>MySQL のログに JSP を書かせてコード実行に到る——学習の痕跡がファイル名に残った<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>データベースの実行文脈から、システムの実行文脈へ移る試みである</strong>（出典1）。</p>
+<p><strong>手順</strong>（出典1）。<strong>①<code>SET GLOBAL general_log_file = '&lt;webshell のパス&gt;'</code> を実行し、一般クエリログの出力先を Web からアクセスできる場所に変える。</strong> <strong>②<code>SET GLOBAL general_log = 1;</code> を実行し、ログ出力を有効にする。</strong> <strong>③<code>SELECT '&lt;% [webshell の内容] %&gt;'</code> という形の SELECT 文を実行する。以降の SQL コマンドが <code>general_log_file</code> で指定したパスに書き込まれる。</strong> <strong>④Java の Web サーブレットが JSP ファイルを扱う仕組み上、<code>&lt;% %&gt;</code> の中の Java コードが解析・コンパイルされてプロセスのメモリ空間に入り、実行の手段になる。</strong></p>
+<p><strong>使われた API は、正規に公開されているアプリケーション固有のSQL API であり、与えられた利用者の認証情報でアクセスできるものだった</strong>（出典1）。<strong>つまり脆弱性の悪用ではなく、正規機能の悪用である</strong>（本記録の整理）。</p>
+<p><strong>ここに ARTEX の試行錯誤が残った</strong>（出典1）。<strong>ログには上記の手順の反復が記録されており、WebShell の候補ごとに短命で半ば連番のファイル名（<code>cl1217.jsp</code>・<code>f1219a.jsp</code>・<code>z1219.jsp</code>）が付き、それぞれが別のコマンドを実行していた。</strong> <strong>WebShell の実行時のエラー（「変数 <code>t</code> は既に定義されている」など）が失敗を招き、ARTEX はおそらく手法を練り直して、目的の異なる複数の WebShell を書き、一部は前の誤りを訂正し、最終的に <code>.jsp</code> の WebShell が正常に実行され有効なコマンド出力を ARTEX に返すまで続いた</strong>（出典1）。</p>
+<p><strong>別の事例では、アクセスの探索の過程で<code>artex-probe-*</code> というファイル名（<code>*</code> は5桁の半ば連番の数字）でさまざまな拡張子のファイルが生成された</strong>（出典1）。<strong>GTIG は「これらの数字の正確な意味や増え方については、我々の可視性からは言及が難しい」としつつ、ARTEX が設置ファイル名・作成したアカウント名にも同様の連番の目印を使っていたと観測している</strong>（出典1）。</p>
+<p><strong>本記録の評価——この連番の目印は、検知の資産である</strong>（本記録の判断）。<strong>手口自体（MySQL ログ汚染による JSP 書き込み）は古くからあるが、「短時間に半ば連番の名前のファイルが複数作られ、それぞれ別のコマンドを実行し、エラーを経て成功に至る」という一連の形は、自律エージェントの固有の痕跡である</strong>（本記録の評価）。<strong>ただし名前の規則（<code>artex-probe-</code> 等）は変えられるため、名前そのものではなく「短時間での連番生成と反復的な失敗」で引く必要がある</strong>（本記録の判断）。</p></section>
+<section id="s8"><h2>PentAGI は Kali のサンドボックスで公開ツールを回す——偵察で止まる例が多い<span class="b slot">背景・過去事例</span><span class=srcs>出典 [1]</span></h2><p><strong>ARTEX とは性格が違う</strong>（出典1）。</p>
+<p><strong>PentAGI（VXControl が開発）の作り</strong>（出典1）——<strong>①利用者は対象と目的を記述するだけでよい。②専門エージェントのチームがタスクを「Flow」に分解して実行し、報告する。③ツールは既定でホストではなく Kali Linux のサンドボックス内で動作する。④使用するツールは metasploit・nmap・SQLmap などの公開ツールである。</strong></p>
+<p><strong>観測された使い方</strong>（出典1）——<strong>①大半は WHOIS によるアセットマッピングと脆弱性スキャンにとどまっている。②一部は侵入と、複数組織での永続化まで進んでいた。③アジアのシステムインテグレーターと大手通信企業を対象に、カスタマイズされた基盤が少なくとも2026年8月下旬から10月上旬に使われた形跡がある。④プロキシサービスと組み合わせ、航空宇宙セクターを狙った事例もある。</strong></p>
+<p><strong>Hexstrike と CAIRN については、記事に詳細な機能の説明が無い</strong>（出典1。本記録の確認）〈未確定6〉——<strong>インシデント対応案件で悪用が確認されたエージェント型ペンテストフレームワークとして名前が挙がるだけである。</strong></p>
+<p><strong>ARTEX の作りは別である</strong>（出典1）。<strong>「Go で書かれ、Next.js の Web コンソールを組み込んだ、自律型・多エージェントの LLM 駆動のペンテストおよび攻撃用コマンド＆コントロール（C2）プラットフォーム」であり、攻撃ライフサイクルを6つの専門サブエージェントに抽象化する（個々の名称と役割は記事に無い）</strong>〈未確定5〉。<strong>GTIG が観測した機能には、Active Directory の自動偵察、権限昇格、標的のクラウド基盤のプロファイリング（Azure のストレージキーの収集など）、独自の WebShell の合成と展開が含まれる</strong>（出典1）。</p>
+<p><strong>本記録の整理——同じ「エージェント型」でも、既定でサンドボックスに閉じるもの（PentAGI）とC2 の機能を内蔵するもの（ARTEX）がある</strong>（本記録の評価）。<strong>防御側にとっての差は、後者が侵害後の全工程を1つの基盤で回せることである。</strong></p></section>
+<section id="s9"><h2>速度と規模のために、ステルス性が捨てられている——それでも使われ続ける<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p><strong>GTIG の見通しは、利点と欠点の両方を書いている</strong>（出典1）。</p>
+<p><strong>欠点（攻撃者側から見た）</strong>（出典1）——<strong>①ARTEX のようなフレームワークは攻撃速度を機械の速さまで引き上げる一方、ステルス性を犠牲にしている。②自律実行はフォレンジックな痕跡、識別しやすい識別子、コードレベルの痕跡を残す。③そのため、検知されるコストが低いシナリオに向いている。</strong></p>
+<p><strong>それでも使われ続ける、という評価</strong>（出典1）——<strong>GTIG は高い確信度で、サイバー犯罪者が自律型攻撃ツールを使い続けると評価している。キャンペーンの到達範囲の拡大が、成功率の低下を補うためである。</strong></p>
+<p><strong>逆に使われにくい層</strong>（出典1）——<strong>ステルス性を重視し長期の滞留を狙うアクターが公開版のツールを使う可能性は低いとされている。</strong></p>
+<p><strong>そして、検知と妨害を分ける指摘がある</strong>（出典1）。<strong>「検知と、対応・妨害は別の機能である。攻撃を早期に検知しても、目的の達成を阻止するには不十分である。」</strong></p>
+<p><strong>本記録の評価——この一文が、本事案の実務上の核心である</strong>（本記録の判断）。<strong>攻撃が2〜25秒のバーストで走り、最短15分で深いシステムアクセスに到るなら</strong>（出典1）、<strong>「検知してから人が判断して遮断する」工程は間に合わない。</strong> <strong>必要なのは、検知の精度を上げることではなく、検知から遮断までを自動で閉じることである</strong>（本記録の評価）。</p>
+<p><strong>記事の結びも同じ方向を指している</strong>（出典1）。<strong>「LLM 支援のツールは新しい技術を生むのではなく、既存の手法を組み合わせる時間を大幅に短縮する。単一の ID・認証情報・ワークロードが侵害されても被害が限定されるよう設計することが最も重要である。」</strong></p></section>
+<section id="s10"><h2>Mandiant Consulting の提言は5層——いずれも長年の定石である<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1]</span></h2><p><strong>記事末尾の提言は5層に整理されている</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>層</th>
+<th>概要</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>コントロールプレーンの保護（管理 API・コンソール・CI/CD を信頼ネットワークに限定）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>ID とキーの制限（短命なワークロード認証情報へ移行し、シークレットを排除）</td>
+</tr>
+<tr>
+<td>3</td>
+<td>設定の強化と攻撃経路の削減（アプリ・インフラの継続的な脆弱性スキャン）</td>
+</tr>
+<tr>
+<td>4</td>
+<td>アプリケーション保護（正規機能の悪用を防止）</td>
+</tr>
+<tr>
+<td>5</td>
+<td>挙動・ボリューム変化の検知（ID の速度、API バースト、ボリューム異常の監視）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>第2層の具体策が最も細かい</strong>（出典1）。<strong>AWS は静的アクセスキーから IAM ロールの一時認証情報へ移行する。Azure はサービスプリンシパルのクライアントシークレットをManaged Identity に置き換え、Azure Storage の共有キー認証を無効化して Entra ID とConditional Access を使う。Google Cloud は Workload Identity Federation を使い、長期のサービスアカウントキーを避ける。GitHub は classic PAT から fine-grained PAT や OIDC へ移行する。AWS の <code>iam:PassRole</code> を特定のロール・サービスに制限する。パスワード保管庫やシークレット基盤へのアクセスを制限し、一括取得を監視する。パスワードリセットやアカウント作成の急増を監視する。リポジトリ・イメージ・パイプラインのシークレットを継続的にスキャンし、露出した認証情報は即ローテーションする。</strong></p>
+<p><strong>第3層には横展開の封じ込めが入る</strong>（出典1）。<strong>DMZ から内部への Kerberos・NTLM・LDAP・SMB・RDP・SSH・DB 接続を制限する。DB の実行アカウントに OS コマンド実行やファイル書き込みの権限を与えない。外部利用者に詳細なエラーやスタックトレースを返さない。AD CS では <code>ENROLLEE_SUPPLIES_SUBJECT</code> を避け、登録権限を絞る。Credential Guard・Protected Users を有効にし、SMB・LDAP の署名と channel binding を有効化して NTLM を減らす。</strong></p>
+<p><strong>第4層は本件の特徴に直接対応している</strong>（出典1）。<strong>高影響 API（メール・通知・ユーザー作成・アクセス変更など）に受信者数やレート制限を設ける。RCE・デプロイ・一括メッセージなどの管理機能を事前に棚卸しする。内部アプリに SAST/DAST を実施し、LLM を使った脆弱性発見も検討する。</strong></p>
+<p><strong>本記録の評価——第4層の「受信者数とレート制限」は、本件の観測（1,300超の社内ユーザーへのテスト通知、500回超の Web リクエスト、491個の webhook.site URL）にそのまま対応する</strong>（出典1。本記録の判断）。<strong>「正規機能に上限を付ける」ことが、自律エージェントに対する実効のある制約になる。</strong></p>
+<p><strong>Google SecOps の検知ルールとして4件が挙げられている</strong>（出典1）——<strong>Suspicious Webhook.Site Interaction（webhook.site との疑わしい通信）、Suspicious Curl Invocation（疑わしい curl の起動）、Cmd Launching Curl（cmd が curl を起動）、AWS Cloud Accounts Getcalleridentity（AWS の呼び出し元 ID の取得）——いずれも Mandiant Frontline Threats / Mandiant Hunting Rules パックに含まれる</strong>（原文英語の規則名）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>campaign_name</th><td>**固有のキャンペーン名は付けられていない**（出典1）。 **記事の題は「ARTEX and Friends: Enter Agentic Offensive Frameworks」で、 特定のキャンペーンではなく「エージェント型攻撃フレームワークの 実環境での使用」という事象を扱っている**（本記録の整理）。 **GTIG が追跡名を付けているのは ARTEX 関連キャンペーンの UNC7228 のみである**（出典1）。</td></tr><tr><th>tools</th><td><div class=sub><b>名称:</b> ARTEX　<b>詳細:</b> **Go で書かれ、Next.js の Web コンソールを組み込んだ、 自律型・多エージェントの LLM 駆動のペンテストおよび 攻撃用コマンド＆コントロール（C2）プラットフォーム**（出典1）。 **攻撃ライフサイクルを6つの専門サブエージェントに抽象化する （個々の名称と役割は記事に無い）**〈未確定5〉。 **フロンティアおよびオープンソースのモデルの API を活用して、 高レベルの戦術目標を実行可能な機械命令へ翻訳する**（出典1）。 **GTIG が観測した機能——Active Directory の自動偵察、権限昇格、 標的のクラウド基盤のプロファイリング（Azure のストレージキーの収集など）、 独自の WebShell の合成と展開**（出典1）。 **作者は GitHub ユーザー Autumn-27。 元のリポジトリは2026年10月に、 脅威アクターによる広範な悪用を理由に作者自身が削除した。 ただしコミュニティのフォークを通じて世界的に拡散しており、 地域化された派生版 ScopeWeaver や 商用版 ARTEX PRO が存在する**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> PentAGI　<b>詳細:</b> **VXControl が開発**（出典1）。 **利用者は対象と目的を記述するだけでよく、 専門エージェントのチームがタスクを「Flow」に分解して 実行・報告する**（出典1）。 **ツールは既定でホストではなく Kali Linux の サンドボックス内で動作する。 使用ツールは metasploit・nmap・SQLmap などの公開ツールである**（出典1）。 **観測の大半は WHOIS によるアセットマッピングと 脆弱性スキャンにとどまっているが、 一部は侵入や複数組織での永続化に進んでいた**（出典1）。 **アジアのシステムインテグレーターや大手通信企業を対象に、 カスタマイズされた基盤が少なくとも2026年8月下旬から 10月上旬に使われた形跡がある。 プロキシサービスと組み合わせ、 航空宇宙セクターを狙った事例もある**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> CAIRN　<b>詳細:</b> **インシデント対応案件で悪用が確認された オープンソースのエージェント型ペンテストフレームワークとして 名前が挙がる**（出典1）。 **「ARTEX、PentAGI、CAIRN、およびその他の 独自の基盤とみられるもの」の一つとして、 2026年8月下旬以降に観測されたと記されている**（出典1）。 **機能の詳細は記事に無い**〈未確定6〉。　<b>出典:</b> 1</div><div class=sub><b>名称:</b> Hexstrike　<b>詳細:</b> **インシデント対応案件で悪用が確認された オープンソースのエージェント型ペンテストフレームワークとして 名前が挙がる**（出典1）。 **機能の詳細は記事に無い**〈未確定6〉。　<b>出典:</b> 1</div></td></tr><tr><th>ai_integration</th><td><b>where_inference_runs:</b> **外部のモデルの API を呼ぶ形である**（出典1）。 **ARTEX は「フロンティアおよびオープンソースのモデルの API を活用して、 高レベルの戦術目標を実行可能な機械命令へ翻訳する」とされる**（出典1）。 **提供元・モデル名は公表されていない**（本記録の確認）。 **本記録の評価——推論のための外部通信が発生するため、 その通信自体が検知の手がかりになる**（本記録の判断） ——**Mandiant Consulting の提言の第5層が 「外部 AI プラットフォームへの未知の宛先」を 監視対象に挙げているのはこのためとみられる**（出典1）。　<b>autonomy_level:</b> **エージェントが複数の攻撃経路を自律的に探索し、 エラーに対処し、秒・分の単位で目的を達成する**（出典1）。 **観測された自己修正の例——①「スクリプトが大きすぎる」という エラーを引用してスクリプトを削り、再実行して 約10秒で17スナップショットのインスタンスを展開した。 ②WebShell の実行時のエラー （「変数 `t` は既に定義されている」）を経て、 目的の異なる複数の WebShell を書き、 一部は前の誤りを訂正して最終的に成功させた**（出典1）。 **人の関与は、侵害済み認証情報の投入と 高レベルの目標の指示にとどまる事案が複数ある**（出典1）。　<b>forensic_signature:</b> **GTIG の評価は「熟練した人間の攻撃者と比べて、 ARTEX はきわめてフォレンジック上騒がしい形でコード実行に到った。 高速で反復的な試行錯誤に依存するためである」**（出典1）。 **具体的な痕跡——①工程間の長い停止と2〜25秒の高密度バーストという 時間の形、②23秒で27イベントという密度、 ③Weaver OA の事例での240ログイベント、 ④サブエージェント同士の上書きによるエラー、 ⑤短命で半ば連番のファイル名（`cl1217.jsp`・`f1219a.jsp`・`z1219.jsp`、 `artex-probe-*` の5桁の数字）、 ⑥設置ファイル名と作成アカウント名に使われる同様の連番の目印**（出典1）。 **本記録の評価——名前の規則は変更できるため、 検知は「短時間での連番生成と反復的な失敗」という形で書く必要がある** （本記録の判断）。<span class="b rsn">stated</span></td></tr><tr><th>iocs</th><td><div class=sub>webhook.site</div><div class=sub>artex-probe-NNNNN</div><div class=sub>cl1217.jsp / f1219a.jsp / z1219.jsp</div><div class=sub>SET GLOBAL general_log_file / SET GLOBAL general_log = 1</div><div class=sub>variable &#x27;t is already defined</div><div class=sub>Suspicious Webhook.Site Interaction</div><div class=sub>疑わしい curl の起動（原文英語 Suspicious Curl Invocation）</div><div class=sub>Cmd Launching Curl</div><div class=sub>AWS の呼び出し元 ID の取得（原文英語 AWS Cloud Accounts Getcalleridentity）</div><div class=fn>**これらは出典1 に記載された観測値・ルール名であり、 本記録は悪性を検証していない**（本記録の明示）。 **IP アドレス・ハッシュ・ドメインといった従来型の IoC は 記事に示されていない**（本記録の確認） ——**公表されているのは挙動の特徴と検知ルール名である。** **webhook.site は正規サービスであるため、 遮断の対象として扱うと業務に影響する**（本記録の評価）。 **ファイル名の規則（`artex-probe-` 等）はフォークと派生版で 変更されうるため、名前そのものに依存した検知は持続しない** （本記録の判断）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> コントロールプレーンの保護——管理 API・コンソール・CI/CD を信頼ネットワークに限定し、FIDO2 やパスキーなどのフィッシング耐性認証を使い、Kudu/SCM へのアクセスを個別に制限して基本認証の公開を無効化し、run-from-package などで直接的な改変を減らし、管理インターフェースへのアクセスを監視する　<b>状況:</b> **Mandiant Consulting の提言（第1層）**（出典1）。　<b>副作用:</b> **本記録の評価——管理インターフェースを信頼ネットワークに限定すると、 社外・在宅・委託先からの運用作業の動線を作り直す必要がある。 踏み台や VPN へ寄せると、それ自体が単一の攻撃面になる**（本記録の判断）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> ID とキーの制限——静的な長期キーを廃して短命なワークロード認証情報へ移行し（AWS は IAM ロール、Azure は Managed Identity、Google Cloud は Workload Identity Federation、GitHub は fine-grained PAT や OIDC）、`iam:PassRole` を特定のロール・サービスに制限し、シークレットの一括取得とパスワードリセット・アカウント作成の急増を監視する　<b>状況:</b> **Mandiant Consulting の提言（第2層）**（出典1）。　<b>副作用:</b> **本記録の評価——長期キーに依存した既存の自動化・CI・ 外部連携が一斉に動かなくなる。 移行期間中は両方の認証経路が有効になり、 その間は攻撃面が一時的に増える**（本記録の判断）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 設定の強化と攻撃経路の削減——外部公開アプリ・インフラを継続的にスキャンし、DMZ から内部への Kerberos・NTLM・LDAP・SMB・RDP・SSH・DB 接続を制限し、DB 実行アカウントに OS コマンド実行やファイル書き込みの権限を与えず、外部利用者に詳細なエラーを返さず、AD CS で `ENROLLEE_SUPPLIES_SUBJECT` を避け、Credential Guard・Protected Users と SMB・LDAP の署名・channel binding を有効化する　<b>状況:</b> **Mandiant Consulting の提言（第3層）**（出典1）。　<b>副作用:</b> **本記録の評価——DMZ から内部へのプロトコル制限は、 公開アプリが内部の認証基盤やデータベースを参照する構成を 作り直すことを意味する。 NTLM の削減は古い機器・ソフトウェアの切り捨てを伴う**（本記録の判断）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> アプリケーション保護——高影響 API（メール・通知・ユーザー作成・アクセス変更など）に受信者数やレート制限を設け、管理機能（RCE・デプロイ・一括メッセージ）を事前に棚卸しし、内部アプリに SAST/DAST を実施する　<b>状況:</b> **Mandiant Consulting の提言（第4層）**（出典1）。　<b>副作用:</b> **本記録の評価——正規の一括処理（全社通知、 大量のアカウント作成を伴う異動・入社手続き、 大規模なデプロイ）が上限に当たって止まる。 上限値を業務の実測から決める作業が必要になる**（本記録の判断）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 挙動・ボリューム変化の検知——認証元（ネットワーク・ASN・リージョン・ホスティング事業者）の変化を追跡し、管理 API の急増・権限テスト・資格情報の取得を監視し、ストレージの列挙や大量ダウンロードを検知し、一連のシーケンスとして相関させ、サーバの egress を制限して Webhook・OAST・トンネリング・ファイル共有・外部 AI プラットフォームへの未知の宛先を監視する　<b>状況:</b> **Mandiant Consulting の提言（第5層）**（出典1）。　<b>副作用:</b> **本記録の評価——速度とボリュームを条件にした検知は、 正規のバッチ処理・移行作業・大規模なデプロイで誤検知する。 誤検知の処理に人手が取られると、 本来の警報が埋もれる**（本記録の判断）。 **また外部 AI プラットフォームの遮断は、 業務で生成 AI を使っている部門と衝突する。**　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 検知から遮断（セッション無効化・キーのローテーション・ネットワーク隔離）までを自動で閉じる　<b>状況:</b> **本記録の評価。記事の提言には明示されていない**（本記録の明示）。 **GTIG の「検知と、対応・妨害は別の機能である。 攻撃を早期に検知しても、目的の達成を阻止するには不十分である」という 指摘と、最短15分という観測から導いた**（出典1。本記録の判断）。　<b>副作用:</b> **本記録の評価——自動遮断は誤作動したときに業務を止める。 「止めてよい範囲」を事前に経営として決めておかないと、 現場は自動化を入れられない**（本記録の判断）。　<b>出典:</b> 1</div><span class="b rsn">stated</span><div class=fn>**提言の性格が、本事案の最も重要な所見である**（本記録の評価）。 **GTIG 自身が「提案する防御戦略——コントロールプレーンの分離、 短命な認証情報、最小権限、セグメント化、挙動ベースの検知——は いずれも長年のセキュリティのベストプラクティスである」と書いている**（出典1）。 **つまり、新しい攻撃基盤に対して新しい対策は提示されていない** （本記録の整理）。 **提示されているのは、既存の対策を隙間なく組み合わせることと、 挙動で検知することである。** **本記録が1つ追加したのは、検知から遮断までの自動化である** ——**GTIG 自身の「検知と妨害は別の機能」という指摘から導かれるが、 提言には明示されていない**（出典1。本記録の判断）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月（GTIG の先行報告）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**GTIG が、先進的な攻撃者が基本的なプロンプト操作から エージェント型のワークフローと LLM を使った自動化へ 移行し始めていることを報告した**（出典1）。 **本報告はその続きに位置づけられている**（出典1）。 **先行報告の正確な日付・題名は本記事に示されていない**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年8月（Wiz が特定した活動の遡及の下限）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Wiz の調査は、GTIG が UNC7228 として追跡する ARTEX 関連キャンペーンの活動が 少なくとも2026年8月まで遡ることを示した**（出典1）。 **当初は2026年10月の IT 業界向けの活動として把握されていたものを、 8月まで広げた形である**（出典1）。 **Wiz は、米国と欧州の複数組織で標的化・侵害・データ窃取を特定し、 業種はエンタープライズソフトウェア、産業オートメーション、 半導体の製造・設計、通信にわたるとした**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年8月下旬以降（GTIG・Mandiant の観測の開始）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**GTIG と Mandiant が、Mandiant のインシデント対応案件のなかで、 ARTEX・PentAGI・CAIRN および独自の基盤とみられるものを 脅威アクターが実際に運用していることを観測し始めた**（出典1）。 **「この活動はリサーチのテレメトリによってさらに裏づけられた」とされる** （出典1）。 **観測された工程は、横展開・データベースの悪用・ 持ち出しの準備など攻撃ライフサイクルの重要な部分にわたる**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年8月下旬〜10月上旬（PentAGI のカスタマイズ基盤の使用痕跡）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**アジアのシステムインテグレーターと大手通信企業を対象に、 カスタマイズされた PentAGI の基盤が 少なくとも2026年8月下旬から10月上旬に使われた形跡が確認された**（出典1）。 **プロキシサービスと組み合わせて航空宇宙セクターを狙った事例もあるとされる** （出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月（ARTEX の元リポジトリの削除）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**ARTEX の元のリポジトリが、脅威アクターによる広範な悪用を理由に 作者自身（GitHub ユーザー Autumn-27）によって削除された**（出典1）。 **ただしフレームワークはコミュニティのフォークを通じて 世界的に拡散を続けており、 ScopeWeaver のような地域化された派生版や ARTEX PRO という商用版が存在するとされる**（出典1）。 **正確な削除日・GitHub への公開時期は記事に示されていない** （本記録の確認）〈未確定4〉。</td></tr><tr><td class="sm nowrap tw">2026年10月30日14時00分 UTC（記事の公開。RSS の配信時刻）</td><td class=nowrap><span class="b kind">公表</span></td><td>**GTIG と Mandiant が 「ARTEX and Friends: Enter Agentic Offensive Frameworks」 （ARTEX とその仲間たち——エージェント型攻撃フレームワークの登場。原文英語）を Google Cloud のブログに公開した**（出典1）。 **内容——実環境での観測、ARTEX と PentAGI の説明、 人間の攻撃者との違い（バーストの長さ・イベント数・ フォレンジック上の騒がしさ）、Weaver OA と MySQL ログ汚染の事例、 見通し、Mandiant Consulting による5層の防御の提言、 Google SecOps の検知ルール4件。** **本DBは本記事を2026年11月1日収集分として取得した**（本記録の確認）。 **記事ページの表示日付は2026年10月31日であり、 RSS の配信時刻（2026年10月30日14時00分 UTC）と1日ずれている**〈齟齬2〉。</td></tr><tr><td class="sm nowrap tw">2026年11月3日（本記録による現況確認）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が記事の全文を直接取得し、 本DBが収集した本文が `BODY_CAP` で切り詰められていた後半部分 （PentAGI の説明・数値の一覧・見通し・5層の防御・検知ルール）を 補って確認した**（出典1。本記録の確認）。 **ARTEX の6つの専門サブエージェントについては、 記事が「ARTEX は攻撃ライフサイクルを6つの専門サブエージェントに抽象化する」と 述べるだけで、個々の名称と役割は記載されていないことを確認した**（出典1）〈未確定5〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">裏取りできていない</span><div class=sm>**本記録が参照したのは GTIG・Mandiant の記事のみである**（出典1）。 **記事が引用する Wiz の調査（米国・欧州の複数組織、 業種の内訳、最初の侵害から深いアクセスまで約4時間・最短15分、 活動が少なくとも2026年8月まで遡ること）と、 Microsoft が STORM-0940 を PRC 系とする判断は、 いずれも GTIG の記事を通じて確認した**（本記録の明示）。 **本記録の検索結果には、 Microsoft が ConnectWise Cloud Backup の供給網侵害を STORM-0940 に帰属させ、同アクターが2026年9月から ARTEX を 使っていたとする第三者の記述、および 「ARTEX は2026年7月に GitHub に初登場し、 作者が閉じるまでに12,000を超えるフォークがあった」とする Wiz 引用の記述があったが、いずれも裏づけられていない。** **本記録はこれらを事実として扱わず、references に立てない**（本記録の方針）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**記事ページのタイトル直下の表示は2026年10月31日である** （出典1。本記録の確認）。 **一方、本DBが取得した RSS の `published` は 2026年10月30日14時00分 UTC である**（本記録の確認）。 **本記録は初報の日付を2026年10月30日とした** ——**根拠は、配信時刻が記録として明示的であること**（本記録の判断）。 **2026年10月30日14時00分 UTC は米国太平洋時間では同日午前であり、 ページ表示の10月31日との差は表示側のタイムゾーンや 公開処理の時点の違いによるものとみられる**（本記録の推定）。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**記事に日本の組織・日本の業種・日本の地域への言及は無い** （出典1。本記録の確認）。 **アジアについての記述は 「金融セクターを狙ったとする公開報告」 「アジアのシステムインテグレーターと大手通信企業」 「航空宇宙セクター」の3つにとどまる。** **本記録はこれを日本を含むとは読まない**（本記録の方針）〈未確定1〉。 **本記録が日本との関係を「有名事象として記録」の区分にしたのは このためである。**</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**記事は「ARTEX は攻撃ライフサイクルを 6つの専門サブエージェントに抽象化する」と述べるだけで、 個々の名称と役割を記載していない**（出典1。本記録の確認）。 **本記録は推測で補わない**（本記録の方針）〈未確定5〉。 **サブエージェントの存在が観測として現れたのは、 「複数のサブエージェントが同じ目的を追って互いを上書りしたことに 起因しうるエラー」という記述だけである**（出典1）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**記事は段階別の章立てを採っておらず、 実環境の観測・ARTEX の説明・人間との違い・事例・ PentAGI の説明・見通し・防御の提言という構成である** （出典1。本記録の確認）。 **本記録の chain は、記事の記述を スキーマの攻撃段階に割り当てて並べたものである**（本記録の明示）。 **複数の事案の観測が混在しており、 1つの侵入がこの順序で全段階を通ったことを示すものではない。** **各段階の `controls` のうち「本記録の評価」と注記したものは 記事の提言には無い。**</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**本DBが収集した記事本文は `BODY_CAP`（12,000字）で切り詰められており、 `artex-probe-*` の記述の途中で終わっていた**（本記録の確認）。 **本記録は2026年11月3日に記事を直接取得し、 PentAGI の説明・数値の一覧・見通し・5層の防御の提言・ Google SecOps の検知ルールを補って確認した**（出典1）。 **ただし再取得は要約を介して行っているため、 数値の一覧については原文の表記（どの事案のどの観測か）を 1件ずつ対応づけられていない項目がある**（本記録の明示） ——**該当するのは AD の列挙、webhook.site の URL 数、 Web リクエスト数、SQL の抽出量、内部メールの送信先数、 Azure の Blob 操作、ディスクの容量である。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>攻撃者（侵害済み認証情報を投入し、高レベルの目標を指示） → エージェント型フレームワーク（ARTEX／PentAGI／CAIRN／Hexstrike） → 外部 LLM の API で目標を機械命令に翻訳 → 6つのサブエージェントが偵察・権限昇格・横展開・持ち出し準備を 2〜25秒のバーストで自律実行（エラーから自己修正） → 標的のクラウド基盤・AD・公開アプリ → 491個の使い捨て webhook.site URL を C2 にデータ窃取</div><div class=svgwrap><svg viewBox="0 0 1406 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,104.0 C193.0,104.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,206.0 C193.0,206.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,104.0 C193.0,104.0 193.0,206.0 220,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,206.0 C295.0,206.0 295.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,155.0 424,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C499.0,111.0 499.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C805.0,155.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C805.0,155.0 805.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C805.0,155.0 805.0,250.0 832,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C907.0,155.0 907.0,155.0 1036,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1111.0,60.0 1111.0,155.0 1240,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,250.0 C1111.0,250.0 1111.0,155.0 1240,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,155.0 C1213.0,155.0 1213.0,155.0 1036,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（侵害済み認証情報</text><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を与え、高レベルの目標を</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">指示するだけ）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">UNC7228／金銭目的</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">の恐喝グループ／PRC </text><rect x="16" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">UNC7228（GTIG</text><text x="91.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> の追跡名。Micros</text><text x="91.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">oft の STORM…</text><text x="91.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">帰属の確信度は記事に明示</text><text x="91.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">されていない〈未確定2〉</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エージェント型フレームワ</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーク（ARTEX＝Go＋</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Next.js・C2 …</text><text x="295.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">ARTEX の元リポジト</text><text x="295.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">リは2026年10月に作</text><rect x="424" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部 LLM の API</text><text x="499.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（フロンティアおよびオー</text><text x="499.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プンソースのモデル。提…</text><text x="499.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">高レベルの目標を機械命令</text><text x="499.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">に翻訳する。推論のための</text><rect x="628" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">6つの専門サブエージェン</text><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ト（名称と役割は記事に記</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">載なし）</text><text x="703.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">同じ目的を追って互いを上</text><text x="703.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">書きし、エラーを生むこと</text><rect x="220" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害済み認証情報（攻撃者</text><text x="295.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">が投入）</text><text x="295.0" y="218.0" text-anchor="middle" fill="#ffcc80" font-size="10">複数の事案で、これを与え</text><text x="295.0" y="230.0" text-anchor="middle" fill="#ffcc80" font-size="10">て後続工程の実行を指示し</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的のクラウド基盤（AW</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S・Azure・Goog</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">le Cloud）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">23秒で27イベントの権</text><text x="907.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">限探索／Azure の一</text><rect x="832" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">標的の Active D</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">irectory</text><text x="907.0" y="167.0" text-anchor="middle" fill="#64b5f6" font-size="10">110,000超のオブジ</text><text x="907.0" y="179.0" text-anchor="middle" fill="#64b5f6" font-size="10">ェクトを列挙</text><rect x="832" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部公開アプリ（例：Li</text><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nux 上の Weave</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r OA）と MySQL</text><text x="907.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">正規の SQL API </text><text x="907.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">→ general_lo</text><rect x="1036" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（491個の使い捨て</text><text x="1111.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> webhook.sit</text><text x="1111.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e URL。遮断時はオ…</text><text x="1111.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">正規サービスのためドメイ</text><text x="1111.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">ン単位の遮断は業務影響を</text><rect x="1240" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1315.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">窃取データ（約20クエリ</text><text x="1315.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で約400KB／17スナ</text><text x="1315.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ップショットのインスタ…</text><text x="1315.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">米国・欧州の複数組織でデ</text><text x="1315.0" y="186.0" text-anchor="middle" fill="#ffcc80" font-size="10">ータ窃取を特定（Wiz）</text></svg></div><div class=fn>GTIG・Mandiant の報告（2026年10月30日・出典1）にもとづく。 **複数の事案の観測を1つの図に整理したものであり、 1つの侵入がこの全経路を通ったことを示すものではない**（本記録の明示）。 **破線は、記事が「重なる」「疑われる」という水準で述べている関係を示す。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">検知した</span><div class=sm>**量そのものが検知の条件になる**（本記録の評価）。
+**110,000を超えるオブジェクトの列挙、
+500回を超える Web リクエストは、
+人の操作では到達しない規模である**（出典1。本記録の判断）。
+**Mandiant Consulting の提言の第5層が
+「ID の速度、API バースト、ボリュームの異常を監視する」であり、
+この段階を直接指している**（出典1）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>管理 API の急増・権限テスト・資格情報の取得を監視し、認証元（ネットワーク・ASN・リージョン・ホスティング事業者）の変化を追跡する<span class=sm>　**Mandiant Consulting の提言の第5層**（出典1）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>AD の列挙を抑える（Credential Guard・Protected Users の有効化、SMB・LDAP の署名と channel binding、NTLM の削減、AD CS で `ENROLLEE_SUPPLIES_SUBJECT` を避ける）<span class=sm>　**Mandiant Consulting の提言の第3層**（出典1）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">検知した</span><div class=sm>**権限の探索は、短時間の高密度な API 呼び出しとして現れる**
+（出典1。本記録の評価）。
+**Google SecOps の検知ルールに
+「AWS Cloud Accounts Getcalleridentity」（AWS の呼び出し元 ID の取得）が
+含まれているのは、この段階に対応するものである**（出典1）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>静的な長期キーを廃し、短命な認証情報へ移行する（AWS は IAM ロールの一時認証情報、Azure は Managed Identity、Google Cloud は Workload Identity Federation、GitHub は fine-grained PAT や OIDC）<span class=sm>　**Mandiant Consulting の提言の第2層**（出典1）。 **本記録の評価——侵害済み認証情報が入口であるため、 認証情報の寿命を短くすることが最も直接に効く**（本記録の判断）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>パスワード保管庫・シークレット基盤へのアクセスを制限し、一括取得を監視する。リポジトリ・イメージ・パイプラインのシークレットを継続的にスキャンし、露出した認証情報は即ローテーションする<span class=sm>　**Mandiant Consulting の提言の第2層**（出典1）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">検知した</span><div class=sm>**痕跡が多い**（出典1。本記録の評価）。
+**①Weaver OA の事例では240件のログイベントが生成された。
+②WebShell の候補ごとに短命で半ば連番のファイル名
+（`cl1217.jsp`・`f1219a.jsp`・`z1219.jsp`）が作られた。
+③実行時のエラー（「変数 `t` は既に定義されている」）を経て
+反復的に書き直されている**（出典1）。
+**本記録の評価——名前の規則は変えられるため、
+名前ではなく「短時間での連番生成と反復的な失敗」で引く必要がある**
+（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>DB の実行アカウントに OS コマンド実行やファイル書き込みの権限を与えない<span class=sm>　**Mandiant Consulting の提言の第3層**（出典1）。 **本記録の評価——本件の手口は `SET GLOBAL general_log_file` で任意のパスにログを書かせることに 依存している**（出典1） ——**書き込み先を制限すれば成立しない**（本記録の判断）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>管理機能（RCE・デプロイ・一括メッセージなど）と高影響 API を事前に棚卸しし、正規機能の悪用を前提に保護する<span class=sm>　**Mandiant Consulting の提言の第4層**（出典1）。 **本記録の明示——本件で使われたのは正規に公開された アプリケーション固有の SQL API であり、脆弱性ではない**（出典1）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>外部利用者に詳細なエラーやスタックトレースを返さない<span class=sm>　**Mandiant Consulting の提言の第3層**（出典1）。 **本記録の評価——本件では ARTEX が 「スクリプトが大きすぎる」「変数 `t` は既に定義されている」という エラーメッセージを読んで自力で修正している**（出典1） ——**エラーの詳細が自律エージェントの入力になっている**（本記録の判断）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">検知した</span><div class=sm>**検知はできる。しかし間に合うかは別である**（本記録の評価）。
+**GTIG 自身が「検知と、対応・妨害は別の機能である。
+攻撃を早期に検知しても、目的の達成を阻止するには不十分である」と
+明記している**（出典1）。
+**最短15分という速度に対して、
+人が判断して遮断する工程は間に合わない**（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>DMZ から内部への Kerberos・NTLM・LDAP・SMB・RDP・SSH・DB 接続を制限し、侵害されたワークロードが届く範囲を最小化する<span class=sm>　**Mandiant Consulting の提言の第3層**（出典1）。</span></div><div class=ctl><span class="b eff">検知できた</span>認証・権限探索・ストレージ列挙・大量ダウンロード・未知の外部サービスへの接続を、一連のシーケンスとして相関させる<span class=sm>　**Mandiant Consulting の提言の第5層**（出典1）。 **本記録の評価——単発の事象では引けないが、 この順序が短時間に並ぶことは人の操作では起きにくい**（本記録の判断）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>検知から遮断（セッション無効化・キーのローテーション・ネットワーク隔離）までを自動で閉じる<span class=sm>　**本記録の評価。** **GTIG の「検知と妨害は別の機能」という指摘と、 最短15分という観測から導かれる**（出典1。本記録の判断）。 **これは記事の提言には明示されていない。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">検知した</span><div class=sm>**正規サービスを C2 に使うため、
+ドメイン単位の遮断は業務影響を伴う**（本記録の評価）。
+**Google SecOps の検知ルールに
+「Suspicious Webhook.Site Interaction」
+（webhook.site との疑わしい通信）が含まれている**（出典1）。
+**491個という数は、
+「同一ホストから短時間に多数の異なる使い捨て URL へ出ていく」という
+形で引ける**（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>サーバの egress を制限し、Webhook・OAST・トンネリング・ファイル共有・外部 AI プラットフォームへの未知の宛先を監視する<span class=sm>　**Mandiant Consulting の提言の第5層**（出典1）。 **本記録の評価——「外部 AI プラットフォーム」が 監視対象に挙げられている点が本件固有である**（本記録の判断） ——**エージェントは推論のために外部 API を呼ぶため、 その通信自体が痕跡になる。**</span></div><div class=ctl><span class="b eff">検知できた</span>必要なテレメトリ（ID・コントロールプレーン・データプレーン・DNS・プロキシ・ネットワーク・エンドポイント）を収集・集約する<span class=sm>　**Mandiant Consulting の提言の第5層**（出典1）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">検知した</span><div class=sm>**ボリュームの作成・ディスクの拡張・スナップショットの展開は、
+クラウドのコントロールプレーンに記録される事象である**
+（本記録の評価）。
+**Mandiant Consulting の提言の第5層が
+「ストレージのデータプレーンで列挙、書き込み・読み取り・削除の連続、
+大量ダウンロードを検知する」としている**（出典1）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>ストレージのデータプレーンで、列挙・書き込み／読み取り／削除の連続・大量ダウンロードを検知する<span class=sm>　**Mandiant Consulting の提言の第5層**（出典1）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>高影響 API（メール・通知・ユーザー作成・アクセス変更など）に受信者数やレート制限を設ける<span class=sm>　**Mandiant Consulting の提言の第4層**（出典1）。 **本記録の評価——本件の観測（1,300超の社内ユーザーへのテスト通知、 500回超の Web リクエスト、491個の webhook.site URL）は いずれも「正規機能を上限なく回した」結果である**（出典1。本記録の判断） ——**上限を付けることが、自律エージェントに対する実効のある制約になる。**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「検知できるか」ではなく「検知から遮断までが自動で閉じるか」を問う**</div><div class=lw>**GTIG 自身が「検知と、対応・妨害は別の機能である。 攻撃を早期に検知しても、目的の達成を阻止するには不十分である」と 明記している**（出典1）。 **Wiz の観測では、最初の侵害アカウントから深いシステムアクセスまで 通常約4時間、ある事例では15分であった**（出典1）〈齟齬1〉。 **ARTEX の個々の実行は2〜25秒のバーストで走る**（出典1）。 **この速度に対して、「警報が上がる→担当者が見る→判断する→遮断する」という 工程は間に合わない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①現在の自組織の「検知から遮断まで」の実測値を出す （警報の発生から、セッション無効化・キーのローテーション・ ネットワーク隔離が完了するまでの時間を、訓練で計る）。** **②その値が1時間を超える経路について、 自動遮断（条件付きアクセスによるセッション失効、 キーの自動ローテーション、 異常な ID の自動隔離）の導入を検討する。** **③自動遮断の誤作動が業務を止める範囲を事前に評価し、 「止めてよい範囲」を経営として決めておく ——この判断を現場に委ねると自動化は入らない。**</div></li><li><div class=lp>**新しい攻撃基盤に、新しい対策は提示されていない。定石の「隙間」を潰す**</div><div class=lw>**GTIG 自身が 「提案する防御戦略——コントロールプレーンの分離、 短命な認証情報、最小権限、セグメント化、挙動ベースの検知——は いずれも長年のセキュリティのベストプラクティスである」と書いている** （出典1）。 **原因も新しくない** ——**「侵害された認証情報を使うこと、未修正のシステムを狙うことといった 侵入の仕組みは変わらないままである」**（出典1）。 **変わったのは速度と規模だけである**（出典1）。</div><div class=la><b>取るべき行動</b> **①5層（コントロールプレーンの保護／ID とキーの制限／ 設定の強化と攻撃経路の削減／アプリケーション保護／ 挙動とボリュームの検知）について、 自組織の実施状況を「導入済み・部分・未」で棚卸しする。** **②「部分」のものについて、 どこに隙間が残っているか（どの環境・どのアカウント種別・ どのネットワーク区間が外れているか）を具体に落とす。** **③AI エージェントを理由とした新規の製品導入より、 既存対策の網羅率を上げる方を優先する—— 報告自体がその順序を示している。**</div></li><li><div class=lp>**正規機能に上限が無い箇所を棚卸しする。エージェントはそこを上限なく回す**</div><div class=lw>**本件の観測の多くは、正規機能を上限なく回した結果である**（出典1） ——**AD で110,000超のオブジェクト列挙、 500回超の Web リクエスト、 テスト通知で1,300超の社内ユーザーへの送信、 491個の webhook.site URL。** **Weaver OA の事例では、 正規に公開されたアプリケーション固有の SQL API が使われており、 脆弱性の悪用ではない**（出典1）。 **Mandiant Consulting の提言の第4層が 「高影響 API に受信者数やレート制限を設ける」である**（出典1）。</div><div class=la><b>取るべき行動</b> **①社内アプリと SaaS について、 「管理者が使う高影響の機能」（一括メール・通知・ユーザー作成・ アクセス変更・デプロイ・任意コード実行）を棚卸しする。** **②それぞれに受信者数・実行回数・時間あたりの上限があるかを確認し、 無いものに上限を付ける。** **③上限に当たったときの警報の宛先を決める ——上限は検知の仕組みにもなる。**</div></li><li><div class=lp>**「アジア」という地域記述を日本と読み替えない。日本への言及は無い**</div><div class=lw>**記事に日本への言及は無い**（出典1。本記録の確認）〈未確定1〉。 **示されているのは、米国・欧州（エンタープライズソフトウェア・ 産業オートメーション・半導体・通信）、 米国（政府・テクノロジー・化学材料・製造）、 アジア（金融セクターを狙ったとする公開報告、 システムインテグレーターと大手通信企業、航空宇宙）である**（出典1）。 **ただし ARTEX はフォークを通じて世界的に拡散しており、 地域化された派生版（ScopeWeaver）や商用版（ARTEX PRO）が 存在するとされる**（出典1）。</div><div class=la><b>取るべき行動</b> **①外部の脅威情報を社内に伝えるとき、 「日本が対象として名指しされているか」を区別して書く。** **②名指しが無い場合は、 自組織が該当する業種・構成（本件ではソフトウェアベンダー、 産業オートメーション、半導体、通信、政府、SI）で当てはめる。** **③フォークによる拡散が示されているツールについては、 「報告された地域の外でも使われうる」ことを前提に置く。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**「長い停止＋2〜25秒の高密度バースト」という時間の形を検知条件に書く**</div><div class=lw>**GTIG はログとタイムスタンプから 「人間の攻撃者にとってはきわめて不規則な活動の塊」を特定した**（出典1）。 **いずれの侵入も工程中に長い停止を示したが、 個々の実行シーケンスは2〜25秒の圧縮されたバーストで走った**（出典1）。 **1つのオペレーションでは23秒の実動時間に27イベントが記録された**（出典1）。 **Azure では一時 Blob の書き込み・削除が330〜400ミリ秒、 ARM の validate sweep が8秒で11リソースタイプである**（出典1）。</div><div class=la><b>取るべき行動</b> **①クラウドの監査ログ（AWS CloudTrail・Azure Activity Log・ Google Cloud Audit Logs）に対し、 「同一の ID が N 秒以内に M 件以上の API を呼ぶ」という 速度の条件を書く（本件の観測なら23秒で27件が目安になる）。** **②条件を「件数」だけでなく 「異なる API 種別の数」でも書く ——権限の探索は種類が多い。** **③長い停止を挟む点に注意し、 相関の時間窓を工程単位（数十秒）と侵入単位（数時間）の 2段で持つ。**</div></li><li><div class=lp>**MySQL の `general_log` による JSP 書き込みを塞ぐ——DB アカウントに書き込み権限を与えない**</div><div class=lw>**本件の手口は `SET GLOBAL general_log_file = &#x27;&lt;webshell のパス&gt;&#x27;` → `SET GLOBAL general_log = 1;` → `SELECT &#x27;&lt;% [webshell の内容] %&gt;&#x27;` という順序で成立する**（出典1）。 **Java のサーブレットが JSP を扱う仕組み上、 `&lt;% %&gt;` の中のコードが解析・コンパイルされて プロセスのメモリ空間に入る**（出典1）。 **使われた API は正規に公開されたアプリケーション固有の SQL API であり、 脆弱性ではない**（出典1）。 **Mandiant Consulting の提言の第3層が 「DB の実行アカウントに OS コマンド実行やファイル書き込みの権限を 与えない」である**（出典1）。</div><div class=la><b>取るべき行動</b> **①アプリケーションが使う DB アカウントから `SUPER`／`SYSTEM_VARIABLES_ADMIN` 相当の権限と ファイル書き込み権限（`FILE` 等）を外す。** **②`general_log_file`・`secure_file_priv` の設定を確認し、 Web から到達できるパスへ書けない状態にする。** **③`SET GLOBAL general_log` の変更を監査ログの警報にする ——正常な運用でこの値が動くことは稀である。** **④アプリケーションが公開している SQL 実行系の API を棚卸しし、 利用者の認証情報で到達できる範囲を確認する。**</div></li><li><div class=lp>**短時間に半ば連番の名前のファイルが複数作られる形を検知する（名前そのものではなく）**</div><div class=lw>**本件では、WebShell の候補ごとに短命で半ば連番のファイル名 （`cl1217.jsp`・`f1219a.jsp`・`z1219.jsp`）が付き、 それぞれ別のコマンドを実行していた**（出典1）。 **別の事例では `artex-probe-*`（`*` は5桁の半ば連番の数字）という ファイル名でさまざまな拡張子のファイルが生成された**（出典1）。 **GTIG は、ARTEX が設置ファイル名・作成したアカウント名にも 同様の連番の目印を使っていたと観測している**（出典1）。 **ただし名前の規則は変更できる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①Web 公開ディレクトリのファイル完全性監視で、 「短時間に複数の新規ファイルが作られる」ことを警報にする （1件ごとではなく、頻度で引く）。** **②作成されたアカウント名について、 短時間に複数・名前が半ば連番という形を検知条件に入れる。** **③`artex-probe` のような既知の文字列も条件に入れてよいが、 それだけに依存しない——フォークと派生版が拡散している。**</div></li><li><div class=lp>**外部 AI プラットフォームへの通信と、使い捨て Webhook サービスを監視対象に入れる**</div><div class=lw>**ARTEX はフロンティアおよびオープンソースのモデルの API を 活用して高レベルの目標を機械命令に翻訳する**（出典1） ——**推論のための外部通信が発生する。** **C2 としては491個の使い捨て webhook.site URL が使われた**（出典1）。 **Mandiant Consulting の提言の第5層は 「サーバの egress を制限し、Webhook・OAST・トンネリング・ ファイル共有・外部 AI プラットフォームへの未知の宛先を監視する」である** （出典1）。 **Google SecOps の検知ルールにも 「Suspicious Webhook.Site Interaction」が含まれている**（出典1）。</div><div class=la><b>取るべき行動</b> **①業務サーバからの egress を白名簿化し、 外部 AI プラットフォームの API エンドポイントへの通信を 既定で遮断または警報にする（業務で使う場合は経路を明示的に分ける）。** **②webhook.site・OAST 系サービス・トンネリングサービスへの通信を 検知条件にする。** **③「同一ホストから短時間に多数の異なる使い捨て URL へ出ていく」という 形で引く——個々の URL は遮断しても意味が薄い。**</div></li><li><div class=lp>**詳細なエラーを外部に返さない。それが自律エージェントの入力になっている**</div><div class=lw>**本件では ARTEX が 「スクリプトが大きすぎる」というエラーを引用して自力で修正し、 約10秒で17スナップショットのインスタンスを展開した**（出典1）。 **WebShell の実行時のエラー （「変数 `t` は既に定義されている」）を経て、 目的の異なる複数の WebShell を書き、 一部は前の誤りを訂正して最終的に成功させた**（出典1）。 **Mandiant Consulting の提言の第3層に 「外部利用者に詳細なエラーやスタックトレースを返さない」が含まれている** （出典1）。 **本記録の評価——従来この項目は情報漏えいの観点で語られてきたが、 自律エージェントに対しては「学習の入力を断つ」意味を持つ** （本記録の判断）。</div><div class=la><b>取るべき行動</b> **①外部公開のアプリケーションとAPI について、 エラー応答に実装の詳細（スタックトレース・SQL の内容・ 内部パス・変数名）が含まれていないかを確認する。** **②エラーは一般化したメッセージと相関用の ID のみを返し、 詳細はサーバ側のログに残す。** **③同一の ID・送信元から短時間に多数のエラーが発生することを 警報にする——反復的な試行錯誤はエラーの山として現れる。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 検知から遮断（セッション無効化・キーのローテーション・ネットワーク隔離）までが人の判断を経る設計で、その所要時間を実測していない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> クラウドやリポジトリで静的な長期の認証情報（アクセスキー・クライアントシークレット・classic PAT・サービスアカウントキー）が残っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 管理 API・コンソール・CI/CD が信頼ネットワークに限定されておらず、業務ネットワークやインターネットから到達できる</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> アプリケーションが使う DB アカウントに、OS コマンド実行またはファイル書き込みの権限が残っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 高影響 API（一括メール・通知・ユーザー作成・アクセス変更・デプロイ）に受信者数やレート制限が無い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 業務サーバの egress が白名簿化されておらず、外部 AI プラットフォームや使い捨て Webhook サービスへの通信が監視されていない</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月30日14時00分 UTC（RSS の配信時刻。記事ページの表示は2026年10月31日） Google Threat Intelligence Group / Mandiant（Google Cloud Blog）</span> <a href="https://cloud.google.com/blog/topics/threat-intelligence/artex-and-friends-enter-agentic-offensive-frameworks/" target="_blank" rel="noreferrer noopener nofollow">ARTEX and Friends: Enter Agentic Offensive Frameworks</a> <span class="b kind">調査レポート</span><span class=sm>（（原文英語。**本事案の一次資料。観測を行ったベンダー自身による報告である。**
+**執筆者は Aurora Blum・David Mainor・Rohit Nambiar・Omar ElAhdan・
+Matthew McWhirt・Will Silverstone・Bhavesh Dhake・Chris Busse の8名。**
+**記載されていること**——**①2026年8月下旬以降、
+Mandiant のインシデント対応案件で ARTEX・PentAGI・CAIRN・Hexstrike および
+独自の基盤とみられるものの悪用を観測、
+②ARTEX の作り（Go＋Next.js の Web コンソール、
+自律型・多エージェントの LLM 駆動のペンテストおよび攻撃用 C2、
+攻撃ライフサイクルを6つの専門サブエージェントに抽象化）と
+作者（GitHub ユーザー Autumn-27）、2026年10月のリポジトリ削除、
+フォークによる拡散（ScopeWeaver・ARTEX PRO）、
+③UNC7228（Microsoft の STORM-0940 と重なる）と Wiz の調査、
+④人間の攻撃者との違い（2〜25秒のバースト、23秒で27イベント、
+240件のログイベント、フォレンジック上の騒がしさ）、
+⑤Weaver OA の事例と MySQL ログ汚染による JSP WebShell
+（`SET GLOBAL general_log_file` → `SET GLOBAL general_log = 1` →
+`SELECT &#x27;&lt;% %&gt;&#x27;`、ファイル名 `cl1217.jsp`・`f1219a.jsp`・`z1219.jsp`、
+エラー「変数 t は既に定義されている」）、
+⑥`artex-probe-*` の5桁の半ば連番のファイル名、
+⑦PentAGI の作り（VXControl 開発、Kali Linux のサンドボックス、
+metasploit・nmap・SQLmap）と観測（大半は WHOIS と脆弱性スキャン、
+一部は侵入と永続化、アジアの SI と大手通信・航空宇宙）、
+⑧数値の一覧（AD で11万超のオブジェクト列挙、
+491の rotating webhook.site URL、500回超の Web リクエスト、
+約20クエリで約400KB の SQL 抽出、1,300超の社内ユーザーへのテスト通知、
+Azure の一時 Blob 操作が330〜400ミリ秒、
+ARM validate sweep が8秒で11リソースタイプ、
+100GB ボリュームの作成とルートディスクの60GB への拡張、
+約10秒で17スナップショットのインスタンス展開、
+Wiz の観測で最初の侵害から深いアクセスまで約4時間・最短15分）、
+⑨見通し（ステルス性を犠牲に速度と規模を得た／
+高い確信度でサイバー犯罪者は使い続ける／
+ステルス重視のアクターは公開版を使う可能性が低い／
+検知と妨害は別の機能である）、
+⑩Mandiant Consulting による5層の防御の提言、
+⑪Google SecOps の検知ルール4件。**
+**記載されていないもの**——**被害組織の名称・数・国別の内訳、
+日本への言及、6つのサブエージェントの名称と役割、
+Hexstrike と CAIRN の機能の詳細、
+UNC7228 の帰属の確信度、ARTEX のフォークの数、
+使用された LLM の提供元とモデル名、
+ARTEX の GitHub 公開時期とリポジトリ削除の正確な日付。**
+**本記録の注記——本DBが収集した本文は `BODY_CAP` で切り詰められており
+`artex-probe-*` の記述の途中で終わっていたため、
+本記録は2026年11月3日に記事を直接取得して後半を補った。**
+**記事ページの表示日付は2026年10月31日であり、
+RSS の配信時刻（2026年10月30日14時00分 UTC）と1日ずれている**〈齟齬2〉。）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月3日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月1日収集分の記事 〈output/articles/20261101/0066_mandiant-blog_artex-and-friends-enter-agentic-offensive-framewor.md〉を 起点に作成した。 **収集した本文は `BODY_CAP` で切り詰められており `artex-probe-*` の記述の途中で終わっていたため、 2026年11月3日に記事を直接取得して後半 （PentAGI の説明・数値の一覧・見通し・5層の防御の提言・ Google SecOps の検知ルール）を補って確認した**〈齟齬6〉。 **記事が引用する Wiz と Microsoft の報告は直接確認していない**〈齟齬1〉。 **記事ページの表示日付（2026年10月31日）と RSS の配信時刻（2026年10月30日14時00分 UTC）が1日ずれているため、 初報の日付は配信時刻を採った**〈齟齬2〉。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">ARTEX</span><span class="b tag">PentAGI</span><span class="b tag">CAIRN</span><span class="b tag">Hexstrike</span><span class="b tag">ScopeWeaver</span><span class="b tag">エージェント型攻撃フレームワーク</span><span class="b tag">大規模言語モデルの悪用</span><span class="b tag">GTIG</span><span class="b tag">Mandiant</span><span class="b tag">Wiz</span><span class="b tag">UNC7228</span><span class="b tag">STORM-0940</span><span class="b tag">Autumn-27</span><span class="b tag">Weaver OA</span><span class="b tag">MySQLログ汚染</span><span class="b tag">JSPウェブシェル</span><span class="b tag">webhook.site</span><span class="b tag">コントロールプレーン</span><span class="b tag">短命な認証情報</span><span class="b tag">挙動ベースの検知</span><span class="b tag">機械速度の侵入</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-03 02:24 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
