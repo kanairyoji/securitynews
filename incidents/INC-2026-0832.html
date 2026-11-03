@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>PingCAP 侵害で TiDB Cloud 情報流出 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0832</span>PingCAP 侵害で TiDB Cloud 情報流出</h1>
+<header class="site-header">
+  <p class="subtitle">TiDB の開発元 PingCAP の社内システムが、不正取得された**サービスアカウントの
+認証情報**で2026年9月9日〜10月7日（米国時間）に侵入され、データが複製された。
+**TiDB Cloud のアカウント情報・取引情報・API キーの一部・ソースコード**が
+持ち出され、**日本国内で最大約5万件**の個人情報が漏えいしたとされる。</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月19日（英語版の報告公開）</span>
+  <span>最終更新: 2026年11月3日</span>
+</div>
+
+<div class="lead"><p><strong>データベース基盤の提供元が侵害され、顧客側に鍵の入れ替えを要求した事案です。</strong>分散 SQL データベース TiDB を開発する PingCAP は、<strong>不正に取得されたアカウントの認証情報を使って社内システムに侵入され、データが複製された</strong>ことを公表しました（出典1・2）。</p>
+<p><strong>期間は2026年9月9日から10月7日（米国時間）。同社が認識したのは10月7日で、同日のうちに影響を受けた認証情報の無効化を開始しています</strong>（出典1・2）。<strong>侵入から検知まで28日間</strong>（本記録の算出）。</p>
+<p><strong>持ち出された範囲は3〜4種に分かれます</strong>（出典1・2）。<strong>①TiDB Cloud のアカウント情報</strong>（ユーザー名・メールアドレス・組織とプロジェクトの関連付け・SQL エディタの実行履歴とエラー情報・問い合わせ情報）<strong>②取引関連情報</strong>（氏名・メールアドレス・企業名・電話番号・契約条件・注文内容・支払条件・請求設定）<strong>③認証情報</strong>（TiDB Cloud API キーの Public Key 部分）。<strong>英語版の報告はこれに加えてソースコードの取得にも触れています</strong>〈差異1〉（出典2）。</p>
+<p><strong>日本法人の公表は「日本国内で最大約5万件の個人情報が漏洩したことが判明」としています</strong>（出典1）。<strong>国内でこの事案を測る数値はこれ1つです。</strong></p>
+<p><strong>顧客側の作業が明示されている点が、この事案の実務上の要点です</strong>（出典1）。<strong>アクセスログの確認・組織メンバーとロールの見直し・TiDB Cloud で発行した API キーのローテーション——つまり「提供元が侵害されたので、利用側で鍵を入れ替えてほしい」という依頼です</strong>（本記録の整理）。</p>
+<p><strong>一方で、TiDB に保存された顧客データ自体への影響は「確認されていない」とされています</strong>（出典1・2）。<strong>本記録はこれを「影響が無かった」とは読みません</strong> ——<strong>調査は継続中であり、同社自身が「データ流出の範囲を否定するものではない」と留保しています</strong>（出典2）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>認証情報が盗まれた経路</span><span class="b rsn">公表されていない</span><div class=sm>**「不正取得したアカウントの認証情報」とされるが、
+どのように盗まれたのか（フィッシング・端末のマルウェア・
+リポジトリへの混入・委託先経由）は公表されていない**（出典1・2）。
+**侵入の入口が分からないため、
+同種の構成を持つ他社が点検すべき箇所も特定できない**（本記録の評価）。
+</div></li><li><span class=ui>影響を受けた顧客組織の数と内訳</span><span class="b rsn">調査中</span><div class=sm>**「影響の内容は顧客ごとに異なる」「影響を受けた顧客には直接連絡する」と
+されるが、組織数は公表されていない**（出典1・2）。
+**日本国内の最大約5万件が何組織分なのかも示されていない**（本記録の整理）。
+</div></li><li><span class=ui>修正された4件の脆弱性の内容と、過去に悪用された形跡</span><span class="b rsn">調査中</span><div class=sm>**外部機関が報告した4件の脆弱性の内容は公表されていない**（出典2）。
+**同社は「修正前の脆弱性が悪用されていないか本番ログを確認中」としており、
+本記録の作成時点で結論は示されていない**（出典2）。
+</div></li><li><span class=ui>持ち出された API キーの件数と悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**日本語の報告は「TiDB Cloud API キーの Public Key 部分」が流出したとし、
+Private Key 部分は流出していないため Public Key だけでは
+TiDB Cloud を操作できないとする**（出典1）。
+**英語版は「暗号化された API キーの値を含むテーブル」が流出したとし、
+調査用に発行した1件はそのままでは API キーとして使えなかったとする**〈差異1〉（出典2）。
+**いずれも件数と悪用の有無は示されていない。**
+</div></li><li><span class=ui>外部調査機関の名称</span><span class="b rsn">公表されていない</span><div class=sm>**英語版は「外部のインシデント対応会社」「外部の法律事務所・
+フォレンジック専門家」の関与に触れるが、社名は公表されていない**（出典2）。
+</div></li><li><span class=ui>ソースコードの持ち出し範囲</span><span class="b rsn">公表されていない</span><div class=sm>**英語版の概要は攻撃者がソースコードを入手したと記すが、
+どのリポジトリ・どの範囲かは示されていない**（出典2）。
+**日本語の報告にはソースコードへの言及が無い**〈差異1〉（出典1。本記録の確認）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>PingCAP（本社）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>PingCAP株式会社（日本法人）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>TiDB Cloud の利用組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>外部調査機関（名称は公表されていない）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>日本国内で漏えいした個人情報の件数</span><span class="b conf">最大</span><span class="b org">公表値</span></div><div class=fv>50,000<span class=fu>件</span></div><div class=fn>**公表は「日本国内で最大約5万件の個人情報が漏洩したことが判明しました」**（出典1・3）。
+**「最大」は上限として示された値であり、
+確定件数ではない**（本記録の明示）。
+**何人分かは公表されておらず、
+TiDB Cloud のアカウント情報と取引関連情報のどちらがどれだけを占めるかも
+示されていない**〈未確定4〉。
+</div></div><div class=fig><div class=fh><span class=fl>不正アクセスが続いた日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>28<span class=fu>日</span></div><div class=fn>**本記録の算出（2026年9月9日 → 10月7日・いずれも米国時間）。**
+**この期間に社内システムへのアクセスとデータの複製が行われたとされる**（出典1・2）。
+</div></div><div class=fig><div class=fh><span class=fl>認識から公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>12<span class=fu>日</span></div><div class=fn>**本記録の算出（2026年10月7日の認識 → 10月19日の Trust Hub 公開）。**
+**日本語の報告には追記が2026年10月21日13時05分に入っている**（出典1）。
+</div></div><div class=fig><div class=fh><span class=fl>外部機関の指摘により修正した脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>件</span></div><div class=fn>**外部機関が2026年10月12〜13日に報告し、10月14日までに修正、
+同機関が再検証して修正を確認した**（出典2）。
+**これらが今回の侵入に使われたかどうかは示されておらず、
+同社は「修正前の脆弱性が悪用されていないか本番ログを確認中」としている**（出典2）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**入口は認証情報、影響の広がりは権限である**（出典1・2。本記録の整理）。
+**不正取得されたサービスアカウントの認証情報で社内システムに入られ、
+28日間にわたってデータが複製された**（出典1・2）。
+**同社が対応として「クラウドプロジェクト間の過剰な権限の削除」を挙げている点から、
+1つのアカウントから複数のプロジェクトへ到達できる状態だったと読める**
+（本記録の評価）。
+**本番システムでは、攻撃者がコマンドを実行した形跡や永続的なアクセスの痕跡は
+確認されていないとされるが、同社自身が
+「これはデータ流出の範囲を否定するものではない」と留保している**（出典2）。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**第三者が不正取得したアカウント（サービスアカウント）の認証情報を使って
+社内システムにアクセスした**（出典1・2）。
+**認証情報が盗まれた経路は公表されていない**〈未確定1〉。
+</div><div class=fn>根拠: PingCAP の報告（「不正取得したアカウントの認証情報を使用して社内システムにアクセス」）</div></li><li><div class=stg><span class="b stage">2. 内部探索</span><span class="b conf">推定</span><span class=srcs>[2]</span></div><div>**社内システム内で、顧客のアカウント情報・取引情報・
+API キーを含むテーブル・ソースコードへ到達した**（出典1・2）。
+**同社は10月10日に「クラウドプロジェクト間の過剰な権限」を削除しており、
+プロジェクトをまたぐ到達が可能だったと読める**（出典2。本記録の評価）。
+</div><div class=fn>根拠: PingCAP の報告（持ち出された情報の分類、過剰な権限の削除）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**①TiDB Cloud のアカウント情報**（ユーザー名・メールアドレス・
+組織とプロジェクトの関連付け・SQL エディタの実行履歴とエラー情報・
+組織/プロジェクト/クラスタ ID・問い合わせ情報）
+**②取引関連情報**（氏名・メールアドレス・企業名・電話番号・
+契約条件・注文内容・支払条件・請求設定）
+**③TiDB Cloud API キーの Public Key 部分**（出典1）。
+**英語版はこれに加えてソースコードの入手にも触れる**〈差異1〉（出典2）。
+**SQL エディタの実行履歴が含まれる点は、
+クエリ本文にテーブル名・カラム名・条件値が現れるため、
+顧客のスキーマや業務の形が読める材料になる**（本記録の評価）。
+</div><div class=fn>根拠: PingCAP の報告（漏えいが確認された情報の分類）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**データの複製が取得された**（出典1・2）。
+**持ち出された量・宛先・手口は公表されていない**（本記録の確認）。
+**同社は「本番システムでは攻撃者がコマンドを実行した形跡や
+永続的なアクセスの痕跡は確認されていない」としつつ、
+「これはデータ流出の範囲を否定するものではない」と明記している**（出典2）。
+</div><div class=fn>根拠: PingCAP の報告（「データの複製を取得」「エクスポートされた記録も含めて検証」）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>侵入から検知まで</div><div class=mv>28日（本記録の算出。2026年9月9日 → 10月7日・いずれも米国時間）</div></div><div class=met><div class=ml>検知から封じ込め完了まで</div><div class=mv>7日（本記録の算出。2026年10月7日に認証情報の無効化を開始し、10月14日までに特定された流出認証情報をすべて無効化、不正アクセス経路も遮断したとされる）</div></div><div class=met><div class=ml>検知から公表まで</div><div class=mv>12日（本記録の算出。2026年10月7日の認識 → 10月19日の Trust Hub 公開）。日本語の報告には10月21日13時05分に追記が入っている（出典1）</div></div><div class=met><div class=ml>検知から顧客への個別通知まで</div><div class=mv>算出できない。「影響を受けた顧客には直接連絡する」とされるが、通知の開始日・完了見込みは公表されていない（出典1・2）</div></div><div class=met><div class=ml>検知から当局報告まで</div><div class=mv>算出できない。「法執行機関への届出と各国の監督当局への報告」を実施したとされるが、報告日・報告先は公表されていない（出典1）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**認識当日（2026年10月7日）から影響を受けたアカウントと認証情報の
+大部分を無効化・取り消し、10月10日に追加の認証情報を削除、
+クラウドプロジェクト間の過剰な権限を削除した**（出典2）。
+**顧客側にも API キーのローテーションを依頼している**（出典1）。
+</div><div class=fn><b>トレードオフ:</b> **即日の無効化は再侵入を止める一方、
+社内の自動処理やデプロイが止まるリスクを伴う。
+顧客側の API キーのローテーションは、
+利用組織の運用（CI/CD・バッチ）に作業を発生させる。**
+</div></li><li><div class=ui>**漏えいが確認された情報を3分類で列挙し、
+API キーについては Public Key 部分のみで Private Key は
+流出していないと明示した**（出典1）。
+**英語版はソースコードの入手にも触れるが、日本語の報告には記載が無い**
+〈差異1〉（出典1・2）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **分類して列挙することで、利用側は自分の露出を推定しやすい。
+一方、言語版で記述の粒度が違うと、
+どちらを読んだかで理解が変わる。**
+</div></li><li><div class=ui>**外部のインシデント対応会社・法律事務所・フォレンジック専門家を起用し、
+脆弱性の報告（10月12〜13日）と修正の再検証（10月14日）を受けた**（出典2）。
+**法執行機関への届出と各国の監督当局への報告も実施したとしている**（出典1）。
+</div><div class=fn><b>トレードオフ:</b> **外部検証を入れることで修正の確認が得られるが、
+社名が公表されていないため、検証の重みを外部から評価できない。**
+</div></li><li><div class=ui>**Trust Hub での公表（英語・日本語）に加えて、
+影響を受けた顧客には直接連絡するとした**（出典1・2）。
+**問い合わせ窓口を設けている（日本は security-jp@pingcap.com、
+本社は security@pingcap.com）**（出典1・2）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **個別連絡は正確だが、特定に時間がかかる。
+その間、利用側は「自分が対象かどうか」を判断できないまま
+API キーのローテーションを判断することになる。**
+</div></li></ul></div>
+<section id="s6"><h2>失われたのはデータベースの中身ではなく、データベースへ入るための名簿である<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>この事案で持ち出されたのは、顧客が TiDB に保存しているデータではありません</strong>（出典1・2）。</p>
+<p><strong>持ち出されたのは、TiDB Cloud を使うための周辺情報です</strong>（出典1）。</p>
+<ul>
+<li><strong>アカウント情報</strong> — ユーザー名、メールアドレス、組織・プロジェクトの関連付け、SQL エディタの実行履歴とエラー情報（組織・プロジェクト・クラスタ ID を含む）、問い合わせ情報（サポートチケット）</li>
+<li><strong>取引関連情報</strong> — 氏名、メールアドレス、企業名、電話番号、契約条件（注文内容・支払い条件・請求設定）</li>
+<li><strong>認証情報</strong> — TiDB Cloud API キーの Public Key 部分</li>
+</ul>
+<p><strong>英語版の報告はこれに加えて、攻撃者がソースコードを入手したとしています</strong>〈差異1〉（出典2）。</p>
+<p><strong>「組織・プロジェクトの関連付け」と「SQL エディタの実行履歴」は、一見すると軽い情報です</strong>（本記録の評価）。<strong>しかし前者は、どの会社がどの規模のクラスタを持っているかの名簿になり、後者はテーブル名・カラム名・条件値を通じて業務の形を見せます。</strong> <strong>攻撃者が次に狙う先を選ぶための材料として質が高い</strong>（本記録の判断）。</p>
+<p><strong>TiDB Cloud への不正アクセスとクレジットカード情報の流出は確認されていないとされています</strong>（出典1）。<strong>ただし英語版は、本番システムで痕跡が見つからないことを示したうえで「これはデータ流出の範囲を否定するものではない」と明記しています</strong>（出典2）。</p></section>
+<section id="s7"><h2>28日間気づかれず、検知後7日で遮断を完了している<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>時間の並びは、検知の前と後で対照的です</strong>（出典1・2）。</p>
+<ul>
+<li><strong>2026年9月9日（米国時間）</strong> 不正取得された認証情報で社内システムへ侵入</li>
+<li><strong>10月7日</strong> 認識。<strong>同日中に影響を受けた認証情報の無効化を開始</strong></li>
+<li><strong>10月10日</strong> 追加の認証情報を削除。クラウドプロジェクト間の過剰な権限を削除。影響を受けたプロジェクトでクラウドストレージのアクセスログを追加で有効化</li>
+<li><strong>10月12〜13日</strong> 外部機関が4件の脆弱性を報告</li>
+<li><strong>10月14日</strong> 4件を修正し、外部機関が再検証。<strong>特定された流出認証情報はすべて無効化、不正アクセス経路も遮断</strong></li>
+<li><strong>10月19日</strong> Trust Hub でセキュリティ更新を公開（認識から12日）</li>
+<li><strong>10月21日13時05分</strong> 日本語の報告に追記（問い合わせ情報を対象に追加）</li>
+</ul>
+<p><strong>侵入から検知まで28日、検知から遮断完了まで7日です</strong>（本記録の算出）。</p>
+<p><strong>28日の側に出ている論点は2つあります</strong>（本記録の評価）。<strong>第一に、10月10日に「クラウドストレージのアクセスログを追加で有効化」しているため、侵害当時は記録が無い領域がありました</strong>（出典2）。<strong>第二に、継続中の作業として「異常アクセスや大量エクスポートの通知強化」が挙げられています</strong>（出典2）——<strong>データの複製が28日間続いても通知が上がらない状態だった</strong>ということです。</p></section>
+<section id="s8"><h2>鍵を入れ替えるのは、侵害された側ではなく使っている側である<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>公表が顧客に求めている作業は4つです</strong>（出典1）。</p>
+<ol>
+<li><strong>TiDB Cloud と関連クラウドアカウントのアクセスログを確認する</strong>（不審な IP アドレス・身に覚えのない操作）</li>
+<li><strong>組織メンバーとロールを見直し、不要なアカウントを削除する</strong></li>
+<li><strong>TiDB Cloud で発行した API キーをローテーションする</strong></li>
+<li><strong>PingCAP を装う不審なメールに注意する</strong>（同社がパスワードやアクセスキーをメールで尋ねることはない）</li>
+</ol>
+<p><strong>3番目が実務の核です</strong>（本記録の判断）。<strong>日本語の報告は「Public Key 部分のみが流出し、Private Key 部分は流出していないため、Public Key だけでは TiDB Cloud を操作できない」としています</strong>（出典1）。<strong>それでもローテーションを依頼しているのは、「他に使用可能な認証情報が流出したかは未確認」という状態だからです</strong>（出典2）。</p>
+<p><strong>本記録の補足として、交換対象は API キーだけではありません</strong>（本記録の判断）。<strong>漏えい対象に問い合わせ情報（サポートチケット）が含まれるため、過去にサポートへ貼り付けた接続文字列・一時パスワード・デバッグ用の認証情報も交換の対象になります。</strong></p>
+<p><strong>自社で確認すべきことは1つです</strong>—— <strong>API キーを無停止で差し替えられるか。</strong> <strong>設定ファイルに直書きしている構成では、ベンダーから依頼が来ても即日では動けません</strong>（本記録の判断）。</p></section>
+<section id="s9"><h2>日本語の案内と英語の報告で、書かれている中身が違う<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>同じ事案の説明が、言語版で揃っていません</strong>〈差異1〉（出典1・2）。</p>
+<p><strong>日本語の報告（出典1）</strong><br />
+- 認証情報の流出は「TiDB Cloud API キーの Public Key 部分」<br />
+- 「Private Key 部分は流出しておらず、Public Key だけでは操作できない」<br />
+- <strong>ソースコードへの言及は無い</strong><br />
+- 日本国内で最大約5万件の個人情報が漏洩したことが判明</p>
+<p><strong>英語版（出典2）</strong><br />
+- 「暗号化された TiDB Cloud API キーの値を含むテーブル」が流出<br />
+- 復号鍵は露出していない。検証した1件はそのままでは API キーとして使えなかった<br />
+- <strong>攻撃者がソースコードを入手した</strong><br />
+- <strong>件数の記載は無い</strong></p>
+<p><strong>どちらかが誤りだと断定する材料はありません</strong>（本記録の明示）。<strong>Public Key 部分という説明と「暗号化された値を含むテーブル」という説明は、同じ実装を別の粒度で述べている可能性があります。</strong></p>
+<p><strong>実務上の結論は変わりません</strong>（本記録の判断）。<strong>どちらを読んでも、やることは API キーのローテーションです。</strong> <strong>ただし、海外ベンダーの侵害を日本語の案内だけで判断すると、ソースコードの持ち出しのような論点を見落とします</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_component</th><td>**PingCAP の社内システム**（出典1・2）。 **TiDB Cloud（マネージドの分散 SQL データベース）の運用に関わる 顧客メタデータ・取引情報・API キーを含むテーブル、 および（英語版によれば）ソースコードが対象となった**（出典1・2）。 **TiDB に保存された顧客のデータベース内容自体については、 影響を受けた証拠は無いとされる**（出典1・2）</td></tr><tr><th>intrusion_vector</th><td>**不正取得されたアカウント（サービスアカウント）の認証情報の使用**（出典1・2）。 **認証情報がどのように盗まれたのかは公表されていない**〈未確定1〉。 **報道の一部は、同社 CEO の更新が GitHub アカウントの侵害に 言及していると伝えているが、本記録はその原文を確認できていない**〈差異2〉</td></tr><tr><th>data_at_risk</th><td>**①TiDB Cloud アカウント情報**——ユーザー名、メールアドレス、 組織・プロジェクトの関連付け、SQL エディタの実行履歴およびエラー情報 （組織・プロジェクト・クラスタ ID を含む記録もある）、 問い合わせ情報（サポートチケット情報・2026年10月21日13時05分の追記で追加）。 **②取引関連情報**——顧客の連絡先（氏名・メールアドレス・企業名・電話番号）、 契約条件（注文内容・支払い条件・請求設定）。 **③認証情報**——TiDB Cloud API キーの Public Key 部分（出典1）。 **④ソースコード**——英語版の概要にのみ記載（出典2）〈差異1〉</td></tr><tr><th>api_key_status</th><td>**日本語の報告**: **「Public Key 部分が流出しましたが、暗号化されています。 Private Key 部分は流出しておらず、Public Key だけでは TiDB Cloud を操作できません」**（出典1）。 **英語版**: **「暗号化された TiDB Cloud API キーの値を含むテーブルが流出した。 復号鍵は露出していない。外部機関が検証した1件（調査用に発行されたもの）は、 そのままでは API キーとして使えなかった。 他に使用可能な認証情報が流出したかは未確認」**（出典2。本記録の訳）。 **本記録は両者を併記し、どちらかに寄せない**〈差異1〉。 **いずれにしても同社は顧客に API キーのローテーションを依頼している**（出典1）</td></tr><tr><th>含まれていない情報</th><td>**TiDB Cloud への不正アクセスと、クレジットカード情報の流出は 確認されていない**（出典1）。 **TiDB に保存された顧客データが影響を受けた証拠は無いとされる**（出典2）。 **API キーの Private Key 部分（復号鍵）は流出していないとされる**（出典1・2）<span class="b rsn">stated</span></td></tr><tr><th>ログの有無</th><td>**一部の領域ではログが足りていなかったと読める。** **同社は2026年10月10日に「影響を受けたプロジェクトでクラウドストレージの アクセスログを追加で有効化した」としており、 侵害当時はその記録が無かったことになる**（出典2。本記録の評価）。 **一方、エクスポートされた記録を事後に検証できているため、 持ち出しの範囲を絞れるだけの記録は残っていた**（出典1）。 **本番システムについては 「攻撃者がコマンドを実行した形跡や永続的なアクセスの痕跡は確認されていない」 としつつ、「データ流出の範囲を否定するものではない」と留保している**（出典2）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月19日（英語版の報告公開時点）　<b>詳細:</b> **「弊社と外部調査機関の調査では、TiDB Cloud への不正アクセスと クレジットカード情報の流出は確認されていない」**（出典1）。 **英語版も、TiDB に保存されたデータが影響を受けた証拠は無いとする一方、 調査は継続中であり、これはデータ流出の範囲を否定するものではないと 明記している**（出典2。本記録の訳）。 **本記録はこれを「悪用が無かった」とは読まない** ——**API キーの悪用は顧客側のクラスタで起きるため、 提供元から観測できるとは限らない**（本記録の評価）</td></tr><tr><th>customer_actions_advised</th><td>**①TiDB Cloud と関連クラウドアカウントのアクセスログを確認する （不審な IP アドレス・身に覚えのない操作） ②組織メンバーとロールを見直し、不要なアカウントを削除する ③TiDB Cloud で発行した API キーをローテーションする ④PingCAP を装う不審なメールに注意する （同社がパスワードやアクセスキーをメールで尋ねることはない）**（出典1）。 **本記録の補足として、サポートチケットに添付・貼り付けた認証情報や 接続文字列も交換の対象になる**（本記録の判断）</td></tr><tr><th>provider_remediation</th><td>**①影響を受けたアカウントと認証情報の無効化（2026年10月7日開始） ②追加の認証情報の削除とクラウドプロジェクト間の過剰な権限の削除（10月10日） ③影響を受けたプロジェクトでクラウドストレージのアクセスログを追加で有効化（10月10日） ④外部機関が報告した4件の脆弱性の修正と再検証（10月12〜14日） ⑤流出したキーと重要なキーのローテーション ⑥アカウント権限とネットワーク管理の見直し ⑦クラウドサービスへの脅威検知の導入 ⑧法執行機関への届出と各国の監督当局への報告**（出典1・2）。 **継続中の作業として、顧客ごとの影響範囲の特定、 修正済み脆弱性の過去の悪用確認、追加の認証情報流出の有無の確認、 認証情報のローテーション拡大、コードとシークレットのスキャン、 監査ログと大量エクスポートの通知強化が挙げられている**（出典2）</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年9月9日（米国時間）</td><td class=nowrap><span class="b kind">発生</span></td><td>**不正取得されたアカウントの認証情報による社内システムへのアクセスが始まる。**
+**以降、データの複製が取得された**（出典1・2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月7日（米国時間）</td><td class=nowrap><span class="b kind">検知</span></td><td>**PingCAP が本インシデントを認識し、同日中に影響を受けた認証情報の
+無効化を開始**（出典1・2）。
+**不正アクセスの期間はこの日までとされている**（出典1・2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月10日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**追加の認証情報を削除し、クラウドプロジェクト間の過剰な権限を削除。**
+**影響を受けたプロジェクトでクラウドストレージのアクセスログを
+追加で有効化した**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月12日〜13日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**外部機関が4件の脆弱性を報告**（出典2）。
+**脆弱性の内容は公表されていない**〈未確定3〉。
+</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**報告された4件の脆弱性を修正し、外部機関が再検証して修正を確認。**
+**この時点で、特定された流出認証情報はすべて無効化され、
+不正アクセス経路も遮断されたとされる**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月19日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Trust Hub にセキュリティ更新（英語）を公開。**
+**持ち出された情報の分類、TiDB 内データへの影響が確認されていない旨、
+実施済みの対応と継続中の作業を示した**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月21日13時05分</td><td class=nowrap><span class="b kind">訂正</span></td><td>**日本語の報告に追記。** **漏えい対象に
+「問い合わせ情報（サポートチケット情報）」が加わった**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年11月2日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**ScanNetSecurity が日本法人の公表を報道。**
+**日本国内で最大約5万件の個人情報漏えいが判明したこと、
+漏えいが確認された情報の種類を伝えた**（出典3）。
+</td></tr><tr><td class="sm nowrap tw">2026年11月3日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成時点で調査は継続中。**
+**顧客ごとの影響範囲の特定、修正済み脆弱性の過去の悪用確認、
+追加の認証情報流出の有無の確認が続いているとされる**（出典2。本記録の確認）。
+</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>API キーとソースコードの記述が、日本語版と英語版で一致していない</span><div class=sm>**日本語の報告（出典1）は、認証情報の流出を
+「TiDB Cloud API キーの Public Key 部分」とし、
+「Private Key 部分は流出しておらず、Public Key だけでは
+TiDB Cloud を操作できない」と記す。ソースコードへの言及は無い。**
+**英語版（出典2）は、「暗号化された TiDB Cloud API キーの値を含むテーブル」が
+流出したとし、復号鍵は露出していない・検証した1件はそのままでは
+使えなかったとする。さらに攻撃者がソースコードを入手したと記す。**
+**同じ事案の説明として、粒度と対象が揃っていない**（本記録の整理）。
+**本記録は両方を併記し、どちらかに寄せない。**
+</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>初期侵入の経路について、報道が別の説明を伝えている</span><div class=sm>**公表（出典1・2）はいずれも「不正取得したアカウントの認証情報」とする。**
+**一方、本記録の調査中に参照した検索結果には、
+同社 CEO の更新が GitHub アカウントの侵害に言及していると伝える記述があった。**
+**本記録はその CEO 更新の原文を取得できておらず、
+経路に関する記述は公表された範囲（認証情報の不正取得）に留める**（本記録の明示）。
+</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>攻撃者を名乗る主体による窃取規模の主張を、本記録は検証していない</span><div class=sm>**本記録の調査中に参照した検索結果には、
+FulcrumSec を名乗る主体が 10.6TB のデータと
+11万5,000件の API キーペアの窃取を主張していると伝える記述があった。**
+**本記録はその一次情報・報道本文のいずれも取得しておらず、
+数値も主張の存在も確認できていない。**
+**PingCAP の公表には、窃取されたデータ量・API キーの件数の記載が無い**
+（出典1・2）。**本記録はこの主張を数値として採らない**（本記録の明示）。
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「最大約5万件」が何人分かが分からない</span><div class=sm>**日本語の報告は「日本国内で最大約5万件の個人情報が漏洩したことが判明」とする**
+（出典1・3）。**単位は「件」で、対象者数・対象組織数は示されていない。**
+**TiDB Cloud のアカウント情報（個人のユーザー名・メール）と
+取引関連情報（担当者の氏名・電話）が混在していると読めるため、
+1人が複数件に数えられている可能性がある**（本記録の評価）。
+</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>全世界の規模が公表されていない</span><div class=sm>**公表されている件数は日本国内の最大約5万件のみである**（出典1・3）。
+**英語版は持ち出された情報の種類を列挙する一方、
+件数・影響組織数を示していない**（出典2。本記録の確認）。
+**国内の数値だけが流通するため、
+事案全体の規模を読者が把握できない**（本記録の評価）。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>提供元で失われた鍵の名簿が、利用側の作業になる</div><div class=svgwrap><svg viewBox="0 0 794 400" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,156.0 C91.0,156.0 91.0,244.0 16,244.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,244.0 C193.0,244.0 193.0,112.0 220,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C397.0,112.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C397.0,112.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C397.0,112.0 397.0,264.0 424,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C397.0,112.0 397.0,353.0 424,353.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,264.0 C601.0,264.0 601.0,156.0 628,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,156.0 628,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,288.0 C295.0,288.0 295.0,112.0 220,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,200.0 C295.0,200.0 295.0,112.0 220,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,288.0 C499.0,288.0 499.0,156.0 628,156.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C499.0,112.0 499.0,244.0 628,244.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="119.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属は公表されて</text><text x="91.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">いない）</text><text x="91.0" y="168.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年9月9日〜10</text><text x="91.0" y="180.0" text-anchor="middle" fill="#f48fb1" font-size="10">月7日（米国時間）の28</text><rect x="16" y="207.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="229.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不正取得されたサービスア</text><text x="91.0" y="243.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウントの認証情報</text><text x="91.0" y="256.0" text-anchor="middle" fill="#ffcc80" font-size="10">盗まれた経路は非公表（出</text><text x="91.0" y="268.0" text-anchor="middle" fill="#ffcc80" font-size="10">典1・2）</text><rect x="220" y="75.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="97.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PingCAP の社内シ</text><text x="295.0" y="111.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ステム</text><text x="295.0" y="124.0" text-anchor="middle" fill="#64b5f6" font-size="10">データの複製が取得された</text><text x="295.0" y="136.0" text-anchor="middle" fill="#64b5f6" font-size="10">。プロジェクト間に過剰な</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TiDB Cloud ア</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント情報（ユーザー名</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・メール・組織/プロジ…</text><text x="499.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">日本国内で最大約5万件の</text><text x="499.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">個人情報（出典1）</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">取引関連情報（氏名・メー</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル・企業名・電話・契約条</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">件・請求設定）</text><text x="499.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">顧客ごとに内容が異なる（</text><text x="499.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">出典1）</text><rect x="424" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TiDB Cloud A</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PI キー（日本語版：P</text><text x="499.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ublic Key 部…</text><text x="499.0" y="283.0" text-anchor="middle" fill="#ffcc80" font-size="10">記述が日英で異なる（出典</text><text x="499.0" y="295.0" text-anchor="middle" fill="#ffcc80" font-size="10">1・2）〈差異1〉</text><rect x="424" y="322.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ソースコード（英語版の概</text><text x="499.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">要にのみ記載）</text><text x="499.0" y="371.0" text-anchor="middle" fill="#ffcc80" font-size="10">範囲は非公表（出典2）</text><rect x="628" y="119.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TiDB Cloud の</text><text x="703.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用組織</text><text x="703.0" y="168.0" text-anchor="middle" fill="#80cbc4" font-size="10">API キーのローテーシ</text><text x="703.0" y="180.0" text-anchor="middle" fill="#80cbc4" font-size="10">ョン・ロール見直し・ログ</text><rect x="628" y="207.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="229.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TiDB に保存された顧</text><text x="703.0" y="243.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">客データ</text><text x="703.0" y="256.0" text-anchor="middle" fill="#ffcc80" font-size="10">影響を受けた証拠は無いと</text><text x="703.0" y="268.0" text-anchor="middle" fill="#ffcc80" font-size="10">される（調査は継続中・出</text><rect x="220" y="163.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="185.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部調査機関（名称非公表</text><text x="295.0" y="199.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="295.0" y="212.0" text-anchor="middle" fill="#80cbc4" font-size="10">4件の脆弱性を報告（10</text><text x="295.0" y="224.0" text-anchor="middle" fill="#80cbc4" font-size="10">月12〜13日）し修正を</text><rect x="220" y="251.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="273.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PingCAP（無効化・</text><text x="295.0" y="287.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遮断・公表・当局報告）</text><text x="295.0" y="300.0" text-anchor="middle" fill="#80cbc4" font-size="10">10月7日に認識・即日無</text><text x="295.0" y="312.0" text-anchor="middle" fill="#80cbc4" font-size="10">効化開始、10月19日に</text></svg></div><div class=fn>攻撃者（layer 0）が不正取得したサービスアカウントの認証情報で
+PingCAP の社内システム（layer 1）に侵入し、
+TiDB Cloud のアカウント情報・取引情報・API キーの一部・ソースコード（layer 2）を
+複製した。影響は利用組織（layer 3）に、API キーのローテーションと
+ロール見直しという作業として渡っている。
+TiDB 内の顧客データ自体への影響は確認されていないとされるが、調査は継続中である。
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**2026年9月9日の侵入開始から10月7日の認識まで28日間ある**
+（本記録の算出）。
+**同社は対応として「クラウドサービスへの脅威検知の導入」
+「異常アクセスや大量エクスポートの通知強化」を挙げており、
+侵害当時はこれらが無かったと読める**（出典1・2。本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>サービスアカウントを短命の資格情報（ワークロード ID・一時トークン）へ置き換える</div><div class=ctl><span class="b eff">検知できた</span>サービスアカウントの利用元 IP・時刻・頻度に基準を置き、逸脱を通知する</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**影響を受けたプロジェクトでクラウドストレージのアクセスログを
+追加で有効化したのは2026年10月10日である**（出典2）
+——**侵害当時はログが取られていなかった領域があったことを意味する**
+（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>クラウドプロジェクト間の権限を職務単位に分割し、横断参照を既定で禁止する</div><div class=ctl><span class="b eff">検知できた</span>オブジェクトストレージのアクセスログを全プロジェクトで既定有効にする</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**大量のデータ複製（エクスポート）が28日間続いたが検知されていない**
+（出典1・2。本記録の評価）。
+**同社は継続中の作業として
+「異常アクセスや大量エクスポートの通知強化」を挙げている**（出典2）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>SQL エディタの実行履歴に機密値が残らないようマスキング・保持期間短縮を行う</div><div class=ctl><span class="b eff">検知できた</span>顧客メタデータの大量エクスポートに閾値アラートを置く</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**エクスポートされた記録を事後に検証できているため、
+記録自体は残っていた**（出典1）。
+**検知の仕組みが無かったことが28日間の滞留につながっている**
+（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>外向き転送量とエクスポート操作を SIEM に集約し、基準からの逸脱を通知する</div><div class=ctl><span class="b eff">影響を限定できた</span>顧客メタデータを保持するストアに、取得件数の上限と承認フローを設ける</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**認識当日（2026年10月7日）から影響を受けたアカウントと認証情報の
+大部分を無効化・取り消し、10月10日に追加の認証情報を削除、
+クラウドプロジェクト間の過剰な権限を削除した**（出典2）。
+**顧客側にも API キーのローテーションを依頼している**（出典1）。
+</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm></td></tr><tr><td>**漏えいが確認された情報を3分類で列挙し、
+API キーについては Public Key 部分のみで Private Key は
+流出していないと明示した**（出典1）。
+**英語版はソースコードの入手にも触れるが、日本語の報告には記載が無い**
+〈差異1〉（出典1・2）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**外部のインシデント対応会社・法律事務所・フォレンジック専門家を起用し、
+脆弱性の報告（10月12〜13日）と修正の再検証（10月14日）を受けた**（出典2）。
+**法執行機関への届出と各国の監督当局への報告も実施したとしている**（出典1）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**Trust Hub での公表（英語・日本語）に加えて、
+影響を受けた顧客には直接連絡するとした**（出典1・2）。
+**問い合わせ窓口を設けている（日本は security-jp@pingcap.com、
+本社は security@pingcap.com）**（出典1・2）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>データベース基盤の提供元が侵害されると、鍵の入れ替えは利用側の作業になる</div><div class=lw>**PingCAP は顧客に対し、API キーのローテーション・
+ロールの見直し・アクセスログの確認を依頼している**（出典1）。
+**提供元の侵害であっても、手を動かすのは利用側である**（本記録の整理）。
+</div><div class=la><b>取るべき行動</b> **利用している SaaS・PaaS ごとに「提供元が侵害されたとき、
+自社が何を入れ替えるのか」を一覧にする。
+API キー・サービスアカウント・Webhook の署名鍵まで含め、
+入れ替えの手順と所要時間を測っておく。**
+</div></li><li><div class=lp>サポートに渡した情報は、そのまま流出対象の一部になる</div><div class=lw>**漏えい対象に「問い合わせ情報（サポートチケット情報）」が
+2026年10月21日の追記で加わった**（出典1）。
+**SQL エディタの実行履歴とエラー情報も対象である**（出典1）。
+**問い合わせの過程で貼り付けた接続情報やクエリは、
+提供元の資産になって保存される**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **サポート窓口へ情報を渡すときの社内規則を作る。
+接続文字列・認証情報・実データを含むクエリを貼らない、
+貼った場合は事後に交換する、を手順に書く。**
+</div></li><li><div class=lp>同一事案の説明が言語版で違うことがある</div><div class=lw>**英語版はソースコードの入手と
+「暗号化された API キーの値を含むテーブル」の流出に触れるが、
+日本語の報告はソースコードに触れず
+「API キーの Public Key 部分」と記している**〈差異1〉（出典1・2）。
+</div><div class=la><b>取るべき行動</b> **海外ベンダーの侵害では、日本語の案内だけで判断しない。
+英語の一次公表（Trust Hub・セキュリティ更新）も読み、
+差分があれば窓口に確認する運用を決める。**
+</div></li><li><div class=lp>「影響は確認されていない」は調査の現在地であって結論ではない</div><div class=lw>**同社は TiDB 内データへの影響の証拠は無いとしつつ、
+「これはデータ流出の範囲を否定するものではない」と明記している**（出典2）。
+</div><div class=la><b>取るべき行動</b> **ベンダーの公表を読むときは、
+「確認されていない」の後ろにある留保と調査の継続状況を読み取り、
+自社の対応（鍵の交換・ログの確認）を結論待ちにしない。**
+</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>API キーは、流出の報告を待たずに交換できる状態にしておく</div><div class=lw>**本件では Private Key は流出していないとされているが、
+それでも全顧客に API キーのローテーションが依頼されている**（出典1）。
+**交換が難しい構成では、依頼が来ても動けない**（本記録の判断）。
+</div><div class=la><b>取るべき行動</b> **API キーを設定ファイルに直書きせず、
+シークレット管理から参照する形にし、
+無停止で差し替えられるか（新旧の併存期間を持てるか）を検証する。**
+</div></li><li><div class=lp>SQL の実行履歴は、スキーマと業務の形を外に出す</div><div class=lw>**漏えい対象に SQL エディタの実行履歴とエラー情報が含まれる**（出典1）。
+**クエリ本文にはテーブル名・カラム名・条件値が現れる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **マネージドサービスの Web コンソールで実運用のクエリを流す場合、
+履歴の保持期間と保存場所を確認する。
+個人情報や鍵を条件値に書かない運用に切り替える。**
+</div></li><li><div class=lp>サービスアカウントの権限は、プロジェクトをまたがせない</div><div class=lw>**同社は対応として「クラウドプロジェクト間の過剰な権限を削除」
+「アカウント権限とネットワーク管理の見直し」を挙げている**（出典1・2）。
+**1つの認証情報から到達できる範囲が、影響範囲を決めている**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **自社のクラウドでも、サービスアカウントの権限を
+プロジェクト・環境（本番/検証）ごとに分割し、
+横断する権限を棚卸しして期限を切る。**
+</div></li><li><div class=lp>オブジェクトストレージのアクセスログを既定で有効にする</div><div class=lw>**同社は侵害後の2026年10月10日に
+「影響を受けたプロジェクトでクラウドストレージのアクセスログを
+追加で有効化した」としている**（出典2）
+——**侵害当時は記録が無い領域があった**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **全プロジェクトのオブジェクトストレージでアクセスログを既定有効にし、
+保持期間を90日以上にする。
+有効化されていないバケットを検出するポリシーを置く。**
+</div></li><li><div class=lp>大量エクスポートの検知を、侵入検知より優先して置く</div><div class=lw>**28日間にわたってデータの複製が行われたが検知されていない**
+（出典1・2。本記録の算出）。
+**同社も継続中の作業として大量エクスポートの通知強化を挙げている**（出典2）。
+</div><div class=la><b>取るべき行動</b> **顧客メタデータ・課金情報・認証情報を持つストアについて、
+取得件数と転送量の基準を決め、閾値超過を即時通知にする。**
+</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> TiDB Cloud を利用している（または同様のマネージド DB / データ基盤に依存している）</td><td class=sm>**本件は提供元の侵害であり、利用側に
+API キーのローテーションとロール見直しが要求されている**（出典1）。
+</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 外部サービスの API キーを長期有効のまま設定ファイルやリポジトリに持っている</td><td class=sm>**本件では Public Key 部分の流出にとどまるとされるが、
+それでも全顧客にローテーションが依頼されている**（出典1）。
+**交換できない構成では依頼に応えられない**（本記録の判断）。
+</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> ベンダーのサポート窓口や Web コンソールに、実データ・接続情報・クエリを渡している</td><td class=sm>**漏えい対象に問い合わせ情報と SQL エディタの実行履歴が含まれる**（出典1）。
+</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 1つのサービスアカウントが複数のクラウドプロジェクト・環境に到達できる</td><td class=sm>**同社の対応に「クラウドプロジェクト間の過剰な権限を削除」が含まれる**（出典2）。
+**到達範囲が影響範囲になる**（本記録の評価）。
+</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> オブジェクトストレージのアクセスログや大量エクスポートの通知が未整備である</td><td class=sm>**本件は28日間検知されず、同社は侵害後にログの追加有効化と
+大量エクスポートの通知強化を進めている**（出典2。本記録の算出）。
+</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 海外ベンダーの侵害時に、日本語の案内だけで対応方針を決めている</td><td class=sm>**本件は日英で記述の粒度が異なる**〈差異1〉（出典1・2）。
+</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月（2026年10月21日13時05分に追記） PingCAP株式会社（日本法人）</span> <a href="https://pingcap.co.jp/trust-hub/security/security-update-october-2026/" target="_blank" rel="noreferrer noopener nofollow">不正アクセスによる情報漏洩に関するお詫びとご報告</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（**日本語の一次公表。** **2026年9月9日〜10月7日（米国時間）に
+不正取得された認証情報で社内システムへアクセスされ、データが複製された。
+日本国内で最大約5万件の個人情報が漏洩したことが判明。
+漏えいが確認された情報は TiDB Cloud アカウント情報・取引関連情報・
+API キーの Public Key 部分（Private Key は流出しておらず、
+Public Key だけでは操作できない）。
+TiDB Cloud への不正アクセスとクレジットカード情報の流出は確認されていない。
+対応として、キーのローテーション・権限とネットワーク管理の見直し・
+脅威検知の導入・法執行機関への届出と各国監督当局への報告。
+顧客にはログ確認・ロール見直し・API キーのローテーション・
+なりすましメールへの注意を依頼。窓口は security-jp@pingcap.com。
+10月21日13時05分の追記で問い合わせ情報（サポートチケット情報）が対象に追加。
+公表日そのものの明記は無い**）
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月19日 PingCAP（Trust Hub）</span> <a href="https://www.pingcap.com/trust-hub/security/security-update-october-2026/" target="_blank" rel="noreferrer noopener nofollow">Security Update — October 2026</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（**英語の一次公表。原文英語。** **盗まれたサービスアカウントの認証情報による
+侵入、暗号化された API キーの値を含むテーブルの流出（復号鍵は未露出・
+検証した1件はそのままでは使用不可）、ソースコードの入手、
+TiDB 内データへの影響の証拠は無いが「データ流出の範囲を否定するものではない」との留保。
+実施済み対応として 10月7日からの認証情報の無効化、10月10日の追加削除と
+プロジェクト間の過剰な権限の削除・ストレージのアクセスログ追加有効化、
+外部機関が10月12〜13日に報告した脆弱性4件の10月14日までの修正と再検証。
+継続中の作業として顧客ごとの影響範囲の特定、修正済み脆弱性の過去の悪用確認、
+追加の認証情報流出の確認、監査ログと大量エクスポートの通知強化。
+外部のインシデント対応会社・法律事務所・フォレンジック専門家が関与（社名は非公表）。
+問い合わせは security@pingcap.com**）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月2日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/11/02/56640.html" target="_blank" rel="noreferrer noopener nofollow">PingCAPに不正アクセス、日本国内で最大約5万件の個人情報が漏えい</a> <span class="b kind">記事</span><span class=sm>（（**国内報道。** **日本法人の公表を伝え、
+不正アクセスの期間・認識日・無効化の開始・
+漏えいが確認された情報の3分類（TiDB Cloud アカウント情報・取引関連情報・
+API キーの Public Key 部分）を列挙している。
+ソースコードの持ち出しには触れていない**）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月3日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月2日収集分の記事
+〈output/articles/20261102/0034_scannetsecurity_pingcap5.md〉を起点に、
+一次公表の日本語版（pingcap.co.jp）と英語版（pingcap.com Trust Hub）の
+双方を取得して突き合わせた。
+**API キーの記述とソースコードの扱いが日英で一致していないため、
+両方を併記して〈差異1〉に記録した。**
+**CEO 更新が言及すると報じられた GitHub アカウント侵害、
+および攻撃者を名乗る主体の窃取規模の主張は、
+原文を取得できていないため数値・事実として採らず
+〈差異2〉〈差異3〉に残した。**
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">PingCAP</span><span class="b tag">TiDB Cloud</span><span class="b tag">API キー</span><span class="b tag">サービスアカウント</span><span class="b tag">クラウド基盤の侵害</span><span class="b tag">鍵のローテーション</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-03 10:49 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Alpine Linux が GitLab を再構築 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0843</span>Alpine Linux が GitLab を再構築</h1>
+<header class="site-header">
+  <p class="subtitle">Alpine Linux が2026年10月28日、自前の GitLab（gitlab.alpinelinux.org）に対して **CVSS 10.0 の CVE-2026-97229 の悪用が試みられた**と公表した—— **修正版の公開から1週間後**、新規登録アカウントが細工した CI 設定を投げ、 **GitLab のワーカーを8回クラッシュさせ、うち4回は悪用の途中まで到達**していた。 **10月13日に修正版 19.3.5 ではなく 19.3.4 を誤って入れ**、 10月22日の 19.3.6 への更新も**修正が GitLab のコードではなく 同社が自社パッケージにのみ適用する Ruby へのパッチだったため効かなかった**。 **コード実行の証拠は見つからなかったが、必要なログが既に失われており否定できない**ため、 **侵害されたものとして扱い GitLab をゼロから作り直した**</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b type2">脆弱性</span><span class="b st">続報が止まり調査も完了</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span><span class="b cause">作業ミス・誤操作</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月28日</span>
+  <span>最終更新: 2026年11月3日（公表2本を取得して本文を確認した時点）</span>
+</div>
+
+<div class="lead"><p><strong>「製品のバージョンを上げた」が、脆弱性の修正を適用したことにならない事例です。</strong></p>
+<p><strong>2026年10月28日、Alpine Linux は自前の GitLab（gitlab.alpinelinux.org）に対してCVE-2026-97229（CVSS 10.0）の悪用が試みられたことを公表しました</strong>（出典1）。<strong>10月30日には復旧後の利用者向け手順を別記事として公表しています</strong>（出典2）。</p>
+<p><strong>攻撃の経緯</strong>（出典1。すべて同プロジェクトの公表内容）。</p>
+<ul>
+<li><strong>10月20日</strong>、<strong>新規登録されたアカウント</strong>がアカウントを作って探りを始めた。</li>
+<li><strong>10月20日〜21日</strong>、<strong>細工した CI 設定</strong>を投げ、<strong>GitLab のワーカープロセスを8回クラッシュ</strong>させた。<strong>そのうち4回は、攻撃者が悪用の途中まで到達し、次の段階で失敗</strong>している。<strong>10月21日が主たる攻撃</strong>で、クラッシュ・502 エラー・CI ジョブの失敗として表に出た。</li>
+<li><strong>攻撃者は Alpine の GitLab コンテナイメージもダウンロード</strong>しており、<strong>自分たちの正確なビルドに合わせて攻撃を調整していたことを示唆する</strong>とされています。</li>
+<li><strong>10月23日</strong>、攻撃者のアカウントをブロック。<strong>10月25日〜26日に攻撃者が戻って再試行したが失敗。</strong></li>
+</ul>
+<p><strong>脆弱な状態が続いた理由</strong>（出典1）。</p>
+<ul>
+<li><strong>10月12日、GitLab が修正版を公開。</strong> しかし<strong>10月13日、Alpine は修正の入った 19.3.5 ではなく誤って 19.3.4 を入れた</strong>（原文英語: "by mistake"）。</li>
+<li><strong>10月22日に 19.3.6 へ上げたが、これでも直らなかった。</strong> <strong>「修正は GitLab 自身のコードではなく、GitLab が自社の公式パッケージにのみ適用するRuby へのパッチである。我々のイメージは標準の Ruby を使っていたため、パッチを受け取らなかった」</strong>（原文英語）。</li>
+<li><strong>10月26日、更新後もまだ脆弱であることを発見。</strong></li>
+<li><strong>上流の Ruby が修正を出したのは10月23日</strong>（Ruby 3.3.13・3.4.12・4.0.9）。</li>
+</ul>
+<p><strong>判断と対応</strong>（出典1・2）。</p>
+<ul>
+<li><strong>10月27日、開発者とビルドサーバを除く全員に対して GitLab を閉鎖し、再構築を開始。</strong></li>
+<li><strong>10月28日、再構築が完了。全パスワードをリセットし、GitLab の秘密鍵を交換。</strong></li>
+<li><strong>10月29日、19.3.7 に上げて再開。10月30日に利用者向けの手順を公表。</strong></li>
+<li><strong>判断の理由は明示されています</strong>—— <strong>「コード実行を否定できず、それを確認するために必要な証拠はもう存在しないため、我々は困難な道を選び、GitLab インスタンスをゼロから作り直した」</strong>（原文英語）。</li>
+</ul>
+<p><strong>本記録が要点と見たのは、次の4点です。</strong></p>
+<ul>
+<li><strong>「バージョンを上げた」が修正の適用を意味しなかった。</strong> <strong>修正の実体は Ruby へのパッチで、GitLab は自社の公式パッケージとコンテナイメージにのみそれを適用していました</strong>（出典1）。<strong>自前のイメージ・ソースからの構築で GitLab を運用している組織は、GitLab を最新版にしても直っていません。</strong> <strong>Alpine は「GitLab を自分の Ruby で動かしている場合、GitLab を上げるだけでは足りない。Ruby 3.3.13・3.4.12・4.0.9 以降も必要だ」と明記しています</strong>（出典1）。<strong>これは本件で最も再現性の高い学びです</strong>（本記録の評価）。</li>
+<li><strong>「否定できない」を理由に、否定できる形へ作り直した。</strong> <strong>改ざんの痕跡は見つかっていません</strong>（aports・パッケージ・10月21日のリリースはいずれもGitLab の外の記録と突き合わせて検証済み）。<strong>署名鍵も GitLab サーバには一度も置いていない。</strong> <strong>それでも「成功した悪用はクラッシュも Web ログの痕跡も残さない」「攻撃当日のログの一部が既に失われている」「外向き通信の記録を取っておらず、ホスティング事業者も保持していない」という3点を理由に、侵害されたものとして扱いました</strong>（出典1）。<strong>本記録はこの判断を、本DBに収めた事案のなかで最も明晰なものと評価します</strong>（本記録の評価）。</li>
+<li><strong>「もし成功していたら何が露出したか」を列挙して公表した。</strong>利用者全員のメールアドレス・氏名・IPアドレス、パスワードハッシュ、2FA の秘密・CI/CD 変数・Runner トークン、Webhook・連携・プッシュミラーの認証情報、パーソナルアクセストークン（ハッシュ）、非公開リポジトリと非公開の課題・マージリクエスト（出典1）。<strong>確認されたわけではない情報を「もしも」の形で先に出しておくことで、利用者が自分で判断して動けるようになっています</strong>（本記録の評価）。</li>
+<li><strong>攻撃者は防御側のビルドをダウンロードして攻撃を合わせてきた。</strong> <strong>公開されているコンテナイメージの取得自体は正常な行為であり、それ単体では不審に見えません</strong>（本記録の評価）。<strong>自分が公開している成果物が、自分への攻撃の調整材料になるという構造は、OSS プロジェクトに限らず、公開イメージや公開ビルドを持つすべての組織に当てはまります。</strong></li>
+</ul></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>攻撃者の素性・所在・動機</span><span class="b rsn">公表されていない</span><div class=sm>公表は**「新規登録されたアカウント」**（原文英語: &quot;a newly registered account&quot;）と 述べるのみで、**素性・所在・動機のいずれにも触れていない**（出典1）。 **攻撃者が Alpine の GitLab コンテナイメージをダウンロードして 攻撃を正確なビルドに合わせていたことから、 Alpine を特定の標的として選んだとは読めるが、 Alpine はそれ以上の帰属を述べていない**（本記録の整理）。 **「サプライチェーン攻撃を準備していたかもしれない」という評価は BleepingComputer の記述であり、Alpine の公表には無い**（出典1・3）〈差異3〉。 **また、他サイトから漏えいしたパスワードを用いた自動ログイン試行の観測は 別途述べられているが、本件の攻撃者によるものとは述べられていない**（出典1・2）。</div></li><li><span class=ui>gitlab.alpinelinux.org の利用者数（露出しえた情報の対象者数）</span><span class="b rsn">公表されていない</span><div class=sm>**「もし成功していたら露出しえた情報」として 「全利用者のメールアドレス・氏名・IPアドレス」が挙げられているが、 その人数は公表されていない**（出典1）。 **全パスワードがリセットされ、2FA も全アカウントでリセットされているが、 対象アカウント数は示されていない**（出典2）。 **本記録は人数を推定しない。**</div></li><li><span class=ui>悪用の「途中まで」がどの段階だったか</span><span class="b rsn">公表されていない</span><div class=sm>**「8回のクラッシュのうち4回で、攻撃者は悪用の途中まで進み、 次の段階で失敗した」**とされているが（出典1）、 **「途中まで」「次の段階」が具体的に何を指すかは示されていない。** **これが分からないと、同じ構成の第三者は 「自分のところでは成功していたかもしれない」かどうかを判断できない**（本記録の評価）。 **なお Alpine が悪用の詳細を伏せたことは、 KEV に収載された脆弱性の悪用手順を広めない配慮とも読めるが、 Alpine はそう説明していない**（本記録の推定・断定しない）。</div></li><li><span class=ui>誰が最初に異常に気づいたか（検知の端緒）</span><span class="b rsn">公表されていない</span><div class=sm>**公表されたタイムラインは10月21日を「主たる攻撃。GitLab のクラッシュ・ 502 エラー・CI ジョブの失敗」と記しているが、 誰がいつ「これは攻撃である」と判断したかは示されていない**（出典1）。 **利用者からの障害報告によるものか、自分たちの監視によるものかも分からない。** **攻撃者のアカウントがブロックされたのは10月23日であり、 10月21日との間に2日ある**（本記録の確認）。 **このため「検知から封じ込めまで」の所要も算出できない。**</div></li><li><span class=ui>外部の調査機関の関与・第三者によるレビューの有無</span><span class="b rsn">公表されていない</span><div class=sm>**公表に外部の調査機関・セキュリティ企業の関与についての記述は無い**（出典1）。 **10月30日の記事に「インシデントの調査とサーバの再構築を手伝ってくれた すべての人に感謝する」という謝辞があるのみで、 それがプロジェクト内のボランティアか外部の専門家かは区別できない**（出典2）。 **結果として、「コード実行の証拠は無い」という認定の客観性を 外部から検証する材料は無い**（本記録の評価）。 **ただし Alpine は寄付とボランティアで運営されるプロジェクトであり、 外部調査の費用を前提にできる体制ではないことに留意が必要である**（本記録の留保）。</div></li><li><span class=ui>CI 実行系とリポジトリ・認証情報の保持系の分離について</span><span class="b rsn">公表されていない</span><div class=sm>**再発防止策4点（修正済みの Ruby・1日以内のパッチ適用と同梱コンポーネントの確認・ 外向き接続とデータベース接続の記録と保持期間の延長・署名付きリリースタグ）に、 系の分離への言及は無い**（出典1）。 **本件の攻撃経路は CI 設定の正規表現の評価であり、 そこから「もし成功していたら露出しえた情報」の一覧は 利用者全員のメールアドレスから非公開リポジトリまで広がっている。** **CI 設定を評価する処理が、これらを保持する系と同じ特権で動いていたことになる** （本記録の評価）。 **分離を検討したが採らなかったのか、議題に上がっていないのかは分からない。**</div></li><li><span class=ui>コード実行・データの持ち出しが実際に起きたか</span><span class="b rsn">証拠が失われ確認不可</span><div class=sm>**Alpine は「コード実行の証拠は見つからなかったが、否定することはできない」と 明記している**（出典1）。 **否定できない理由として3点が挙げられている**—— **①成功した悪用は、クラッシュも Web ログの痕跡も残さない。 ②攻撃当日のログの一部が既に失われている （バックグラウンドジョブのログ、旧コンテナのファイルシステム）。 ③外向きのネットワーク接続の記録を取っておらず、 ホスティング事業者も保持していない。** **これは「調べていない」ではなく「確認に必要な証拠が存在しない」状態である**（本記録の整理）。 **本記録は、この項目が今後も確定しないと判断している**—— **失われたログは戻らない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Alpine Linux（プロジェクト）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GitLab Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Ruby（上流）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（新規登録アカウント・素性非公表）</span><span class="b role">推定加害者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>gitlab.alpinelinux.org の利用者（開発者・貢献者）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Alpine Linux のパッケージ・リリース利用者（下流）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">被害なし確認</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>細工した CI 設定により GitLab のワーカープロセスがクラッシュした回数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>回</span></div><div class=fn>**2026年10月20日・21日の攻撃による**（出典1。原文英語: &quot;This crashed GitLab worker processes 8 times&quot;）。 **クラッシュ・502 エラー・CI ジョブの失敗として表に出ており、 本件が検知された経路はこの可視的な障害である**（本記録の整理）。 **単位は「回」であり、攻撃の試行回数とは必ずしも一致しない。**</div></div><div class=fig><div class=fh><span class=fl>悪用の途中まで到達したクラッシュの回数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>回</span></div><div class=fn>**8回のクラッシュのうち4回で、攻撃者は悪用の途中まで進み、次の段階で失敗した**（出典1。 原文英語: &quot;In 4 of those crashes the attacker got partway through the exploit and failed at the next step&quot;）。 **「途中まで」の具体的な段階は公表されていない**〈未確定3〉。 **性質を「未遂・阻止された分」としたのは、 Alpine が「コード実行の証拠は見つからなかった」と述べているためである**（本記録の判断）。 **ただし Alpine 自身が「成功を否定できない」としていることに留意が必要である。**</div></div><div class=fig><div class=fh><span class=fl>aports のコミットとパッケージの検証に使ったビルダの台数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>45<span class=fu>台</span></div><div class=fn>**「攻撃者が到達できない記録——ある開発者のクローンと45台すべてのビルダ——と 突き合わせて確認した」**（出典1。原文英語: &quot;a developer&#x27;s clone and all 45 builders&quot;）。 **これは改ざんの有無を GitLab の外側から検証した具体的な方法であり、 本件で最も再現可能な手続きである**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>事案当時の GitLab のログ保持期間</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**再発防止策として「ログをこれまでより長く保持する（14日より長く）」と 述べられていることから、事案当時の保持期間が14日であったと読める**（出典1。 原文英語: &quot;keep logs longer than 14 days&quot;）。 **本件では攻撃当日のログの一部（バックグラウンドジョブのログ、 旧コンテナのファイルシステム）が既に失われており、 コード実行の有無を確認できなかった**（出典1）。 **保持期間そのものが直接の原因とは述べられていない**ことに留意が必要である（本記録の注記）。</div></div><div class=fig><div class=fh><span class=fl>GitLab の修正版公開から攻撃の開始までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>日</span></div><div class=fn>本記録の作成者による算出。2026年10月12日（GitLab が修正版を公開）から 10月20日（攻撃者がアカウントを登録し探りを始めた）まで。 **Alpine 自身は「修正の公開から1週間後」と表現している**（出典1。 原文英語: &quot;a week after the fix was released&quot;）。</div></div><div class=fig><div class=fh><span class=fl>「更新したのに脆弱だった」期間（19.3.6 への更新から、まだ脆弱と気づくまで）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fn>本記録の作成者による算出。2026年10月22日（GitLab 19.3.6 へ更新）から 10月26日（更新後もまだ脆弱であることを発見）まで。 **本記録がこの値を置いたのは、「対処済み」と認識している期間が 実際には無防備である状態を測るためである**（本記録の明示）。 **この4日間には10月25日〜26日の攻撃者の再試行が含まれる**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>修正版の公開から GitLab を閉鎖するまで、脆弱なまま稼働していた日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>15<span class=fu>日</span></div><div class=fn>本記録の作成者による算出。2026年10月12日（GitLab が修正版を公開）から 10月27日（開発者とビルドサーバを除く全員に対して GitLab を閉鎖）まで。 **Alpine は「我々の GitLab は10月27日に閉じるまで脆弱なままだった」と明記している**（出典1。 原文英語: &quot;Our GitLab stayed vulnerable until we closed it on October 27&quot;）。 **修正版の公開前から脆弱であったことは当然であり、 この値が測っているのは「直せる状態になってから直るまで」である**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>GitLab を公開停止していた日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>2<span class=fu>日</span></div><div class=fn>本記録の作成者による算出。2026年10月27日（開発者とビルドサーバを除く全員に閉鎖）から 10月29日（19.3.7 に上げて再開）まで。 **この間もパッケージミラー・cgit・メーリングリスト・IRC は通常どおり稼働していた**（出典1）。 **ゼロからの再構築を含めて2日で再開している**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>再構築後に公表された新しい SSH ホスト鍵の指紋の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>**ED25519・ECDSA・RSA の3種の SHA256 指紋が公表された**（出典2）。 **あわせて `~/.ssh/known_hosts` に直接追記するための公開鍵そのものも掲載されている。** **ホスト鍵が変わるため初回の git pull/push で警告が出ることと、 `ssh-keygen -R gitlab.alpinelinux.org` で古い鍵を削除する手順も示されている**（本記録の整理）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>以下は Alpine Linux の公表2本に書かれた事実関係を段階ごとに並べたものである。 **本件は悪用の試みであり、成功は確認されていない**（出典1）。 **攻撃の各段階は具体的に公表されている**—— 新規アカウントの登録と探り、公開コンテナイメージの取得による攻撃の調整、 細工した CI 設定の投入、8回のワーカークラッシュ（うち4回は途中まで到達）、 アカウントのブロック後の再試行。 **一方、コード実行・持ち出しの段階は「否定できない」という形でしか書けていない**—— **成功した悪用は痕跡を残さず、必要なログが既に失われていたためである**（出典1）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>**2026年10月20日、攻撃者が gitlab.alpinelinux.org にアカウントを登録し、探りを始めた**（出典1）。 **あわせて、Alpine の GitLab コンテナイメージをダウンロードしている** ——**Alpine は「我々の正確なビルドに合わせて攻撃を調整していたことを示唆する」と述べている。**</div><div class=fn>根拠: Alpine Linux「GitLab security incident」のタイムラインおよび本文</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**2026年10月20日・21日、新規登録されたアカウントが細工した CI 設定を Alpine の GitLab へ送った。インスタンスはまだ 19.3.4 を実行しており、 10月12日の修正を持っていなかった**（出典1）。 **これにより GitLab のワーカープロセスが8回クラッシュし、 そのうち4回で攻撃者は悪用の途中まで進み、次の段階で失敗した。** **10月21日が主たる攻撃で、クラッシュ・502 エラー・CI ジョブの失敗として表に出た。**</div><div class=fn>根拠: Alpine Linux の公表本文（クラッシュ回数と部分到達の回数を明示）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**攻撃者がサーバ上でコードを実行した証拠は見つかっていない。 しかし否定することはできない**（出典1。原文英語: &quot;We have found no evidence that the attacker ran code on the server, but we cannot rule it out&quot;）。 **確認のために行われたこと**—— **タイミングの探査では遅延が見られず、 想定外のファイル・鍵・フック・プロセスも見つからなかった。 Web や API のリクエストを通じて非公開データが攻撃者へ返された形跡も、 見られる範囲では無かった。**</div><div class=fn>根拠: Alpine Linux の公表「What we found」および「Why we can&#x27;t be sure」</div></li><li><div class=stg><span class="b stage">4. 認証情報アクセス</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**もし悪用が成功していた場合に露出しえた情報として、 Alpine は次を列挙している**（出典1）—— **全利用者のメールアドレス・氏名・IPアドレス、パスワードハッシュ、 2FA の秘密・CI/CD 変数・Runner トークン、 Webhook・連携・プッシュミラーの認証情報、 パーソナルアクセストークン（ハッシュとして保存）、 非公開リポジトリおよび非公開の課題とマージリクエスト。** **いずれについても露出は確認されていない。** **一方、Alpine のパッケージとリリースに署名する鍵は、 GitLab サーバに置かれていないし、これまで一度も置かれたことがない。**</div><div class=fn>根拠: Alpine Linux の公表「What could have been exposed if the attack succeeded」</div></li><li><div class=stg><span class="b stage">5. 永続化</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**2026年10月23日に攻撃者のアカウントがブロックされた後、 10月25日〜26日に攻撃者が戻って再び侵入を試みたが失敗した**（出典1）。 **この時点で Alpine のインスタンスはまだ脆弱であった** ——**19.3.6 への更新後もまだ脆弱であることが分かったのは10月26日である**（本記録の整理）。 **また、想定外のファイル・鍵・フック・プロセスは見つかっておらず、 足場が残された証拠は無い。**</div><div class=fn>根拠: Alpine Linux の公表タイムラインおよび「What we found」</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>攻撃の開始から可視的な障害として表に出るまで</div><div class=mv>2026年10月20日（攻撃者がアカウントを登録し探りを開始）から 10月21日（主たる攻撃。クラッシュ・502 エラー・CI ジョブの失敗）まで（出典1）。 **これは「侵入から検知まで」ではない**—— **攻撃は成功していないため侵入は発生しておらず、 また検知した正確な日時は公表されていない**〈未確定4〉。 **攻撃者のアカウントがブロックされたのは10月23日である。**</div></div><div class=met><div class=ml>攻撃の開始から攻撃者のアカウントをブロックするまで</div><div class=mv>2026年10月20日から10月23日（攻撃者のアカウントをブロック）まで（出典1）。 **ただしこれは封じ込めの完了ではない**—— **攻撃者は10月25日〜26日に戻って再試行しており、 脆弱性そのものが閉じたのは10月27日の閉鎖と10月28日の再構築である**（本記録の明示）。</div></div><div class=met><div class=ml>攻撃の開始から公表まで</div><div class=mv>2026年10月20日から10月28日（ブログ記事の公表）まで（出典1）。 **公表は再構築の完了と同日であり、 「調査と対応が終わってから出す」形になっている**（本記録の整理）。 **なお公表の内容には、分かったこと・断定できないこと・ もし成功していたら露出しえた情報・再発防止策がいずれも含まれている。**</div></div><div class=met><div class=ml>GitLab の閉鎖から再開まで</div><div class=mv>2026年10月27日（開発者とビルドサーバを除く全員に対して閉鎖・再構築開始）から 10月29日（19.3.7 に上げて再開）まで（出典1）。 **ゼロからの再構築・全パスワードのリセット・秘密鍵の交換を含めて2日である。** **この間もパッケージミラー・cgit・メーリングリスト・IRC は通常どおり稼働していた。**</div></div><div class=met><div class=ml>攻撃の開始から再開まで</div><div class=mv>2026年10月20日から10月29日の再開まで（出典1）。 **うち10月22日から26日までの4日間は、 「19.3.6 へ更新したので対処済み」という認識のまま脆弱であった**（本記録の算出）。 **利用者向けの再設定手順が示されたのは10月30日である**（出典2）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**2026年10月27日、開発者とビルドサーバを除く全員に対して GitLab を閉鎖し、 インスタンスをゼロから再構築した。** **攻撃は緩和できており、改ざんの痕跡も見つかっていなかったが、 それでも「侵害された」ものとして扱った**（出典1）。</div><div class=fn><b>トレードオフ:</b> **再構築は、足場が残っている可能性を一括して消せる唯一の手段である。** **「調べて見つからなかった」で済ませる場合、 見つからなかったのは無いからなのか、見る手段が無いからなのかを区別できない** ——**本件はまさに後者の状態にあった**（本記録の評価）。 **代償は大きい。** 2日間の閉鎖、全パスワード・2FA・トークンのリセット、 **CI/CD 変数の値の全損**、連携設定の再入力、SSH ホスト鍵の変更による 全利用者への警告、そして再構築に要した人手である（出典1・2）。 **プロジェクトの貢献者全員に作業を発生させる判断でもある。**</div></li><li><div class=ui>**全パスワードをリセットし、GitLab の秘密鍵を交換した。** **結果として 2FA（認証アプリ・セキュリティキーの双方）・古いリカバリコード・ パーソナルアクセストークン・フィード URL のトークン・ 非公開メールアドレス・CI/CD 変数の値・連携設定のトークンがすべて失効した。** **一方、利用者の SSH 鍵と GPG 鍵は保持し、 GitHub・GitLab.com・postmarketOS 経由のサインインも維持した**（出典1・2）。</div><div class=fn><b>トレードオフ:</b> **交換しなければ、露出していた場合に攻撃者が後から使える。** **交換すれば、全利用者と全プロジェクト管理者に再設定作業が発生する。** **本件は「失効させるもの」と「保持するもの」を区別している**（本記録の整理）—— **SSH 鍵と GPG 鍵は利用者が持つ公開鍵であり、 サーバ側の秘密が漏れても危険にならないため保持できる。** **逆に CI/CD 変数の値は、サーバ側に平文相当で保持される秘密なので捨てるしかない。**</div></li><li><div class=ui>**「見つかったこと」「確信が持てない理由」「もし成功していたら露出しえた情報」を 分けて公表した。** **あわせて、日付ごとのインシデントタイムライン、FAQ、再発防止策4点を掲載した。** **外向き通信の記録を取っていなかったこと、 攻撃当日のログの一部が失われていたことも明記した**（出典1）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **自分たちの運用の欠落（ログの不足・バージョンの取り違え）を書くことは、 プロジェクトの信頼を一時的に損なう。** **一方、書かなければ利用者は「確認されていない」の確度を判断できず、 自分のアクセストークンや CI/CD 変数を差し替えるべきかも決められない**（本記録の評価）。 **「もし成功していたら」の列挙は、不要な不安を与える可能性と、 利用者が自分で判断できるようになる利益を引き換えにしている。**</div></li><li><div class=ui>**2026年10月28日（再構築完了と同日）に経緯と調査結果を公表し、 10月30日（再開の翌日）に利用者向けの再設定手順を別記事として公表した。** **10月28日の記事には後から「10月30日更新」として再開の告知が追記された**（出典1・2）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **10月21日の障害（502 エラー・CI ジョブの失敗）は利用者から見えていたため、 公表までの7日間は「GitLab が不調」という状態が説明されないまま続いたことになる** （本記録の評価。Alpine はこの点に触れていない）。 **一方、調査結果と対応をまとめて出すことで、 利用者は「何を再設定すべきか」を1度に受け取れる。** **2本に分けたことで、インシデントの説明と作業手順が混ざらずに読める**（本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>「GitLab を上げた」が修正の適用にならなかった——修正は製品の外の Ruby にあった<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>本件の技術的な中核は、修正がどこにあったかである。</strong></p>
+<p>Alpine の公表は次のように述べている（出典1。原文英語・訳は本記録）。</p>
+<blockquote>
+<p>CVE-2026-97229 は、GitLab が CI 設定の正規表現を評価する方法にある重大な（CVSS 10.0）脆弱性である。<strong>根本のバグは、Ruby に組み込まれた正規表現エンジン Onigmo にある。</strong> GitLab は10月12日に修正版をリリースしたが、<strong>修正そのものは、GitLab が自社のパッケージとコンテナイメージに同梱している Ruby へのパッチの集合である。</strong> <strong>上流の Ruby が修正を出荷したのは10月23日</strong>で、Ruby 3.3.13・3.4.12・4.0.9 に含まれる。</p>
+<p><strong>19.3.6 への更新（10月22日）では脆弱性は直らなかった。</strong>修正は GitLab 自身のコードではなく Ruby へのパッチにあり、<strong>GitLab はそれを自社の公式パッケージにのみ適用している。我々のイメージは標準の Ruby を使っていたため、パッチを受け取らなかった。</strong></p>
+<p><strong>GitLab を（ソースから、あるいは自分のコンテナイメージで）自前の Ruby で動かしている場合、GitLab を上げるだけでは足りない。Ruby 3.3.13・3.4.12・4.0.9 以降も必要である。</strong></p>
+</blockquote>
+<p><strong>ここから読み取れることを整理する</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>「製品のバージョンを上げた」という行為が、脆弱性の修正を適用したことを意味しない場合がある。</strong> <strong>脆弱性は製品にあるのではなく、製品が同梱している言語処理系にあった。</strong>製品ベンダーは自社のパッケージ経路でそれを塞いだが、<strong>その経路を使っていない運用者には届かない。</strong></li>
+<li><strong>時間差も効いている。</strong> GitLab の修正版は10月12日、上流 Ruby の修正は10月23日である。<strong>その間の11日間、自前の Ruby で GitLab を動かしていた運用者には、適用できる上流の修正が存在しなかった</strong>—— <strong>GitLab の公式パッケージ・公式イメージに乗り換えるか、GitLab のパッチを自分で Ruby に当てるかしかなかったことになる</strong>（本記録の評価）。</li>
+<li><strong>「19.3.4 を誤って入れた」の方は、人のミスである。</strong> <strong>Alpine は 2026年10月13日に、修正の入った 19.3.5 ではなく 19.3.4 を入れたと自ら明記している</strong>（原文英語: "by mistake"）。<strong>1つ違いのバージョン番号は取り違えやすい。</strong> <strong>なお本DBの INC-2026-0476 は、CVE-2026-97229 の修正版について報道と2つの政府系 CERT が「19.3.4」と記載し GitLab 自身の記載（19.3.5）と食い違っていたことを記録している。</strong> <strong>Alpine はその食い違いを取り違えの理由として挙げていない</strong>ため、<strong>本記録は両者を結び付けない</strong>〈差異1〉。</li>
+</ul>
+<p><strong>影響はコンテナイメージの利用者にも及んでいる</strong>（出典1）。<strong><code>alpinelinux/gitlab</code> イメージを使っている場合は、<code>alpinelinux/gitlab:19.3.6</code> を改めて取得する必要がある</strong>——<strong>10月27日に公開されたイメージが Ruby 3.3.13 を含み、CVE-2026-97229 に対処している。10月27日より前に取得した 19.3.6 イメージ、および古いすべてのタグは脆弱である。</strong></p></section>
+<section id="s7"><h2>攻撃は8回のクラッシュとして表に出た——うち4回は悪用の途中まで到達していた<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1]</span></h2><p><strong>本件が検知された経路は、可視的な障害である</strong>（本記録の整理）。</p>
+<p>Alpine の公表によれば（出典1。原文英語・訳は本記録）、</p>
+<blockquote>
+<p><strong>10月20日と21日、新規登録されたアカウントが細工した CI 設定を我々の GitLab インスタンスへ送った。</strong>インスタンスはまだ 19.3.4 を実行しており、10月12日の修正を持っていなかった。<strong>これにより GitLab のワーカープロセスが8回クラッシュした。そのうち4回のクラッシュでは、攻撃者は悪用の途中まで進み、次の段階で失敗した。</strong> <strong>攻撃者は我々の GitLab コンテナイメージもダウンロードしており、我々の正確なビルドに合わせて攻撃を調整していたことを示唆する。</strong>攻撃者がサーバ上でコードを実行した証拠は見つかっていないが、否定することはできない。</p>
+</blockquote>
+<p>公表されたタイムラインでは、<strong>10月21日が「主たる攻撃」とされ、「GitLab のクラッシュ・502 エラー・CI ジョブの失敗」が併記されている</strong>（出典1）。</p>
+<p><strong>ここに2つの含意がある</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>攻撃が失敗したからこそ気づけた。</strong> <strong>8回のクラッシュと502エラーと CI の失敗は、利用者から見れば「GitLab が不調」である。</strong> <strong>攻撃者が悪用に成功していれば、これらは発生しなかった</strong>—— <strong>Alpine 自身が「成功した悪用はクラッシュも Web ログの痕跡も残さない」と明記している</strong>（出典1）。<strong>つまり本件の検知は、攻撃の不出来に依存している。</strong></li>
+<li><strong>攻撃者は防御側の正確なビルドを手に入れて調整していた。</strong> <strong>Alpine が公開している GitLab コンテナイメージのダウンロードは、それ自体まったく正常な行為である</strong>（本記録の評価）。<strong>公開イメージ・公開ビルドを持つ組織は、自分の成果物が自分への攻撃の調整材料になるという構造を抱えている</strong>—— <strong>これは OSS プロジェクトに限らない。</strong></li>
+</ul>
+<p><strong>検知の端緒が「誰が最初に気づいたか」という形では公表されていない</strong>（本記録の確認）〈未確定4〉。<strong>502 エラーと CI の失敗が利用者から報告されたのか、自分たちの監視で気づいたのかは示されていない。</strong></p></section>
+<section id="s8"><h2>「否定できない」を理由に、否定できる形へ作り直した<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>Alpine が公表した判断の理由は、本DBに収めた事案のなかで最も明晰である</strong>（本記録の評価）。</p>
+<p>公表の FAQ は次のとおりである（出典1。原文英語・訳は本記録）。</p>
+<blockquote>
+<p><strong>攻撃を緩和できたのに、なぜ GitLab を再構築したのか。</strong> <strong>コード実行を否定できず、それを確認するために必要な証拠はもう存在しないため、我々は困難な道を選び、GitLab インスタンスをゼロから作り直した。</strong>これにより、成功しえた悪用が残したかもしれない足場を取り除く。</p>
+</blockquote>
+<p><strong>判断を支える3つの事実が、分けて示されている</strong>（出典1）。</p>
+<p><strong>（A）見つかったこと</strong></p>
+<ul>
+<li><strong>Alpine のリリースとパッケージは改変されていない。</strong> 10月21日の安定版リリース（3.21.9・3.22.7・3.23.7・3.24.3。ISO イメージと公式 alpine Docker イメージのもとになる minirootfs tarball を含む）、および10月20日から24日に構築された全パッケージは、<strong>GitLab の外の記録と突き合わせて検証した aports のコミットから来ている。</strong></li>
+<li><strong>署名鍵は露出していない。</strong> <strong>Alpine のパッケージとリリースに署名する鍵は、GitLab サーバに置かれていないし、これまで一度も置かれたことがない。</strong></li>
+<li><strong>攻撃者のコードが動いた証拠は無い。</strong> <strong>タイミングの探査では遅延が見られず、想定外のファイル・鍵・フック・プロセスも見つからなかった。</strong></li>
+<li><strong>Web や API のリクエストを通じて非公開データが攻撃者へ返された形跡は、我々が見られる範囲では無い。</strong></li>
+</ul>
+<p><strong>（B）確信が持てない理由</strong></p>
+<ul>
+<li><strong>成功した悪用は、クラッシュも Web ログの痕跡も残さない。</strong></li>
+<li><strong>攻撃当日のログの一部が既に失われている</strong>（バックグラウンドジョブのログ、旧コンテナのファイルシステム）。</li>
+<li><strong>外向きのネットワーク接続の記録を取っておらず、ホスティング事業者も保持していない。</strong></li>
+</ul>
+<p><strong>（C）もし成功していたら露出しえた情報</strong></p>
+<ul>
+<li>全利用者のメールアドレス・氏名・IPアドレス</li>
+<li>パスワードハッシュ</li>
+<li>2FA の秘密・CI/CD 変数・Runner トークン</li>
+<li>Webhook・連携・プッシュミラーの認証情報</li>
+<li>パーソナルアクセストークン（ハッシュとして保存）</li>
+<li>非公開リポジトリ、および非公開の課題とマージリクエスト</li>
+</ul>
+<p><strong>本記録がこの構成を評価する理由は3点ある</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>「何を調べて、何が分かったか」と「調べられなかった理由」を分けている。</strong> <strong>「痕跡なし」で終わる公表は、調べた範囲を示さないため読者が確度を判断できない。</strong> <strong>本件は「成功した悪用なら痕跡が残らない」という調査手法の限界そのものを書いている。</strong></li>
+<li><strong>ログが無いことを隠していない。</strong> <strong>外向き通信の記録を取っていなかったこと、ホスティング事業者も保持していないことを明記し、それを再発防止策（外向き接続とデータベース接続の記録・保持期間の延長）に直結させている。</strong></li>
+<li><strong>確認されていない情報の露出可能性を、先に列挙している。</strong> <strong>「確認されていないので何も言わない」のではなく、「もし成功していたらこれが出た」という形で利用者に判断材料を渡している</strong>—— <strong>結果として、利用者は CI/CD 変数の値を新しい認証情報に差し替えるという具体的な行動を取れる</strong>（出典2）。</li>
+</ul>
+<p><strong>なお、外部の調査機関を入れたかどうかは公表されていない</strong>（本記録の確認）〈未確定5〉。<strong>謝辞として「インシデントの調査とサーバの再構築を手伝ってくれたすべての人に感謝する」と述べられているのみである</strong>（出典2）。</p></section>
+<section id="s9"><h2>改ざんの検証は「GitLab の外の記録」と突き合わせて行われた<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p><strong>本件で最も再現可能な手続きは、改ざんの有無を侵害された系の外側から検証した方法である</strong>（本記録の評価）。</p>
+<p>Alpine の公表は次のとおりである（出典1。原文英語・訳は本記録）。</p>
+<blockquote>
+<p><strong>10月20日から22日に追加された aports の全コミットは、既知の開発者による記録されたプッシュを経て届いている。</strong> <strong>我々はこれを、攻撃者が到達できない記録と突き合わせて確認した——ある開発者のクローンと、45台すべてのビルダである。</strong> <strong>10月20日から24日に全アーキテクチャで構築された全パッケージは、git.alpinelinux.org に公開されたとおりのコミットから来ている。</strong> 10月21日のリリース（3.21.9・3.22.7・3.23.7・3.24.3）は、それと同じ検証済みのコミットから構築された。<strong>我々はこれらの検査を10月24日に実施し、10月20日から22日のコミットと10月24日までに構築されたパッケージを対象とした。我々の GitLab は10月27日に閉じるまで脆弱なままだったので、同じ検査をその日まで拡張している。</strong></p>
+</blockquote>
+<p><strong>この手続きの性質を整理する</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>検証の基準を、侵害された可能性のある系の外側に置いている。</strong> <strong>GitLab 上の記録だけで「改ざんされていない」と言っても、その記録自体が書き換えられた可能性を排除できない。</strong> <strong>開発者の手元のクローンと、45台のビルダがそれぞれ持つ記録は、攻撃者が GitLab を取ったとしても到達できない。</strong></li>
+<li><strong>検証の対象期間と、検証を行った日を分けて書いている。</strong> <strong>10月24日に検査し、対象はコミットが10月22日まで、パッケージが10月24日まで。その後も脆弱だった10月27日までへ検査を拡張している。</strong> <strong>「いつまでを検証したか」が明示されているため、読者は残った不確かさの範囲を判断できる。</strong></li>
+<li><strong>署名鍵が系の外にあったことが、独立した安心の根拠になっている。</strong> <strong>「Alpine のパッケージとリリースに署名する鍵は、GitLab サーバに置かれていないし、これまで一度も置かれたことがない」</strong>（出典1）。<strong>これは本件の対応ではなく、事前の設計判断である</strong>（本記録の評価）。</li>
+</ul>
+<p><strong>再発防止策のひとつに「署名付きリリースタグ——GitLab から独立してリリースを検証できるようにする」が挙げられている</strong>（出典1）。<strong>本件の検証は人手で記録を突き合わせる形だったが、それを仕組みに移す方向である</strong>（本記録の整理）。</p></section>
+<section id="s10"><h2>再開時に何を捨てたか——秘密鍵を交換したことの波及<span class="b slot">復旧の経過</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>10月28日に再構築が完了し、全パスワードがリセットされ、GitLab の秘密鍵が交換された</strong>（出典1）。<strong>10月30日の記事は、その結果として利用者側で何が効かなくなるかを列挙している</strong>（出典2）。</p>
+<p><strong>全員が行うこと</strong></p>
+<ul>
+<li><strong>新しいパスワードの設定。</strong> 全パスワードがリセットされたため、サインインページの「Forgot your password?」から設定する。<strong>GitHub・GitLab.com・postmarketOS でのサインインは引き続き使える。</strong></li>
+<li><strong>2FA の再設定。</strong> <strong>認証アプリ・セキュリティキーの双方がリセットされ、古いリカバリコードは無効。</strong> 認証アプリから古い <code>gitlab.alpinelinux.org</code> の項目を削除する。</li>
+<li><strong>新しい SSH ホスト鍵の受け入れ。</strong> <strong>サーバの SSH ホスト鍵が新しくなったため、初回の git pull/push で警告が出る。</strong> <code>ssh-keygen -R gitlab.alpinelinux.org</code> で古い鍵を削除し、公表された3種の SHA256 指紋（ED25519・ECDSA・RSA）と照合する。<strong>利用者側の SSH 鍵と GPG 鍵は保持されており、再登録は不要。</strong></li>
+<li><strong>パーソナルアクセストークンの再作成。</strong> 以前作成したものは無効。</li>
+<li><strong>フィード URL とメールアドレスの更新。</strong> <strong>RSS・カレンダーフィードの URL に含まれるトークン、課題作成やメール返信に使う非公開メールアドレスがリセットされた。</strong></li>
+</ul>
+<p><strong>プロジェクト管理者が行うこと</strong></p>
+<ul>
+<li><strong>CI/CD 変数の値の再入力。</strong> <strong>値はすべて失われている</strong>（変数自体は名前と設定とともに残っているが値は空）。パイプラインスケジュールの変数も同様。<strong>「古い値は露出した可能性があるものとして扱うこと。可能な場合は、古いものではなく新しい認証情報を使うこと」</strong>と明記されている。</li>
+<li><strong>連携・Webhook・ミラーの確認。</strong> <strong>連携設定は動作しなくなっているためトークンとパスワードを再入力する。Webhook とプッシュミラーは新サーバへ移されて動作するが、秘密トークンとパスワードが露出した可能性があるため新しいものに差し替える。OAuth アプリケーションを持っている場合はその秘密も更新する。</strong></li>
+</ul>
+<p><strong>運用の変更</strong></p>
+<ul>
+<li><strong>メールアドレスとパスワードで新規登録したアカウントは、使用開始前に管理者の承認が必要になった</strong>（出典2）。<strong>本件の攻撃者は10月20日に新規登録したアカウントから攻撃を始めている</strong>（出典1）ため、<strong>これは攻撃の前提条件そのものへの対処である</strong>（本記録の整理）。</li>
+<li><strong>他サイトから漏えいしたパスワードを用いた自動ログイン試行を観測しているとして、同じパスワードを他で使っている場合はそちらも変更するよう呼びかけている</strong>（出典1・2）。</li>
+</ul>
+<p><strong>ここに現れているのは、「秘密鍵を交換する」という1つの決定が利用者側の再設定作業へ広く波及するという構造である</strong>（本記録の評価）。<strong>Alpine はその波及をすべて列挙し、何が保持され何が失われたかを区別して示した。</strong> <strong>再構築を選べるかどうかは、この一覧を事前に書けるかどうかに依存する</strong>（本記録の評価）。</p></section>
+<section id="s11"><h2>再発防止策は4つ——いずれも本件で機能しなかった点に対応している<span class="b slot">再発防止</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>Alpine が公表した再発防止策は次の4つである</strong>（出典1。原文英語・訳は本記録）。</p>
+<blockquote>
+<p><strong>この出来事に対して我々が変えること</strong><br />
+- <strong>修正済みの Ruby</strong>：再構築したインスタンスは修正の入った Ruby（3.3.13 以降）で動く。<br />
+- <strong>より速いパッチ適用</strong>：GitLab の重大なセキュリティリリースを1日以内に適用し、<strong>各リリースについて、我々自身のビルドが適用しなければならないRuby やその他のコンポーネントのパッチが含まれていないかを確認する。</strong><br />
+- <strong>より良いログ</strong>：<strong>GitLab ホストからの外向き接続とデータベース接続を記録し、ログを14日より長く保持する。</strong><br />
+- <strong>署名付きリリースタグ</strong>：GitLab から独立してリリースを検証できるようにする。</p>
+</blockquote>
+<p><strong>4つはいずれも、本件で機能しなかった点に1対1で対応している</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>再発防止策</th>
+<th>本件で起きたこと</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>修正済みの Ruby</td>
+<td>自前イメージが標準 Ruby を使っており、GitLab のパッチを受け取らなかった</td>
+</tr>
+<tr>
+<td>1日以内の適用＋<strong>他コンポーネントのパッチの確認</strong></td>
+<td>10月13日に 19.3.4 を誤って入れ、10月22日の 19.3.6 でも直らなかった</td>
+</tr>
+<tr>
+<td>外向き接続とデータベース接続の記録・保持期間の延長</td>
+<td><strong>外向き通信の記録が無く、攻撃当日のログの一部も失われており、コード実行の有無を確認できなかった</strong></td>
+</tr>
+<tr>
+<td>署名付きリリースタグ</td>
+<td>改ざんの検証を、開発者のクローンと45台のビルダに人手で突き合わせて行った</td>
+</tr>
+</tbody>
+</table>
+<p><strong>本記録が注目するのは2つ目の後半である</strong>（本記録の評価）。<strong>「各リリースについて、我々自身のビルドが適用しなければならないRuby やその他のコンポーネントのパッチが含まれていないかを確認する」</strong>—— <strong>これは「製品を上げる」から「製品の修正がどこにあるかを読む」への変更である。</strong> <strong>自前でビルドして運用している組織に固有の作業であり、ベンダーのパッケージをそのまま使っている組織には発生しない</strong>（本記録の整理）。<strong>逆に言えば、自前ビルドを選んだ時点でこの作業が義務として付いてくる。</strong></p>
+<p><strong>一方、次の点は再発防止策に含まれていない</strong>（本記録の確認）。</p>
+<ul>
+<li><strong>新規登録の制限</strong>は10月30日の記事で運用変更として示されているが（出典2）、<strong>10月28日の再発防止策の一覧には含まれていない</strong>（本記録の確認）。</li>
+<li><strong>CI ジョブを実行する系と、リポジトリ・認証情報を保持する系の分離</strong>については言及が無い〈未確定6〉。<strong>本件の攻撃経路は CI 設定の評価であり、そこから到達できた範囲が「もし成功していたら露出しえた情報」の一覧の広さを決めている</strong>（本記録の評価）。</li>
+<li><strong>外部の調査機関の関与や、第三者によるレビューの導入</strong>についての記述は無い〈未確定5〉。</li>
+</ul></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月28日　<b>補足:</b> **コード実行・データの持ち出し・認証情報の悪用はいずれも確認されていない**（出典1）。 **「Web や API のリクエストを通じて非公開データが攻撃者へ返された形跡は、 我々が見られる範囲では無い」**とされている（原文英語: &quot;No private data was returned to the attacker through any web or API request we can see&quot;）。 **ただし Alpine 自身が「成功した悪用はクラッシュも Web ログの痕跡も残さない」 「外向き通信の記録を取っていない」と明記しており、 確認されていないことが起きていないことを意味しない**（本記録の評価）〈未確定7〉。 **別に、他サイトから漏えいしたパスワードを用いた自動ログイン試行を 観測しているとされているが、これは本件の攻撃者によるものとは述べられていない**（出典1・2）。　<b>出典:</b> 1、2</td></tr><tr><th>ログの有無</th><td>**著しく不足していた。Alpine 自身が3点を明示している**（出典1。原文英語・訳は本記録）。 **①「成功した悪用は、クラッシュも Web ログの痕跡も残さない」** ——**検知に使えた8回のクラッシュは、攻撃が失敗したことの副産物である**（本記録の評価）。 **②「攻撃当日のログの一部が既に失われている」** ——**失われたのはバックグラウンドジョブのログと、旧コンテナのファイルシステムである。** **③「外向きのネットワーク接続の記録を取っておらず、 ホスティング事業者も保持していない」。** **結果として、「コード実行を否定できず、それを確認するために必要な証拠はもう存在しない」** という状態になり、**これが GitLab をゼロから作り直す判断の直接の根拠になった**（出典1）。 **一方、残っていた記録でできたこともある**—— **タイミングの探査で遅延が無いことを確認し、想定外のファイル・鍵・フック・プロセスが 無いことを確認している。** **また改ざんの検証は GitLab の外の記録（開発者のクローンと45台のビルダ）で成立した。** **再発防止策として、外向き接続とデータベース接続の記録、 および保持期間を14日より長くすることが挙げられている。**</td></tr><tr><th>運用への影響</th><td><div class=sub><b>impact:</b> GitLab のワーカープロセスが8回クラッシュし、502 エラーと CI ジョブの失敗が発生した　<b>補足:</b> **2026年10月20日・21日。10月21日が主たる攻撃**（出典1）。 **本件が検知された経路はこの可視的な障害である**（本記録の整理）。　<b>出典:</b> 1</div><div class=sub><b>impact:</b> 2026年10月27日から29日まで、GitLab を開発者とビルドサーバを除く全員に対して閉鎖した　<b>補足:</b> **閉鎖は2日間**（本記録の算出）。 **この間もパッケージミラー・cgit・メーリングリスト・IRC は通常どおり稼働していた**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>impact:</b> GitLab インスタンスをゼロから再構築し、全パスワードをリセットし、GitLab の秘密鍵を交換した　<b>補足:</b> **再構築は10月27日開始・10月28日完了。10月29日に 19.3.7 で再開**（出典1）。 **利用者側では 2FA・パーソナルアクセストークン・フィードのトークン・ 非公開メールアドレス・CI/CD 変数の値・連携のトークンがいずれも失効した**（出典2）。 **利用者の SSH 鍵と GPG 鍵は保持された。**　<b>出典:</b> 1、2</div><div class=sub><b>impact:</b> SSH ホスト鍵が変わり、利用者は初回の git 操作で警告を受ける　<b>補足:</b> **ED25519・ECDSA・RSA の3種の新しい SHA256 指紋が公表された**（出典2）。　<b>出典:</b> 2</div><div class=sub><b>impact:</b> 10月27日より前に取得した alpinelinux/gitlab:19.3.6 イメージおよび古いタグはすべて脆弱　<b>補足:</b> **10月27日に再公開された `alpinelinux/gitlab:19.3.6`（Ruby 3.3.13 を含む）を 改めて取得するよう案内されている**（出典1）。 **これは Alpine の GitLab イメージを使っている第三者にも及ぶ影響である**（本記録の整理）。　<b>出典:</b> 1</div><div class=sub><b>impact:</b> Alpine のパッケージ・リリース・aports には改ざんの痕跡が無いと検証された　<b>補足:</b> **10月21日の安定版リリース（3.21.9・3.22.7・3.23.7・3.24.3）と 10月20日〜24日に構築された全パッケージ、 10月20日〜22日に追加された aports の全コミットが対象**（出典1）。 **検証は GitLab の外の記録（開発者のクローンと45台のビルダ）と突き合わせて行われた。** **検査は10月27日までへ拡張されている。**　<b>出典:</b> 1</div><span class="b rsn">stated</span></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 再構築したインスタンスを修正の入った Ruby（3.3.13 以降）で動かす　<b>副作用:</b> **本件の直接の原因（自前イメージが標準 Ruby を使い GitLab のパッチを受け取らなかったこと）に 対応する**（出典1）。 **代償として、GitLab の各リリースに対して自前ビルドが追随すべき コンポーネントのパッチを毎回確認する作業が恒常的に発生する。**　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> GitLab の重大なセキュリティリリースを1日以内に適用し、各リリースについて自前ビルドが適用すべき Ruby やその他のコンポーネントのパッチを確認する　<b>副作用:</b> **「製品を上げる」から「製品の修正がどこにあるかを読む」への変更である**（本記録の評価）。 **1日以内という目標は、検証の時間を削ることと引き換えである**—— **緊急適用による障害のリスクを引き受けることになる**（本記録の評価。Alpine はこの点に触れていない）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> GitLab ホストからの外向き接続とデータベース接続を記録し、ログを14日より長く保持する　<b>副作用:</b> **本件で「コード実行を否定できない」状態を作った3点のうち2点に対応する**（出典1）。 **代償として保存容量と、記録される接続先情報の取り扱い （貢献者の IP アドレスを含む可能性）の管理が増える**（本記録の評価。Alpine はこの点に触れていない）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 署名付きリリースタグを導入し、GitLab から独立してリリースを検証できるようにする　<b>副作用:</b> **本件の検証は開発者のクローンと45台のビルダへの人手の突き合わせで成立したが、 それを仕組みに移すものである**（出典1。本記録の整理）。 **代償として、タグ署名の鍵の管理が新たに必要になる** ——**ただし Alpine はパッケージ署名鍵を GitLab サーバに置かない方針を既に持っている**（本記録の整理）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> メールアドレスとパスワードで新規登録したアカウントに管理者の承認を必須とした　<b>副作用:</b> **本件の攻撃者は新規登録したアカウントから攻撃を始めており、 攻撃の前提条件そのものへの対処である**（出典1・2。本記録の整理）。 **代償として新規貢献者の参加に遅れが生じる**—— **Alpine は「早く承認されるには #alpine-infra で知らせてほしい」と案内している**（出典2）。 **なお、この変更は10月28日の再発防止策の一覧には含まれていない**（本記録の確認）。　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> 利用者に対し、同じパスワードを他サイトで使っている場合の変更を呼びかけた　<b>副作用:</b> **「他サイトから漏えいしたパスワードを用いた自動ログイン試行を 我々の GitLab に対して観測している」と理由を添えている**（出典1・2）。 **これは本件の攻撃とは別の脅威への注意喚起であり、 本件で露出しえた情報（パスワードハッシュ）と結び付けて読める形になっている**（本記録の整理）。　<b>出典:</b> 1、2</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月12日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**GitLab が CVE-2026-97229 の修正版をリリースした**（出典1）。 **修正の実体は、GitLab が自社のパッケージに同梱する Ruby へのパッチの集合である** （原文英語: &quot;the fix itself is a set of patches to the Ruby that GitLab bundles in its own packages and container images&quot;）。 **GitLab は、特定の条件下で細工した正規表現を CI/CD パイプライン設定に投入することで 攻撃者が本脆弱性を発火させうると警告した**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年10月13日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**CVE-2026-97229 が公表され、Alpine は修正の入った 19.3.5 ではなく 誤って GitLab 19.3.4 へ上げた**（出典1。原文英語: &quot;we upgraded to GitLab 19.3.4 instead of 19.3.5 (which had the fix) by mistake&quot;）。 **この時点で、Alpine は「対処済み」と認識しながら脆弱なまま稼働している状態に入った** （本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年10月20日</td><td class=nowrap><span class="b kind">発生</span></td><td>**攻撃者がアカウントを登録し、探りを始めた**（出典1。 原文英語: &quot;Attacker registers an account and starts probing&quot;）。 **gitlab.alpinelinux.org は当時、新規登録が可能な状態であった**（本記録の整理。 再開後は管理者承認が必須になっている・出典2）。</td></tr><tr><td class="sm nowrap tw">2026年10月20日〜21日</td><td class=nowrap><span class="b kind">発生</span></td><td>**新規登録されたアカウントが、細工した CI 設定を Alpine の GitLab へ送った。 当時のインスタンスは 19.3.4 を実行しており、10月12日の修正を持っていなかった。 これにより GitLab のワーカープロセスが8回クラッシュし、 そのうち4回で攻撃者は悪用の途中まで到達し、次の段階で失敗した**（出典1）。 **攻撃者は Alpine の GitLab コンテナイメージもダウンロードしており、 Alpine の正確なビルドに合わせて攻撃を調整していたことを示唆するとされる。** **Alpine は「攻撃者がサーバ上でコードを実行した証拠は見つかっていないが、 否定することはできない」と述べている。**</td></tr><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">検知</span></td><td>**主たる攻撃。GitLab のクラッシュ・502 エラー・CI ジョブの失敗が発生した**（出典1。 原文英語: &quot;Main attack; GitLab crashes, 502 errors and failed CI jobs&quot;）。 **同日、Alpine は安定版リリース 3.21.9・3.22.7・3.23.7・3.24.3 を公開している** ——**後にこれらが改ざんされていないことが検証された**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月22日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**GitLab 19.3.6 へ更新した。しかしこれでも脆弱性は直らなかった**（出典1）。 **理由は、修正が GitLab 自身のコードではなく、 GitLab が自社の公式パッケージにのみ適用する Ruby へのパッチだったためである。 Alpine の自前イメージは標準の Ruby を使っており、このパッチを受け取らなかった。**</td></tr><tr><td class="sm nowrap tw">2026年10月23日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**攻撃者のアカウントをブロックした。同日、上流の Ruby が修正をリリースした** （Ruby 3.3.13・3.4.12・4.0.9）（出典1）。 **GitLab の修正版公開（10月12日）から11日後であり、 自前の Ruby で GitLab を動かしていた運用者には、 この日まで適用できる上流の修正が存在しなかった**（本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年10月24日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**aports・パッケージ・10月21日のリリースを、GitLab の外の記録と突き合わせて検証した**（出典1）。 **10月20日から22日に追加された aports の全コミットが、 既知の開発者による記録されたプッシュを経ていること、 および10月20日から24日に全アーキテクチャで構築された全パッケージが git.alpinelinux.org に公開されたコミットから来ていることを、 ある開発者のクローンと45台すべてのビルダと突き合わせて確認した。**</td></tr><tr><td class="sm nowrap tw">2026年10月25日〜26日</td><td class=nowrap><span class="b kind">発生</span></td><td>**攻撃者が戻り、再び侵入を試みたが失敗した**（出典1。 原文英語: &quot;Attacker returns and tries to get back in; attempts fail&quot;）。 **この時点で Alpine はまだ脆弱な状態にあった**（10月26日に判明・本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">判明</span></td><td>**19.3.6 への更新後もインスタンスがまだ脆弱であることを発見した**（出典1。 原文英語: &quot;Found the instance still vulnerable after the upgrade&quot;）。 **10月22日の更新から4日間、「対処済み」という認識のまま脆弱であった**（本記録の算出）。</td></tr><tr><td class="sm nowrap tw">2026年10月27日</td><td class=nowrap><span class="b kind">サービス停止</span></td><td>**開発者とビルドサーバを除く全員に対して GitLab を閉鎖し、再構築を開始した**（出典1）。 **同日、`alpinelinux/gitlab:19.3.6` コンテナイメージを Ruby 3.3.13 を含む形で 再公開した**——**これより前に取得した 19.3.6 イメージおよびそれ以前のすべてのタグは脆弱である**（出典1）。 **Alpine は「我々の GitLab は10月27日に閉じるまで脆弱なままだった」と明記している。**</td></tr><tr><td class="sm nowrap tw">2026年10月28日</td><td class=nowrap><span class="b kind">公表</span></td><td>**再構築が完了し、全パスワードをリセットし、GitLab の秘密鍵を交換した**（出典1）。 **同日、Alpine Linux がブログ記事 「GitLab security incident: attempted exploitation of CVE-2026-97229」を公表した** ——経緯・タイムライン・分かったこと・断定できないこと・ もし成功していたら露出しえた情報・FAQ・再発防止策を含む（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月29日</td><td class=nowrap><span class="b kind">サービス再開</span></td><td>**GitLab を 19.3.7 に上げて再開した**（出典1のタイムライン）。 **再開後のインスタンスは、修正を含む Ruby 3.3.13 で動いている**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年10月30日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Alpine Linux が「GitLab is back: what you need to do」を公表し、 利用者・プロジェクト管理者が再設定すべき項目を列挙した**（出典2）。 **パスワードの再設定（「Forgot your password?」から）・2FA の再設定・ 新しい SSH ホスト鍵の受け入れ（3種の SHA256 指紋を掲載）・ パーソナルアクセストークンの再作成・フィード URL と非公開メールアドレスの更新・ CI/CD 変数の値の再入力・連携設定のトークンとパスワードの再入力・ Webhook とプッシュミラーの秘密トークンの差し替え・OAuth アプリの秘密の更新**を案内した。 **あわせて、メールアドレスとパスワードで新規登録したアカウントは 管理者の承認が必須になったことを示した。** **10月28日の記事にも「10月30日更新」として再開の告知が追記された。**</td></tr><tr><td class="sm nowrap tw">2026年11月1日〜2日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>BleepingComputer（11月1日・出典3）と iThome Security（台湾・11月2日・出典4）が本件を記事化した。 **BleepingComputer は Alpine の公表内容を正確に伝えているが、 「A later upgrade to 19.3.6 also failed to close the flaw」と記しており、 Alpine の公表が明示する「10月13日に 19.3.4 を誤って入れた」という時系列とは 記述の順序が異なる**（本記録の確認）。 **iThome Security は「該專案雖在10月22日將其GitLab升級為13.9.6版」と記しており、 バージョン番号が誤っている**（正しくは 19.3.6）〈差異2〉。</td></tr><tr><td class="sm nowrap tw">2026年11月3日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、Alpine Linux の公表2本（10月28日・10月30日）を取得して本文を逐語で確認し、 ニュースアーカイブに本件のそれ以降の追加記事が無いことを確認した** （本記録の確認。公表された出来事ではない）。</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">本記録による推定</span><span class=ui>「19.3.4 を誤って入れた」ことと、修正版の番号が外部資料で誤記されていたことの間に 因果を示す資料は無い</span><div class=sm>**Alpine は「10月13日、我々は修正の入った 19.3.5 ではなく誤って 19.3.4 へ上げた」と 述べるのみで、取り違えの理由を説明していない**（出典1。原文英語: &quot;by mistake&quot;）。 **一方、本DBの INC-2026-0476 は、CVE-2026-97229 の修正版について 報道と2つの政府系 CERT が「19.3.4」と記載し、 GitLab 自身の記載（19.3.5）と食い違っていたことを記録している。** **本記録は両者を結び付けない。** **Alpine はその食い違いに言及しておらず、 取り違えが外部資料の誤記に由来するとする資料は存在しない**（本記録の明示）。 **sections の cause 節では両者を併置したうえで、因果を結ばないことを明記した。** **併置の意図は、「1つ違いのバージョン番号は取り違えやすく、 外部資料の誤記も実際に発生していた」という環境を示すことにある。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>iThome Security（台湾）の記事がバージョン番号を誤記している</span><div class=sm>**iThome Security の記事は「該專案雖在10月22日將其GitLab升級為13.9.6版」と記している**（出典4）。 **Alpine の公表は「Upgraded to GitLab 19.3.6」である**（出典1）。 **「13.9.6」は誤記であり、正しくは 19.3.6 である。** **また同記事は「Alpine Linix」という綴りの誤りも含む。** **本記録は出典4を本件の起点となった記事のひとつとして記録しているが、 数値・バージョン番号はすべて一次公表（出典1）から取っている**（本記録の明示）。 **なお同記事のそれ以外の記述（10月20〜21日の攻撃・8回のクラッシュ・ 4回の部分到達・コンテナイメージのダウンロード・10月27日の閉鎖・ 10月29日の再開・Ruby パッチが未適用だったこと）は一次公表と整合している。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>「攻撃者はサプライチェーン攻撃を準備していたかもしれない」という評価は 報道の記述であり、Alpine の公表には無い</span><div class=sm>**BleepingComputer は「The Alpine Linux team found that the attackers downloaded its GitLab container image, suggesting they may have been preparing a supply-chain attack」と記している**（出典3）。 **Alpine の公表は「攻撃者は我々の GitLab コンテナイメージもダウンロードしており、 我々の正確なビルドに合わせて攻撃を調整していたことを示唆する」までで、 「サプライチェーン攻撃を準備していた」という評価は含まれていない**（出典1。本記録の確認）。 **BleepingComputer は別に「aports のビルドレシピをホストしているため 価値あるサプライチェーンの標的になる」という背景説明も行っているが、 これは記事の解説である。** **本記録は攻撃者の意図を未確定1に置き、 timeline・attack.chain にはこの評価を使っていない**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>CISA による KEV 収載は本記録が独立に検証していない</span><div class=sm>**本記録は冒頭の「日本との関わり」の注記および sections で、 CVE-2026-97229 が2026年10月29日に CISA の KEV（悪用が確認された脆弱性の一覧）へ 収載されたことに言及している。** **この事実は本DBの INC-2026-0476 が JSON 原本で確認したものであり、 本記録の作成者が独立に検証したものではない**（本記録の明示）。 **Alpine の公表（出典1・2）には KEV への言及が無い。** **本記録は KEV 収載日を figures・timeline のいずれにも入れていない。** **読者が確認する場合は CISA の KEV カタログを直接参照する必要がある。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>Alpine Linux の GitLab 事案——修正がどこにあったか、そして何が検証できたか</div><div class=svgwrap><svg viewBox="0 0 998 412" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,206.0 C193.0,206.0 193.0,250.0 220,250.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,206.0 C193.0,206.0 193.0,155.0 220,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,155.0 C397.0,155.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,206.0 C499.0,206.0 499.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,308.0 C499.0,308.0 499.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,155.0 628,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C703.0,60.0 703.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C907.0,60.0 907.0,257.0 832,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C703.0,162.0 703.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C907.0,162.0 907.0,352.0 832,352.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,257.0 C805.0,257.0 805.0,257.0 832,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="169.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（10/20 新規</text><text x="91.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">登録・素性非公表）</text><text x="91.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">10/23 にブロック後</text><text x="91.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10">、10/25〜26 に再</text><rect x="220" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工した CI 設定（正</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">規表現）</text><text x="295.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">ワーカーを8回クラッシュ</text><text x="295.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">・うち4回は途中まで到達</text><rect x="220" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公開 GitLab コン</text><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">テナイメージ（攻撃者がダ</text><text x="295.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウンロード）</text><text x="295.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">正確なビルドに合わせて攻</text><text x="295.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">撃を調整したことを示唆</text><rect x="424" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gitlab.alpin</text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">elinux.org（1</text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9.3.4 → 19.…</text><text x="499.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">aports・コードレビ</text><text x="499.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">ュー・CI ジョブをホス</text><rect x="424" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">10/13 に 19.3</text><text x="499.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.5 ではなく 19.3</text><text x="499.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.4 を誤って導入</text><text x="499.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">Alpine 自身が b</text><text x="499.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">y mistake と記</text><rect x="424" y="264.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正は GitLab 公</text><text x="499.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">式パッケージ内の Rub</text><text x="499.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">y へのパッチ（自前イ…</text><text x="499.0" y="327.0" text-anchor="middle" fill="#f48fb1" font-size="10">19.3.6 へ上げても</text><text x="499.0" y="339.0" text-anchor="middle" fill="#f48fb1" font-size="10">直らなかった。上流 Ru</text><rect x="628" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">露出しえた情報（メール・</text><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">氏名・IP・パスワードハ</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッシュ・2FA秘密・C…</text><text x="703.0" y="174.0" text-anchor="middle" fill="#ffcc80" font-size="10">いずれも露出は確認されて</text><text x="703.0" y="186.0" text-anchor="middle" fill="#ffcc80" font-size="10">いない</text><rect x="628" y="213.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パッケージ・リリースの署</text><text x="703.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">名鍵（GitLab サー</text><text x="703.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バには一度も置かれてい…</text><text x="703.0" y="276.0" text-anchor="middle" fill="#ffcc80" font-size="10">本件で最も効いた事前の設</text><text x="703.0" y="288.0" text-anchor="middle" fill="#ffcc80" font-size="10">計判断</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitLab の外の記録</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（開発者のクローン＋45</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">台のビルダ）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">aports・パッケージ</text><text x="907.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">・10/21 リリースの</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ゼロからの再構築（10/</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">27 閉鎖 → 10/2</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">8 完了 → 10/2…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">全パスワードをリセットし</text><text x="907.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10"> GitLab の秘密鍵</text><rect x="832" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Alpine のパッケー</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジ・リリースの利用者</text><text x="907.0" y="269.0" text-anchor="middle" fill="#8892b0" font-size="10">改ざんの痕跡なし。ただし</text><text x="907.0" y="281.0" text-anchor="middle" fill="#8892b0" font-size="10">古い alpinelin</text><rect x="832" y="308.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="907.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gitlab.alpin</text><text x="907.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">elinux.org の</text><text x="907.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者・プロジェクト管…</text><text x="907.0" y="371.0" text-anchor="middle" fill="#8892b0" font-size="10">パスワード・2FA・トー</text><text x="907.0" y="383.0" text-anchor="middle" fill="#8892b0" font-size="10">クン・CI/CD 変数の</text></svg></div><div class=fn>layer 0 は攻撃者（10月20日に新規登録したアカウント・素性非公表）。 layer 1 は攻撃の入口——**細工した CI 設定**と、 **攻撃の調整に使われた公開 GitLab コンテナイメージ**。 layer 2 は標的の GitLab インスタンスと、**脆弱なまま残った理由の2つ** （10月13日の 19.3.4 への取り違えと、10月22日の 19.3.6 で修正が入らなかったこと）。 layer 3 は「もし成功していたら露出しえた情報」と、 **GitLab サーバに置かれていなかった署名鍵**。 **署名鍵へ向かう線が引けないことが、本件で最も重要な事前の設計である。** layer 4 は検証と対応——**GitLab の外の記録（開発者のクローンと45台のビルダ）による 改ざんの検証**、ゼロからの再構築、そして配布物の利用者。 **図の要点は、layer 2 の「修正の所在」が GitLab のコードではなく GitLab 公式パッケージ内の Ruby にあったことにある**（本記録の評価）。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**後から振り返れば、新規アカウントの登録とコンテナイメージの取得という 2つの事象が揃っていた**（出典1）。 **ただし、どちらも単体では不審に見えない**（本記録の評価）—— **新規登録は自由に行える状態であり、 公開されているコンテナイメージの取得はまったく正常な行為である。** **公表に「この時点で気づけた」という記述は無い**ため、 **本記録が「機会はあったが検知できなかった」と判断したのは 記録上に事象が現れていたという意味であり、Alpine がそう述べたわけではない**（本記録の明示）。 **再開後は新規登録に管理者承認が必須になっており、この段階への対処になっている**（出典2）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>新規アカウントの登録に管理者承認を必須とし、承認前は CI を含む機能を使えないようにする</div><div class=ctl><span class="b eff">検知できた</span>新規アカウントが最初に行った操作（プロジェクト作成・CI 設定の投入）を別枠で記録し、通知する</div><div class=ctl><span class="b eff">影響を限定できた</span>自分が公開しているコンテナイメージ・ビルドが攻撃の調整材料になることを前提に、公開版と本番稼働版の構成を一致させない</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">検知した</span><div class=sm>**検知された。8回のクラッシュ・502 エラー・CI ジョブの失敗として 可視的な障害になっている**（出典1）。 **ただしこの検知は攻撃の失敗に依存している**—— **Alpine 自身が「成功した悪用はクラッシュも Web ログの痕跡も残さない」と 明記している**（本記録の評価）。 **誰が最初に気づいたか（利用者からの報告か自前の監視か）は公表されていない**〈未確定4〉。 **攻撃者のアカウントがブロックされたのは10月23日である**（出典1）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>GitLab のワーカープロセスの異常終了を監視対象にし、短時間に複数回の発生を攻撃の疑いとして扱う</div><div class=ctl><span class="b eff">侵入を防げた</span>CI 設定の投入を、信頼済みの貢献者または承認済みのマージリクエスト経由に限る</div><div class=ctl><span class="b eff">侵入を防げた</span>重大なセキュリティリリースの適用後に、該当の脆弱性が実際に閉じたことを検証する（版番号の確認だけで済ませない）</div><div class=ctl><span class="b eff">影響を限定できた</span>CI ジョブを実行する系と、リポジトリ・認証情報を保持する系をネットワークと権限で分離する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**Alpine が明示した3つの理由により、この段階の検知は現実的でなかった**（出典1）。 **①「成功した悪用は、クラッシュも Web ログの痕跡も残さない」** ——**検知に使えたクラッシュは、攻撃が失敗したことの副産物である。** **②「攻撃当日のログの一部が既に失われている」** （バックグラウンドジョブのログ、旧コンテナのファイルシステム）。 **③「外向きのネットワーク接続の記録を取っておらず、 ホスティング事業者も保持していない」。** **③は本来取れたはずの記録であり、再発防止策に挙げられている** （外向き接続とデータベース接続の記録・保持期間の延長）。 **本記録が「現実的な検知機会がなかった」と判断したのは①が原理的な制約であるためで、 ②③は改善可能な欠落である**（本記録の明示）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>アプリケーションホストからの外向き接続を既定で拒否し、許可した宛先への接続のみを記録付きで通す</div><div class=ctl><span class="b eff">検知できた</span>バックグラウンドジョブのログを本体とは別の保存先へ転送し、コンテナの破棄で失われない形にする</div><div class=ctl><span class="b eff">検知できた</span>ファイル・鍵・フックの完全性を基準イメージとの差分で継続的に確認する</div><div class=ctl><span class="b eff">影響を限定できた</span>アプリケーションを読み取り専用のファイルシステムで動かし、想定外の書き込みを成立させない</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">公表されていない</span><div class=sm>**データベースからの読み出しを検知する仕組みの有無は公表されていない**（出典1）。 **再発防止策に「データベース接続の記録」が挙げられていることは、 事案当時それが無かったことを示す**（本記録の評価）。 **なお「Web や API のリクエストを通じて非公開データが返された形跡は無い」という 確認は行われている**——**ただし悪用に成功した場合はそれらの経路を通らない**（本記録の整理）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>署名鍵・リリース鍵をアプリケーションサーバに置かず、別の系（オフライン・HSM）で管理する</div><div class=ctl><span class="b eff">影響を限定できた</span>CI/CD 変数・Runner トークンを外部の秘密管理に置き、アプリケーションのデータベースに値を持たせない</div><div class=ctl><span class="b eff">検知できた</span>データベースへの接続と大量の読み出しを記録し、しきい値を超えた場合に通知する</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**検知された。10月25日〜26日の再試行は観測され、失敗したことも把握されている**（出典1）。 **アカウントのブロック後も攻撃者が戻ってきたことは、 アカウント単位の封じ込めが対策として不十分であることを示す**（本記録の評価）。 **実際に脆弱性が閉じたのは10月27日の閉鎖と10月28日の再構築であり、 その間の4日間は「対処済み」という認識のまま無防備であった**（本記録の算出）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>攻撃者のアカウントをブロックした時点で、同一経路を使う全アカウントの機能（CI 設定の投入）を一時的に止める</div><div class=ctl><span class="b eff">侵入を防げた</span>脆弱性の修正を適用した後に、実際に攻撃が成立しないことを検証する手順を持つ</div><div class=ctl><span class="b eff">侵入を防げた</span>侵害が否定できない系は、足場の有無を調べるのではなく作り直す方針を事前に決めておく</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**2026年10月27日、開発者とビルドサーバを除く全員に対して GitLab を閉鎖し、 インスタンスをゼロから再構築した。** **攻撃は緩和できており、改ざんの痕跡も見つかっていなかったが、 それでも「侵害された」ものとして扱った**（出典1）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価である。**判断の根拠が「何が分からないか」で構成されている点を高く評価する。** **「痕跡が無かったので安全と判断した」ではなく、 「痕跡が無いことを確認する手段が失われていたので安全と判断できない」として 行動を選んでいる**（出典1）。 **さらに、その判断を可能にした事前の設計がある**—— **署名鍵を GitLab サーバに置かない方針と、 開発者のクローンおよび45台のビルダという GitLab の外の記録である。** **これらが無ければ、再構築しても「配布物が汚染されていないか」は答えられなかった**（本記録の評価）。 **なお、閉鎖がより早くできなかったかという点は評価が難しい**—— **10月26日まで「対処済み」と認識していたためである**（本記録の留保）。</td></tr><tr><td>**全パスワードをリセットし、GitLab の秘密鍵を交換した。** **結果として 2FA（認証アプリ・セキュリティキーの双方）・古いリカバリコード・ パーソナルアクセストークン・フィード URL のトークン・ 非公開メールアドレス・CI/CD 変数の値・連携設定のトークンがすべて失効した。** **一方、利用者の SSH 鍵と GPG 鍵は保持し、 GitHub・GitLab.com・postmarketOS 経由のサインインも維持した**（出典1・2）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価である。**「何が失効し、何が残ったか」を利用者向けの記事で 項目ごとに列挙したことを評価する**（出典2）。 **再設定の手順（パスワード・2FA・SSH ホスト鍵の指紋3種・ アクセストークン・フィード URL・CI/CD 変数・連携・Webhook・OAuth）が 役割別（全員／新規アカウント／プロジェクト管理者）に整理されている。** **さらに「古い値は露出した可能性があるものとして扱い、 可能なら新しい認証情報を使う」という指示は、 単なる再入力ではなく差し替えを求めている点で踏み込んでいる**（本記録の評価）。</td></tr><tr><td>**「見つかったこと」「確信が持てない理由」「もし成功していたら露出しえた情報」を 分けて公表した。** **あわせて、日付ごとのインシデントタイムライン、FAQ、再発防止策4点を掲載した。** **外向き通信の記録を取っていなかったこと、 攻撃当日のログの一部が失われていたことも明記した**（出典1）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価である。**本DBに収めた事案のなかで、 公表の構成として最も参考になるものと判断する。** **とくに次の3点を評価する**—— **①「成功した悪用はクラッシュも Web ログの痕跡も残さない」という 調査手法の限界そのものを書いていること。 これがあるために、読者は「痕跡なし」の意味を正しく受け取れる。** **②検証の対象期間と検証を実施した日を分けて書き、 その後も脆弱だった期間へ検査を拡張したと明示していること。** **③自分たちの取り違え（19.3.5 ではなく 19.3.4 を入れた）を タイムラインに「by mistake」として残していること。** **一方、外部の調査機関を入れたかどうかは示されておらず、 認定の客観性を外部から検証する材料は無い**〈未確定5〉。</td></tr><tr><td>**2026年10月28日（再構築完了と同日）に経緯と調査結果を公表し、 10月30日（再開の翌日）に利用者向けの再設定手順を別記事として公表した。** **10月28日の記事には後から「10月30日更新」として再開の告知が追記された**（出典1・2）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の評価である。**内容の質は高いが、時期については留保が残る。** **10月21日に可視的な障害が発生し、10月23日に攻撃者のアカウントをブロックした時点で、 「攻撃を受けている」という事実だけでも早く出す選択はありえた**（本記録の評価）。 **とくに10月22日から26日までの4日間は、 自分たちも「対処済み」と誤認していた期間であり、 同じ構成（自前の Ruby で GitLab を運用）の第三者も同じ誤認をしていた可能性が高い。** **`alpinelinux/gitlab` イメージの利用者への注意も、10月27日の再公開まで出ていない** （出典1。本記録の整理）。 **ただし、確定していない段階での公表が別の混乱を生むことも事実であり、 本記録はこれを欠陥と断じない。**</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「最新版に上げた」を是正の完了として報告させない。 修正がどこにあるかを確認させる**</div><div class=lw>本件では、**GitLab を 19.3.6 へ上げても脆弱性は閉じなかった**（出典1）。 **修正の実体は GitLab のコードではなく、 GitLab が自社の公式パッケージとコンテナイメージにのみ適用する Ruby へのパッチだったためである。** **自前のイメージやソースからの構築で運用していた Alpine は、 「上げた」のに4日間無防備だった**（本記録の算出）。 **脆弱性管理の報告が「対象製品のバージョン」で完結する運用では、 この種の見落としは報告上「完了」として通る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> 脆弱性対応の完了基準を**「版を上げた」から「該当の脆弱性が閉じたことを確認した」に変える。** **緊急度の高い CVE については、是正報告に ①適用した版、②修正の実体がどこにあるか（製品のコードか、同梱コンポーネントか）、 ③自組織の配布経路でそれが適用されるか、④閉じたことをどう確認したか**の4項目を書かせる。 **とくに「自前でビルドしている」「公式パッケージを使っていない」構成を 資産台帳で識別し、別扱いにする。**</div></li><li><div class=lp>**「侵害を否定できるか」は、事後の調査能力ではなく事前のログ設計で決まる**</div><div class=lw>本件で Alpine が再構築を選んだ理由は**「コード実行を否定できず、 それを確認するために必要な証拠はもう存在しない」**ことである（出典1）。 **欠けていたのは3点**—— **①成功した悪用は痕跡を残さない（原理的な制約）、 ②攻撃当日のログの一部が既に失われていた（保持期間14日）、 ③外向きのネットワーク接続の記録を取っておらず、ホスティング事業者も保持していない。** **②③は事前の設計で用意できた記録である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> 重要な系について、**「侵害が否定できない」と判断するコストを試算しておく**—— **再構築に要する停止時間・認証情報の全差し替え・利用者への波及作業。** **そのコストと、それを避けるために必要なログ（外向き通信・データベース接続・ バックグラウンドジョブ・保持期間）の費用を並べて比較する。** **本件はログの不足が「2日間の停止＋全利用者の再設定」という形で請求された事例である。**</div></li><li><div class=lp>**署名鍵・リリース鍵を、侵害されうる系の外に置く。これは事後にはできない**</div><div class=lw>本件で最も効いたのは**「Alpine のパッケージとリリースに署名する鍵は、 GitLab サーバに置かれていないし、これまで一度も置かれたことがない」**という 事前の設計である（出典1）。 **GitLab が侵害されたものとして扱われても、 配布物の署名の信頼は損なわれなかった。** **逆に、署名鍵が同じ系にあれば、再構築しても 「過去に配ったものが本物か」は答えられない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織の署名鍵・リリース鍵・コード署名証明書の秘密鍵がどこにあるかを確認する。** **アプリケーションサーバ・CI の環境変数・リポジトリの秘密に置かれているものは、 オフラインまたは HSM・専用の署名サービスへ移す。** **移せない場合は、「その系が侵害されたら配布物の信頼が失われる」ことを リスクとして明示的に記録する**（移さない判断自体は経営の選択でよい）。</div></li><li><div class=lp>**「確認されていない」と「起きていない」を公表文で混ぜない。 もし起きていたら何が出たかを先に列挙する**</div><div class=lw>本件の公表は**「見つかったこと」「確信が持てない理由」 「もし成功していたら露出しえた情報」を分けて書いている**（出典1）。 **結果として、利用者は CI/CD 変数の値を新しい認証情報に差し替えるという 具体的な行動を取れた**（出典2）。 **「確認されていません」で止める公表は、 読者に「では何もしなくてよいのか」を判断させない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> 自組織の侵害公表の雛形に**「もし成功していた場合に影響しえた情報」の欄を作る。** **書く内容は、①その系が保持している情報の種類、 ②それが露出した場合に読者が取るべき行動**の2つでよい。 **「確認されていない」と書くときは、同じ段落に 「確認の方法」と「その方法で確認できない範囲」を添える** ——本件の「成功した悪用はクラッシュも Web ログの痕跡も残さない」がその例である。</div></li><li><div class=lp>**自分が公開している成果物が、自分への攻撃の調整材料になることを前提に置く**</div><div class=lw>本件の攻撃者は**Alpine の GitLab コンテナイメージをダウンロードしており、 Alpine の正確なビルドに合わせて攻撃を調整していたことを示唆するとされている**（出典1）。 **公開イメージの取得はまったく正常な行為であり、検知の手がかりにはならない**（本記録の評価）。 **この構造は OSS プロジェクトに限らない**—— **公開している Docker イメージ・SDK・オンプレ版の配布物・ 求人票に書いた技術スタックはいずれも同じ役割を果たす。**</div><div class=la><b>取るべき行動</b> **自組織が外部から確認できる構成情報を棚卸しする** （公開コンテナイメージ・公開リポジトリ・配布するオンプレ版・ 技術ブログ・求人票・バナー情報）。 **本番で稼働する構成を、公開している構成と一致させない** （版・パス・設定の差分を作る）。 **公開物に本番の構成がそのまま現れる場合は、 その系の脆弱性対応を他より速い基準で運用する。**</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**同梱コンポーネント（言語処理系・ライブラリ）にある脆弱性は、 製品を上げても直らないことがある**</div><div class=lw>CVE-2026-97229 の**根本のバグは Ruby に組み込まれた正規表現エンジン Onigmo にあり、 GitLab の修正は「GitLab が自社のパッケージとコンテナイメージに同梱している Ruby へのパッチの集合」だった**（出典1）。 **Alpine の自前イメージは標準の Ruby を使っていたため、 GitLab を 19.3.6 に上げてもパッチを受け取らなかった。** **上流 Ruby が修正を出したのは GitLab の11日後（10月23日）である。**</div><div class=la><b>取るべき行動</b> **自前でビルド・コンテナ化している製品について、 「製品のソース」と「同梱コンポーネント」のどちらがベンダーのパッチの対象かを、 セキュリティリリースごとに読む。** **ベンダーのリリースノートが『当社のパッケージでは修正済み』と書いている場合は、 自分のビルドに同じパッチが入るかを確認する。** **本件の Alpine の再発防止策がまさにこれである**—— **「各リリースについて、我々自身のビルドが適用しなければならない Ruby やその他のコンポーネントのパッチが含まれていないかを確認する」。** **確認が難しい製品は、ベンダーの公式パッケージ・公式イメージへ寄せることを検討する。**</div></li><li><div class=lp>**パッチ適用の後に、脆弱性が実際に閉じたことを検証する手順を持つ**</div><div class=lw>本件では**10月22日に 19.3.6 へ上げてから10月26日まで4日間、 「対処済み」という認識のまま脆弱であった**（出典1。本記録の算出）。 **その間の10月25日〜26日に攻撃者が戻って再試行している。** **版番号の確認だけでは、本件のように修正が別のコンポーネントにある場合に 誤った安心が残る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> 重大な CVE については、**適用後に「閉じたこと」を確認する手順を1つ用意する**—— **①同梱コンポーネントの版を実際に問い合わせる** （本件なら稼働中のコンテナで `ruby -v` を確認し 3.3.13 以降かを見る）、 **②ベンダーが示す検出方法・検証スクリプトがあれば実行する、 ③検証環境で概念実証を試す（可能な場合）。** **「適用した」と「閉じた」を別のチェック項目として記録に残す。**</div></li><li><div class=lp>**外向き通信の記録を取る。これが無いと「持ち出されたか」に答えられない**</div><div class=lw>本件で Alpine が侵害を否定できなかった理由のひとつは **「外向きのネットワーク接続の記録を取っておらず、 ホスティング事業者も保持していない」**ことである（出典1）。 **「Web や API のリクエストを通じて非公開データが返された形跡は無い」ことは 確認できたが、悪用に成功した場合はそれらの経路を通らない**（本記録の整理）。 **再発防止策には「GitLab ホストからの外向き接続とデータベース接続を記録し、 ログを14日より長く保持する」が挙げられている。**</div><div class=la><b>取るべき行動</b> 重要なアプリケーションホストについて、**外向き接続を既定で拒否し、 許可した宛先への接続のみを記録付きで通す。** **データベースへの接続と大量の読み出しも記録する。** **ログは本体とは別の保存先へ転送する** ——**本件では旧コンテナのファイルシステムとともにバックグラウンドジョブのログが失われている。** **保持期間は「侵害に気づくまでの想定日数」から逆算する**（14日では足りないことが本件で示された）。</div></li><li><div class=lp>**配布物の改ざんは、侵害された系の外側の記録と突き合わせて検証する**</div><div class=lw>Alpine は**10月20日から22日に追加された aports の全コミットを、 「攻撃者が到達できない記録——ある開発者のクローンと、45台すべてのビルダ」と 突き合わせて確認した**（出典1）。 **GitLab 上の記録だけで「改ざんされていない」と言っても、 その記録自体が書き換えられた可能性を排除できない**（本記録の評価）。 **また検証の対象期間（コミットは10月22日まで・パッケージは10月24日まで）と 検証した日（10月24日）を分けて示し、脆弱だった10月27日まで検査を拡張している。**</div><div class=la><b>取るべき行動</b> **自組織のビルド成果物について、「ソースの真正性を系の外側から確認する方法」を1つ用意する** ——**開発者の手元のクローン、別の系に置いたミラー、 ビルダ側に残るコミットハッシュの記録のいずれでもよい。** **さらに署名付きのリリースタグを導入し、 リポジトリ基盤から独立してリリースを検証できるようにする** （Alpine の再発防止策のひとつ）。 **検証を行うときは、対象期間と実施日を分けて記録する。**</div></li><li><div class=lp>**CI 設定の評価は信頼されていない入力の処理である。 実行系とリポジトリ・認証情報の保持系を分ける**</div><div class=lw>本件の攻撃経路は**新規登録アカウントから投入された CI 設定の正規表現の評価**である（出典1）。 **そこから「もし成功していたら露出しえた情報」の一覧は、 利用者全員のメールアドレス・パスワードハッシュ・2FA の秘密・ CI/CD 変数・Runner トークン・非公開リポジトリまで広がっている。** **CI 設定を評価する処理が、これらを保持する系と同じ特権で動いていたことになる** （本記録の評価）。 **なお Alpine の再発防止策には、この分離への言及が無い**〈未確定6〉。</div><div class=la><b>取るべき行動</b> **CI 設定の構文解析・正規表現の評価といった「外部からの入力を処理する部分」を、 リポジトリ本体と認証情報を保持する系から分離する** （別プロセス・別コンテナ・最小権限・読み取り専用のファイルシステム）。 **自己登録したアカウントからの CI 設定の投入を、 承認済みのマージリクエスト経由に限る。** **CI/CD 変数・Runner トークンは外部の秘密管理に置き、 アプリケーションのデータベースに値を持たせない。**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> GitLab・その他の製品を、ベンダーの公式パッケージ・公式コンテナイメージではなく 自前のビルドや自前のコンテナイメージで運用している</td><td class=sm>**本件の中核はここである**（出典1）。 **CVE-2026-97229 の修正は GitLab が自社パッケージにのみ適用する Ruby へのパッチであり、 自前の Ruby を使う構成では GitLab を上げても直らなかった。** **「最新版にした」が是正にならない構成である**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 重大な CVE への対応が「対象製品のバージョンを上げた」で完了扱いになっており、 該当の脆弱性が実際に閉じたことを確認する手順が無い</td><td class=sm>本件では**10月22日の更新から10月26日まで4日間、 「対処済み」という認識のまま脆弱だった**（本記録の算出）。 **誤った安心は、無防備よりも検知を遅らせる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 重要なアプリケーションホストからの外向きネットワーク接続を記録しておらず、 ホスティング事業者・クラウド事業者側にも記録が無い</td><td class=sm>**本件で「コード実行を否定できない」状態を作った3点のうちの1点である**（出典1）。 **持ち出しの有無に答えられないと、再構築と全認証情報の差し替えしか選択肢が残らない。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> アプリケーションのログをコンテナやホストの内部にのみ保持しており、 保持期間が「侵害に気づくまでの想定日数」に足りていない</td><td class=sm>本件では**攻撃当日のバックグラウンドジョブのログと旧コンテナのファイルシステムが 既に失われていた**（出典1）。 **事案当時の保持期間は14日で、再発防止策としてこれを延ばすとされている。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 開発基盤・課題管理基盤で新規アカウントの自己登録が可能で、 登録直後から CI 設定の投入やパイプラインの実行ができる</td><td class=sm>本件の攻撃者は**10月20日に新規登録したアカウントから攻撃を始めている**（出典1）。 **再開後は管理者承認が必須になっており、攻撃の前提条件そのものへの対処である**（出典2）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> パッケージ・リリースの署名鍵、コード署名証明書の秘密鍵が、 アプリケーションサーバ・CI の環境変数・リポジトリの秘密のいずれかに置かれている</td><td class=sm>**本件で最も効いたのは「署名鍵を GitLab サーバに置かない」という事前の設計である**（出典1）。 **同じ系にあれば、再構築しても「過去に配ったものが本物か」に答えられない**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自組織が公開しているコンテナイメージ・配布物・技術情報が、 本番で稼働している構成とほぼ一致している</td><td class=sm>本件の攻撃者は**Alpine の GitLab コンテナイメージを取得して 攻撃を正確なビルドに合わせていた**とされる（出典1）。 **公開物の取得は正常な行為であり、検知の手がかりにならない**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月28日（10月30日に更新の追記） Alpine Linux</span> <a href="https://alpinelinux.org/posts/GitLab-security-incident-CVE-2026-97229.html" target="_blank" rel="noreferrer noopener nofollow">GitLab security incident: attempted exploitation of CVE-2026-97229</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料・本件の中核。本記録の作成者が2026年11月3日に取得して本文を逐語で確認した。 **攻撃の経緯**（10月20日・21日に新規登録アカウントが細工した CI 設定を送り、 当時 19.3.4 を実行していたインスタンスでワーカープロセスが8回クラッシュ、 うち4回で悪用の途中まで到達して次の段階で失敗、 攻撃者が GitLab コンテナイメージをダウンロードして正確なビルドに攻撃を合わせていたこと）・ **脆弱性の説明**（CVSS 10.0、GitLab が CI 設定の正規表現を評価する処理、 根本のバグは Ruby 同梱の正規表現エンジン Onigmo、 **GitLab の修正は同社が自社パッケージとコンテナイメージに同梱する Ruby へのパッチの集合**、 上流 Ruby の修正は10月23日の 3.3.13・3.4.12・4.0.9）・ **10月22日の 19.3.6 への更新で直らなかった理由**（自前イメージが標準 Ruby を使用）・ **自前の Ruby で運用している場合は Ruby 3.3.13・3.4.12・4.0.9 以降も必要との警告**・ **`alpinelinux/gitlab:19.3.6` を10月27日公開版で再取得する必要があること**・ **インシデントタイムライン**（10/12 GitLab 修正公開／10/13 CVE 公表・19.3.5 ではなく 19.3.4 を誤って導入／10/20 攻撃者がアカウント登録と探り／10/21 主たる攻撃・ クラッシュと502エラーとCIジョブの失敗／10/22 19.3.6 へ更新／ 10/23 攻撃者のアカウントをブロック・Ruby が修正を公開／ 10/24 aports・パッケージ・10/21リリースを外部記録と突合検証／ 10/25〜26 攻撃者が戻って再試行し失敗／10/26 更新後もまだ脆弱と発見／ 10/27 開発者とビルドサーバを除き閉鎖・再構築開始／ 10/28 再構築完了・全パスワードリセット・秘密鍵交換／10/29 19.3.7 で再開）・ **見つかったこと**（リリースとパッケージは改変なし、 署名鍵は GitLab サーバに置かれておらず過去も一度も置かれていない、 コード実行の証拠なし、Web/API 経由で非公開データが返された形跡なし）・ **確信が持てない理由**（成功した悪用はクラッシュも Web ログの痕跡も残さない、 攻撃当日のログの一部が失われている、外向き接続の記録が無くホスティング事業者も保持していない）・ **もし成功していたら露出しえた情報**（全利用者のメール・氏名・IP、パスワードハッシュ、 2FA の秘密・CI/CD 変数・Runner トークン、Webhook・連携・プッシュミラーの認証情報、 パーソナルアクセストークン（ハッシュ）、非公開リポジトリと非公開の課題・マージリクエスト）・ **FAQ**（再構築の理由、aports・リリースへの影響、 10/20〜22 のコミットを開発者のクローンと45台すべてのビルダと突合したこと、 Alpine の ruby パッケージの状況）・ **再発防止策4点**（修正済み Ruby／重大リリースを1日以内に適用し 自前ビルドが適用すべき Ruby 等のパッチを各リリースで確認／ 外向き接続とデータベース接続の記録・ログを14日より長く保持／署名付きリリースタグ）を確認した)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月30日 Alpine Linux</span> <a href="https://alpinelinux.org/posts/GitLab-reopened-after-security-incident.html" target="_blank" rel="noreferrer noopener nofollow">GitLab is back: what you need to do</a> <span class="b kind">ブログ</span><span class=sm>（(一次資料・復旧後の利用者向け手順。本記録の作成者が2026年11月3日に取得して本文を逐語で確認した。 **再構築した新サーバで GitLab 19.3.7・Ruby 3.3.13（修正を含む）が稼働していること**・ **アカウント・プロジェクト・課題・マージリクエストは保持されたが、 GitLab の秘密鍵を交換したためパスワード・2FA・トークン・一部の保存された秘密が 機能しなくなったこと**・ **全員が行うこと**（パスワードの再設定／ 2FA の再設定・認証アプリとセキュリティキーの双方がリセットされ古いリカバリコードは無効／ 新しい SSH ホスト鍵の受け入れ・ED25519・ECDSA・RSA の3種の SHA256 指紋と公開鍵を掲載・ `ssh-keygen -R gitlab.alpinelinux.org` の手順／ パーソナルアクセストークンの再作成／ RSS・カレンダーフィード URL のトークンと非公開メールアドレスの更新）・ **利用者の SSH 鍵と GPG 鍵は保持され再登録不要であること**・ **GitHub・GitLab.com・postmarketOS でのサインインは引き続き使えること**・ **メールアドレスとパスワードで新規登録したアカウントは管理者の承認が必要になったこと**・ **プロジェクト管理者が行うこと**（CI/CD 変数の値の再入力・値はすべて失われており 変数名と設定のみ残存・パイプラインスケジュール変数も同様・ **「古い値は露出した可能性があるものとして扱い、可能なら新しい認証情報を使う」との指示**／ 連携設定のトークンとパスワードの再入力／ Webhook とプッシュミラーは移行済みだが秘密トークンとパスワードを差し替える／ OAuth アプリケーションの秘密の更新）・ **他サイトから漏えいしたパスワードを用いた自動ログイン試行を観測しているとの注意喚起**・ 連絡先（OFTC IRC の #alpine-infra、infra@alpinelinux.org）を確認した)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月1日 BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/alpine-linux-rebuilds-gitlab-after-attempted-rce-attack/" target="_blank" rel="noreferrer noopener nofollow">Alpine Linux rebuilds GitLab after attempted RCE attack</a> <span class="b kind">記事</span><span class=sm>（(報道。本記録の起点となった記事のひとつ。本記録の作成者が2026年11月3日に本文を確認した。 Alpine の公表内容をおおむね正確に伝えている。 **記事が加えている背景説明**——Alpine Linux が Docker コンテナイメージの基盤として 広く使われていること・GitLab インスタンスが開発リポジトリ・コードレビュー・ CI ジョブ（パッケージを生成する `aports` のビルドレシピを含む）をホストしており 価値あるサプライチェーンの標的になること・ **CVE-2026-97229 を「GitLab の CI/CD 正規表現コンパイラ Onigmo（Ruby に同梱）における 最大深刻度の整数オーバーフロー」と記述していること**（Alpine の公表は 「整数オーバーフロー」という語を使っていない）・ **GitLab が10月12日に欠陥を公表し修正を提供したうえで、 特定の条件下で細工した正規表現を CI/CD パイプライン設定に投入することで 攻撃者が発火させうると警告したこと**・ **「攻撃者がコンテナイメージをダウンロードしたことはサプライチェーン攻撃を 準備していた可能性を示唆する」という評価**（これは記事の記述であり Alpine の公表には無い・差異3）。 **なお記事は「A later upgrade to 19.3.6 also failed to close the flaw」と記しており、 10月13日の 19.3.4 への取り違えを「Alpine initially installed GitLab 19.3.4 instead of the patched version, 19.3.5」として伝えている**)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月2日 iThome Security（台湾）</span> <a href="https://www.ithome.com.tw/news/180128" target="_blank" rel="noreferrer noopener nofollow">Alpine Linux遭GitLab重大漏洞攻擊，重建開發基礎設施防範供應鏈風險</a> <span class="b kind">記事</span><span class=sm>（(報道・繁体中国語。本記録の起点となった記事のひとつ。 本記録の作成者が2026年11月3日に本文を確認した。 Alpine の公表内容を要約しているが、 **「該專案雖在10月22日將其GitLab升級為13.9.6版」とバージョン番号を誤記している** （正しくは 19.3.6）〈差異2〉。**「Alpine Linix」という綴りの誤りも含む。** **それ以外の記述（10月28日の公表・CVSS 10.0・10月12日の修正版・ 10月20〜21日の新規登録アカウントによる攻撃・8回のクラッシュ・ 4回の部分到達・コンテナイメージのダウンロード・ 自建容器に必要な Ruby パッチが未適用だったこと・一部ログの喪失により 侵入を完全に排除できないこと・10月27日の閉鎖とゼロからの再構築・ 全アカウントのパスワードリセットと機密鍵の交換・10月29日の再開）は 一次公表と整合している**（本記録の確認）。 **本記録は数値・バージョン番号をすべて一次公表（出典1）から取っている**)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月3日</span> <span class="b rev">新規作成</span> 2026年11月1日の BleepingComputer 記事（出典3）と 11月2日の iThome Security 記事（出典4）を起点に新規作成した。 **両記事はいずれも Alpine Linux の公表の二次記事であったため、 一次公表を特定して取得した。** **一次公表の URL は検索では見つからなかったため、 alpinelinux.org のニュースアーカイブ（/posts/）を取得して記事一覧から 2本（10月28日・10月30日）を特定し、 本文を HTML から抽出して逐語で確認した**（出典1・2）。 **一次公表には報道が伝えていない要素が多数含まれていた**—— 日付ごとのインシデントタイムライン、FAQ、 「確信が持てない理由」の3点、「もし成功していたら露出しえた情報」の6項目、 再発防止策4点、45台のビルダによる検証、 そして復旧後の再設定手順（SSH ホスト鍵の指紋3種を含む）である。
+**本記録が起点の記事に無い要素として加えたのは次の5点である。**
+①**「修正がどこにあったか」を本記録の中核に据えた。** **CVE-2026-97229 の修正は GitLab のコードではなく、 GitLab が自社の公式パッケージとコンテナイメージにのみ適用する Ruby へのパッチの集合だった**（出典1）。 **このため自前イメージで運用していた Alpine は、 GitLab を 19.3.6 に上げても4日間無防備だった。** sections の cause 節に一次公表の該当箇所を引用して置き、 figures に「更新したのに脆弱だった期間」4日を算出して立て、 lessons の ciso 向け第1項・engineer 向け第1項と第2項、 applicability の第1項・第2項に反映した。 **「製品のバージョンを上げた」が修正の適用を意味しないという点が、 本件で最も再現性の高い学びである**（本記録の評価）。
+②**「否定できない」を理由に再構築を選んだ判断と、それを支えた事前の設計を分離した。** **判断の理由は公表文に明示されている**（「コード実行を否定できず、 それを確認するために必要な証拠はもう存在しないため」）。 **本記録が加えたのは、その判断が成立した前提の指摘である**—— **①署名鍵を GitLab サーバに置かない方針、 ②開発者のクローンと45台のビルダという GitLab の外の記録。** **これらが無ければ、再構築しても「配布物が汚染されていないか」には答えられなかった** （本記録の評価）。sections に専用の節を2つ置き、 lessons の ciso 向け第3項・engineer 向け第4項に反映した。
+③**公表の構成そのものを評価対象にした。** **「見つかったこと」「確信が持てない理由」「もし成功していたら露出しえた情報」を 分けて書き、「成功した悪用はクラッシュも Web ログの痕跡も残さない」という 調査手法の限界そのものを公表している点を、 本DBに収めた事案のなかで最も参考になる公表の構成と評価した**（本記録の評価）。 lessons の ciso 向け第4項に「確認されていない」と「起きていない」を混ぜない という形で反映した。
+④**公表までの7日間と、コンテナイメージ利用者への注意の時期を留保として記録した。** **10月21日に可視的な障害が発生してから公表（10月28日）まで7日あり、 その間の10月22日〜26日は Alpine 自身も「対処済み」と誤認していた期間である**（本記録の算出）。 **同じ構成（自前の Ruby で GitLab を運用）の第三者、 および `alpinelinux/gitlab` イメージの利用者も同じ誤認をしていた可能性が高いが、 注意が出たのは10月27日のイメージ再公開である。** response.decisions の disclosure_timing を partial と評価した。 **ただし Alpine は寄付とボランティアで運営されるプロジェクトであり、 これを欠陥と断じていない**（本記録の留保）。
+⑤**「攻撃者が防御側の公開ビルドを取得して攻撃を調整した」構造を、 OSS に限らない論点として立てた。** **公開コンテナイメージの取得はまったく正常な行為であり、検知の手がかりにならない** （本記録の評価）。lessons の ciso 向け第5項と applicability の最終項に反映した。
+**関連記録との関係を明示する。** **本DBの INC-2026-0476 は CVE-2026-97229 そのもの（type: vulnerability）を記録しており、 そこには「報道と2つの政府系 CERT が修正版を 19.3.4 と記載し GitLab 自身の記載（19.3.5）と食い違っていた」という事実が含まれる。** **Alpine は「10月13日に 19.3.5 ではなく 19.3.4 を誤って入れた」と述べているが、 その理由を説明していない。** **本記録は両者を結び付けず、差異1に本記録の併置であることを明記した。** **また、CISA による KEV 収載（2026年10月29日）は INC-2026-0476 が JSON 原本で確認したものであり、本記録は独立に検証していない**（差異4に明示。 figures・timeline には入れていない）。
+**status は settled とした。** 10月29日に GitLab が再開し、 10月30日に利用者向け手順が公表されて一連の対応が完結している。 **本記録の作成者が11月3日に Alpine のニュースアーカイブを確認した範囲では、 それ以降の追加記事は無い。** **ただし「コード実行が実際に起きたか」は失われたログにより今後も確定しない** （未確定7に evidence_lost として記録）。</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-03 10:49 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
