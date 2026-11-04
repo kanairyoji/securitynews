@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Chainstack に侵入、ノード認証情報も露出扱い — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0867</span>Chainstack に侵入、ノード認証情報も露出扱い</h1>
+<header class="site-header">
+  <p class="subtitle">ブロックチェーンノード基盤の Chainstack が2026年11月3日、外部の攻撃者に
+**開発環境から本番環境の一部へ侵入され**、顧客アカウント情報
+（組織名・アカウント保有者名・メンバーのメールアドレス・パスワードハッシュ）を
+保持するデータベースにアクセスされたと公表した。
+**ノード認証情報を保持するシステムにも到達されており、読み取られた証拠は無いが
+「露出したものとして扱う」として全顧客に認証情報の回転を要請している**。
+同社は本件を**10月下旬に報じられた AI 主導の攻撃キャンペーンの一部**と評価している。</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">委託先・供給元起因</span><span class="b cause">公表されていない／不明</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月3日（Chainstack のインシデント報告ページ）</span>
+  <span>最終更新: 2026年11月4日</span>
+</div>
+
+<div class="lead"><p><strong>「読み取られた証拠は無いが露出扱いにする」という判断が、この公表の芯です。</strong>ブロックチェーンのノード基盤を提供する Chainstack は2026年11月3日、<strong>外部の攻撃者が第三者コンポーネントを通じて自社インフラの一部に侵入した</strong>と公表しました（出典1・原文英語）。</p>
+<p><strong>侵入は開発環境から始まり、本番環境の一部へ広がりました。</strong> <strong>公表された経過は、10月26日に開発環境へのアクセス、10月29日に本番環境の一部へ、10月31日に検知して同日アクセス経路を遮断、11月2日に調査を終えて事案をクローズ、という4点です</strong>（出典1）。<strong>侵入から検知まで5日間です</strong>（本記録の算出）。</p>
+<p><strong>露出した可能性があるのは、顧客アカウント情報のデータベースです</strong> ——組織名・アカウント保有者名・顧客組織メンバーのメールアドレス・パスワードハッシュ（出典1）。<strong>カード番号やセキュリティコードはそもそも保持していないため露出していない</strong>としています（出典1）。</p>
+<p><strong>技術者にとって重いのはノード認証情報のほうです。</strong> <strong>Chainstack は「攻撃者はノード認証情報を保持するシステムにもアクセスできた。読み取られた証拠は無いが、露出したものとして扱い、顧客に回転を依頼する」と書いています</strong>（出典1・原文英語）。<strong>ノード認証情報は、顧客のアプリケーションがブロックチェーンのエンドポイントを叩くための鍵です。これが第三者の手に渡れば、顧客の課金枠を使われるだけでなく、顧客アプリが参照するチェーンデータの経路に他人が入れることになります</strong>（本記録の評価）。</p>
+<p><strong>同社は本件を「10月下旬に報じられた、より広範な AI 主導の攻撃キャンペーンの一部」と評価しつつ、「それは自社環境で起きたことに対する当社の責任を変えない」と添えています</strong>（出典1・原文英語）。<strong>キャンペーン名・攻撃主体の名指しはありません</strong>〈未確定3〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>侵入口となった「第三者コンポーネント」の正体</span><span class="b rsn">公表されていない</span><div class=sm>**公表は「a third-party component（第三者コンポーネント）」と記すだけで、
+製品名・種別・提供元・悪用された欠陥を示していない**（出典1・原文英語）。
+**同じ部品を使う他組織が点検できないという意味で、
+本件の公表で最も影響が大きい欠落である**（本記録の評価）。
+</div></li><li><span class=ui>開発環境から本番環境へ渡れた仕組み</span><span class="b rsn">公表されていない</span><div class=sm>**10月26日に開発環境、10月29日に本番環境の一部という2つの日付は示されたが、
+その間に何が使われたのか（共有認証情報・権限の過剰付与・
+ネットワークの到達性など）は公表されていない**（出典1）。
+**「開発環境は本番ではない」という前提がどこで崩れたのかが、
+読者が最も知りたい点である**（本記録の評価）。
+</div></li><li><span class=ui>AI 主導キャンペーンの名称と攻撃主体</span><span class="b rsn">公表されていない</span><div class=sm>**Chainstack は「10月下旬に報じられた、より広範な AI 主導の攻撃キャンペーンの
+一部だと当社の調査は示している」と書くが、キャンペーン名も攻撃主体も
+挙げていない**（出典1・原文英語）。
+**同時期には ARTEX というエージェント型侵入基盤を用いたキャンペーンが
+Microsoft（10月21日）と CrowdStrike（10月29日）から報じられているが、
+本件との結び付きを示した公表はない**〈差異1〉（本記録の確認）。
+</div></li><li><span class=ui>影響を受けた顧客の数</span><span class="b rsn">公表されていない</span><div class=sm>**顧客数・組織数・メールアドレス件数は示されていない**（出典1・3）。
+**「全顧客にメールで通知している」とあるため、
+通知の対象は全顧客だが、データベースに入っていた件数は分からない**（本記録の整理）。
+</div></li><li><span class=ui>パスワードハッシュの方式</span><span class="b rsn">公表されていない</span><div class=sm>**「password hashes（パスワードハッシュ）」とあるだけで、
+アルゴリズム・ストレッチング回数・ソルトの有無は公表されていない**（出典1）。
+**総当たりへの耐性を読者が評価できない**（本記録の評価）。
+</div></li><li><span class=ui>ノード認証情報が実際に読まれたか</span><span class="b rsn">調査したが確定せず</span><div class=sm>**「攻撃者はノード認証情報を保持するシステムにもアクセスできた。
+読み取られた証拠は無いが、露出したものとして扱う」と公表している**
+（出典1・原文英語）。**つまり調査しても読まれた・読まれなかったの
+どちらとも確定できていない**（本記録の整理）。
+</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Chainstack</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>公表されていない第三者コンポーネントの提供元</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>侵入（開発環境）から検知まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>日</span></div><div class=fn>**公表タイムラインの10月26日（開発環境へのアクセス）から
+10月31日（検知）までを本記録が差分で算出した**（出典1）。
+**開発環境への侵入がいつ始まったかは「アクセスを獲得した日」として
+示されているだけで、偵察の開始時期は含まない**（本記録の明示）。
+</div></div><div class=fig><div class=fh><span class=fl>開発環境から本番環境の一部へ到達するまで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**10月26日から10月29日までを本記録が算出した**（出典1）。
+**開発環境の侵害が3日で本番に届いた点が、この事案の実務的な要点である**
+（本記録の評価）。
+</div></div><div class=fig><div class=fh><span class=fl>検知から公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**10月31日（検知）から11月3日（公表・顧客通知）までを本記録が算出した**（出典1）。
+**調査のクローズ（11月2日）を挟んでおり、
+「調査を終えてから公表する」順序になっている**（本記録の整理）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**公表された手口は「第三者コンポーネント経由の侵入」と
+「開発環境→本番環境の一部」という2点に尽きる**（出典1）。
+**以下は公表されたタイムラインと露出範囲から段階を整理したもので、
+攻撃者の技術的な分析ではない**（本記録の整理）。
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**2026年10月26日、攻撃者が第三者コンポーネントを通じて
+Chainstack の開発環境へのアクセスを獲得した**（出典1）。
+**コンポーネントの正体・悪用された欠陥は公表されていない**〈未確定1〉。
+</div><div class=fn>根拠: Chainstack のインシデント報告ページ（タイムラインと「through a third-party component」の記述）</div></li><li><div class=stg><span class="b stage">2. 横展開</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**2026年10月29日、攻撃者は本番環境の一部へアクセスを広げた**（出典1）。
+**開発環境と本番環境の間に渡れる経路が存在したことになるが、
+その仕組みは公表されていない**〈未確定2〉。
+</div><div class=fn>根拠: Chainstack のインシデント報告ページ（タイムライン10月29日）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**顧客アカウント情報を保持するデータベースにアクセスされた。
+対象は組織名・アカウント保有者名・顧客組織メンバーのメールアドレス・
+パスワードハッシュである**（出典1）。
+**あわせて、ノード認証情報を保持するシステムにも到達していた**（出典1）。
+</div><div class=fn>根拠: Chainstack のインシデント報告ページ（「What was exposed」節）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">推定</span><span class=srcs>[1]</span></div><div>**持ち出しの有無について、公表は明言していない。**
+**顧客アカウント情報は「露出した可能性がある（may have been exposed）」、
+ノード認証情報は「読み取られた証拠は無いが露出扱い」という書き方である**
+（出典1・原文英語）。**本記録はこれを「持ち出しは確定していない」と読む**
+（本記録の整理）。
+</div><div class=fn>根拠: Chainstack のインシデント報告ページ（「may have been exposed」「no evidence they were read」）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>侵入から検知まで</div><div class=mv>5日（2026年10月26日の開発環境侵入 → 10月31日の検知。出典1から本記録が算出）</div></div><div class=met><div class=ml>検知から封じ込めまで</div><div class=mv>同日（10月31日に検知し、同日アクセス経路を遮断と公表。時刻は示されていない。出典1）</div></div><div class=met><div class=ml>検知から公表まで</div><div class=mv>3日（10月31日 → 11月3日。出典1から本記録が算出）</div></div><div class=met><div class=ml>検知から顧客通知まで</div><div class=mv>3日（公表と同日に全顧客へメール通知と記載。個別の通知完了時期は示されていない。出典1）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**読み取られた証拠が無いノード認証情報を「露出したものとして扱う」と決め、
+全顧客に回転を依頼した**（出典1）。
+</div><div class=fn><b>トレードオフ:</b> **顧客に作業を強いる代わりに、後から「実は読まれていた」と判明した場合の
+被害を断てる。証拠が無いことを根拠に放置すれば、顧客は何も知らないまま
+リスクを抱え続ける。**
+</div></li><li><div class=ui>**侵入日・本番到達日・検知日・クローズ日という日付と、
+露出した項目を開示する一方、第三者コンポーネントの正体・
+影響顧客数・パスワードハッシュの方式は開示しなかった**（出典1）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **日付を出したことで、読者は侵入から検知までの日数を自分で算出できる。
+一方、侵入口の部品名が無いため、同じ部品を使う組織は点検ができない。**
+</div></li><li><div class=ui>**検知（10月31日）から3日後、調査のクローズ（11月2日）の翌日に公表した**（出典1）。
+</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **調査を終えてから出すことで内容の訂正は減るが、
+その間、顧客は露出した認証情報を使い続けることになる。**
+</div></li></ul></div>
+<section id="s6"><h2>「読み取られた証拠は無い」と認めた上で、露出扱いにした<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p><strong>この公表の芯は、ノード認証情報の扱いです。</strong></p>
+<p>Chainstack は露出範囲を2段階で書いています（出典1・原文英語）。</p>
+<ul>
+<li><strong>顧客アカウント情報のデータベース</strong>にアクセスされた。露出した可能性がある情報は、組織名・アカウント保有者名・顧客組織メンバーのメールアドレス・パスワードハッシュ。</li>
+<li><strong>ノード認証情報を保持するシステム</strong>にも攻撃者は到達できた。<strong>「読み取られた証拠は無いが、露出したものとして扱い、顧客に回転を依頼する」。</strong></li>
+</ul>
+<p><strong>後者の判断が実務的に重いのは、ノード認証情報が「顧客のアプリが動くための鍵」だからです</strong>（本記録の評価）。これが第三者の手にあれば、顧客の利用枠を使われるだけでなく、顧客アプリが参照するブロックチェーンデータの経路に他人が入り込めます。</p>
+<p><strong>一方で、支払手段の詳細は「そもそも保持していない」と明記されています</strong> ——カード番号の全桁・セキュリティコードは露出していないとしています（出典1）。<strong>保持していないものは漏れない、という単純な事実が、この種の公表では最も強い防御になります</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>開発環境の侵害が、3日で本番の問題になった<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>公表されたタイムラインは4点です</strong>（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>公表された内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年10月26日</td>
+<td>攻撃者が開発環境へのアクセスを獲得</td>
+</tr>
+<tr>
+<td>2026年10月29日</td>
+<td>攻撃者が本番環境の一部へアクセスを獲得</td>
+</tr>
+<tr>
+<td>2026年10月31日</td>
+<td>侵入を検知し、同日アクセス経路を遮断</td>
+</tr>
+<tr>
+<td>2026年11月2日</td>
+<td>調査を完了し、事案をクローズ</td>
+</tr>
+</tbody>
+</table>
+<p><strong>侵入から検知まで5日、開発環境から本番環境まで3日です</strong>（本記録の算出）。</p>
+<p><strong>「開発環境だから影響は小さい」という前提が、3日で崩れています</strong>（本記録の評価）。<strong>そして、どう崩れたのかは公表されていません</strong>〈未確定2〉。共有された認証情報か、権限の過剰付与か、ネットワークの到達性か—— <strong>読者が自社の境界を点検するうえで最も知りたい点が、空白のままです。</strong></p>
+<p>侵入口についても、<strong>「第三者コンポーネントを通じて」とだけ書かれています</strong>（出典1・原文英語）。<strong>製品名・種別・提供元・悪用された欠陥は示されていません</strong>〈未確定1〉。<strong>同じ部品を使っている組織が点検できないという意味で、この欠落は業界全体の再発防止を妨げます</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>依頼と同時に、無停止で回せる手段を出した<span class="b slot">組織の対応</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>顧客に求めた作業は4つです</strong>（出典1）。</p>
+<ol>
+<li><strong>パスワードの変更</strong>（同じパスワードを使い回している他サービスも含む）</li>
+<li><strong>ノード認証情報の回転</strong></li>
+<li><strong>プラットフォーム API キーの再発行</strong>（API を利用している場合）</li>
+<li><strong>フィッシングへの警戒</strong>（Chainstack はパスワード・トークン・鍵を尋ねない）</li>
+</ol>
+<p><strong>重要なのは2番目に添えられた一文です。</strong> <strong>「セルフサービスでの回転がコンソールで利用可能になった。既存のエンドポイントは回転が完了するまで有効なので、停止なしで回転できる」</strong>（出典1・原文英語）。同社の11月2日の変更履歴にも、<strong>ノード認証トークンの回転でユーザー名・パスワード・gRPC の x-token が差し替わり、新旧が並行して有効な間にアプリを更新できる</strong>旨が記されています（出典2）。</p>
+<p><strong>「回転してください」だけを書いて手段を用意しない公表は、実行されません</strong>（本記録の評価）。<strong>止まることが分かっている作業は後回しになり、露出した認証情報が使われ続けます。</strong></p>
+<p><strong>本記録の補足として、顧客側の作業はこれで終わりません</strong>（本記録の判断）。ノード認証情報は CI の秘密情報・コンテナイメージ・環境変数・クライアント配布物に埋め込まれていることが多く、<strong>回転と同時に「どこに埋まっているか」の棚卸しが要ります。</strong></p></section>
+<section id="s9"><h2>キャンペーンの一部という説明と、自社の責任を分けて書いた<span class="b slot">帰属</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>Chainstack は本件を、10月下旬に報じられた AI 主導の攻撃キャンペーンの一部だと評価しています</strong>（出典1）。<strong>同時に「それは当社の環境で起きたことに対する当社の責任を変えない」と添えています</strong>（出典1・原文英語）。</p>
+<p><strong>外部環境の説明と自社の責任を別の文に分けたこの書き方は、公表文の作法として参考になります</strong>（本記録の評価）。「大規模なキャンペーンだった」という説明は、読者にとっては自分も対象かを判断する材料ですが、<strong>責任の軽減に使われると信頼を損ないます。</strong></p>
+<p><strong>ただし、キャンペーンの名前も攻撃主体も示されていません</strong>〈未確定3〉。同時期には、エージェント型の侵入基盤 ARTEX を用いた並列攻撃がMicrosoft（10月21日）と CrowdStrike（10月29日）から報じられ、本記録でも INC-2026-0802・INC-2026-0807・INC-2026-0866 として記録しています。<strong>しかし本件との結び付きを示した公表は無く、結び付けは本記録の推定にとどまります</strong>〈差異1〉（本記録の明示）。</p></section>
+<section id="s10"><h2>件数が1つも出ていないため、規模は分からない<span class="b slot">未確定事項</span><span class=srcs>出典 [1]</span></h2><p><strong>この公表に、数は日付以外ほとんど出てきません</strong>（本記録の確認）。</p>
+<ul>
+<li><strong>影響を受けた顧客の数</strong>（組織数・アカウント数・メールアドレス件数）</li>
+<li><strong>ノード認証情報の件数</strong></li>
+<li><strong>パスワードハッシュの方式</strong>（アルゴリズム・ストレッチング・ソルト）</li>
+<li><strong>ログの保持期間と保全範囲</strong></li>
+</ul>
+<p><strong>「全顧客にメールで通知している」とあるため、通知の対象は全顧客ですが、データベースに入っていた件数は示されていません</strong>（出典1）。</p>
+<p><strong>パスワードハッシュの方式が分からないと、読者は「総当たりされるまでの時間」を見積もれません</strong>（本記録の評価）。bcrypt や Argon2 なのか、単純なハッシュなのかで、顧客が取るべき行動の緊急度は変わります。</p>
+<p><strong>ログの保持についての説明が無いことは、「ノード認証情報が読み取られた証拠は無い」という結論の重みに直結します</strong>（本記録の明示）。<strong>見た範囲に無いのか、見られる記録が無いのかを、外部から判定できません。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>**Chainstack のプラットフォーム基盤**（出典1）。 **顧客向けのノード・コンソール・API は事案中も通常稼働し、 顧客ノード・コンソール・API に改変は無かったとしている**（出典1）。 **侵害されたのは開発環境と本番環境の一部、および 顧客アカウント情報のデータベースである**（出典1）</td></tr><tr><th>data_at_risk</th><td>**組織名・アカウント保有者名・顧客組織メンバーのメールアドレス・ パスワードハッシュ**（出典1）。 **加えて、ノード認証情報を保持するシステムに到達されており、 読み取られた証拠は無いが露出扱いとされている**（出典1）。 **本記録の評価としては、後者のほうが実害に直結する** ——**ノード認証情報は顧客アプリがブロックチェーンのエンドポイントを 呼ぶための鍵であり、第三者が握れば顧客の利用枠の濫用や、 顧客アプリが参照するデータ経路への介入が可能になる**</td></tr><tr><th>含まれていない情報</th><td>**支払手段の詳細（カード番号の全桁・セキュリティコード）**。 **「当社はこれらを保持していないため露出していない」と公表に明記**（出典1）<span class="b rsn">stated</span></td></tr><tr><th>ログの有無</th><td>**公表されていない。** **ログの保持期間・保全範囲・外部調査機関の関与は いずれも示されていない。** **「ノード認証情報が読み取られた証拠は無い」という 判断の根拠を外部から検証できないため、本記録はこれを 「読まれていない」とは読まない**（出典1。本記録の明示）</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年11月3日（公表時点）　<b>ログの有無:</b> **公表されていない。** **「読み取られた証拠は無い」とする一方、 その判定に用いたログの範囲・期間は示されていない**（出典1。本記録の確認）　<b>詳細:</b> **公表は、顧客ノード・コンソール・API の改変が無かったことと、 ノード認証情報が読み取られた証拠が無いことを述べる**（出典1）。 **流出データの悪用（アカウント乗っ取り・エンドポイントの濫用）が 確認されたという記述も、否定する記述も無い**（本記録の確認）</td></tr><tr><th>customer_actions_advised</th><td>**①パスワードを変更する（同じパスワードを使い回している他サービスも含む） ②ノード認証情報を回転する（コンソールのセルフサービス機能で、 既存エンドポイントは回転完了まで有効のため無停止で実施できる） ③プラットフォーム API を利用している場合は API キーを再発行する ④フィッシングに警戒する（Chainstack はパスワード・トークン・鍵を尋ねない）** （出典1）。 **本記録の補足として、ノード認証情報を CI/CD の秘密情報や アプリの環境変数に埋め込んでいる場合は、回転と同時に その配布経路の棚卸しも要る**（本記録の判断）</td></tr><tr><th>影響しなかった範囲</th><td><ul class=cl><li>顧客向けサービスは事案を通じて通常稼働したと Chainstack が明記（出典1）</li><li>顧客ノード・コンソール・API の改変は無かったと Chainstack が明記（出典1）</li><li>支払手段の詳細（カード番号の全桁・セキュリティコード）は保持しておらず露出していないと明記（出典1）</li></ul></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">発生</span></td><td>**攻撃者が開発環境へのアクセスを獲得した**（出典1）。
+**経路は「第三者コンポーネント」とのみ説明されている**（出典1・原文英語）。
+</td></tr><tr><td class="sm nowrap tw">2026年10月29日</td><td class=nowrap><span class="b kind">発生</span></td><td>**攻撃者が本番環境の一部へアクセスを広げた**（出典1）。
+**開発環境から本番環境へ渡れた理由（共有された認証情報・ネットワーク到達性など）は
+公表されていない**〈未確定2〉。
+</td></tr><tr><td class="sm nowrap tw">2026年10月31日</td><td class=nowrap><span class="b kind">検知</span></td><td>**Chainstack が侵入を検知し、同日アクセス経路を遮断した**（出典1）。
+**検知の契機（監視・外部からの指摘など）は公表されていない。**
+</td></tr><tr><td class="sm nowrap tw">2026年11月2日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**調査を終え、事案をクローズしたと公表のタイムラインに記載**（出典1）。
+**同日、Chainstack はノード認証トークンを無停止で回転できる
+セルフサービス機能をコンソールに追加したことを変更履歴で告知している**（出典2）。
+</td></tr><tr><td class="sm nowrap tw">2026年11月3日</td><td class=nowrap><span class="b kind">公表</span></td><td>**インシデント報告ページを公開し、全顧客へメールで通知。
+パスワード変更・ノード認証情報の回転・プラットフォーム API キーの再発行・
+フィッシングへの警戒を依頼した**（出典1）。
+</td></tr><tr><td class="sm nowrap tw">2026年11月3日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が本件を報じ、「先週明らかになった大規模な AI 主導の
+攻撃キャンペーンの一部と評価されている」と伝えた**（出典3・原文英語）。
+</td></tr><tr><td class="sm nowrap tw">2026年11月4日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成時点で、公表ページに追記・訂正は確認できない**
+（出典1。本記録の確認）。**影響を受けた顧客数は依然として示されていない。**
+</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">本記録による推定</span><span class=ui>「AI 主導キャンペーン」が具体的にどれを指すのかは公表されていない</span><div class=sm>**Chainstack は「10月下旬に報じられた、より広範な AI 主導の攻撃キャンペーンの
+一部」と書くのみである**（出典1・原文英語）。
+**同時期には、エージェント型侵入基盤 ARTEX を用いたキャンペーンが
+Microsoft（10月21日）と CrowdStrike（10月29日）から報じられ、
+本記録でも INC-2026-0802（200組織への並列侵入）・
+INC-2026-0807（Chainalysis）・INC-2026-0866（WorkOS）として記録している。**
+**しかし Chainstack の公表はキャンペーン名を挙げておらず、
+結び付けは本記録の推定にとどまる**（本記録の明示）。
+</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>露出範囲の表現が「可能性」と「露出扱い」で分かれている</span><div class=sm>**顧客アカウント情報は「露出した可能性がある情報（Information that may have
+been exposed）」、ノード認証情報は「読み取られた証拠は無いが露出したものとして
+扱う」と、2つの異なる表現で書かれている**（出典1・原文英語）。
+**前者はアクセスされたデータベースの中身、後者は到達されたが
+読み取りが確認できない系という違いだと読めるが、公表に明示はない**
+（本記録の整理）。
+</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>報道は検知日を「10月31日」としつつ公表日を「火曜日」と記す</span><div class=sm>**The Hacker News は本件を「火曜日に公表された」と伝える**（出典3・原文英語）。
+**2026年11月3日は火曜日であり、一次公表のタイムラインと矛盾しない**
+（本記録の確認）。**本記録は日付を一次公表（出典1）に合わせている。**
+</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>記事本文を取得できず、一次公表で代替した</span><div class=sm>**本記録の起点となった The Hacker News の記事（出典3）は、
+収集時に本文取得が失敗しており（content_source: fetch_failed）、
+本記録の作成環境からの再取得も Cloudflare の bot 検査で阻まれた。**
+**このため事実関係は一次公表（出典1）を直接取得して組み立てており、
+出典3は冒頭の要約文と見出しの範囲でのみ参照している**（本記録の明示）。
+</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>第三者コンポーネント → 開発環境 → 本番環境の一部</div><div class=svgwrap><svg viewBox="0 0 1202 194" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,97.0 C193.0,97.0 193.0,97.0 220,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,97.0 C397.0,97.0 397.0,97.0 424,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,97.0 C601.0,97.0 601.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C805.0,53.0 805.0,53.0 832,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,53.0 C805.0,53.0 805.0,141.0 832,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,53.0 C1009.0,53.0 1009.0,53.0 1036,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,141.0 C1009.0,141.0 1009.0,53.0 1036,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C703.0,141.0 703.0,53.0 628,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,141.0 C907.0,141.0 907.0,53.0 1036,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,141.0 C1111.0,141.0 1111.0,53.0 1036,53.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="60.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部の攻撃者（帰属は公表</text><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されていない）</text><text x="91.0" y="109.0" text-anchor="middle" fill="#f48fb1" font-size="10">Chainstack は</text><text x="91.0" y="121.0" text-anchor="middle" fill="#f48fb1" font-size="10">「10月下旬に報じられた</text><rect x="220" y="60.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第三者コンポーネント（名</text><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">称・種別は非公表）</text><text x="295.0" y="109.0" text-anchor="middle" fill="#f48fb1" font-size="10">侵入口。提供元も悪用され</text><text x="295.0" y="121.0" text-anchor="middle" fill="#f48fb1" font-size="10">た欠陥も公表されていない</text><rect x="424" y="60.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Chainstack 開</text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">発環境</text><text x="499.0" y="109.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年10月26日に</text><text x="499.0" y="121.0" text-anchor="middle" fill="#64b5f6" font-size="10">アクセスを獲得された（出</text><rect x="628" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Chainstack 本</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">番環境の一部</text><text x="703.0" y="65.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年10月29日に</text><text x="703.0" y="77.0" text-anchor="middle" fill="#64b5f6" font-size="10">到達。10月31日に検知</text><rect x="832" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客アカウント情報のデー</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タベース</text><text x="907.0" y="65.0" text-anchor="middle" fill="#ffcc80" font-size="10">組織名・アカウント保有者</text><text x="907.0" y="77.0" text-anchor="middle" fill="#ffcc80" font-size="10">名・メンバーのメールアド</text><rect x="832" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ノード認証情報を保持する</text><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">システム</text><text x="907.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">到達されたが読み取られた</text><text x="907.0" y="165.0" text-anchor="middle" fill="#ffcc80" font-size="10">証拠は無い。露出扱いとし</text><rect x="1036" y="16.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Chainstack の</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客組織</text><text x="1111.0" y="65.0" text-anchor="middle" fill="#80cbc4" font-size="10">全顧客へメール通知。パス</text><text x="1111.0" y="77.0" text-anchor="middle" fill="#80cbc4" font-size="10">ワード変更・認証情報回転</text><rect x="1036" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客ノード・コンソール・</text><text x="1111.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">API（改変なし）</text><text x="1111.0" y="153.0" text-anchor="middle" fill="#64b5f6" font-size="10">事案中も通常稼働し、改変</text><text x="1111.0" y="165.0" text-anchor="middle" fill="#64b5f6" font-size="10">は無かったと公表（出典1</text><rect x="628" y="104.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Chainstack（検</text><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">知・遮断・公表）</text><text x="703.0" y="153.0" text-anchor="middle" fill="#80cbc4" font-size="10">10月31日検知・同日遮</text><text x="703.0" y="165.0" text-anchor="middle" fill="#80cbc4" font-size="10">断、11月2日調査完了、</text></svg></div><div class=fn>攻撃者（layer 0）が第三者コンポーネント（layer 1）を通じて
+Chainstack の開発環境（layer 2）に入り、3日後に本番環境の一部（layer 3）へ
+到達した経路を示す。本番側では顧客アカウント情報のデータベースと、
+ノード認証情報を保持するシステムに到達された。顧客向けのノード・
+コンソール・API は改変されていない。第三者コンポーネントの正体と、
+開発環境から本番環境へ渡れた仕組みはいずれも公表されていない。
+</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**この段階で気づけたかどうかの説明はない**（出典1）。
+**検知は10月31日、本番環境への到達（10月29日）より後であり、
+開発環境の段階では気づけていないことは日付から読める**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>開発環境に組み込む第三者コンポーネントを資産台帳に載せ、認証・外向き通信の経路を本番と同じ基準で監視する</div><div class=ctl><span class="b eff">影響を限定できた</span>第三者コンポーネントに与える権限を読み取り専用・短命トークンに限定する</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本番環境への到達から検知まで2日ある**（10月29日→10月31日。本記録の算出）。
+**本番側に境界を越える動きを捉える仕組みがあれば、
+より早く気づけた段階である**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>開発環境と本番環境で認証情報・ロール・ネットワーク経路を完全に分離し、共有された資格情報を持たない</div><div class=ctl><span class="b eff">検知できた</span>本番側の管理系 API・データベースへの新規の呼び出し元（IP・サービスアカウント）を検知条件にする</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**顧客データベースへの大量参照を検知したのかどうかは公表されていない**（出典1）。
+**検知の契機そのものが示されていないため、
+どの層のセンサーが鳴ったのか読めない**（本記録の確認）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>顧客アカウントテーブルの大量参照・エクスポートに閾値アラートを置く</div><div class=ctl><span class="b eff">影響を限定できた</span>ノード認証情報を暗号化保管し、平文取得には別系統の承認を要する作りにする</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">公表されていない</span><div class=sm>**ログの保全状況・保持期間は公表されていないため、
+「証拠が無い」が「見た範囲に無い」のか「見られる記録が無い」のかを
+外部から判定できない**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">復旧を早められた</span>顧客データと認証情報を扱う系の参照ログを90日以上保持し、事後に読まれたか判定できる状態にする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**読み取られた証拠が無いノード認証情報を「露出したものとして扱う」と決め、
+全顧客に回転を依頼した**（出典1）。
+</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm></td></tr><tr><td>**侵入日・本番到達日・検知日・クローズ日という日付と、
+露出した項目を開示する一方、第三者コンポーネントの正体・
+影響顧客数・パスワードハッシュの方式は開示しなかった**（出典1）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**検知（10月31日）から3日後、調査のクローズ（11月2日）の翌日に公表した**（出典1）。
+</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「証拠が無い」を安全側に倒すかどうかが、顧客の被害量を決める</div><div class=lw>**Chainstack はノード認証情報について「読み取られた証拠は無い」と
+認めた上で、露出扱いとして全顧客に回転を依頼した**（出典1）。
+**証拠が無いことを根拠に黙っていれば、顧客は露出した鍵を使い続ける**
+（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **自社のインシデント基準に「証拠が無い場合の既定の扱い」を先に書いておく。
+到達された資産については既定で露出扱いとし、
+露出扱いを外すには何を確認できたら良いかを条件として明記する。**
+</div></li><li><div class=lp>開発環境の侵害は、3日で本番の問題になる</div><div class=lw>**本件は10月26日に開発環境、10月29日に本番環境の一部**（出典1）。
+**「開発環境だから影響は小さい」という前提が3日で崩れている**
+（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **開発環境を「本番に到達し得る環境」として分類し直し、
+監視・認証・ログ保持の基準を本番に合わせる。
+予算上一律が無理なら、本番の認証情報・顧客データに触れる開発資産だけを
+先に本番基準へ上げる。**
+</div></li><li><div class=lp>顧客に作業を依頼するなら、無停止でできる手段を同時に出す</div><div class=lw>**本件はノード認証情報の回転をセルフサービス化し、
+既存エンドポイントが回転完了まで有効であることを明記した**（出典1・2）。
+**止まることが分かっている作業依頼は後回しにされる**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **自社サービスの認証情報について「無停止で回せるか」を平時に確認する。
+回せないものは、インシデント時に顧客が実行しない前提で
+代替手段（旧認証情報の強制失効と事前予告）を設計しておく。**
+</div></li><li><div class=lp>「大規模キャンペーンの一部」という位置付けは、責任の軽減にならない</div><div class=lw>**Chainstack は AI 主導キャンペーンの一部と評価しつつ、
+「それは自社環境で起きたことに対する当社の責任を変えない」と添えた**
+（出典1・原文英語）。**外部要因の説明が責任の転嫁に見えると、
+顧客の信頼を損なう**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **公表文の様式に「外部環境の説明」と「自社の責任範囲」を
+別段落として置き、前者を後者の代わりに使わない運用を決める。**
+</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>第三者コンポーネントを「自社資産」として台帳に載せる</div><div class=lw>**侵入口は第三者コンポーネントだった**（出典1）。
+**自社で書いていない部品は、資産台帳からも監視からも漏れやすい**
+（本記録の判断）。
+</div><div class=la><b>取るべき行動</b> **開発環境・CI・本番で動く第三者コンポーネントを棚卸しし、
+それぞれの認証方式・持っている権限・外向き通信先を一覧化する。
+権限は読み取り専用と短命トークンを既定にする。**
+</div></li><li><div class=lp>開発環境と本番環境で、認証情報を1つも共有しない</div><div class=lw>**3日で開発から本番へ渡られている**（出典1）。
+**渡れた仕組みは公表されていないが、共有された資格情報は
+最も一般的な経路である**（本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **開発・ステージング・本番でサービスアカウントと鍵を完全に分け、
+共有されているものを洗い出して切る。
+切った結果動かなくなるものが、そのまま境界の穴の一覧になる。**
+</div></li><li><div class=lp>顧客に配る認証情報は、無停止で回せる設計にしておく</div><div class=lw>**本件では新旧エンドポイントの並行有効により無停止回転が成立した**（出典1・2）。
+**回転が停止を伴う設計だと、インシデント時に回せない**（本記録の判断）。
+</div><div class=la><b>取るべき行動</b> **顧客向けトークン・API キーに「複数有効・世代管理・猶予期間」を実装する。
+平時に回転訓練を行い、顧客側の作業手順書を事前に公開しておく。**
+</div></li><li><div class=lp>「読まれた証拠が無い」と言えるだけのログを先に用意する</div><div class=lw>**本件はログの保持状況が公表されておらず、
+「証拠が無い」の重みを外部から評価できない**（出典1。本記録の評価）。
+</div><div class=la><b>取るべき行動</b> **認証情報ストア・顧客データベースの参照ログを90日以上保持し、
+誰が・いつ・何件読んだかを後から言い切れる状態にする。
+保持期間と範囲を公表文のテンプレートに書き込む欄として持つ。**
+</div></li><li><div class=lp>回転の対象は、ノード認証情報の「配布先」まで広がる</div><div class=lw>**ノード認証情報は顧客側の CI/CD の秘密情報・環境変数・
+フロントエンドの設定に埋め込まれていることが多い**（本記録の判断）。
+</div><div class=la><b>取るべき行動</b> **回転時に、認証情報が埋まっている場所（Secrets Manager・CI 変数・
+コンテナイメージ・クライアント配布物）を列挙して順に差し替え、
+イメージやリポジトリに残った旧値を削除する。**
+</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自社の開発環境・CI に第三者コンポーネント（SaaS 連携・ビルド部品・エージェント）を組み込んでいる</td><td class=sm>**本件の侵入口は第三者コンポーネントである**（出典1）。
+**自社で書いていない部品が侵入口になると、監視も台帳も届きにくい**
+（本記録の評価）。
+</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 開発環境と本番環境の間に、共有された認証情報またはネットワーク到達性がある</td><td class=sm>**本件は開発環境から3日で本番環境の一部に到達している**（出典1）。
+**境界の有無が被害範囲を決める**（本記録の評価）。
+</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 顧客に認証情報（エンドポイント鍵・API キー）を配布しており、その回転にサービス停止を伴う</td><td class=sm>**本件は無停止回転が用意できたため、全顧客への回転依頼が現実的になった**
+（出典1・2）。**停止を伴う設計では、同じ依頼が実行されない**（本記録の判断）。
+</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 顧客の認証情報（トークン・パスワード・鍵）を自社システムで保持している</td><td class=sm>**本件で露出扱いになったのは、顧客アカウント情報とノード認証情報である**（出典1）。
+**保持している認証情報の量が、インシデント時に顧客へ依頼する作業量になる**
+（本記録の評価）。
+</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 認証情報ストア・顧客データベースの参照ログを90日以上保持していない</td><td class=sm>**「読まれた証拠が無い」と言うには、見られる記録が要る**（本記録の判断）。
+**本件はログの保持状況が公表されておらず、判断の重みを評価できない**（出典1）。
+</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月3日 Chainstack</span> <a href="https://chainstack.com/security-incident-nov-2026" target="_blank" rel="noreferrer noopener nofollow">Incident report: what happened and what customers need to do</a> <span class="b kind">ブログ</span><span class=sm>（（**本件の一次公表（原文英語）。** **第三者コンポーネント経由の不正アクセス、
+露出した可能性のある情報（組織名・アカウント保有者名・メンバーのメールアドレス・
+パスワードハッシュ）、ノード認証情報を保持する系への到達と「露出扱い」の方針、
+タイムライン（10月26日 開発環境／10月29日 本番環境の一部／10月31日 検知・遮断／
+11月2日 調査完了）、顧客への4つの依頼、支払手段の詳細は保持していないこと、
+顧客ノード・コンソール・API に改変が無かったことを記す。
+「このページを本事案の単一の情報源とし、新情報があれば更新する」と宣言している。**
+**本記録の作成環境から直接取得して全文を確認した**）
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月2日 Chainstack</span> <a href="https://docs.chainstack.com/changelog/chainstack-updates-november-2-2026" target="_blank" rel="noreferrer noopener nofollow">Chainstack updates: November 2, 2026</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（（**ノード認証トークンの無停止回転をコンソールで提供したことを告知する
+変更履歴（原文英語）。回転でユーザー名・パスワード・gRPC の x-token が
+差し替わり、新旧が並行して有効な間にアプリを更新できると記す。
+本記録は「依頼と同時に手段を用意した」ことの裏付けに用いた。**
+**本記録の作成環境からの直接取得は行っておらず、
+検索エンジンが読み取った引用で内容を確認している**〈差異4〉）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月3日 18:16 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/11/chainstack-reports-production-systems.html" target="_blank" rel="noreferrer noopener nofollow">Chainstack Reports Production Systems Breach Exposing Customer Data and Password Hashes</a> <span class="b kind">記事</span><span class=sm>（（**本記録の起点となった報道（原文英語）。
+「大規模な AI 主導の攻撃キャンペーンの一部と評価されている」と伝える。**
+**収集時に本文取得が失敗しており（content_source: fetch_failed）、
+本記録の作成環境からの再取得も Cloudflare の bot 検査で阻まれた。
+参照できたのは冒頭の要約と見出しのみである**〈差異4〉）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月4日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月4日収集分の記事
+〈output/articles/20261104/0095_the-hacker-news_chainstack-reports-production-systems-breach-expos.md〉を
+起点に、一次公表（Chainstack のインシデント報告ページ）を直接取得して
+全文を突き合わせた。**記事側は本文取得に失敗しており、
+事実関係は一次公表に基づく**〈差異4〉。
+**所要日数（侵入から検知まで5日・開発から本番まで3日・検知から公表まで3日）は
+公表タイムラインから本記録が算出した。**
+</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Chainstack</span><span class="b tag">ブロックチェーン基盤</span><span class="b tag">第三者コンポーネント</span><span class="b tag">ノード認証情報</span><span class="b tag">認証情報の回転</span><span class="b tag">開発環境</span><span class="b tag">AI主導キャンペーン</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-04 15:40 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
