@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Linux カーネルIPv4にUAF — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0900</span>Linux カーネルIPv4にUAF</h1>
+<header class="site-header">
+  <p class="subtitle">Linux カーネルのIPv4処理に、認証なしでネットワーク越しに踏める解放後使用（UAF）が公表された （CVE-2026-98432・CVSS 3.1 で 9.8）—— TCP接続要求の再送やソケットマイグレーションと並行して ソケットオプションが解放され、まだ読んでいる処理が解放済みメモリを参照する。 Red Hat は2026年10月30日に専用の速報（RHSB-2026-016）を立てて 「修正の提供を急いでいる」とし、暫定策として IPオプション付きのIPv4 TCPパケットを nftables で落とす規則を示した。 WatchGuard も11月3日に WGSA-2026-0033 を出し、Dimension・Fireware OS・ WatchGuard AP が対象だと公表した</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月30日（Red Hat 速報 RHSB-2026-016 の公開）</span>
+  <span>最終更新: 2026年11月6日（本記録の作成。Red Hat・WatchGuard の一次公表を取得して裏を取った時点）</span>
+</div>
+
+<div class="lead"><p><strong>Red Hat は2026年10月30日16時03分（協定世界時）、Linux カーネルのIPv4ネットワーク処理に解放後使用の脆弱性があるとして、専用の速報 RHSB-2026-016 を公開しました</strong>（出典2）。<strong>CVE-2026-98432。Red Hat の評価は CVSS 3.1 で 9.8（Critical）、ベクターは AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H です</strong>（出典1）〈重要〉。<strong>cve.org の値も 9.8 で一致し、NVD は「N/A」です</strong>（出典1）。</p>
+<p><strong>何が起きるか。</strong> Red Hat の記述では、<strong>inbound な接続要求に結び付いたソケットオプションが、並行する処理がまだそれを読んでいる最中に解放されうる</strong>（出典2。原文英語）。<strong>競合が起こるのは、接続要求が再送されたとき、またはソケットマイグレーションのときです</strong>（出典2）。<strong>結果として、遠隔の認証されていない攻撃者が「リモートコード実行を達成しうる（possibly achieve remote code execution）」</strong>（出典2。原文英語）。<strong>悪用には精密なタイミングが要るが、権限も利用者の操作も要りません</strong>（出典2）。</p>
+<p><strong>どこまで及ぶか。</strong> <strong>Red Hat の速報が挙げるのはRHEL 8・9・10、OpenShift Container Platform 4（ノードが RHEL CoreOS で動く）、および RHEL カーネルの上に作られた製品（Red Hat OpenStack Platform・Red Hat Virtualization）です</strong>（出典2）。<strong>国内報道は、これに加えて OpenShift Container Platform 5 の openshift/ose-rhel-coreos-9、RHEL for NVIDIA 26 のカーネル、RHEL 9 の kernel-rt を挙げ、RHEL 7 は脆弱なコードが存在しないため影響を受けないと伝えています</strong>（出典4）。</p>
+<p><strong>暫定策は「IPオプション付きのIPv4 TCPパケットを落とす」ことです</strong>（出典2）〈重要〉—— <strong>nftables で <code>ip protocol tcp ip hdrlength &gt; 5 counter drop</code> を入力フックに置く規則が速報に載っています</strong>（出典2）。<strong>ただしこれは修正ではなくフィルタで、再起動をまたいで残りません</strong>（出典2）。<strong>Red Hat は一部のワークロードを壊しうるので先に試験せよと述べています</strong>（出典2）。<strong>MPTCP は前提条件ではないので、MPTCP の無効化では防げません</strong>（出典2）。</p>
+<p><strong>機器ベンダーへの波及が始まっています。</strong> <strong>WatchGuard は2026年11月3日、WGSA-2026-0033「Linux Kernel IPv4 Use-After-Free Vulnerability」をCritical として公開し、対象を Dimension 2.0 以降・Fireware OS 2025.1 および 12.0 以降・WatchGuard AP 1.0 以降としました</strong>（出典3）〈重要〉。<strong>報道によれば、Fireware OS と WatchGuard AP は脆弱なカーネルを含むがこの脆弱性が開くリモートコード実行の連鎖の影響は受けず、Dimension は脆弱な Ubuntu で動いていて修正はまだ提供されていない、とWatchGuard は説明しています</strong>（出典5。原文英語）。</p>
+<p><strong>悪用の報告はありません</strong>（出典1・2・3・5）〈未確定1〉—— <strong>報道は「Cisco も WatchGuard も、いずれの脆弱性も実際に悪用されているとは把握していない」と伝えています</strong>（出典5。原文英語）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**Red Hat の CVE ページ・速報、WatchGuard の勧告のいずれにも悪用の記載は無い** （出典1・2・3。本記録の確認）〈重要〉。 **報道は「Cisco も WatchGuard も、いずれの脆弱性も実際に悪用されているとは把握していない」と 伝えている**（出典5。原文英語）—— **「把握していない」は「悪用されていない」とは別である**（本記録の明示）。</div></li><li><span class=ui>リモートコード実行が実証されたか（概念実証コードの有無）</span><span class="b rsn">公表されていない</span><div class=sm>**Red Hat の記述は「possibly achieve remote code execution」であり、 「悪用には精密なタイミングが要る」としている**（出典2。原文英語）〈重要〉。 **国内報道は「任意コード実行を確実に実現するには精密なヒープ制御が必要」と書いている**（出典4）。 **概念実証コードが存在するか、公開されているかは、本記録が確認した一次公表に記載が無い** （本記録の確認）。</div></li><li><span class=ui>WatchGuard Dimension の修正提供時期</span><span class="b rsn">公表されていない</span><div class=sm>**報道は「Dimension は脆弱な Ubuntu で動いているが、修正はまだ提供されていない」と WatchGuard の説明を伝えている**（出典5。原文英語）〈重要〉—— **提供予定の時期は公表されていない**（本記録の確認）。 **一方で WatchGuard の PSIRT は Dimension 2.0 以降を対象として明示している**（出典3）。</div></li><li><span class=ui>上流（Linux カーネル）の修正コミットと RHSA の個別内容</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した一次公表（出典1・2・3）には、 上流の修正コミットの識別子が記載されていない**（本記録の確認）。 **国内報道が挙げる4件の RHSA（出典4）は、本記録では Red Hat 側で個別に取得していない** （本記録の明示）—— **各 RHSA が具体的にどのカーネルバージョンで修正されたかは本記録では裏取りできていない。** **また、Red Hat 速報が11月4日に更新された際の変更点も判別できない。**</div></li><li><span class=ui>影響を受ける日本の組織の数・一覧</span><span class="b rsn">公表されていない</span><div class=sm>**公表はいずれも製品単位であり、国・組織単位の集計は示されていない** （出典1・2・3。本記録の確認）〈重要〉。 **JPCERT/CC や IPA による国内向けの注意喚起も、本記録の作成時点では確認していない** （本記録の確認）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Red Hat</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>WatchGuard Technologies</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Linux カーネル開発コミュニティ</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>RHEL / OpenShift を運用する組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>WatchGuard の機器を運用する組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-98432 の CVSS 3.1 ベーススコア（Red Hat 評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>スコア</span></div><div class=fa>2026年11月6日（取得時点） 時点</div><div class=fn>**ベクターは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H**（出典1）〈重要〉—— **攻撃経路はネットワーク、複雑さは低、必要な権限と利用者の操作はいずれも不要、 機密性・完全性・可用性への影響はすべて高い**（出典1・4）。 **cve.org の値も 9.8 で一致し、NVD は「N/A」である**（出典1）。 **Red Hat は Critical 評価の理由として、 ネットワーク上の前提条件が無いことと、深刻な不安定化の可能性を挙げている**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける RHEL のメジャーバージョン数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>系列</span></div><div class=fa>2026年11月6日 時点</div><div class=fn>**RHEL 8・9・10 の3系列**（出典2）〈重要〉—— **RHEL 7 は脆弱なコードが存在しないため影響を受けない**（出典4）。 **Red Hat は、対象製品の旧マイナー更新系列についても、 影響なしと明記されていない限り脆弱と見なすよう促している**（出典4）〈重要〉。</div></div><div class=fig><div class=fh><span class=fl>国内報道が挙げた RHEL 向け勧告（RHSA）の件数</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>4<span class=fu>件</span></div><div class=fa>2026年11月1日 時点</div><div class=fn>**RHSA-2026:93413（RHEL 10）・93412（RHEL 9）・93414（RHEL 8 カーネル）・ 93415（RHEL 8 kernel-rt）の4件**（出典4）—— **本記録はこの4件を Red Hat 側で個別に取得していない**（本記録の明示）〈未確定4〉。</div></div><div class=fig><div class=fh><span class=fl>Red Hat 速報の公開から WatchGuard 勧告の公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fa>2026年11月3日 時点</div><div class=fn>**10月30日（出典2）から11月3日（出典3）までの差**（本記録の算出）〈重要〉—— **Linux カーネルの脆弱性は、OS 配布元の公表から機器ベンダーの勧告まで 日単位の時差で波及する**（本記録の評価）。 **自組織の資産棚卸しが「OS」止まりだと、この4日のあいだに アプライアンスの存在に気づけない**（本記録の評価）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃の観測ではなく、Red Hat の速報と CVE ページが示す成立条件を 段階に並べたものである**（本記録の明示）〈未確定1〉〈重要〉。 **攻撃者は、外部からTCP接続を受け付ける対象に対して細工した要求を送り、 接続要求の再送またはソケットマイグレーションと並行する競合を起こす**（出典1・2・4）。 **各段階の「検知の機会」と「効きえた対策」は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4]</span></div><div>**攻撃者は、外部からTCP接続を受け付ける対象を探す**（出典4）〈重要〉——
+**必要なのは到達可能なTCPポートがあることだけで、
+特定のサービスや設定は前提になっていない**（出典1・2。本記録の整理）。
+**MPTCP が有効かどうかは条件ではない**（出典2）。
+</div><div class=fn>根拠: CVSS ベクターの AV:N / PR:N / UI:N（出典1）／「外部からTCP接続を受け付けるシステムが主な攻撃対象」（出典4）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4]</span></div><div>**攻撃者は細工したネットワーク要求を送り、
+接続要求の再送またはソケットマイグレーションと並行する処理を競合させる**（出典2・4）〈重要〉——
+**ソケットオプションが解放済みのまま参照される（解放後使用）**（出典1・2）。
+**Red Hat は「悪用には精密なタイミングが要るが、
+権限も利用者の操作も要らない」と述べている**（出典2。原文英語）。
+**国内報道の整理では、暫定策が「IPv4ヘッダにIPオプションを含むTCPパケット」を
+落とすものであることから、成立にはIPオプション付きのパケットが関係する**（出典2・4）。
+</div><div class=fn>根拠: Red Hat 速報の技術記述と nftables 規則（出典2）／国内報道の解説（出典4）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4]</span></div><div>**確実に起きるのはシステムのクラッシュによるサービス運用妨害とメモリ破損である**
+（出典1・2・4）〈重要〉。
+**さらに「遠隔の認証されていない攻撃者がリモートコード実行を達成しうる」**
+（出典2。原文英語）〈未確定2〉——
+**国内報道は「任意コード実行を確実に実現するには精密なヒープ制御が必要」と
+条件を添えている**（出典4）。
+**成立すればカーネル権限での実行になるため、
+その上の利用者権限・コンテナ境界・SELinux の前提はいずれも崩れる**
+（本記録の評価。公表に記載は無い）。
+</div><div class=fn>根拠: Red Hat CVE ページの「想定される影響」（出典1）／速報の記述（出典2）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul></div>
+<section id="s5"><h2>競合状態が、認証も操作も要らない遠隔の攻撃面になっていた<span class="b slot">原因・手口</span></h2><p><strong>Red Hat の速報の技術記述はこうです</strong>（出典2。原文英語。本記録の訳）〈重要〉—— <strong>inbound な接続要求に結び付いたソケットオプションが、並行する処理がまだそれを読んでいる最中に解放されうる。競合は、接続要求が再送されたとき、またはソケットマイグレーションのときに起こりうる。</strong></p>
+<p><strong>国内報道はこれを「TCP接続要求の再送やソケットマイグレーション（ソケットの移行）などを並行して処理する際に発生する競合状態」と整理し、「接続要求に関連付けられたソケットオプションの所有権が子ソケットに移される一方、別の処理が同じメモリ領域を参照する可能性がある」と説明しています</strong>（出典4）。</p>
+<p><strong>CVSS のベクターが意味するところは明快です。</strong> <strong>AV:N（ネットワーク）・AC:L（複雑さ低）・PR:N（権限不要）・UI:N（操作不要）</strong>（出典1）〈重要〉—— <strong>つまり、外部からTCP接続を受け付けているだけで条件が揃います。</strong> <strong>Red Hat は Critical 評価の理由として、ネットワーク上の前提条件が無いことと、深刻な不安定化の可能性を挙げています</strong>（出典1）。</p>
+<p><strong>ただし「複雑さ低」と「精密なタイミングが要る」は矛盾していません。</strong> <strong>Red Hat 自身が「悪用には精密なタイミングが要るが、権限も利用者の操作も要らない」と書いています</strong>（出典2。原文英語）—— <strong>競合状態は何度も試せるため、CVSS の AC は低く付きます</strong>（本記録の評価）。<strong>DoS は比較的容易に、コード実行は精密なヒープ制御を要する、という段差があります</strong>（出典4）〈未確定2〉。</p>
+<p><strong>弱点の分類には表現の揺れがあります。</strong> <strong>Red Hat の CVE ページは CWE-825（期限切れポインタの参照）、WatchGuard の勧告の題名と国内報道は「解放後使用（use-after-free）」です</strong>（出典1・3・4）〈齟齬2〉—— <strong>指している現象は同じで、分類の粒度が違うだけです</strong>（本記録の整理）。</p></section>
+<section id="s6"><h2>暫定策は「IPオプション付きのパケットを落とす」——ただし再起動で消える<span class="b slot">対策・注意喚起</span></h2><p><strong>Red Hat の速報は、修正の提供を急ぐと述べる一方で、nftables による暫定策を具体的な規則の形で載せています</strong>（出典2）〈重要〉。<strong>入力フックに <code>ip protocol tcp ip hdrlength &gt; 5 counter drop</code> を置き、IPオプションを含むIPv4 TCPパケットを落とすものです</strong>（出典2）。</p>
+<p><strong>この規則には3つの注意書きが付いています</strong>（出典2。原文英語）〈重要〉—— <strong>①これはフィルタであって修正ではない。②再起動をまたいで残らない。③一部のワークロードを壊しうるので先に試験せよ。</strong></p>
+<p><strong>②が実務では一番危ういところです</strong>（本記録の評価）〈重要〉。<strong>カーネル更新そのものが再起動を要する作業である一方、暫定策は再起動で消えます。</strong> <strong>「更新できないから暫定策を入れた」環境で予定外の再起動が起きると、守られているつもりで無防備な状態に戻ります</strong>（本記録の判断）—— <strong>入れるなら永続化の仕組み（systemd ユニット・構成管理）まで含めて入れるべきです。</strong></p>
+<p><strong>MPTCP の無効化は効きません</strong>（出典2）〈重要〉。<strong>Red Hat は「MPTCP は前提条件ではないため、その無効化は完全な緩和ではない」と明記し、「RHEL は MPTCP を既定で無効にしているが、それでも影響を受ける」と述べています</strong>（出典2。原文英語）—— <strong>近年の TCP 系の競合状態の脆弱性では MPTCP が条件になったものがあり、同じ対処を当てはめると外します</strong>（本記録の評価）。</p>
+<p><strong>OpenShift には別の手順があります</strong>（出典2）。<strong>Red Hat は OpenShift 向けの暫定指針（solution 7149635）を用意し、マネージド OpenShift サービスには別の手順を示しています</strong>（出典2）—— <strong>ノード単位の nftables 規則では Pod 間の通信が守られないと明記されています</strong>（出典2）〈重要〉。<strong>コンテナ基盤では「ノードに入れたから終わり」が成立しません</strong>（本記録の整理）。</p>
+<p><strong>一つ、守りに転用できる点があります</strong>（本記録の判断）〈重要〉。<strong>速報の規則は <code>counter drop</code> です。</strong> <strong>IPオプション付きのIPv4 TCPパケットは平常時にほとんど来ないため、このカウンタが伸びること自体が「誰かが試している」指標になります。</strong> <strong>規則を入れるなら、カウンタを監視に載せるべきです</strong>（公表に記載は無い。本記録の判断）。</p></section>
+<section id="s7"><h2>4日でアプライアンスへ波及した——棚卸しが「OS」止まりだと見えない<span class="b slot">波及・関係先</span></h2><p><strong>Red Hat の速報は2026年10月30日、WatchGuard の勧告は11月3日です</strong>（出典2・3）〈重要〉—— <strong>4日の差で、Linux ディストリビューションの問題がネットワーク機器の問題になりました</strong>（本記録の算出）。</p>
+<p><strong>WGSA-2026-0033「Linux Kernel IPv4 Use-After-Free Vulnerability」は Critical で、対象は Dimension 2.0 以降・Fireware OS 2025.1 および 12.0 以降・WatchGuard AP 1.0 以降です</strong>（出典3）。<strong>報道によれば WatchGuard は、Fireware OS と WatchGuard AP は脆弱なカーネルを含むがこの脆弱性が開くリモートコード実行の連鎖の影響は受けず、Dimension は脆弱な Ubuntu で動いていて修正はまだ提供されていない、と説明しています</strong>（出典5。原文英語）〈重要〉〈未確定3〉。</p>
+<p><strong>「脆弱なコードは入っているが、連鎖は成立しない」という説明の扱いが難しいところです</strong>（本記録の評価）〈重要〉—— <strong>これはベンダー側の内部構成の知識に依存する判断で、利用者側では検証できません。</strong> <strong>一方で WatchGuard は、その Fireware OS と AP を勧告の対象として明示してもいます</strong>（出典3）。<strong>実務的には「対象として挙がった以上、ベンダーの修正提供を追う」のが素直です</strong>（本記録の判断）。</p>
+<p><strong>ここから引ける一般則があります</strong>（本記録の評価）〈重要〉。<strong>自組織の脆弱性管理が「OS のパッチ適用」までで止まっていると、中で Linux が動いているアプライアンス（ファイアウォール・無線 AP・管理サーバ・ストレージ・ロードバランサ・監視装置）が抜けます。</strong> <strong>本件では、管理プラットフォーム（Dimension）と無線 AP が対象に入りました</strong>（出典3）—— <strong>どちらも「サーバ」として管理台帳に載っていないことが多い機器です。</strong></p>
+<p><strong>Red Hat の速報は、もう一段広い注意も書いています</strong>（出典2）。<strong>RHEL のカーネルの上に作られた製品（Red Hat OpenStack Platform・Red Hat Virtualization）も「潜在的に影響を受ける」としており、断定していません</strong>〈未確定4〉—— <strong>国内報道も、Red Hat が「対象製品の旧マイナー更新系列についても、影響なしと明記されていない限り脆弱と見なすよう」促していると伝えています</strong>（出典4）〈重要〉。<strong>「影響ありと書かれていないから大丈夫」ではなく「影響なしと書かれていなければ脆弱と見なす」が、本件の読み方です</strong>（本記録の整理）。</p></section>
+<section id="s8"><h2>悪用の報告は無い——「把握していない」と「されていない」を分けて読む<span class="b slot">未確定事項</span></h2><p><strong>本記録の作成時点（2026年11月6日）で、Red Hat の CVE ページ・速報 RHSB-2026-016・WatchGuard の PSIRT のいずれにも悪用の記載はありません</strong>（出典1・2・3。本記録の確認）〈重要〉〈未確定1〉。<strong>報道は「Cisco も WatchGuard も、いずれの脆弱性も実際に悪用されているとは把握していない（are not aware of ...being exploited in the wild）」と伝えています</strong>（出典5。原文英語）。</p>
+<p><strong>この文は「悪用されていない」とは言っていません</strong>（本記録の明示）〈重要〉—— <strong>ベンダーの可視範囲に入っていないという報告です。</strong> <strong>本件の DoS 側は再現が容易で、コード実行側は精密なヒープ制御を要する</strong>（出典2・4）〈未確定2〉—— <strong>したがって、仮に試行が始まっていれば、最初に表に出るのは「原因不明のカーネルパニック」の形になる可能性があります</strong>（本記録の評価）。</p>
+<p><strong>概念実証コードの有無も公表されていません</strong>（本記録の確認）〈未確定2〉。<strong>技術記述と暫定策の規則（IPオプション付きパケットを落とす）が公開されているため、成立条件の方向はすでに読み取れる状態です</strong>（本記録の評価）—— <strong>これは「暫定策の内容が攻撃の手がかりになる」という、緩和策の公開に常につきまわる緊張です</strong>（本記録の評価）。</p>
+<p><strong>Red Hat 自身が速報を「調査は継続中」と位置づけ、11月4日に更新しています</strong>（出典2）〈重要〉—— <strong>何が変わったかは速報の表示からは判別できません</strong>〈未確定4〉。<strong>本件は追跡が必要な段階にあり、本記録の status も updating としています。</strong></p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Red Hat Enterprise Linux（カーネル・kernel-rt）　<b>ベンダー:</b> Red Hat　<b>CVE番号:</b> CVE-2026-98432　<b>バージョン:</b> **RHEL 8・9・10 が影響を受ける**（出典2）〈重要〉—— **RHEL 7 のカーネルパッケージは脆弱なコードが存在しないため影響を受けない**（出典4）。 **国内報道は RHEL 8 の kernel-rt、RHEL 9 の kernel-rt、 RHEL for NVIDIA 26 のカーネルも対象として挙げている**（出典4）。 **修正は RHSA-2026:93413（RHEL 10）・93412（RHEL 9）・93414（RHEL 8 カーネル）・ 93415（RHEL 8 kernel-rt）**（出典4）〈未確定4〉。　<b>概要:</b> **カーネルのIPv4ネットワーク処理**（出典1・2）—— **攻撃面になるのは「外部からTCP接続を受け付けるシステム」である**（出典4）。　<b>症状:</b> **接続要求に結び付いたソケットオプションが、 並行する処理がまだ読んでいる最中に解放される**（出典2。原文英語。本記録の訳）〈重要〉—— **競合は接続要求の再送、またはソケットマイグレーションのときに起こりうる**（出典2）。 **結果はシステムのクラッシュ（DoS）、メモリ破損、 およびリモートコード実行の可能性である**（出典1・2）。</div><div class=sub><b>名称:</b> Red Hat OpenShift Container Platform（RHEL CoreOS ノード）　<b>ベンダー:</b> Red Hat　<b>CVE番号:</b> CVE-2026-98432　<b>バージョン:</b> **速報が挙げるのは OpenShift Container Platform 4（ノードが RHEL CoreOS で動く）**（出典2）。 **国内報道はこれに加えて OpenShift Container Platform 5 の openshift/ose-rhel-coreos-9、 同4の openshift/ose-rhel-coreos-8 と -9 を挙げている**（出典4）〈重要〉。　<b>概要:</b> **コンテナ基盤のノード OS が RHEL CoreOS であるため、カーネルの脆弱性が波及する**（出典2）。　<b>症状:</b> **Red Hat は OpenShift 向けの暫定指針（solution 7149635）を別に用意し、 マネージド OpenShift サービスには別の手順を示している**（出典2）〈重要〉—— **ノード単位の nftables 規則では Pod 間の通信は守られない**（出典2）。</div><div class=sub><b>名称:</b> WatchGuard Dimension / Fireware OS / WatchGuard AP　<b>ベンダー:</b> WatchGuard Technologies　<b>CVE番号:</b> CVE-2026-98432　<b>バージョン:</b> **Dimension 2.0 以降、Fireware OS 2025.1 および 12.0 以降、WatchGuard AP 1.0 以降** （出典3）〈重要〉。　<b>概要:</b> **いずれも脆弱な Linux カーネルを含む製品である**（出典3・5）。　<b>症状:</b> **報道によれば、Fireware OS と WatchGuard AP は脆弱なカーネルを含むが この脆弱性が開くリモートコード実行の連鎖の影響は受けず、 Dimension は脆弱な Ubuntu で動いていて修正はまだ提供されていない** （出典5。原文英語。本記録の訳）〈重要〉〈未確定3〉。</div><div class=sub><b>名称:</b> Red Hat OpenStack Platform / Red Hat Virtualization　<b>ベンダー:</b> Red Hat　<b>CVE番号:</b> CVE-2026-98432　<b>バージョン:</b> **速報は「RHEL のカーネルの上に作られた製品は影響を受ける可能性がある」として この2製品を名指ししている**（出典2。原文英語）—— **具体的なバージョンは速報に記載が無い**（本記録の確認）〈未確定4〉。　<b>概要:</b> **RHEL カーネルを共有する製品群**（出典2）。　<b>症状:</b> **「潜在的に影響を受ける（potentially affected）」という表現にとどまる** （出典2。原文英語）〈重要〉—— **断定されていないため、利用組織は自分で問い合わせる必要がある**（本記録の評価）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **修正済みカーネルへ更新する**（出典2・4）〈重要〉—— **RHEL 10 は RHSA-2026:93413、RHEL 9 は 93412、 RHEL 8 のカーネルは 93414、kernel-rt は 93415**（出典4）。　<b>副作用:</b> **カーネル更新は再起動を要する**（本記録の整理）〈重要〉—— **無停止が前提のシステムでは、更新の実施そのものが計画作業になり、 その間は暫定策で凌ぐことになる**（本記録の評価）。 **OpenShift のノード更新はローリング再起動となり、 Pod の退避とディスラプションバジェットの確認が要る**（本記録の評価）。</div><div class=sub><b>手順:</b> **更新まで時間がかかる場合、nftables で IPオプション付きのIPv4 TCPパケットを落とす**（出典2・4）〈重要〉—— **速報の規則は `table inet cve_2026_98432` の入力フック（priority -310・policy accept）に `ip protocol tcp ip hdrlength &gt; 5 counter drop` を置くもの**（出典2）。 **適用前に `nft --check --file` で検証し、 更新後は `nft delete table inet cve_2026_98432` で外す手順も示されている**（出典2）。　<b>副作用:</b> **Red Hat は「これはフィルタであって修正ではない」「再起動をまたいで残らない」 「一部のワークロードを壊しうるので先に試験せよ」と明記している**（出典2。原文英語）〈重要〉。 **国内報道も「完全な修正の代替ではなく、適用時には既存の通信への影響を 確認する必要がある」と伝えている**（出典4）。 **再起動で消えるため、無人の再起動が入る環境では 「守られているつもりで守られていない」状態になりうる**（本記録の評価）〈重要〉。</div><div class=sub><b>手順:</b> **OpenShift では、ノード単位ではなく Red Hat の OpenShift 向け暫定指針 （solution 7149635）に従う**（出典2）—— **マネージド OpenShift サービスには別の手順が用意されている**（出典2）。　<b>副作用:</b> **ノード単位の nftables 規則では Pod 間の通信が守られない**（出典2）〈重要〉—— **「ノードに規則を入れたから終わり」と判断すると、 クラスタ内部からの経路が残る**（本記録の評価）。</div><div class=sub><b>手順:</b> **MPTCP の無効化を緩和策として当てにしない**（出典2）〈重要〉。　<b>副作用:</b> **Red Hat は「MPTCP は前提条件ではないため、無効化は完全な緩和ではない」と明記し、 RHEL は既定で MPTCP を無効にしているが影響を受けると述べている**（出典2。原文英語）—— **他の競合状態の脆弱性で MPTCP が条件だった経験から 同じ対処を当てはめると、対策したつもりで無防備になる**（本記録の評価）。</div><div class=sub><b>手順:</b> **アプライアンス・仮想基盤の棚卸しを、OS だけでなく 「中で Linux が動いている製品」まで広げる**（本記録の判断。公表に記載は無い）〈重要〉—— **本件では WatchGuard の Dimension・Fireware OS・AP が対象に入った**（出典3）。　<b>副作用:</b> **棚卸しの対象が広がり、ベンダーへの問い合わせ件数が増える**（本記録の評価）—— **一方で、ベンダーが「影響なし」と明記しない限り 利用者側では判断できないため、この作業は省けない**（本記録の判断）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**国内報道は「Red Hatは2026年10月15日（現地時間）、Linuxカーネルの IPv4ネットワーク処理に関する脆弱性『CVE-2026-98432』を公開した」と書いている**（出典4）。 **Red Hat の CVE ページには「Last modified」が空欄で日付が無く、 速報 RHSB-2026-016 の公開日は10月30日である**（出典1・2。本記録の確認）〈齟齬1〉—— **本記録はこの日付を一次公表で裏取りできていない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Red Hat が速報 RHSB-2026-016「Use-after-free in kernel IPv4」を公開した**（出典2）〈重要〉—— **CVE-2026-98432 を Critical とし、「修正の提供を急いでいる」とした**（出典2。原文英語）。 **同時に、IPオプション付きのIPv4 TCPパケットを落とす nftables の規則を暫定策として示した**（出典2）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**国内報道によれば、Red Hat は RHEL 10・9・8 のカーネルパッケージおよび RHEL 8 の kernel-rt について修正情報を公開した**（出典4）—— **勧告番号は RHEL 10 が RHSA-2026:93413、RHEL 9 が RHSA-2026:93412、 RHEL 8 のカーネルが RHSA-2026:93414、kernel-rt が RHSA-2026:93415 である**（出典4）。 **本記録は個別の RHSA を取得していない**（本記録の明示）〈未確定4〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**WatchGuard が WGSA-2026-0033「Linux Kernel IPv4 Use-After-Free Vulnerability」を Critical として公開した**（出典3）〈重要〉—— **対象は Dimension 2.0 以降・Fireware OS 2025.1 および 12.0 以降・WatchGuard AP 1.0 以降**（出典3）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">訂正</span></td><td>**Red Hat の速報 RHSB-2026-016 が更新された（「Last updated」の表示）**（出典2）—— **速報は「調査は継続中で、新しい情報が出れば更新する」と述べている**（出典2。原文英語）。 **何が変わったかは速報の表示から判別できない**（本記録の確認）〈未確定4〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**SecurityWeek が、Cisco・WatchGuard の修正と SonicWall の非修正をまとめた記事の中で 本件を「最も深刻なもの」として取り上げた**（出典5）—— **同日、国内の @IT Security &amp; Trust も「RHELとOpenShiftを直撃」として 国内の運用者向けに取り上げた**（出典4。公開は11月4日22時45分 協定世界時）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成時点で、Red Hat の CVE ページ・速報 RHSB-2026-016・ WatchGuard の PSIRT のいずれにも悪用の記載は無い**（出典1・2・3。本記録の確認）〈未確定1〉。 **WatchGuard Dimension の修正提供時期も公表されていない**〈未確定3〉。</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Red Hat が CVE を公開した日付</span><div class=sm>**国内報道は「Red Hatは2026年10月15日（現地時間）、……CVE-2026-98432 を公開した」と 書いている**（出典4）〈重要〉。 **一方、Red Hat の CVE ページには「Last modified」が空欄で日付の表示が無く、 速報 RHSB-2026-016 の公開日時は2026年10月30日16時03分（協定世界時）である** （出典1・2。本記録の確認）。 **本記録は10月15日という日付を一次公表で裏取りできていない**（本記録の明示）—— **CVE ページの初出と専用速報の公開が別の日であることは通常ありうるため、 矛盾とは言い切れないが、本記録では timeline の T1 に 「一次公表では確認できない」と添えて残した。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>弱点の分類の呼び方（CWE-825 と use-after-free）</span><div class=sm>**Red Hat の CVE ページは弱点を CWE-825（期限切れポインタの参照）としている**（出典1）。 **WatchGuard の勧告の題名と国内報道は「解放後使用（use-after-free）」と呼び、 Red Hat の速報の題名も「Use-after-free in kernel IPv4」である**（出典2・3・4）〈重要〉。 **指している現象は同じで分類の粒度が違うだけである**（本記録の整理）—— **ただし CWE 番号で検索・突合する運用をしている組織では、 CWE-416（解放後使用）で引けないことがありうる**（本記録の評価）。</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>WatchGuard 製品の「脆弱なコードは含むが連鎖は成立しない」という説明</span><div class=sm>**報道は「Fireware OS と WatchGuard AP は脆弱な Linux カーネルのバージョンを含むが、 この脆弱性が開くリモートコード実行の連鎖の影響は受けない」と WatchGuard の説明を伝えている**（出典5。原文英語。本記録の訳）〈重要〉。 **本記録が確認した WatchGuard の PSIRT 一覧には、 Dimension・Fireware OS・WatchGuard AP が影響を受ける製品として並んでいるだけで、 この区別の記載は見当たらない**（出典3。本記録の確認）〈未確定3〉—— **個別の勧告ページに書かれている可能性があるが、本記録は取得していない。** **利用者側で検証できる主張ではないため、 本記録は「対象として挙がった以上、修正提供を追う」立場を採る**（本記録の判断）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が RHSA と上流コミットを個別に取得していないこと</span><div class=sm>**国内報道が挙げる4件の RHSA（RHSA-2026:93412〜93415）および 11月1日という公開日は、本記録では Red Hat 側で個別に取得していない**（出典4）〈重要〉〈未確定4〉。 **上流（Linux カーネル）の修正コミットの識別子も、 本記録が取得した一次公表（出典1・2・3）には記載が無い。** **また、速報が2026年11月4日に更新された際の変更点も、 速報の表示からは判別できない**（出典2。本記録の確認）。 **本記録は、一次公表で確認できた範囲（CVSS・影響製品・技術記述・暫定策）と、 報道でのみ確認できた範囲（RHSA 番号・10月15日・11月1日）を分けて記載した。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>外部からのTCP接続だけで届く経路と、Red Hat が示した2つの遮断点</div><div class=svgwrap><svg viewBox="0 0 998 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C295.0,111.0 295.0,213.0 220,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,118.0 628,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,213.0 C601.0,213.0 601.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,118.0 C805.0,118.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,118.0 C805.0,118.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,118.0 C805.0,118.0 805.0,264.0 832,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遠隔の認証されていない攻</text><text x="91.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">撃者</text><text x="91.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS は AV:N・</text><text x="91.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">AC:L・PR:N・UI</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工したTCP要求（IP</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">オプション付きのIPv4</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パケット）</text><text x="295.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">暫定策が落とす対象が「I</text><text x="295.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">Pオプションを含むIPv</text><rect x="220" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">暫定策 — nftabl</text><text x="295.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">es で IPオプション</text><text x="295.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">付きのIPv4 TCP…</text><text x="295.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">修正ではなくフィルタ。再</text><text x="295.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">起動をまたいで残らない（</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IPv4処理の競合状態（</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">接続要求の再送／ソケット</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">マイグレーション）</text><text x="499.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">ソケットオプションが解放</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">され、まだ読んでいる処理</text><rect x="628" y="74.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Linux カーネル（R</text><text x="703.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HEL 8/9/10・R</text><text x="703.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HEL CoreOS）</text><text x="703.0" y="137.0" text-anchor="middle" fill="#64b5f6" font-size="10">クラッシュ（DoS）・メ</text><text x="703.0" y="149.0" text-anchor="middle" fill="#64b5f6" font-size="10">モリ破損・リモートコード</text><rect x="628" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">恒久対策 — 修正済みカ</text><text x="703.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーネルへの更新</text><text x="703.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">RHSA-2026:93</text><text x="703.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">412〜93415（出典</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenShift Co</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ntainer Plat</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">form のノードと …</text><text x="907.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">ノード単位の nftab</text><text x="907.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">les 規則では Pod</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">WatchGuard D</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">imension / F</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ireware OS …</text><text x="907.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">WGSA-2026-00</text><text x="907.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">33（2026年11月3</text><rect x="832" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Red Hat Open</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Stack Platfo</text><text x="907.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rm / Red Ha…</text><text x="907.0" y="283.0" text-anchor="middle" fill="#64b5f6" font-size="10">「潜在的に影響を受ける」</text><text x="907.0" y="295.0" text-anchor="middle" fill="#64b5f6" font-size="10">とされ断定されていない（</text></svg></div><div class=fn>**Red Hat の速報（出典2）と CVE ページ（出典1）が示す成立条件を経路として並べたものである。**
+**実際の悪用の観測ではない**〈未確定1〉。
+**右側は、同じカーネルを含む製品への波及（出典3・5）である**（本記録の整理）。
+</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表に検知の指針は無い**（本記録の確認）〈未確定1〉。
+**実務的には、外部に開いたTCPポートの一覧を自分で持っているかどうかが分かれ目になる**
+（本記録の評価）〈重要〉——
+**「どのサーバのどのポートが外から見えているか」を答えられない組織では、
+この段で何も見えない。**
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>外部公開しているTCPポートを棚卸しし、不要なものを閉じる</div><div class=ctl><span class="b eff">影響を限定できた</span>外部から到達できる範囲を許可元IPで絞る（境界での前段フィルタ）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表に検知の指針は無い**〈未確定1〉。
+**暫定策の nftables 規則が `counter drop` である点は使える**（本記録の評価）〈重要〉——
+**IPオプション付きのIPv4 TCPパケットは平常時にほとんど来ないため、
+このカウンタが伸びること自体が異常の指標になる。**
+**規則を入れたら、カウンタを監視対象に載せるべきである**（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>nftables で IPオプション付きのIPv4 TCPパケットを落とす（速報の暫定策）</div><div class=ctl><span class="b eff">検知できた</span>落としたパケット数のカウンタを監視し、増加を検知に使う</div><div class=ctl><span class="b eff">侵入を防げた</span>修正済みカーネルへ更新する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵害後の痕跡についての指針は公表されていない**（本記録の確認）〈未確定1〉。
+**DoS の側は観測しやすい**（本記録の評価）〈重要〉——
+**原因不明のカーネルパニック・再起動が、
+外部からの接続を受けるホストで続くなら本件を疑う材料になる。**
+**一方、コード実行まで至った場合の痕跡はカーネル内に残るため、
+通常のホスト監視では見えない**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>カーネルクラッシュ・予期しない再起動を監視対象に載せ、crashkernel で vmcore を保全する</div><div class=ctl><span class="b eff">影響を限定できた</span>外部公開面を最小にし、カーネル境界に依存しない区画（別ホスト・別ネットワーク）で重要資産を分ける</div><div class=ctl><span class="b eff">侵入を防げた</span>修正済みカーネルへ更新する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「OS のパッチ適用」で脆弱性管理が完結していないことを、本件で確認する。**</div><div class=lw>**Red Hat の速報から4日で、WatchGuard の管理プラットフォーム・ファイアウォール OS・ 無線アクセスポイントが対象として公表された**（出典2・3）〈重要〉—— **これらは「サーバ」として管理台帳に載っていないことが多い機器である**（本記録の評価）。 **Linux カーネルの脆弱性は、中で Linux が動いているすべての製品に波及しうるが、 波及の有無は各ベンダーが個別に判断して公表するため、 利用者側は「問い合わせる」以外に知る方法がない**（本記録の判断）。</div><div class=la><b>取るべき行動</b> **①アプライアンス（ファイアウォール・無線 AP・ロードバランサ・ストレージ・ 監視装置・管理サーバ）の台帳が存在するか確認する。 ②各機器のベンダーの PSIRT／勧告ページの URL を台帳の項目に加える。 ③本件の CVE 番号（CVE-2026-98432）を各ベンダーへ照会し、 「影響なし」の明記が取れた機器と、回答が無い機器を分けて記録する。**</div></li><li><div class=lp>**「影響ありと書かれていないから対象外」という読み方を禁じる。**</div><div class=lw>**Red Hat は、対象製品の旧マイナー更新系列についても 「影響なしと明記されていない限り脆弱と見なすよう」促している**（出典4）〈重要〉。 **速報が Red Hat OpenStack Platform・Red Hat Virtualization を 「潜在的に影響を受ける（potentially affected）」としたまま断定していないのも同じ構えである** （出典2。原文英語）〈未確定4〉。 **既定値を「対象外」に置くと、断定されていない製品がすべて抜ける**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①脆弱性対応の判定規則を「影響なしの明記が取れるまで対象」に変える。 ②ベンダー回答の記録に「影響なしと明記」「潜在的に影響」「未回答」の3区分を設ける。 ③未回答のまま一定期間（例: 14日）を超えた機器を経営報告の対象にする。**</div></li><li><div class=lp>**暫定策を「対策済み」と報告させない。期限と永続性を一緒に管理する。**</div><div class=lw>**Red Hat は nftables の規則について「フィルタであって修正ではない」 「再起動をまたいで残らない」「一部のワークロードを壊しうる」と明記している** （出典2。原文英語）〈重要〉。 **再起動で消える緩和策は、予定外の再起動のあと「守られているつもり」の状態を作る** （本記録の評価）—— **カーネル更新そのものが再起動を要する作業である以上、 この取り違えは起きやすい。**</div><div class=la><b>取るべき行動</b> **①暫定策を適用した資産に「恒久対策の期限」を必ず添えて台帳に記録する。 ②暫定策の永続化（構成管理・systemd ユニット）が済んでいるかを確認項目にする。 ③落としたパケット数のカウンタを監視に載せ、「規則が生きているか」を測れるようにする。**</div></li><li><div class=lp>**コンテナ基盤では「ノードを守った」が対策の完了にならないことを前提にする。**</div><div class=lw>**Red Hat は OpenShift 向けの暫定指針を別に用意し、 ノード単位の nftables 規則では Pod 間の通信が守られないと明記している**（出典2）〈重要〉。 **マネージド OpenShift サービスには別の手順がある**（出典2）—— **「ノードに規則を入れた」という報告だけでは、 クラスタ内部からの経路が残っているかが分からない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①コンテナ基盤の対応状況を、ノード側と Pod 間通信側に分けて報告させる。 ②マネージドサービスを使っている場合、 対応の責任分界（自社が何をするか・事業者が何をするか）を文書で確認する。 ③ノード更新時のローリング再起動の所要時間を把握し、 業務影響の見込みを先に取る。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**外部から到達できるTCPポートの一覧を、今答えられる状態にする。**</div><div class=lw>**CVSS は AV:N・PR:N・UI:N であり、必要なのは到達可能なTCPポートがあることだけである** （出典1）〈重要〉—— **特定のサービスや設定は前提になっていない**（本記録の整理）。 **「どのホストのどのポートが外から見えているか」を答えられない環境では、 優先順位の付け方がない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①外部からの到達面（クラウドのセキュリティグループ・境界ファイアウォールの許可規則）を 書き出し、RHEL 8/9/10 のホストと突き合わせる。 ②不要な公開ポートを閉じる。 ③閉じられないものを「優先して更新するホスト」の一覧にする。**</div></li><li><div class=lp>**nftables の暫定策を入れるなら、永続化とカウンタ監視まで一緒に入れる。**</div><div class=lw>**速報の規則は再起動で消え、かつ `counter drop` でカウンタを持つ**（出典2）〈重要〉—— **永続化しなければ消えるし、カウンタを見なければ 「規則が生きているか」も「誰かが試しているか」も分からない**（本記録の判断）。 **IPオプション付きのIPv4 TCPパケットは平常時にほとんど来ないため、 カウンタの増加はそれ自体が異常の指標になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①`nft --check --file` で検証したうえで適用し、構成管理で再起動後も入る形にする。 ②`nft list table inet cve_2026_98432` のカウンタ値を定期取得し、監視へ送る。 ③カーネル更新後は `nft delete table inet cve_2026_98432` で外す作業を 更新手順書に書き込む（外し忘れの通信障害を防ぐ）。**</div></li><li><div class=lp>**MPTCP の無効化を緩和策の一覧から外す。**</div><div class=lw>**Red Hat は「MPTCP は前提条件ではないため、その無効化は完全な緩和ではない」と明記し、 RHEL は既定で MPTCP を無効にしているが影響を受けると述べている**（出典2。原文英語）〈重要〉—— **過去の TCP 系の競合状態の脆弱性で MPTCP が条件になった例から 同じ対処を当てはめると、対策したつもりで無防備になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①手元の緩和策の手順書から「MPTCP 無効化」を本件の対策として削る。 ②代わりに nftables 規則と更新計画を記載する。 ③緩和策の有効性は毎回ベンダー公表で確認する運用にする。**</div></li><li><div class=lp>**カーネルクラッシュを「原因不明の再起動」で終わらせない仕組みを置く。**</div><div class=lw>**確実に起きる影響はクラッシュによる DoS とメモリ破損である**（出典1・2・4）〈重要〉—— **悪用の報告は無いが（出典5）、仮に試行が始まれば 最初に表に出るのは外部接続を受けるホストでのカーネルパニックになりうる**（本記録の評価）。 **vmcore が取れていなければ、本件によるものか判断できない**（本記録の判断）。</div><div class=la><b>取るべき行動</b> **①外部公開しているホストで kdump（crashkernel）が有効か確認する。 ②カーネルパニック・予期しない再起動を監視のアラート対象にする。 ③発生時に vmcore を保全し、ベンダーへ提出できる手順を用意する。**</div></li><li><div class=lp>**RHEL 7 を「影響なし」と確認したうえで、別のリスクとして分けて扱う。**</div><div class=lw>**RHEL 7 のカーネルパッケージは脆弱なコードが存在しないため本件の影響を受けない** （出典4）〈重要〉—— **これは本件に限った話で、RHEL 7 がサポート期間の観点で安全だという意味ではない** （本記録の明示）。 **「影響なし」の報告が、延命の根拠として使われることがある**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①本件の影響なしの判定と、RHEL 7 のサポート状況の判定を、台帳上で別項目にする。 ②RHEL 7 のホストが外部公開面にいる場合、 本件とは別に移行計画の優先度を上げる。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **RHEL 8・9・10 のホスト、または OpenShift Container Platform 4/5 のノードを 運用しているか**（出典2・4）。</td><td class=sm>**速報が名指しした対象であり、外部からTCP接続を受け付けていれば 認証も操作も不要で攻撃面になる**（出典1・2）〈重要〉—— **RHEL 7 は影響を受けない**（出典4）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **中で Linux が動くアプライアンス（ファイアウォール・無線 AP・管理サーバ・ ストレージ・ロードバランサ・監視装置）を運用しており、 その台帳とベンダー勧告の追跡先を持っているか**（出典3・5）。</td><td class=sm>**本件では WatchGuard Dimension・Fireware OS・WatchGuard AP が 4日遅れで対象として公表された**（出典2・3）〈重要〉—— **台帳が「サーバ」止まりの組織では、この波及が見えない**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **外部から到達できるTCPポートの一覧を、いま答えられるか**（出典1）。</td><td class=sm>**CVSS は AV:N・PR:N・UI:N で、前提は到達可能なTCPポートの存在だけである**（出典1）〈重要〉—— **到達面が分からなければ更新の優先順位が付けられない**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **カーネル更新に伴う再起動を、業務影響の計画として実施できる体制があるか。 できない場合、暫定策を再起動後も残す仕組み（構成管理）を持っているか**（出典2）。</td><td class=sm>**nftables の暫定策は再起動をまたいで残らない**（出典2）〈重要〉—— **「更新できないから暫定策」の環境で予定外の再起動が起きると、 守られているつもりで無防備な状態に戻る**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **カーネルパニック・予期しない再起動を検知でき、vmcore を保全できるか** （本記録の判断。公表に記載は無い）。</td><td class=sm>**確実に起きる影響は DoS とメモリ破損であり、 試行が始まれば最初に出るのはクラッシュである**（出典1・2・4）〈重要〉—— **痕跡を取れなければ、本件によるものか判断できない**（本記録の判断）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **脆弱性対応の判定規則が「影響なしの明記が取れるまで対象」になっているか**（出典2・4）。</td><td class=sm>**Red Hat は「影響なしと明記されていない限り脆弱と見なす」よう促し、 一部の製品を「潜在的に影響を受ける」としたまま断定していない**（出典2・4）〈重要〉—— **既定値を「対象外」に置くと、断定されていない製品がすべて抜ける**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>日付の表示が無い（「Last modified」欄は空欄） Red Hat（Customer Portal）</span> <a href="https://access.redhat.com/security/cve/CVE-2026-98432" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-98432 - Red Hat Customer Portal</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**Red Hat の CVE ページ（一次公表）**（本記録の確認）〈重要〉。
+**記載されているのは、①IPv4ネットワーク処理の競合状態により
+使用中のソケットオプションが解放されうること、
+②競合は接続要求の再送またはソケットマイグレーションのときに起こりうること、
+③遠隔の攻撃者がこの解放後使用を起こしてシステムをクラッシュさせ（DoS）、
+メモリを破損させ、あるいはコードを実行しうること、
+④弱点の分類が CWE-825（期限切れポインタの参照）であること、
+⑤Red Hat の評価が CVSS 3.1 で 9.8（Critical）、ベクターが
+AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H であること、
+⑥cve.org の値も 9.8 で一致し NVD は「N/A」であること、
+⑦Critical 評価の理由がネットワーク上の前提条件の無さと深刻な不安定化の可能性であること、
+⑧詳細は速報 RHSB-2026-016 を参照とすることである**（本記録の確認）。
+**記載が無いのは、影響を受ける製品の一覧（速報へ誘導）、
+公開日・最終更新日、悪用の観測である**〈未確定1〉〈未確定4〉。
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年10月30日16時03分 公開／2026年11月4日04時50分 最終更新（協定世界時） Red Hat（Product Security）</span> <a href="https://access.redhat.com/security/vulnerabilities/RHSB-2026-016" target="_blank" rel="noreferrer noopener nofollow">RHSB-2026-016: Use-after-free in kernel IPv4</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**Red Hat の専用速報（一次公表の中核）**（本記録の確認）〈重要〉。
+**記載されているのは、①CVE-2026-98432 を Critical とし
+「修正の提供を急いでいる（expediting the release of fixes）」とすること、
+②影響を受けるのが RHEL 8・9・10、OpenShift Container Platform 4（ノードが RHEL CoreOS）、
+および RHEL カーネル上の製品（Red Hat OpenStack Platform・Red Hat Virtualization は
+「潜在的に影響を受ける」）であること、
+③技術的には、inbound な接続要求に結び付いたソケットオプションが
+並行する処理の読み取り中に解放されうること、
+競合は接続要求の再送またはソケットマイグレーションのときに起こりうること、
+④悪用には精密なタイミングが要るが権限も利用者の操作も不要であること、
+⑤MPTCP は前提条件ではなく、その無効化は完全な緩和ではないこと
+（RHEL は既定で MPTCP を無効にしているが影響を受ける）、
+⑥暫定策として `table inet cve_2026_98432` の入力フック（priority -310・policy accept）に
+`ip protocol tcp ip hdrlength &gt; 5 counter drop` を置く nftables 規則、
+⑦その適用・検証・削除のコマンド（`nft --check --file` / `nft --file` /
+`nft list table` / `nft delete table`）、
+⑧暫定策は修正ではなくフィルタであり、再起動をまたいで残らず、
+一部のワークロードを壊しうるので先に試験すべきこと、
+⑨OpenShift 向けの暫定指針（solution 7149635）があり、
+マネージド OpenShift サービスには別の手順があること、
+⑩ノード単位の規則では Pod 間の通信は守られないこと、
+⑪調査は継続中で新しい情報が出れば更新することである**（本記録の確認）。
+**記載が無いのは、上流の修正コミット、個別 RHSA の一覧、悪用の観測、
+11月4日の更新で何が変わったかである**〈未確定1〉〈未確定4〉。
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月3日 WatchGuard Technologies（PSIRT）</span> <a href="https://psirt.watchguard.com/" target="_blank" rel="noreferrer noopener nofollow">WGSA-2026-0033: Linux Kernel IPv4 Use-After-Free Vulnerability</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**WatchGuard の PSIRT 一覧で確認した一次公表**（本記録の確認）〈重要〉。
+**記載されているのは、①勧告 ID が WGSA-2026-0033、CVE が CVE-2026-98432、
+題名が「Linux Kernel IPv4 Use-After-Free Vulnerability」であること、
+②深刻度が Critical、公開が2026年11月3日であること、
+③影響を受ける製品が Dimension 2.0 以降・Fireware OS 2025.1 および 12.0 以降・
+WatchGuard AP 1.0 以降であることである**（本記録の確認）。
+**同じ11月の一覧には、本件とは別に AuthPoint Authentication Gateway の4件
+（CVE-2026-121637 が 8.9、CVE-2026-121639 が 9.2、
+CVE-2026-121638 と CVE-2026-121640 が 9.1。いずれも2026年11月4日公開・
+7.6.0 未満が対象で 7.6.0 以降は影響なし）が並んでいる**（本記録の確認）。
+**記載が無いのは、Dimension の修正提供時期、悪用の観測である**〈未確定1〉〈未確定3〉。
+**本記録は PSIRT の一覧ページで確認した。個別の勧告ページの URL は取得していない**
+（本記録の明示）。
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月4日22時45分（協定世界時） @IT Security &amp; Trust（ITmedia）</span> <a href="https://atmarkit.itmedia.co.jp/ait/articles/2611/05/news021.html" target="_blank" rel="noreferrer noopener nofollow">【RHELとOpenShiftを直撃】LinuxカーネルにCVSS 9.8の緊急脆弱性、アップデートできないときの暫定策は？</a> <span class="b kind">記事</span><span class=sm>（**国内の運用者向けに本件を解説した報道**（本記録の確認）。
+**一次公表に無くこの記事にあるのは、①Red Hat が2026年10月15日に
+CVE-2026-98432 を公開したという記述〈齟齬1〉、
+②2026年11月1日に RHEL 向け修正パッケージの情報が公開されたこと、
+③勧告番号が RHEL 10 が RHSA-2026:93413、RHEL 9 が 93412、
+RHEL 8 のカーネルが 93414、kernel-rt が 93415 であること、
+④影響対象に OpenShift Container Platform 5 の openshift/ose-rhel-coreos-9、
+同4の openshift/ose-rhel-coreos-8 と -9、RHEL for NVIDIA 26 のカーネル、
+RHEL 9 の kernel-rt が含まれること、
+⑤RHEL 7 のカーネルパッケージは脆弱なコードが存在しないため影響を受けないこと、
+⑥Red Hat が旧マイナー更新系列についても「影響なしと明記されていない限り
+脆弱と見なす」よう促していること、
+⑦任意コード実行を確実に実現するには精密なヒープ制御が必要であることである**
+（本記録の確認）。
+**本文は会員限定（無料登録）である**（本記録の確認）——
+**本記録は収集済みの本文を参照した。**
+**②③④は本記録では Red Hat 側で個別に裏取りしていない**〈未確定4〉。
+）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年11月5日12時33分（協定世界時） SecurityWeek</span> <a href="https://www.securityweek.com/cisco-watchguard-release-patches-sonicwall-wont-fix-gms-flaws/" target="_blank" rel="noreferrer noopener nofollow">Cisco, WatchGuard Release Patches; SonicWall Won’t Fix GMS Flaws</a> <span class="b kind">記事</span><span class=sm>（**本件を含む週次の修正まとめ報道**（本記録の確認）。
+**本件について一次公表に無い記述は、①WatchGuard が公開した5件の勧告のうち
+最も深刻なのが CVE-2026-98432（CVSS 9.8）であること、
+②Fireware OS と WatchGuard AP は脆弱な Linux カーネルのバージョンを含むが、
+この脆弱性が開くリモートコード実行の連鎖の影響は受けないこと、
+③Dimension は脆弱な Ubuntu のバージョンで動いており、
+修正はまだ提供されていないこと、
+④WatchGuard も Cisco も、いずれの脆弱性も実際に悪用されているとは
+把握していないと述べていることである**（出典5。原文英語。本記録の訳）〈重要〉。
+**同記事は本件とは別に、Cisco の CVE-2026-76506（UCS Central Software）、
+Brotli の CVE-2026-111497（Node2Shell。Cisco 製品19件が影響・調査中が数十件・
+Splunk 製品にも影響）、
+SonicWall の EOL 製品 GMS の未修正2件（CVE-2026-109593・CVE-2026-109594）を
+扱っている**（本記録の確認）——
+**これらは本記録の対象外である**（本記録の明示）。
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月6日</span> <span class="b rev">新規作成</span> </li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">CVE-2026-98432</span><span class="b tag">Linux カーネル</span><span class="b tag">IPv4</span><span class="b tag">解放後使用</span><span class="b tag">use-after-free</span><span class="b tag">CWE-825</span><span class="b tag">競合状態</span><span class="b tag">ソケットマイグレーション</span><span class="b tag">Red Hat</span><span class="b tag">RHSB-2026-016</span><span class="b tag">RHEL</span><span class="b tag">OpenShift</span><span class="b tag">RHEL CoreOS</span><span class="b tag">WatchGuard</span><span class="b tag">WGSA-2026-0033</span><span class="b tag">Fireware OS</span><span class="b tag">Dimension</span><span class="b tag">nftables</span><span class="b tag">IPオプション</span><span class="b tag">MPTCP</span><span class="b tag">暫定緩和策</span><span class="b tag">アプライアンスの脆弱性管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-06 10:23 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

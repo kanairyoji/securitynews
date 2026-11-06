@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>SHIRASAGIにOSコマンド実行の穴 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0899</span>SHIRASAGIにOSコマンド実行の穴</h1>
+<header class="site-header">
+  <p class="subtitle">オープンソースCMS「SHIRASAGI」に2件の脆弱性が公表された（JVN#55454512・2026年11月5日）—— 深刻なのはオープンデータのハーベスト機能にあるOSコマンドインジェクション （CVE-2026-118869・CVSS 3.0 で 8.8）で、 データセット取り込みの「URL」欄に入力した文字列がOSコマンドとして実行される。 もう1件は広告管理機能のクロスサイトスクリプティング（CVE-2026-117679・CVSS 3.0 で 5.4）で、 画面上は選択肢だった入力欄をブラウザの開発者ツールで書き換えると通る。 いずれも修正は v1.21.1</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月5日（JVN#55454512 の公開）</span>
+  <span>最終更新: 2026年11月6日（本記録の作成。JVN と開発者の告知を取得して裏を取った時点）</span>
+</div>
+
+<div class="lead"><p><strong>JPCERT/CC と IPA は2026年11月5日、オープンソースCMS「SHIRASAGI」の2件の脆弱性をJVN#55454512 として公表しました</strong>（出典1）。</p>
+<p><strong>深刻なのは OSコマンドインジェクション（CVE-2026-118869）です。</strong> CWE-78、<strong>CVSS 3.0 のベーススコアは 8.8</strong>、CVSS 4.0 では 8.7 です（出典1）。<strong>影響は「当該製品がインストールされているシステム上で任意のOSコマンドが実行される」こと</strong>（出典1）。<strong>対象は v1.19.0 から v1.21.0 まで</strong>です（出典1）。</p>
+<p><strong>どこから入るか。</strong> 開発者の告知によれば、<strong>オープンデータのデータセットおよびハーベストの権限を持つ管理者が、ハーベストインポートの「URL」欄にパイプ記号から始まるコマンド（例として <code>touch</code>）を入力して保存し、「データセットをインポートする」を押す</strong>と成立します（出典2）〈重要〉。<strong>v1.18.2 以前はオープンデータのハーベスト機能が無いか安全な実装であるため影響を受けません</strong>（出典2）。</p>
+<p><strong>もう1件はクロスサイトスクリプティング（CVE-2026-117679）です。</strong> CWE-79、<strong>CVSS 3.0 で 5.4</strong>、CVSS 4.0 では 5.1（出典1）。<strong>対象は v1.12.0 から v1.21.0 まで</strong>（出典1）。<strong>事例は2つあります</strong>（出典2）—— ①広告管理権限を持つ利用者が広告ページの追加属性に <code>"onclick"="alert(document.URL)"</code> のような値を設定し、その広告が表示されるページへ誘い込んでクリックさせる。②<strong>ブラウザの開発者ツールで、広告ページ（または広告バナー部品）の「リンク表示」欄を選択肢からテキスト入力に書き換え</strong>、<code>_self" onclick="alert('xss');</code> のような値を入れる（②は v1.19.0 から v1.21.0 が対象）。</p>
+<p><strong>修正版は v1.21.1 です</strong>（出典1・2）。<strong>開発元のサイトによれば、v1.21.1 は2026年10月30日に公開されています</strong>（出典3）—— <strong>脆弱性情報の公表（11月5日）より前に修正版が出ていた</strong>ことになります。<strong>アップグレードできない場合は、告知に示されたコミットを適用する方法も案内されています</strong>（出典2）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**JVN にも開発者の告知にも、悪用の観測に関する記載は無い**（出典1・2。本記録の確認）〈重要〉。 **権限を持つ利用者が前提であるため、 外部からの大量スキャンで踏まれる型の脆弱性ではない**（本記録の評価）。</div></li><li><span class=ui>OSコマンドが実行される権限（どのユーザで動くか）</span><span class="b rsn">公表されていない</span><div class=sm>**JVN の記述は「当該製品がインストールされているシステム上で任意のOSコマンドが実行される」で あり、実行される権限は示されていない**（出典1。本記録の確認）〈重要〉—— **一般にアプリケーションの実行ユーザになると考えられるが、本記録は確認していない** （本記録の明示）。 **被害の見積もりはこの点で変わるため、各組織は自環境の実行ユーザを確認する必要がある** （本記録の判断）。</div></li><li><span class=ui>修正版リリースと脆弱性修正の対応関係の明示</span><span class="b rsn">公表されていない</span><div class=sm>**リポジトリの v1.21.1 のリリース説明は「v1.21.1」の一行のみで、 脆弱性修正であることの記載が無い**（出典4。本記録の確認）〈重要〉。 **GitHub のセキュリティアドバイザリ一覧にも本件の2件は掲載されていない** （本記録の確認。掲載は2023年9月の別件のみ）。 **開発者の告知ページにも公開日の記載が無い**（出典2。本記録の確認）—— **本記録は掲示日を開発元サイトの告知一覧の表示（2026年11月5日）で補った**（本記録の明示）。</div></li><li><span class=ui>導入組織の数・一覧</span><span class="b rsn">公表されていない</span><div class=sm>**開発元サイトは導入事例を4件掲げるが、総数は示していない**（出典3。本記録の確認）〈重要〉—— **したがって国内でどれだけのサイトが影響を受けるかは本記録では見積もれない** （本記録の明示）。 **「自治体CMS」という紹介のされ方は広く見られるが、 開発元サイトの記述は「官公庁・病院・大学・企業」である**（出典3。本記録の確認）。</div></li><li><span class=ui>ハーベスト機能の利用状況</span><span class="b rsn">公表されていない</span><div class=sm>**OSコマンドインジェクションはオープンデータのハーベスト機能に依存するが、 この機能を実際に有効にしている組織の割合は公表されていない**（本記録の確認）〈重要〉—— **v1.18.2 以前は機能が無いか安全な実装であるため影響を受けない**（出典2）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>SHIRASAGI Project</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>佐藤勇斗（東京理科大学 創域理工学部 経営システム工学科）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>IPA（独立行政法人情報処理推進機構）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>SHIRASAGI を使うウェブサイトの運営組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-118869（OSコマンドインジェクション）の CVSS 3.0 ベーススコア</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.8<span class=fu>スコア</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**JVN に CVSS:3.0/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H で基本値 8.8 と記載されている** （出典1）〈重要〉—— **CVSS 4.0 では CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N で 8.7** （出典1）。 **PR:L（低い権限が必要）が付いているのは、 オープンデータのデータセットおよびハーベストの権限を持つ管理者が前提であるためと読める** （出典2。本記録の整理）—— **UI:N（利用者の操作は不要）であり、権限を持つ側が自ら操作すれば完結する**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-117679（クロスサイトスクリプティング）の CVSS 3.0 ベーススコア</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5.4<span class=fu>スコア</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**JVN に CVSS:3.0/AV:N/AC:L/PR:L/UI:R/S:C/C:L/I:L/A:N で基本値 5.4 と記載されている** （出典1）—— **CVSS 4.0 では CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:N/VI:N/VA:N/SC:L/SI:L/SA:N で 5.1** （出典1）。 **UI:R（利用者の操作が必要）は、 誘い込んだ利用者が広告をクリックすることを指すと読める**（出典2。本記録の整理）〈重要〉。</div></div><div class=fig><div class=fh><span class=fl>修正版の公開から脆弱性情報の公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>6<span class=fu>日</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**修正版 v1.21.1 は2026年10月30日に公開され、JVN の公表は11月5日である** （本記録の算出。出典1・3）〈重要〉—— **修正が先に出てから脆弱性情報が公表される順序であり、 パートナーシップに基づく調整の通常の形である**（本記録の評価）。 **一方で、リリースの説明には脆弱性修正であることの記載が無い**（出典4）〈未確定3〉—— **利用者がリリースノートだけを見て更新の緊急度を判断することはできない**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>2026年に SHIRASAGI について公表された JVN の件数（本件を含む）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>件</span></div><div class=fa>2026年11月6日 時点</div><div class=fn>**開発元サイトのセキュリティ告知一覧には、 2026年11月5日（JVN#55454512・本件）、2026年9月10日（JVN#37476837・ クロスサイトスクリプティングと認可回避）、 2026年6月23日（JVN#58721679・パストラバーサル）が並んでいる**（出典3）〈重要〉—— **本記録が数えた値である**（本記録の算出）。 **本事案の深刻度を示す値ではなく、 「このCMSは更新を追い続ける必要がある」という運用上の背景値である**（本記録の明示）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**いずれも「権限を持つ利用者」から始まる経路である**（出典1・2）〈重要〉—— **OSコマンドインジェクションはオープンデータの取り込み権限から サーバ上の任意コマンド実行へ、 クロスサイトスクリプティングは広告管理権限から サイト閲覧者のブラウザでのスクリプト実行へ届く**（出典1・2）。 **実際の攻撃の観測ではなく、告知が示す再現手順を段階に並べたものである** （本記録の明示）〈未確定1〉。 **各段階の「検知の機会」と「効きえた対策」は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**攻撃者は、権限を持つアカウントを必要とする**
+（OSコマンドインジェクションはオープンデータのデータセットおよびハーベストの権限、
+クロスサイトスクリプティングは広告管理の権限）（出典2）〈重要〉。
+**その権限をどう得るかは、本脆弱性の範囲外である**（本記録の明示）——
+**CVSS のベクターが PR:L（低い権限が必要）であることと整合する**（出典1）。
+**一般には、認証情報の使い回し・フィッシング・内部者が経路になりうる**
+（本記録の評価。告知に記載は無い）。
+</div><div class=fn>根拠: JVN の CVSS ベクター（PR:L）（出典1）／開発者の告知の前提条件（出典2）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**OSコマンドインジェクション: ハーベストインポートの「URL」欄に
+パイプ記号から始まるコマンドを入力して保存し、
+「データセットをインポートする」を押す**（出典2）〈重要〉——
+**入力した文字列がOSコマンドとして実行される**（出典1・2）。
+**クロスサイトスクリプティング: 広告ページの追加属性に属性名と値の形で
+スクリプトを仕込む、または「リンク表示」欄を開発者ツールでテキスト入力に書き換えて
+属性を閉じる形の値を入れる**（出典2）。
+</div><div class=fn>根拠: 開発者の告知に記載された再現手順（出典2）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**OSコマンドインジェクション: 当該製品がインストールされているシステム上で
+任意のOSコマンドが実行される**（出典1）〈重要〉——
+**実行される権限は公表されていない**〈未確定2〉。
+**クロスサイトスクリプティング: 当該製品を使用しているWebサイトにアクセスした
+利用者のブラウザ上で任意のスクリプトが実行される**（出典1）——
+**公的機関のサイトで成立すれば、閲覧者の信頼を利用した誘導に使われうる**
+（本記録の評価）。
+</div><div class=fn>根拠: JVN の「想定される影響」（出典1）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul></div>
+<section id="s5"><h2>オープンデータの取り込み欄が、OSコマンドの入力欄になっていた<span class="b slot">原因・手口</span></h2><p><strong>2件のうち深刻なのは OSコマンドインジェクション（CVE-2026-118869）です</strong>（出典1）〈重要〉。CVSS 3.0 で 8.8、CVSS 4.0 で 8.7。</p>
+<p><strong>開発者の告知が示す再現手順は、驚くほど短いものです</strong>（出典2。本記録の整理）。</p>
+<ol>
+<li>オープンデータのデータセットおよびハーベストの権限を持つ管理者としてログインする</li>
+<li><strong>ハーベストインポートの「URL」欄に、パイプ記号から始まるコマンドを入力する</strong>（告知の例は <code>touch</code> を使ったもの）</li>
+<li>保存する</li>
+<li>「データセットをインポートする」を押す</li>
+</ol>
+<p><strong>これで、入力した文字列がOSコマンドとして実行されます</strong>（出典1・2）。JVN の表現は「<strong>当該製品がインストールされているシステム上で任意のOSコマンドが実行される</strong>」です（出典1）。</p>
+<p><strong>構造を読むとこうなります</strong>（本記録の評価）。ハーベストは「他のサイトのオープンデータを取りに行く」機能です。<strong>外部へ取得に行く処理を外部コマンド（HTTP クライアント等）に委ねる実装であれば、URL はそのコマンドの引数になります</strong>——そこで引数の組み立てに文字列結合を使っていれば、パイプ記号やセミコロンがシェルの区切りとして働きます（本記録の評価。告知は実装の詳細を説明していません）。</p>
+<p><strong>影響するのは v1.19.0 から v1.21.0 までです</strong>（出典1・2）。<strong>v1.18.2 以前は、オープンデータのハーベスト機能が無いか安全な実装であるため影響を受けません</strong>（出典2）〈重要〉—— <strong>機能が増えたときに入った不備だということです</strong>（本記録の整理）。</p></section>
+<section id="s6"><h2>画面では選択肢だった欄が、開発者ツールで書き換えると通った<span class="b slot">原因・手口</span></h2><p><strong>クロスサイトスクリプティング（CVE-2026-117679）には2つの事例があります</strong>（出典2）。CVSS 3.0 で 5.4（出典1）。</p>
+<p><strong>事例1——広告ページの追加属性。</strong>広告管理の権限を持つ利用者が、広告ページの追加属性に<code>"onclick"="alert(document.URL)"</code> のような値を設定します（出典2）。その広告が表示されるページへ利用者を誘い込み、クリックさせると成立します。<strong>対象は v1.12.0 から v1.21.0 まで</strong>——<strong>4年以上の幅があります</strong>（出典1・2）。</p>
+<p><strong>事例2——「リンク表示」欄の書き換え。</strong> こちらが示唆に富んでいます（本記録の評価）〈重要〉。攻撃者は<strong>ブラウザの開発者ツールで、広告ページ（または広告バナー部品）の「リンク表示」欄を選択肢（select）からテキスト入力に書き換え</strong>、<code>_self" onclick="alert('xss');</code> のような値を入れます（出典2）。<strong>対象は v1.19.0 から v1.21.0 まで</strong>（出典2）。</p>
+<p><strong>ここから引き出せる原則は1つです</strong>（本記録の判断）〈重要〉—— <strong>「画面上の入力形式は検証ではない」。</strong>選択肢で表示していることは、送られてくる値が選択肢のいずれかであることを保証しません。<strong>開発者ツールは誰のブラウザにも付いています。</strong> <strong>サーバ側で値域を検証していなければ、<code>select</code> も <code>readonly</code> も <code>maxlength</code> も見た目の約束にすぎません。</strong></p>
+<p><strong>値が属性の中に出力される場所では、影響がさらに大きくなります</strong>（本記録の評価）——事例2の値は属性を閉じて別の属性（<code>onclick</code>）を足す形です。<strong>HTML エスケープが属性の文脈まで考慮されているかが問われます。</strong></p></section>
+<section id="s7"><h2>修正版は公表の6日前に出ていたが、リリースの説明に脆弱性の記載が無い<span class="b slot">対策・注意喚起</span></h2><p><strong>時系列はこうです</strong>（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年10月30日</td>
+<td><strong>修正版 v1.21.1 が公開</strong>（出典3・4）</td>
+</tr>
+<tr>
+<td>2026年11月5日</td>
+<td>JVN#55454512 と開発者の告知が公開（出典1・2・3）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正が先、公表が後という順序は、情報セキュリティ早期警戒パートナーシップに基づく調整の通常の形です</strong>（本記録の評価）—— <strong>利用者が更新できる状態になってから脆弱性を公表する</strong>という考え方です。</p>
+<p><strong>ただし1つ問題があります</strong>（本記録の評価）〈重要〉。<strong>リポジトリの v1.21.1 のリリース説明は「v1.21.1」の一行だけで、脆弱性修正であることが書かれていません</strong>（出典4）〈未確定3〉。<strong>GitHub のセキュリティアドバイザリ一覧にも、本件の2件は掲載されていません</strong>（本記録の確認。掲載があったのは2023年9月の別件のみ）。<strong>つまり、リリースノートだけを見ている利用者には、この更新が緊急であることが伝わりません。</strong></p>
+<p><strong>更新できない場合の手段は示されています</strong>（出典2）。<strong>クロスサイトスクリプティングは 38f2c98 から b32fd14 までの8件のコミット、OSコマンドインジェクションは 98eca87 のコミット</strong>を適用します。<strong>また v1.14.2 以前から更新する場合は、v1.15.0 のリリースノートに記載された重大な非互換に注意するよう求められています</strong>（出典2）〈重要〉—— <strong>長く更新していない環境では、単純なバージョンアップでは済みません。</strong></p></section>
+<section id="s8"><h2>2件はいずれも権限を持つ利用者が前提——外部スキャンでは踏まれないが、アカウントが奪われた時の到達点が広い<span class="b slot">評価・解釈</span></h2><p><strong>CVSS のベクターを見ると、2件とも PR:L（低い権限が必要）です</strong>（出典1）〈重要〉。告知の再現手順も、広告管理権限またはオープンデータのハーベスト権限を前提にしています（出典2）。</p>
+<p><strong>したがって、インターネットからの無認証スキャンで一斉に踏まれる型ではありません</strong>（本記録の評価）。<strong>悪用の観測も公表されていません</strong>（出典1・2）〈未確定1〉。</p>
+<p><strong>では軽いのか。そうは読めません</strong>（本記録の評価）〈重要〉。<strong>読み替えると、こうなります</strong>—— <strong>「広告の管理ができる担当者のアカウント」や「オープンデータの取り込みを担当する職員のアカウント」が1つ奪われたとき、そこから先がサーバ上の任意コマンド実行まで繋がっている。</strong></p>
+<p><strong>公的機関のサイト運用では、権限を持つ担当者が複数の部署に分散しがちです</strong>（本記録の評価）——広報、情報政策、各課のコンテンツ担当、オープンデータ担当。<strong>権限の保有者が多いほど、この前提は満たされやすくなります。</strong></p>
+<p><strong>実務的な優先順位は3つです</strong>（本記録の判断）。①<strong>更新する</strong>（v1.21.1）。②更新までの間、<strong>オープンデータのハーベスト権限を持つ利用者を最小限に絞る</strong>。③<strong>管理画面の到達性と多要素認証を確認する</strong>——「権限を持つ利用者が前提」という条件を、攻撃者に満たさせないための層です。</p>
+<p><strong>なお、OSコマンドがどの権限で実行されるかは公表されていません</strong>（出典1）〈未確定2〉—— <strong>被害の見積もりはここで変わるため、自環境の実行ユーザを確認してください。</strong></p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> SHIRASAGI（オープンデータのハーベスト機能）　<b>ベンダー:</b> SHIRASAGI Project　<b>CVE番号:</b> CVE-2026-118869　<b>バージョン:</b> **v1.19.0 から v1.21.0 までが影響を受ける**（出典1・2）〈重要〉—— **v1.18.2 以前はオープンデータのハーベスト機能が無いか安全な実装であるため 影響を受けない**（出典2）。 **修正は v1.21.1、または 98eca87 のコミットの適用**（出典2）。　<b>概要:</b> **他サイトのオープンデータを取り込む（ハーベストする）機能**（出典2）〈重要〉—— **操作にはオープンデータのデータセットおよびハーベストの権限が必要である**（出典2）。　<b>症状:</b> **ハーベストインポートの「URL」欄に、パイプ記号から始まるコマンド （告知の例では `touch` を用いたもの）を入力して保存し、 「データセットをインポートする」を押すと、入力した文字列がOSコマンドとして実行される** （出典2）〈重要〉—— **JVN の記述は「当該製品がインストールされているシステム上で任意のOSコマンドが実行される」** （出典1）。</div><div class=sub><b>名称:</b> SHIRASAGI（広告管理機能）　<b>ベンダー:</b> SHIRASAGI Project　<b>CVE番号:</b> CVE-2026-117679　<b>バージョン:</b> **事例1（追加属性）は v1.12.0 から v1.21.0 まで、 事例2（「リンク表示」欄の書き換え）は v1.19.0 から v1.21.0 まで**（出典2）〈重要〉。 **修正は v1.21.1、または 38f2c98 から b32fd14 までの8件のコミットの適用**（出典2）。　<b>概要:</b> **広告ページ・広告バナー部品を管理する機能**（出典2）—— **操作には広告管理の権限が必要である**（出典2）。　<b>症状:</b> **事例1: 広告ページの追加属性に `&quot;onclick&quot;=&quot;alert(document.URL)&quot;` のような値を設定し、 その広告が表示されるページへ利用者を誘い込んでクリックさせる**（出典2）。 **事例2: ブラウザの開発者ツールで「リンク表示」欄を選択肢からテキスト入力に書き換え、 `_self&quot; onclick=&quot;alert(&#x27;xss&#x27;);` のような値を入力する**（出典2）〈重要〉—— **影響は「当該製品を使用しているWebサイトにアクセスしたユーザのブラウザ上で、 任意のスクリプトが実行される」**（出典1）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **修正版 v1.21.1 へ更新する**（出典1・2）〈重要〉。　<b>副作用:</b> **v1.14.2 以前から更新する場合は、v1.15.0 のリリースノートに記載された 重大な非互換に注意するよう告知が求めている**（出典2）〈重要〉—— **長く更新していない環境では、単純なバージョンアップで済まない**（本記録の整理）。</div><div class=sub><b>手順:</b> **更新できない場合は、告知に示されたコミットを適用する**（出典2）—— **クロスサイトスクリプティングは 38f2c98 から b32fd14 までの8件 （v1.12.0 から v1.21.0 向け）、 OSコマンドインジェクションは 98eca87（v1.19.0 から v1.21.0 向け）**（出典2）。　<b>副作用:</b> **8件のコミットを個別に当てる作業になり、適用漏れと競合の risk を自前で管理することになる** （本記録の評価）—— **以後の更新時に、当てた変更と公式の修正が重複しないかを確認する必要がある** （本記録の評価）。</div><div class=sub><b>手順:</b> **当面の緩和として、オープンデータのデータセットおよびハーベストの権限を 必要最小限の利用者に絞る**（本記録の判断。告知に記載は無い）〈重要〉。　<b>副作用:</b> **オープンデータの取り込み運用が止まる、または担当者が限られて業務が滞る** （本記録の評価）—— **恒久策ではないため、更新の予定と併せて決める必要がある**（本記録の判断）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正版 SHIRASAGI v1.21.1 が公開された**（出典3・4）〈重要〉—— **開発元サイトの記載とリポジトリのリリース表示が一致する**（本記録の確認）。 **リリースの説明には脆弱性修正であることの記載は無い**（出典4。本記録の確認）〈未確定3〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**JPCERT/CC と IPA が JVN#55454512「SHIRASAGIにおける複数の脆弱性」を公開した** （出典1）〈重要〉—— **クロスサイトスクリプティング（CVE-2026-117679・CWE-79・CVSS 3.0 で 5.4）と OSコマンドインジェクション（CVE-2026-118869・CWE-78・CVSS 3.0 で 8.8）の2件。 修正版は v1.21.1。報告者は東京理科大学の佐藤勇斗 氏**（出典1）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**開発元サイトに、2件の脆弱性に関する告知（JVN へのリンクを含む）が掲示された** （出典2・3）〈重要〉—— **再現手順・対象バージョン・修正版・適用すべきコミット （XSS は 38f2c98 から b32fd14 までの8件、OSコマンドインジェクションは 98eca87）が示されている** （出典2）。 **掲示日は開発元サイトのセキュリティ告知一覧の表示（2026年11月5日）による**（出典3）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が JVN、開発者の告知、開発元サイト、リポジトリのリリースを取得して 内容を確認した**（出典1〜4）〈重要〉—— **悪用の観測に関する記載はいずれにも無かった**〈未確定1〉。 **GitHub のセキュリティアドバイザリ一覧には本件の2件は掲載されていなかった** （本記録の確認。掲載があったのは2023年9月の別件のみ）〈未確定3〉。</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>2</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>修正版リリースに脆弱性修正であることの記載が無い</span><div class=sm>**JVN と開発者の告知は、修正版が v1.21.1 であると明記している**（出典1・2）。 **一方、リポジトリの v1.21.1 のリリース説明は「v1.21.1」の一行のみで、 脆弱性修正であることに触れていない**（出典4）〈重要〉〈未確定3〉。 **リポジトリのセキュリティアドバイザリ一覧にも本件は掲載されていない**（本記録の確認）—— **本記録は「リリースの説明に記載が無い」ことを沈黙として記録する**（本記録の明示）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>製品の位置づけ（「自治体CMS」という紹介）</span><div class=sm>**本件を「自治体向けCMS の脆弱性」として扱う紹介のされ方は広く見られるが、 開発元サイトの記述は「官公庁・病院・大学・企業のウェブサイト」である** （出典3）〈重要〉。 **導入事例として挙がっている4件のうち、地方公共団体そのものの事例は含まれていない （阿智村社会福祉協議会は村の社会福祉協議会である）**（出典3。本記録の確認）。 **本記録は orgs の業種を government として付けたが、 これは代表値であり、医療・教育・民間も含まれうる**（本記録の判断）〈未確定4〉。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>権限を持つ利用者から、サーバ上の任意コマンド実行と閲覧者のブラウザへの2つの到達点</div><div class=svgwrap><svg viewBox="0 0 590 398" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,199.0 C193.0,199.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C397.0,60.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,199.0 C193.0,199.0 193.0,155.0 220,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,155.0 C295.0,155.0 295.0,243.0 220,243.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,243.0 C397.0,243.0 397.0,243.0 424,243.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,338.0 C295.0,338.0 295.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,338.0 C295.0,338.0 295.0,155.0 220,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="155.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">権限を持つ利用者（奪われ</text><text x="91.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">たアカウント・内部者を含</text><text x="91.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">む）</text><text x="91.0" y="218.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS のベクターは </text><text x="91.0" y="230.0" text-anchor="middle" fill="#f48fb1" font-size="10">PR:L（低い権限が必要</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">オープンデータのハーベス</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トインポートの「URL」</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">欄</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">パイプ記号から始まるコマ</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ンドを入力して保存し、イ</text><rect x="220" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">広告ページの追加属性／「</text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リンク表示」欄</text><text x="295.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">事例2は開発者ツールで選</text><text x="295.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">択肢をテキスト入力に書き</text><rect x="424" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サーバ上での任意OSコマ</text><text x="499.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ンド実行</text><text x="499.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">実行される権限は公表され</text><text x="499.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">ていない（出典1）〈未確</text><rect x="424" y="213.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サイト閲覧者のブラウザ</text><text x="499.0" y="248.0" text-anchor="middle" fill="#8892b0" font-size="10">任意のスクリプトが実行さ</text><text x="499.0" y="260.0" text-anchor="middle" fill="#8892b0" font-size="10">れる。広告のクリックが必</text><rect x="220" y="206.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SHIRASAGI で運</text><text x="295.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用する公開ウェブサイト</text><text x="295.0" y="255.0" text-anchor="middle" fill="#64b5f6" font-size="10">官公庁・病院・大学・企業</text><text x="295.0" y="267.0" text-anchor="middle" fill="#64b5f6" font-size="10">向けのCMS（出典3）</text><rect x="220" y="294.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="316.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 v1.21.1（</text><text x="295.0" y="330.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026年10月30日公</text><text x="295.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開）</text><text x="295.0" y="357.0" text-anchor="middle" fill="#f48fb1" font-size="10">更新できない場合は 98</text><text x="295.0" y="369.0" text-anchor="middle" fill="#f48fb1" font-size="10">eca87（OSコマンド</text></svg></div><div class=fn>**JVN の「想定される影響」（出典1）と開発者の告知の再現手順（出典2）に
+対応させた経路図である。**
+**左の経路がOSコマンドインジェクション（CVE-2026-118869）、
+右がクロスサイトスクリプティング（CVE-2026-117679）である**（本記録の整理）。
+**実際の悪用の観測ではない**〈未確定1〉。
+</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**CMS の管理画面へのログインは記録されうるが、
+検知についての記載は公表に無い**（本記録の確認）〈未確定3〉。
+**権限を持つアカウントの数が多いほど、この段の守りは薄くなる**（本記録の評価）〈重要〉。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>管理画面を外部に公開せず、VPN または許可した通信元からのみ到達可能にする</div><div class=ctl><span class="b eff">侵入を防げた</span>管理者アカウントに多要素認証を要求する</div><div class=ctl><span class="b eff">影響を限定できた</span>権限（広告管理・オープンデータのハーベスト）の保有者を棚卸しし、最小限に絞る</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**保存された値そのものが痕跡として残る**（本記録の評価）〈重要〉——
+**ハーベスト設定の「URL」欄に、URL ではない文字列が入っていれば異常である。
+広告の追加属性に `onclick` のような属性が入っていれば同様である。**
+**公表に検知の指針は無い**〈未確定3〉。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>ハーベスト設定の URL 欄に URL 以外の文字列が入っていないか定期に確認する</div><div class=ctl><span class="b eff">検知できた</span>広告の追加属性・リンク表示欄の値を棚卸しし、スクリプトを呼ぶ属性を洗い出す</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版 v1.21.1 へ更新する（または告知のコミットを適用する）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵害後の痕跡についての指針は公表されていない**（本記録の確認）〈未確定3〉。
+**実務的には、ハーベスト機能を有効にしていた期間と、
+その権限を持つアカウントの操作記録を押さえるのが先である**（本記録の判断）〈重要〉。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>アプリケーションの実行ユーザを最小権限にし、書き込み可能な範囲を限定する</div><div class=ctl><span class="b eff">検知できた</span>公開サイトのコンテンツを外部に保管した基準値と定期に比較する</div><div class=ctl><span class="b eff">影響を限定できた</span>コンテンツセキュリティポリシーを設定し、埋め込まれたスクリプトの実行を制限する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「権限を持つ利用者が前提」という脆弱性を、軽いものとして扱わない。**</div><div class=lw>**本件の2件はいずれも PR:L（低い権限が必要）だが、 OSコマンドインジェクションの到達点はサーバ上の任意コマンド実行である** （出典1・2）〈重要〉—— **読み替えれば「担当者のアカウント1つでサーバに届く」ということである** （本記録の評価）。 **権限保有者が部署に分散している組織では、この前提は満たされやすい。**</div><div class=la><b>取るべき行動</b> **①CMS の管理権限（特に広告管理・オープンデータのハーベスト）の保有者一覧を出す。 ②保有者数を半減させる目標を立て、退職・異動分を棚卸しする。 ③管理画面の到達範囲（外部公開か、VPN か）と多要素認証の有無を確認する。**</div></li><li><div class=lp>**採用している公共系CMS・OSS の脆弱性公表を追う経路を作る。**</div><div class=lw>**SHIRASAGI について2026年に公表された JVN は本件を含め3件である （6月23日・9月10日・11月5日）**（出典3。本記録の算出）〈重要〉—— **年に数回の更新判断が発生するということである**（本記録の評価）。 **しかも本件の修正版はリリース説明に脆弱性の記載が無く、 リリースノートだけでは緊急度が分からない**（出典4）〈未確定3〉。</div><div class=la><b>取るべき行動</b> **①採用している OSS の一覧と、脆弱性情報の入手経路（JVN・開発元の告知ページ・ リポジトリの通知）を対応づける。 ②リポジトリのリリース通知だけに依存していないか確認する。 ③JVN の製品名による絞り込みを定期の確認作業に入れる。**</div></li><li><div class=lp>**長く更新していない環境の「更新できなさ」を、事前に見積もる。**</div><div class=lw>**本件の告知は、v1.14.2 以前から更新する場合は v1.15.0 の重大な非互換に注意するよう求めている**（出典2）〈重要〉—— **更新が緊急になったときに非互換の調査から始めることになれば、 対応は数日では済まない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①稼働中のバージョンと最新版の差（間にある非互換の数）を把握する。 ②非互換の解消にかかる工数を見積もり、年度の予算に載せる。 ③緊急時に当てられる暫定策（本件ならコミットの個別適用・権限の絞り込み）を 手順として用意する。**</div></li><li><div class=lp>**公開サイトの改ざん・スクリプト注入を、信頼の問題として扱う。**</div><div class=lw>**クロスサイトスクリプティングの影響は 「当該製品を使用しているWebサイトにアクセスしたユーザのブラウザ上で 任意のスクリプトが実行される」ことである**（出典1）〈重要〉—— **公的機関のサイトで成立すれば、 住民が信頼している画面が誘導の足場になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①公開サイトのコンテンツを外部に保管した基準値と比較する仕組みを持つ。 ②コンテンツセキュリティポリシーの設定状況を確認する。 ③サイト改ざんが疑われたときの公表判断の手順を決めておく。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**外部コマンドへ渡す引数を、文字列結合で組み立てない。**</div><div class=lw>**本件のOSコマンドインジェクションは、 ハーベストインポートの「URL」欄に入力した文字列が OSコマンドとして実行されるものである**（出典1・2）〈重要〉—— **パイプ記号から始まる入力で成立する**（出典2）。</div><div class=la><b>取るべき行動</b> **①自組織のコードで外部コマンドを呼ぶ箇所を洗い出す （シェル経由の実行を含む）。 ②引数を配列で渡す形に変え、シェルを経由させない。 ③URL を受け取る欄では、スキーム・ホストの形式を検証してから使う。**</div></li><li><div class=lp>**クライアント側の入力形式を検証とみなさない。**</div><div class=lw>**本件のクロスサイトスクリプティングの事例2は、 画面上は選択肢だった「リンク表示」欄を 開発者ツールでテキスト入力に書き換えると通る**（出典2）〈重要〉—— **`select`・`readonly`・`maxlength` は見た目の約束であり、 送られてくる値を縛らない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①選択肢で入力させている項目を列挙し、サーバ側で値域を検証しているか確認する。 ②検証していない項目に、許可する値の一覧による照合を入れる。 ③テストに「選択肢以外の値を送る」ケースを加える。**</div></li><li><div class=lp>**HTML 属性の中に値を出力する箇所を、別扱いで点検する。**</div><div class=lw>**事例2の値 `_self&quot; onclick=&quot;alert(&#x27;xss&#x27;);` は、 属性を閉じて別の属性を足す形である**（出典2）〈重要〉—— **本文向けのエスケープだけでは防げない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①テンプレートで属性値として出力している箇所を洗い出す。 ②属性文脈に応じたエスケープを行っているか確認する。 ③利用者が属性名と値を自由に追加できる機能（本件の「追加属性」）は、 許可する属性名の一覧で絞る。**</div></li><li><div class=lp>**使っていない機能は、有効にしない・権限を付けない。**</div><div class=lw>**OSコマンドインジェクションはオープンデータのハーベスト機能に依存し、 v1.18.2 以前は機能が無いか安全な実装であるため影響を受けない**（出典2）〈重要〉—— **機能が増えるほど攻撃面が増える**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①稼働中の CMS で有効になっている機能とモジュールを一覧にする。 ②業務で使っていない機能を無効化する（または権限を誰にも付けない）。 ③機能追加のバージョンアップ時に、新機能の攻撃面を確認する手順を入れる。**</div></li><li><div class=lp>**保存されている値そのものを、痕跡として点検する。**</div><div class=lw>**本件は入力された値が保存されてから実行・出力される型である**（出典2）〈重要〉—— **ハーベスト設定の「URL」欄に URL でない文字列が入っていれば異常であり、 広告の追加属性にスクリプトを呼ぶ属性があれば同様である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①ハーベスト設定の URL 欄の値を全件確認する。 ②広告ページの追加属性・リンク表示欄の値を一覧で出し、想定外の属性名を探す。 ③確認を更新作業の前後に実施し、結果を記録に残す。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **SHIRASAGI を v1.19.0 から v1.21.0 の範囲で運用しており、 オープンデータのハーベスト機能を使っているか。**</td><td class=sm>**これがOSコマンドインジェクション（CVSS 3.0 で 8.8）の影響範囲である** （出典1・2）〈重要〉—— **v1.18.2 以前は機能が無いか安全な実装であるため影響を受けない**（出典2）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **SHIRASAGI を v1.12.0 以降で運用しており、広告ページ・広告バナー部品を使っているか。**</td><td class=sm>**クロスサイトスクリプティングの事例1は v1.12.0 から v1.21.0 までが対象で、 4年以上の幅がある**（出典1・2）〈重要〉—— **「最近入った不備」ではないため、古い環境も対象になる**（本記録の整理）。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **広告管理の権限、またはオープンデータのデータセットおよびハーベストの権限を 何人が持っているかを即答できるか。**</td><td class=sm>**2件はいずれも、その権限を持つ利用者が前提である**（出典1・2）〈重要〉—— **保有者が多いほど、攻撃者が前提を満たしやすくなる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **CMS の管理画面がインターネットから到達できるか。到達できる場合、 管理者アカウントに多要素認証を要求しているか。**</td><td class=sm>**「権限を持つ利用者が前提」という条件を攻撃者に満たさせないための層である** （本記録の判断）〈重要〉—— **本脆弱性の範囲外だが、実務上の守りはここに寄る**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **現在のバージョンが v1.14.2 以前であるか（更新時に v1.15.0 の非互換に当たるか）。**</td><td class=sm>**告知は v1.14.2 以前からの更新について、 v1.15.0 の重大な非互換に注意するよう求めている**（出典2）〈重要〉—— **緊急更新ができない環境に該当するため、暫定策を先に決める必要がある**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **採用している OSS の脆弱性情報を、JVN と開発元の告知ページから定期に確認しているか。**</td><td class=sm>**本件の修正版（v1.21.1）のリリース説明には脆弱性修正であることの記載が無く、 GitHub のセキュリティアドバイザリ一覧にも掲載されていない**（出典4。本記録の確認）〈重要〉—— **リポジトリの通知だけに頼る運用では緊急度が伝わらない**（本記録の評価）〈未確定3〉。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月5日（開発元サイトの告知一覧の表示による。告知ページ自体に日付の記載は無い） SHIRASAGI Project</span> <a href="https://www.ss-proj.org/support/1743.html" target="_blank" rel="noreferrer noopener nofollow">JVN#55454512 SHIRASAGIにおけるクロスサイト・スクリプティング脆弱性とOSコマンドインジェクション脆弱性</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**開発者による告知。再現手順が具体的に書かれている**（本記録の確認）〈重要〉。
+**記載されているのは、①クロスサイトスクリプティングの2つの事例
+（広告ページの追加属性に属性名と値の形でスクリプトを設定する事例＝v1.12.0 から v1.21.0、
+開発者ツールで「リンク表示」欄を選択肢からテキスト入力に書き換える事例＝v1.19.0 から v1.21.0）、
+②OSコマンドインジェクションの再現手順
+（オープンデータのデータセットおよびハーベスト権限を持つ管理者が
+ハーベストインポートの「URL」欄にパイプ記号から始まるコマンドを入力して保存し、
+「データセットをインポートする」を押す。対象は v1.19.0 から v1.21.0 で、
+v1.18.2 以前は機能が無いか安全な実装）、
+③修正版が v1.21.1 であること、
+④更新できない場合に適用するコミット
+（クロスサイトスクリプティングは 38f2c98 から b32fd14 までの8件、
+OSコマンドインジェクションは 98eca87）、
+⑤v1.14.2 以前から更新する場合は v1.15.0 の重大な非互換に注意すること、
+⑥報告者が佐藤勇斗 氏であることである**（本記録の確認）。
+**記載が無いのは、告知ページ自体の公開日、悪用の観測、実装上の原因の説明である**
+〈未確定1〉〈未確定3〉。
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月6日（本記録の取得時点の表示） SHIRASAGI Project</span> <a href="https://www.ss-proj.org/" target="_blank" rel="noreferrer noopener nofollow">SHIRASAGI 公式サイト（製品紹介・導入事例・セキュリティ告知一覧）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**製品の位置づけと告知の履歴を確認するために参照した**（本記録の確認）〈重要〉。
+**確認できたのは、①官公庁・病院・大学・企業のウェブサイト向けCMS、
+グループウェア、ウェブメールの3製品を提供すること、
+②導入事例として徳島県立農業大学校・ジョブナビとくしま・阿智村社会福祉協議会・
+とくしま農林水産業イノベーションHUB が挙がっていること、
+③最新版が v1.21.1（2026年10月30日公開）であること、
+④セキュリティ告知として2026年11月5日（JVN#55454512・本件）、
+2026年9月10日（JVN#37476837・クロスサイトスクリプティングと認可回避）、
+2026年6月23日（JVN#58721679・パストラバーサル）、
+2023年9月1日、2023年2月22日（JVN#18765463）が並ぶことである**（本記録の確認）。
+**ライセンス名と導入組織の総数は確認できなかった**〈未確定4〉。
+）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年10月30日（リリース表示） SHIRASAGI Project（GitHub）</span> <a href="https://github.com/shirasagi/shirasagi/releases/tag/v1.21.1" target="_blank" rel="noreferrer noopener nofollow">shirasagi/shirasagi リリース v1.21.1</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**修正版の公開日を確認するために参照した**（本記録の確認）〈重要〉。
+**リリースの説明は「v1.21.1」の一行のみで、
+脆弱性修正であることの記載は無い**〈未確定3〉——
+**リリースノートだけを見る利用者には更新の緊急度が伝わらない**（本記録の評価）。
+**またリポジトリのセキュリティアドバイザリ一覧には本件の2件は掲載されておらず、
+掲載があったのは2023年9月の別件（GHSA-xr45-c2jv-2v9r）のみであった**（本記録の確認）。
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月5日（最終更新も同日） JPCERT/CC・IPA（JVN）</span> <a href="https://jvn.jp/jp/JVN55454512/" target="_blank" rel="noreferrer noopener nofollow">JVN#55454512 SHIRASAGIにおける複数の脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**JVN の一次情報**（本記録の確認）〈重要〉。
+**記載されているのは、①クロスサイトスクリプティング（CVE-2026-117679・CWE-79・
+CVSS 4.0 で 5.1、CVSS 3.0 で 5.4）と
+OSコマンドインジェクション（CVE-2026-118869・CWE-78・CVSS 4.0 で 8.7、CVSS 3.0 で 8.8）の2件、
+②対象バージョン（v1.12.0 から v1.21.0 まで／v1.19.0 から v1.21.0 まで）、
+③想定される影響（利用者のブラウザ上での任意スクリプト実行／
+システム上での任意OSコマンド実行）、
+④修正版が v1.21.1 であること、
+⑤情報セキュリティ早期警戒パートナーシップに基づく報告であり、
+報告者が東京理科大学 創域理工学部 経営システム工学科の佐藤勇斗 氏、
+JPCERT/CC が開発者と調整したことである**（本記録の確認）。
+**記載が無いのは、悪用の観測、OSコマンドが実行される権限、
+影響を受ける組織の数である**〈未確定1〉〈未確定2〉〈未確定4〉。
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月6日</span> <span class="b rev">新規作成</span> </li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">SHIRASAGI</span><span class="b tag">SHIRASAGI Project</span><span class="b tag">JVN#55454512</span><span class="b tag">CVE-2026-118869</span><span class="b tag">CVE-2026-117679</span><span class="b tag">OSコマンドインジェクション</span><span class="b tag">クロスサイトスクリプティング</span><span class="b tag">CWE-78</span><span class="b tag">CWE-79</span><span class="b tag">オープンデータ</span><span class="b tag">ハーベスト</span><span class="b tag">CMS</span><span class="b tag">官公庁サイト</span><span class="b tag">権限管理</span><span class="b tag">開発者ツールによる改変</span><span class="b tag">サーバ側検証</span><span class="b tag">情報セキュリティ早期警戒パートナーシップ</span><span class="b tag">東京理科大学</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-06 10:23 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

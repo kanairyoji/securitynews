@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>APTに検証後差し替えの脆弱性 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0898</span>APTに検証後差し替えの脆弱性</h1>
+<header class="site-header">
+  <p class="subtitle">Debian と Ubuntu のパッケージ管理ツール APT に、 検証を通ったパッケージを事後に差し替えられる脆弱性（CVE-2026-109518・CVSS 4.0 で 7.7）が見つかり、 2026年11月4日に修正版が公開された—— HTTP リダイレクトで2つのダウンロードが同じ URI になると両者が統合され、 ダウンロードの再開時のファイル扱いの不備でハードリンク越しに中身を上書きできる。 成立にはリトライ設定（Acquire::Retries が0以外）が要り、 これは Debian 12・Ubuntu 22.04 LTS 以降の既定値である</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月4日（Debian DSA-6607-1・Ubuntu USN-8996-1・APT 開発者告知の公開）</span>
+  <span>最終更新: 2026年11月6日（本記録の作成。Debian・Ubuntu の一次公表を取得して裏を取った時点）</span>
+</div>
+
+<div class="lead"><p><strong>Debian と Ubuntu は2026年11月4日、パッケージ管理ツール APT の脆弱性CVE-2026-109518 に対する修正版を公開しました</strong>（出典1・2）。発見者は<strong>セキュリティ研究者 Max Justicz</strong>です（出典1・2・3）。</p>
+<p><strong>何が起きるか。</strong> 通信経路上に位置する攻撃者（中間者）が、<strong>署名検証を通ったパッケージを、検証の後に自分のものへ差し替えられます</strong>（出典1）。<strong>Debian のパッケージは root 権限でインストールされるため、差し替えが成功すれば root としての任意コード実行になります</strong>（出典1・4）。<strong>Ubuntu は「悪意あるミラーも同じ立場を取れる」と述べています</strong>（出典3）。</p>
+<p><strong>仕組みは2つの機能の組み合わせです</strong>（出典1・4）。①<strong>HTTP リダイレクトによって、2つの異なるパッケージのダウンロードが同じ URI になると、APT は両者を統合してしまう</strong>。②<strong>ダウンロードを再開（リトライ）するときのファイル扱いが適切でないため、既存のハードリンク越しに中身を上書きできる</strong>。<strong>Ubuntu は原因を端的に「ハードリンクの再利用」と書いています</strong>（出典2）。</p>
+<p><strong>成立条件は「リトライが有効であること」です</strong>（出典2・3・4）〈重要〉。<code>Acquire::Retries</code> が0なら悪用できません（出典3）。<strong>この設定が0以外（既定値は3）になっているのは、APT 2.3.2 以降、すなわち Debian 12（Bookworm）と Ubuntu 22.04 LTS（Jammy）以降です</strong>（出典2・4）。<strong>それより古いリリースは既定では影響を受けませんが、スクリプト等でリトライを有効にしていれば影響を受けます</strong>（出典4）。</p>
+<p><strong>修正版は、Debian 13（Trixie）が apt 3.0.4、Debian 12（Bookworm）が 2.6.2、Ubuntu は 22.04 LTS が 2.4.15ubuntu0.1、24.04 LTS が 2.8.4ubuntu0.1、26.04 LTS が 3.2.1ubuntu0.1、26.10 が 3.3.3ubuntu0.1 です</strong>（出典1・2）。<strong>深刻度は Ubuntu の評価で High、CVSS 4.0 のベーススコアは 7.7 です</strong>（出典2）。</p>
+<p><strong>緩和策として Ubuntu が挙げているのは2つです</strong>（出典3）〈重要〉—— <strong>①APT のソースを <code>http://</code> から <code>https://</code> に変える</strong>（HTTPS は本件の悪用を防ぐ）。<strong>②更新作業の間だけ <code>Acquire::Retries</code> を0にする</strong>（<code>sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0</code>）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s20" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>中間者の位置をどう取るかの具体例</span><span class="b rsn">公表されていない</span><div class=sm>**Ubuntu は「悪意あるミラーやプロキシ」を例示している**（出典2・3）〈重要〉—— **一方で、実際にどのような経路（社内プロキシ・公衆無線・侵害されたミラー）で 成立しやすいかという分析は、いずれの一次公表にも無い**（本記録の確認）。 **HTTPS を使えば本件の悪用は防げると Ubuntu は述べている**（出典3）—— **ただし一部のコミュニティミラーは HTTPS に対応していないとも記している**。</div></li><li><span class=ui>実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**Debian の DSA、Ubuntu の USN とセキュリティ情報、Ubuntu のブログ、 APT 開発者の告知のいずれにも、悪用の観測に関する記載は無い** （出典1・2・3・4。本記録の確認）〈重要〉。 **CISA の KEV に収載されたかは本記録では確認していない**（本記録の明示）。</div></li><li><span class=ui>Debian 側の深刻度評価</span><span class="b rsn">公表されていない</span><div class=sm>**Debian のセキュリティトラッカーは本 CVE の深刻度スコアを示していない** （出典5。本記録の確認）—— **本記録が引用する 7.7 は Ubuntu の評価である**（出典2）〈重要〉。</div></li><li><span class=ui>併せて修正された境界外アクセスの詳細</span><span class="b rsn">公表されていない</span><div class=sm>**DSA-6607-1 は「この更新では複数の境界外アクセスの問題も修正している」と述べるが、 それらに CVE が割り当てられているか、どの程度の深刻度かは示していない** （出典1。本記録の確認）〈重要〉—— **APT 開発者の告知にあるコミットハッシュは、この境界外メモリの修正に対応するものである** （出典4）。</div></li><li><span class=ui>国内（日本）での注意喚起・影響の把握</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録が収集した2026年11月5日の記事は海外メディア2本（The Hacker News・CSO Online）であり、 国内の公的機関・専門メディアによる注意喚起は本記録の収集範囲では確認できなかった** （本記録の確認）〈重要〉—— **「存在しない」ことの確認ではない**（本記録の明示）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Debian プロジェクト（Debian Security Team）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Canonical（Ubuntu Security）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>APT 開発者（Julian Andres Klode ほか）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Max Justicz</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Debian・Ubuntu とその派生を運用する組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-109518 の CVSS 4.0 ベーススコア（Ubuntu の評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7.7<span class=fu>スコア</span></div><div class=fa>2026年11月4日 時点</div><div class=fn>**Ubuntu のセキュリティ情報が CVSS 4.0 で 7.7（High）と記載している**（出典2）〈重要〉—— **ベクターは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N**。 **AT:P（攻撃前提条件あり）と UI:P（利用者の受動的な関与が必要）が、 「リトライが起きるダウンロード条件」と「管理者がパッケージ操作を行うこと」に対応すると読める** （本記録の評価）。 **Debian のセキュリティトラッカーは深刻度のスコアを示していない**（出典5。本記録の確認）〈未確定3〉。</div></div><div class=fig><div class=fh><span class=fl>Acquire::Retries の既定値（Debian 12・Ubuntu 22.04 LTS 以降）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>回</span></div><div class=fa>2026年11月4日 時点</div><div class=fn>**Ubuntu のセキュリティ情報が「既定値3は Debian 12・Ubuntu 22.04 LTS 以降に適用される」と 記載している**（出典2）〈重要〉—— **APT 開発者は「リトライが既定になったのは APT 2.3.2 以降だが、 古いリリースでも多くの利用者スクリプトがこれを使っていた可能性がある」と述べている** （出典4。原文英語）。 **この値が0であれば悪用できない**（出典3）—— **つまり本件の成立は、設定1つの状態に依存する**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>Ubuntu が修正版を出したリリースの数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>リリース</span></div><div class=fa>2026年11月4日 時点</div><div class=fn>**USN-8996-1 が示すのは 26.10・26.04 LTS・24.04 LTS・22.04 LTS・ 20.04 LTS・18.04 LTS・16.04 LTS・14.04 LTS の8リリースである**（出典2）〈重要〉—— **本記録が数えた値である**（本記録の算出）。 **20.04 LTS と 18.04 LTS は Ubuntu Pro（ESM）、 16.04 LTS と 14.04 LTS は Legacy Support アドオンが必要と明記されている**（出典2）—— **既定では影響を受けないとされる古いリリースにも修正が出ている点が重要である** （本記録の評価）——**リトライを有効にしていれば影響を受けるためである**（出典4）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**経路上の位置取り → リダイレクトと一時エラーによるリトライの誘発 → ハードリンク越しの上書きによる検証後の差し替え → root としてのコード実行、という経路である** （出典1・2・4）〈重要〉—— **実際の攻撃の観測ではなく、各公表が述べる成立条件と影響を段階に並べたものである** （本記録の明示）〈未確定2〉。 **各段階の「検知の機会」と「効きえた対策」は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[2] [3]</span></div><div>**攻撃者は、APT クライアントとアーカイブサーバの間の HTTP 通信を
+操作できる位置を取る必要がある**（出典2）〈重要〉。
+**Ubuntu は「悪意あるミラーやプロキシ」がその位置を与えうると例示している**（出典2・3）——
+**どの経路が現実的かという分析は公表されていない**〈未確定1〉。
+</div><div class=fn>根拠: Ubuntu のセキュリティ情報とブログの前提条件（出典2・3）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4]</span></div><div>**攻撃者はリダイレクトと一時的な HTTP サーバエラーを使って、
+APT にダウンロードのリトライを行わせる**（出典4）〈重要〉。
+**リダイレクトによって2つの異なるパッケージのダウンロードが同じ URI になると、
+APT は両者を統合してしまう**（出典1）。
+**この経路は `Acquire::Retries` が0以外であることを要する**（出典2・3・4）——
+**既定値3は Debian 12・Ubuntu 22.04 LTS 以降に適用される**（出典2）。
+</div><div class=fn>根拠: DSA-6607-1 の説明（出典1）／APT 開発者の告知（出典4）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [4] [6]</span></div><div>**ダウンロードの再開時のファイル扱いが適切でないため、
+APT は既存のハードリンクを攻撃者が選んだ中身で上書きしてしまう**（出典1・4）〈重要〉。
+**これにより、署名検証を通った後のパッケージが差し替わる**（出典1）——
+**Ubuntu は「署名検証に失敗したパッケージでもインストールさせられる」と述べている**
+（出典3）。
+**修正は、ダウンロード先のファイルを排他で開き、
+部分ダウンロード分を書き写す前に既存ファイルを unlink する変更である**（出典6）〈齟齬2〉。
+</div><div class=fn>根拠: Ubuntu のセキュリティ情報（原因はハードリンクの再利用）（出典2）／APT 開発者の告知（出典4）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [3] [6]</span></div><div>**Debian のパッケージは root 権限でインストールされるため、
+差し替えが成功すれば root としての任意コード実行になる**（出典1・4）〈重要〉。
+**Ubuntu も「root 権限でのリモートコード実行に至る可能性がある」と述べている**（出典2）。
+**影響は APT ライブラリの HTTP バックエンドにあるため、
+apt・apt-get・aptitude・グラフィカルツールのいずれを使っていても対象になる**（出典3）。
+</div><div class=fn>根拠: DSA-6607-1（出典1）／USN-8996-1（出典2）／Ubuntu のブログ（出典3）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul></div>
+<section id="s5"><h2>「検証は通った」という記録が残る——差し替わるのは検証の後だった<span class="b slot">原因・手口</span></h2><p><strong>この脆弱性の本質は、検証の前後関係です</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>Debian の DSA-6607-1 はこう書いています</strong>（出典1。原文英語）。</p>
+<blockquote>
+<p>APT は、HTTP リダイレクトによって2つの別個のパッケージのダウンロードが同じ URI になったとき、それらを統合してしまう。HTTP ダウンロードの再開時のファイル扱いが適切でないため、中間者攻撃者が検証の後にパッケージを差し替えることができ、root としての任意コード実行に至りうる。</p>
+</blockquote>
+<p><strong>「検証の後に」が決定的です</strong>（本記録の整理）。APT の署名検証そのものは破られていません。<strong>検証を通ったファイルの中身が、別の経路の書き込みで入れ替わるのです。</strong></p>
+<p><strong>どう入れ替わるか。</strong> Ubuntu は原因を端的に「<strong>ハードリンクの再利用</strong>」と書いています（出典2）。APT 開発者の説明では、<strong>リダイレクトと一時的な HTTP サーバエラーがダウンロードのリトライを引き起こし、その結果 APT が既存のハードリンクを選んだペイロードで上書きしてしまう</strong>（出典4。原文英語）。</p>
+<p><strong>修正の方向も同じ場所を指しています。</strong> CSO Online の報道によれば、2026年10月12日付のコミットで、<strong>ダウンロード先のファイルを排他で開き、部分ダウンロード分を書き写す前に既存ファイルを unlink する</strong>ように変えられました（出典6）〈齟齬2〉——つまり<strong>「既存のハードリンク越しに書かせない」</strong>という修正です。</p>
+<p><strong>そして Debian のパッケージは root 権限でインストールされます</strong>（出典1・4）。差し替えが成功すれば、それは root としてのコード実行です。</p></section>
+<section id="s6"><h2>成立条件は設定1つ——リトライが0なら悪用できず、既定で3になったのは Debian 12 以降<span class="b slot">被害規模・影響範囲</span></h2><p><strong>影響の有無は <code>Acquire::Retries</code> の値で決まります</strong>（出典2・3・4）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>状態</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Acquire::Retries</code> が0</td>
+<td><strong>悪用できない</strong>（出典3）</td>
+</tr>
+<tr>
+<td><code>Acquire::Retries</code> が0以外（既定値3）</td>
+<td>影響を受ける</td>
+</tr>
+<tr>
+<td>既定が0以外になった時期</td>
+<td><strong>APT 2.3.2 以降</strong>（出典4）＝ Debian 12（Bookworm）・Ubuntu 22.04 LTS（Jammy）以降（出典2）</td>
+</tr>
+<tr>
+<td>それより古いリリース</td>
+<td><strong>既定では影響を受けない</strong>。ただしスクリプト等でリトライを有効にしていれば影響を受ける（出典4）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>ここに運用上のねじれがあります</strong>（本記録の評価）〈重要〉。<strong>新しいリリースのほうが既定で影響を受け、古いリリースは既定では受けない</strong>——通常の「古いほど危ない」という感覚と逆向きです。<strong>そして Ubuntu は 14.04 LTS まで遡って修正版を出しています</strong>（出典2）—— <strong>既定では影響しないはずの古いリリースにも修正を出すのは、リトライを有効にしている運用が実在するという前提に立っているからだと読めます</strong>（本記録の評価）。</p>
+<p><strong>対象の広さも押さえておきます。</strong> Ubuntu は、脆弱性が APT ライブラリの<strong>HTTP バックエンド</strong>にあるため、<strong>apt・apt-get・aptitude・Ubuntu のグラフィカルツールなどAPT を使うフロントエンド全般</strong>が影響を受けると述べています（出典3）。<strong>一方で snap パッケージは影響を受けず、FTP 等の他のトランスポートも影響を受けません</strong>（出典3）。</p></section>
+<section id="s7"><h2>緩和策は HTTPS 化とリトライの一時停止——更新作業そのものが脆弱な経路を通る<span class="b slot">対策・注意喚起</span></h2><p><strong>Canonical のブログが示す手順は、順序に意味があります</strong>（出典3。本記録の整理）〈重要〉。</p>
+<p><strong>①リトライを止めて更新する。</strong></p>
+<pre><code>sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0
+</code></pre>
+<p>全体を更新できない場合は APT だけを対象にできます（出典3）。</p>
+<pre><code>sudo apt update &amp;&amp; sudo apt install -o Acquire::Retries=0 --only-upgrade '?source-package(^apt$)'
+</code></pre>
+<p><strong>なぜ <code>-o Acquire::Retries=0</code> を付けるのか。</strong> <strong>更新作業そのものが、まだ脆弱な APT で行われるからです</strong>（本記録の整理）〈重要〉—— <strong>パッチを取りに行く通信が攻撃の対象になりうるため、その間だけ成立条件を外しておくという考え方です。</strong></p>
+<p><strong>②ソースを HTTPS に変える。</strong> Ubuntu は <code>http://</code> を <code>https://</code> に置換する手順を示しています（出典3）。<strong>HTTPS は本件の悪用を防ぎます</strong>（出典3）。ただし注意が2つあります——<strong>一部のコミュニティミラーは HTTPS に対応していません</strong>。そして Ubuntu 自身が「<strong>パッチ適用後は TLS は主に予防措置であり、アーカイブの署名方式のほうが強い保護である</strong>」と述べています（出典3。原文英語）。</p>
+<p><strong>③バージョンを確認する。</strong></p>
+<pre><code>apt list --installed '?source-package(^apt$)'
+</code></pre>
+<p><strong>④自動更新に任せる場合。</strong> Ubuntu 16.04 以降は unattended-upgrades が既定で有効で、<strong>24時間以内にパッチが当たるはず</strong>とされています（出典3）。<strong>その24時間はそのまま露出時間です</strong>（本記録の評価）。</p>
+<p><strong>そして忘れやすいのが払い出し用イメージです。</strong> CSO Online は、企業のセキュリティチームにとっての優先事項として「<strong>脆弱な導入の特定・リトライ設定の確認・本番システムと払い出しに使う Linux イメージへのパッチ適用</strong>」を挙げています（出典6）〈重要〉—— <strong>自動更新はイメージの中には届きません</strong>（本記録の整理）。</p></section>
+<section id="s8"><h2>悪用の観測は、どの一次公表にも書かれていない<span class="b slot">未確定事項</span></h2><p><strong>本記録が取得した一次資料は4本です</strong>（本記録の確認）—— Debian の DSA-6607-1（出典1）、Ubuntu の USN-8996-1 とセキュリティ情報（出典2）、Canonical のブログ（出典3）、APT 開発者の告知（出典4）。<strong>このいずれにも、実際に悪用されたという記載はありません</strong>〈未確定2〉〈重要〉。</p>
+<p><strong>一方で、発見者の発言として広く引用された一文があります。</strong> CSO Online は、Max Justicz 氏が X に「<strong>AI を2時間使って、素の Ubuntu が動くあらゆるサーバを国家が侵害できるゼロデイを見つけた</strong>」と投稿したと伝えています（出典6。原文英語）〈齟齬1〉。<strong>本記録はこの投稿を一次資料で確認していません</strong>（本記録の明示）—— <strong>X は本記録の収集対象外である</strong>（本プロジェクトの方針）。</p>
+<p><strong>「ゼロデイ」という語の扱いには注意が要ります</strong>（本記録の評価）〈重要〉—— <strong>本件は責任ある開示を経て、修正版と同時に公表されています</strong>（出典3）。<strong>公表時点で未修正だったわけではありません。</strong></p>
+<p><strong>併せて修正された別の問題もあります。</strong> DSA-6607-1 は「この更新では複数の境界外アクセスの問題も修正している」と述べています（出典1。原文英語）—— <strong>これらに CVE が割り当てられているか、深刻度がどの程度かは示されていません</strong>〈未確定4〉。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> APT（Debian）　<b>ベンダー:</b> Debian プロジェクト　<b>CVE番号:</b> CVE-2026-109518　<b>バージョン:</b> **Trixie（13・安定版）は 3.0.3 以前が影響を受け 3.0.4 で修正 （DSA-6607-1）。Bookworm（12）は 2.6.1 以前が影響を受け 2.6.2 で修正（DLA-4880-1）。 Forky/sid は 3.3.6 で修正**（出典1・5）〈重要〉。　<b>概要:</b> **Debian のパッケージ管理ツール。パッケージは root 権限でインストールされる** （出典1・4）。　<b>症状:</b> **HTTP リダイレクトで2つの異なるパッケージのダウンロードが同じ URI になると統合され、 ダウンロード再開時のファイル扱いの不備により、 中間者が検証後にパッケージを差し替えられる**（出典1）〈重要〉—— **結果は root としての任意コード実行である**（出典1・4）。</div><div class=sub><b>名称:</b> APT（Ubuntu）　<b>ベンダー:</b> Canonical　<b>CVE番号:</b> CVE-2026-109518　<b>バージョン:</b> **修正版は 26.10 が 3.3.3ubuntu0.1、26.04 LTS が 3.2.1ubuntu0.1、 24.04 LTS が 2.8.4ubuntu0.1、22.04 LTS が 2.4.15ubuntu0.1、 20.04 LTS が 2.0.12+esm1（Ubuntu Pro）、18.04 LTS が 1.6.19+esm1（Ubuntu Pro）、 16.04 LTS が 1.2.36+esm1、14.04 LTS が 1.0.1ubuntu2.24+esm4 （いずれも Legacy Support アドオン）**（出典2）〈重要〉。　<b>概要:</b> **APT ライブラリの HTTP バックエンドの問題であるため、 apt・apt-get・aptitude・Ubuntu のグラフィカルツールなど APT を使うフロントエンド全般が影響を受ける**（出典3）〈重要〉—— **snap パッケージは影響を受けず、FTP 等の他のトランスポートも影響を受けない**（出典3）。　<b>症状:</b> **経路上の攻撃者が、検証されていないパッケージを APT にインストールさせ、 root 権限でのリモートコード実行に至りうる**（出典2）—— **署名検証に失敗したパッケージでもインストールさせられる**（出典3）〈重要〉。</div><div class=sub><b>名称:</b> Acquire::Retries（APT の設定項目）　<b>ベンダー:</b> Debian プロジェクト　<b>バージョン:</b> **設定値が0以外であることが成立条件である**（出典2・3・4）〈重要〉—— **既定で0以外になったのは APT 2.3.2 以降、 すなわち Debian 12・Ubuntu 22.04 LTS 以降である**（出典2・4）。　<b>概要:</b> **ダウンロードが失敗したときの再試行回数。既定値は3**（出典2）。　<b>症状:</b> **0であれば本件は悪用できない**（出典3）〈重要〉—— **それより古いリリースでも、スクリプト等でリトライを有効にしていれば影響を受ける** （出典4）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **修正版の APT へ更新する**（出典1・2・3）〈重要〉—— **Ubuntu は `sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0`、 全体を更新できない場合は `sudo apt update &amp;&amp; sudo apt install -o Acquire::Retries=0 --only-upgrade &#x27;?source-package(^apt$)&#x27;` を示している**（出典3）。　<b>副作用:</b> **更新そのものが脆弱な経路を通るため、リトライを止めた状態で実施する必要がある** （出典3。本記録の整理）〈重要〉—— **古い LTS（20.04 以前）は Ubuntu Pro または Legacy Support の契約が要る**（出典2）。</div><div class=sub><b>手順:</b> **APT のソースを `http://` から `https://` に変える**（出典3）〈重要〉—— **Ubuntu のブログは Ubuntu アーカイブ向けの置換コマンドを示し、 その後 `sudo apt update` を実行するよう述べている**（出典3）。　<b>副作用:</b> **一部のコミュニティミラーは HTTPS に対応していない**（出典3）〈重要〉—— **また Ubuntu は「パッチ適用後は TLS は主に予防措置であり、 アーカイブの署名方式のほうが強い保護である」と述べている**（出典3。原文英語）。</div><div class=sub><b>手順:</b> **更新作業の間、`Acquire::Retries` を0にする**（出典3）〈重要〉—— **経路上の攻撃者と悪意あるミラーの双方に対して緩和になる**（出典3）。　<b>副作用:</b> **ネットワークが不安定な環境では、一時的な失敗でダウンロードが完遂しなくなる** （本記録の評価。Ubuntu は副作用に言及していない）—— **恒久設定にすると、通常運用の自動更新が失敗しやすくなる**（本記録の評価）。</div><div class=sub><b>手順:</b> **自動更新（unattended-upgrades）に任せる**（出典3）—— **Ubuntu 16.04 以降は既定で有効で、24時間以内にパッチが当たるはずとされている** （出典3）。　<b>副作用:</b> **24時間の猶予がそのまま露出時間になる**（本記録の評価）〈重要〉—— **払い出し用の Linux イメージには自動更新が及ばないため別途の対応が要る** （出典6。本記録の整理）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**APT 開発者 Julian Andres Klode が、ダウンロード先のファイルを排他で開き、 部分ダウンロード分を書き写す前に既存ファイルを unlink するようダウンロード処理を変更した コミットを作成した（CSO Online による）**（出典6）〈重要〉—— **この変更により、既存のハードリンク越しに書き込まれることを防ぐ**（出典6。原文英語）。 **本記録はコミットそのものを一次資料で確認していない**〈齟齬2〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Debian が DSA-6607-1 を公開した**（出典1）〈重要〉—— **「Max Justicz が APT の不備を発見した。 APT は HTTP リダイレクトで2つの別個のパッケージのダウンロードが同じ URI になったとき それらを統合してしまう。HTTP ダウンロードの再開時のファイル扱いが適切でないため、 中間者攻撃者が検証後にパッケージを差し替えられ、root としての任意コード実行に至りうる」 と説明し、Trixie（安定版）の修正版として apt 3.0.4 を示した**（出典1。原文英語）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Ubuntu が USN-8996-1 を公開した**（出典2）〈重要〉—— **「APT がリダイレクトとパッケージダウンロードのリトライに遭遇したときの ハードリンクの扱いが正しくなかった。 経路上に位置する遠隔の攻撃者がこれを悪用して、 APT に検証されていないパッケージをインストールさせ、 root 権限でのリモートコード実行に至る可能性がある」と説明し、 14.04 LTS から 26.10 までの修正版を示した**（出典2。原文英語）。 **深刻度 High、CVSS 4.0 のベーススコアは 7.7 （CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N）**（出典2）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**APT 開発者が deity メーリングリストで告知した**（出典4）—— **リダイレクトと一時的な HTTP サーバエラーによるリトライで 既存のハードリンクを上書きできる旨、 および `Acquire::Retries` が APT 2.3.2 以降の既定である旨を述べ、 1.2.36 から 3.2.1 までの各安定枝の修正版を列挙している**（出典4）〈重要〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Canonical の Luci Stanescu がブログ記事 「CVE-2026-109518 APT vulnerability fixes available」を公開した**（出典3）〈重要〉—— **緩和策として①APT のソースの HTTPS 化、②更新作業中の `Acquire::Retries` を0にすること、 ③`sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0` による適用、 ④16.04 以降は既定で有効な unattended-upgrades が24時間以内にパッチを当てるはず、 を示している**（出典3）。 **snap パッケージは影響を受けず、HTTPS は悪用を防ぐとも述べている**（出典3）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が本件を報じた**（出典7）—— **「攻撃には APT が失敗したダウンロードをリトライすることが必要で、 これは Debian 12 以降では既定で行われる」と伝えている**（出典7。原文英語）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**CSO Online が「Debian, Ubuntu patch APT flaw that could hand attackers root」を公開した** （出典6）〈重要〉—— **Ubuntu が求める対応（脆弱な導入の特定・リトライ設定の確認・ 本番システムと払い出し用の Linux イメージへのパッチ適用）に触れ、 2026年10月12日付の修正コミットの内容を伝えている**（出典6）〈齟齬2〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Debian の DSA-6607-1、Ubuntu の USN-8996-1 と セキュリティ情報ページ、Ubuntu のブログ、APT 開発者の告知、 Debian セキュリティトラッカーを取得して内容を確認した**（出典1〜5）〈重要〉—— **いずれにも悪用の観測に関する記載は無かった**〈未確定2〉。</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>発見者の X への投稿（「AI を2時間使って見つけた」）</span><div class=sm>**CSO Online は Max Justicz 氏の X への投稿を引用している**（出典6。原文英語）〈重要〉—— **本記録は投稿そのものを確認していない**（本記録の明示）。 **本プロジェクトは X を収集対象にしていない（robots.txt が全面禁止のため）** （本記録の明示）。 **また「ゼロデイ」という表現は、本件が責任ある開示を経て修正版と同時に公表された事実 （出典3）と整合しない点に注意が要る**（本記録の評価）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>2026年10月12日付の修正コミットの内容</span><div class=sm>**CSO Online は、APT 開発者 Julian Andres Klode が2026年10月12日に作成したコミットで ダウンロード先を排他で開き既存ファイルを unlink するよう変更した、と伝えている** （出典6）〈重要〉。 **本記録はこのコミットを一次資料（salsa.debian.org）で確認していない**（本記録の明示）—— **APT 開発者の告知に含まれるコミットハッシュは、 本 CVE ではなく併せて修正された境界外メモリの問題に対応するものである**（出典4）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>深刻度の評価</span><div class=sm>**Ubuntu は CVSS 4.0 で 7.7（High）と評価している**（出典2）。 **一方 Debian の DSA とセキュリティトラッカーは、深刻度のスコアを示していない** （出典1・5。本記録の確認）〈重要〉〈未確定3〉—— **本記録が本文で用いる 7.7 は Ubuntu の評価であることを明記する**（本記録の明示）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>リダイレクトとリトライでハードリンクを上書きし、検証後のパッケージを差し替える経路</div><div class=svgwrap><svg viewBox="0 0 1406 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1009.0,60.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C907.0,162.0 907.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">経路上の攻撃者（悪意ある</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ミラー・プロキシを含む）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">Ubuntu が例示する</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">攻撃位置（出典2・3）</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">APT と アーカイブサ</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーバ間の平文 HTTP </text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">通信</text><text x="295.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">HTTPS なら本件の悪</text><text x="295.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">用は防げる（出典3）</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リダイレクト＋一時的な </text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTP エラーによるリ</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トライの誘発</text><text x="499.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">Acquire::Ret</text><text x="499.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">ries が0以外である</text><rect x="628" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同じ URI になった2</text><text x="703.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">つのダウンロードの統合</text><text x="703.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">DSA-6607-1 の</text><text x="703.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">記述（出典1）</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">既存のハードリンク越しの</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">上書き（検証後の差し替え</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">Ubuntu は原因を「</text><text x="907.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ハードリンクの再利用」と</text><rect x="1036" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者が選んだ .deb</text><text x="1111.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> パッケージ</text><text x="1111.0" y="123.0" text-anchor="middle" fill="#ffcc80" font-size="10">署名検証に失敗したパッケ</text><text x="1111.0" y="135.0" text-anchor="middle" fill="#ffcc80" font-size="10">ージでもインストールされ</text><rect x="1240" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">root 権限でのコード</text><text x="1315.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実行</text><text x="1315.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">Debian のパッケー</text><text x="1315.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">ジは root 権限でイ</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版（Debian 3</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.0.4 / 2.6.2</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">、Ubuntu 各リリ…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">ダウンロード先を排他で開</text><text x="907.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">き、既存ファイルを un</text></svg></div><div class=fn>**DSA-6607-1（出典1）・USN-8996-1（出典2）・APT 開発者の告知（出典4）の説明に
+対応させた経路図である。**
+**破線は成立条件（リトライが0以外）が満たされる場合にのみ通る段を示す**（本記録の整理）。
+**実際の悪用の観測ではない**〈未確定2〉。
+</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**検知について公表された記載は無い**（本記録の確認）〈未確定4〉。
+**平文 HTTP でパッケージを取りに行く通信は、
+出口の通信記録に残るため棚卸しは可能である**（本記録の評価）〈重要〉——
+**「どのサーバがどのミラーへ平文で取りに行っているか」は平時に把握できる。**
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>APT のソースを HTTPS に揃え、平文 HTTP のミラー参照を禁止する</div><div class=ctl><span class="b eff">影響を限定できた</span>パッケージ取得を社内の信頼できるミラー・プロキシ1か所に集約し、経路を短くする</div><div class=ctl><span class="b eff">検知できた</span>出口通信の記録から、平文でアーカイブへ出ているホストを洗い出す</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**リトライと 3xx・5xx の連発は、プロキシやミラー側の記録に現れうる**
+（本記録の評価）〈重要〉——
+**ただし一時的な障害でも同じ形になるため、単独では異常と断定できない**。
+**公表に検知の指針は無い**〈未確定4〉。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>更新作業中は Acquire::Retries を0にする</div><div class=ctl><span class="b eff">検知できた</span>社内ミラーのアクセス記録で、同一クライアントのリトライ急増を監視する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**検証を通った後に差し替わるため、APT 自身の検証結果からは異常が見えない**
+（本記録の評価）〈重要〉——
+**「検証に成功した」という記録が残るのが、この脆弱性の厄介さである。**
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版の APT へ更新する（Debian 3.0.4 / 2.6.2、Ubuntu は各リリースの指定版）</div><div class=ctl><span class="b eff">検知できた</span>インストール後のパッケージの整合性を独立に検証する（debsums 等による事後確認）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**侵害後の痕跡についての指針は公表されていない**（本記録の確認）〈未確定4〉。
+**実務的には、パッケージ更新を行ったホストの一覧と更新時刻を押さえ、
+平文 HTTP を使っていたホストから優先して確認するのが現実的である**
+（本記録の判断）〈重要〉。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>払い出し用の Linux イメージにも修正版を取り込む（イメージは自動更新が及ばない）</div><div class=ctl><span class="b eff">復旧を早められた</span>パッケージ更新の実行ホスト・時刻・経路を記録し、事後の絞り込みに使えるようにする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「パッケージ管理は安全」という前提を、根拠まで降りて確認する。**</div><div class=lw>**本件は署名検証そのものを破っていない。検証を通った後に差し替わる**（出典1）〈重要〉—— **つまり「署名を検証しているから安全」という説明が成り立たない場合がある** （本記録の評価）。 **しかもパッケージは root 権限でインストールされるため、 差し替えはそのまま最高権限のコード実行になる**（出典1・4）。</div><div class=la><b>取るべき行動</b> **①自組織のサーバ・コンテナ・CI がパッケージをどこから取っているかを一覧にする。 ②平文 HTTP で取りに行っている経路を洗い出し、HTTPS か社内ミラーへ寄せる。 ③「パッケージ取得の経路」をサプライチェーンのリスク項目として台帳に載せる。**</div></li><li><div class=lp>**払い出し用のイメージ（ゴールデンイメージ）をパッチ管理の対象に入れる。**</div><div class=lw>**自動更新はイメージの中には届かない**（本記録の整理）〈重要〉—— **CSO Online も企業の優先事項として 「本番システムと払い出しに使う Linux イメージへのパッチ適用」を挙げている**（出典6）。 **古いイメージから新しいホストが生まれ続ける構造では、脆弱性が再生産される** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **①イメージの一覧と、それぞれの最終更新日を出す。 ②重大な脆弱性の対応手順に「イメージの再作成」を明記する。 ③イメージから起動したホストが初回起動時に更新を取る設計になっているか確認する。**</div></li><li><div class=lp>**「新しいリリースのほうが既定で危ない」場合があることを前提に判断する。**</div><div class=lw>**本件の成立条件であるリトライの既定有効化は、 Debian 12・Ubuntu 22.04 LTS 以降という比較的新しい側である**（出典2・4）〈重要〉—— **古い LTS は既定では影響を受けない（ただし設定していれば受ける）**（出典4）。 **「更新しているほうが安全」という一般則だけでは判断を誤る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①脆弱性のトリアージで、影響条件を「バージョンの新旧」ではなく 「設定値の状態」で判定する手順にする。 ②本件については `Acquire::Retries` の実値を全ホストで確認する。 ③確認結果を資産台帳に記録し、次回同種の脆弱性で再利用できる形にする。**</div></li><li><div class=lp>**緩和策の副作用を、適用前に見積もる。**</div><div class=lw>**HTTPS 化は一部のコミュニティミラーで使えず、 リトライの無効化はネットワークが不安定な環境で更新の失敗を増やす** （出典3。本記録の評価）〈重要〉—— **「とりあえず緩和策を全台に入れる」と運用が壊れる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①緩和策ごとに影響を受ける運用（自動更新・CI・オフライン環境）を列挙する。 ②恒久設定にするもの（HTTPS 化）と一時措置にするもの（リトライ0）を分けて決める。 ③決めた内容を手順書に書き、作業後に戻し忘れがないか確認する項目を設ける。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**APT のソースを HTTPS に揃え、平文 HTTP の参照を残さない。**</div><div class=lw>**Ubuntu は HTTPS が本件の悪用を防ぐと明記している**（出典3）〈重要〉—— **経路上の攻撃者が HTTP 通信を操作できることが前提条件であるため、 経路を暗号化すれば成立しない**（出典2・3）。</div><div class=la><b>取るべき行動</b> **①`/etc/apt/sources.list` と `/etc/apt/sources.list.d/` 配下、 およびコンテナイメージの Dockerfile を対象に `http://` を検索する。 ②HTTPS に対応しているミラーへ寄せる（対応していないミラーは変更先を決める）。 ③変更後に `apt update` が通ることを確認する。**</div></li><li><div class=lp>**更新作業中はリトライを0にして実行する。**</div><div class=lw>**更新作業そのものが、まだ脆弱な APT で行われる**（本記録の整理）〈重要〉—— **Ubuntu は `sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0` を示している** （出典3）。</div><div class=la><b>取るべき行動</b> **①`apt list --installed &#x27;?source-package(^apt$)&#x27;` で現在のバージョンを確認する。 ②`-o Acquire::Retries=0` を付けて更新する（全体更新ができない場合は APT のみ）。 ③Debian は 3.0.4（Trixie）/ 2.6.2（Bookworm）、 Ubuntu は各リリースの指定版に達していることを確認する。**</div></li><li><div class=lp>**パッケージ取得の経路を1か所に集約する。**</div><div class=lw>**中間者の位置を与えるのは、悪意あるミラーやプロキシである**（出典2・3）〈重要〉—— **各ホストが好きなミラーへ直接出ていく構成は、守る面が広くなる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①社内ミラー（または認証付きプロキシ）を1か所に決め、全ホストをそこへ向ける。 ②ミラーのアクセス記録を残し、同一クライアントのリトライ急増を監視する。 ③出口のファイアウォールで、ホストから外部アーカイブへの直接通信を止める。**</div></li><li><div class=lp>**インストール済みパッケージの整合性を、APT とは独立に確認できるようにする。**</div><div class=lw>**本件では「検証に成功した」という記録が残る**（本記録の評価）〈重要〉—— **APT 自身の検証結果からは差し替えが見えないため、 事後の確認は別の道具で行う必要がある**（本記録の評価。公表に検知指針は無い）〈未確定4〉。</div><div class=la><b>取るべき行動</b> **①`debsums` 等でファイルのハッシュを事後確認する手順を用意する。 ②パッケージ更新の実行ホスト・時刻・取得経路を記録に残す。 ③平文 HTTP を使っていた期間に更新を行ったホストを、確認の優先対象にする。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **Debian 12（Bookworm）以降、または Ubuntu 22.04 LTS（Jammy）以降を運用しているか。**</td><td class=sm>**これらは `Acquire::Retries` の既定値が3であり、既定の状態で成立条件を満たす** （出典2・4）〈重要〉—— **「設定を変えていない」ことが、この脆弱性では安全を意味しない**（本記録の整理）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **それより古いリリースで、スクリプトや設定ファイルで APT のリトライを有効にしていないか。**</td><td class=sm>**APT 開発者は「古いリリースでも多くの利用者スクリプトがリトライを使っていた可能性がある」と 述べている**（出典4）〈重要〉—— **Ubuntu が 14.04 LTS まで修正版を出しているのは、この層が実在するからだと読める** （出典2。本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **APT のソースに平文 HTTP の参照が残っていないか（コンテナイメージの定義ファイルも含む）。**</td><td class=sm>**成立には経路上で HTTP 通信を操作できることが要り、HTTPS は悪用を防ぐ**（出典2・3）〈重要〉—— **コンテナのビルド時に平文で取りに行く定義は見落とされやすい**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **社外のミラーやプロキシを経由してパッケージを取得していないか。**</td><td class=sm>**Ubuntu は「悪意あるミラーやプロキシ」が攻撃位置を与えうると例示している**（出典2・3）—— **悪意あるミラーの場合は、経路の暗号化だけでは防げない**（本記録の評価）〈未確定1〉。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **払い出し用の Linux イメージ（仮想マシンテンプレート・コンテナのベースイメージ）に 修正版を取り込む手順を持っているか。**</td><td class=sm>**自動更新はイメージの中には届かず、古いイメージから新しいホストが生まれ続ける** （本記録の評価）〈重要〉—— **CSO Online も優先事項としてイメージへのパッチ適用を挙げている**（出典6）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **パッケージ更新の実行ホスト・時刻・取得経路が記録として残っているか。**</td><td class=sm>**本件は検証成功の記録が残るため、APT の記録だけでは差し替えを判定できない** （本記録の評価）〈重要〉—— **事後に「どのホストを優先して確認するか」を決める材料が必要になる**（本記録の判断）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月4日 Debian プロジェクト（Debian Security Team）</span> <a href="https://lists.debian.org/debian-security-announce/2026/msg00526.html" target="_blank" rel="noreferrer noopener nofollow">DSA-6607-1 apt -- security update</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**Debian の一次アドバイザリ**（本記録の確認）〈重要〉。
+**記載されているのは、①発見者が Max Justicz であること、
+②HTTP リダイレクトで2つの別個のパッケージのダウンロードが同じ URI になると統合されること、
+③ダウンロード再開時のファイル扱いの不備により中間者が検証後にパッケージを差し替えられ、
+root としての任意コード実行に至ること、
+④Trixie（安定版）の修正版が apt 3.0.4 であること、
+⑤この更新では複数の境界外アクセスの問題も修正していることである**（本記録の確認）。
+**記載が無いのは、CVSS スコア、悪用の観測、
+併せて修正された境界外アクセスの詳細である**〈未確定2〉〈未確定3〉〈未確定4〉。
+**本 URL は www.debian.org/security/2026/dsa-6607 からのリダイレクト先である**
+（本記録の確認）。
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月4日（最終更新も同日） Canonical（Ubuntu Security）</span> <a href="https://ubuntu.com/security/CVE-2026-109518" target="_blank" rel="noreferrer noopener nofollow">USN-8996-1: APT vulnerability / CVE-2026-109518</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**Ubuntu の一次情報。USN-8996-1（https://ubuntu.com/security/notices/USN-8996-1）と
+CVE ページの双方を本記録は取得した**（本記録の確認）〈重要〉。
+**記載されているのは、①深刻度 High・CVSS 4.0 で 7.7
+（CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:P/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N）、
+②原因が「ハードリンクの再利用」であり、
+リダイレクトの追従とダウンロードのリトライを要すること、
+③`Acquire::Retries` が0以外（既定値3）であることが条件で、
+それは Debian 12・Ubuntu 22.04 LTS 以降に適用されること、
+④経路上の攻撃者（悪意あるミラー・プロキシを含む）が
+検証されていないパッケージをインストールさせ root 権限でのコード実行に至りうること、
+⑤14.04 LTS から 26.10 までの8リリースの修正版、
+⑥発見者が Max Justicz であることである**（本記録の確認）。
+**CVE ページには回避策の記載が無く、
+修正版の適用のみが対処として示されている**（本記録の確認）。
+）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月4日 Canonical（Ubuntu）</span> <a href="https://ubuntu.com/blog/apt-vulnerability-fixes-available" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-109518 APT vulnerability fixes available</a> <span class="b kind">ブログ</span><span class=sm>（**Canonical の解説記事。筆者は Luci Stanescu**（本記録の確認）〈重要〉。
+**記載されているのは、①Max Justicz が発見し責任ある開示を行ったこと、
+②APT が署名検証に失敗したパッケージでもインストールさせられること、
+③悪意あるミラーも同じ攻撃位置を取れること、
+④脆弱性が APT ライブラリの HTTP バックエンドにあるため
+APT を使うフロントエンド全般（apt・apt-get・aptitude・グラフィカルツール）が対象で、
+snap パッケージと FTP 等の他トランスポートは影響を受けないこと、
+⑤HTTPS が悪用を防ぐこと（ただし一部のコミュニティミラーは非対応）、
+⑥`Acquire::Retries` を0にする緩和と
+`sudo apt update &amp;&amp; sudo apt upgrade -o Acquire::Retries=0` による適用手順、
+⑦`apt list --installed &#x27;?source-package(^apt$)&#x27;` による確認、
+⑧Ubuntu 16.04 以降は unattended-upgrades が既定で有効で24時間以内に適用されるはずであること、
+⑨20.04 以前は Ubuntu Pro / ESM が必要であることである**（本記録の確認）。
+**悪用の観測についての記載は無い**〈未確定2〉。
+）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月4日 APT 開発者（deity メーリングリスト）</span> <a href="https://lists.debian.org/deity/2026/11/msg00005.html" target="_blank" rel="noreferrer noopener nofollow">APT security releases (CVE-2026-109518)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**APT 開発者 Julian Andres Klode による告知**（本記録の確認）〈重要〉。
+**記載されているのは、①リダイレクトと一時的な HTTP サーバエラーによるリトライで
+既存のハードリンクを選んだペイロードで上書きできること、
+②deb が root 権限でインストールされるためリモートコード実行に至りうること、
+③`Acquire::Retries` が既定になったのは APT 2.3.2 以降であり、
+古いリリースでも利用者スクリプトが使っていた可能性があること、
+④修正版として 1.2.36・1.4.12・1.6.19・1.8.2.4・2.0.12・2.2.5・2.4.15・2.6.2・2.8.4・
+3.0.4・3.2.1 の各安定枝が列挙されていること、
+⑤併せて境界外メモリアクセスの修正を含むことである**（本記録の確認）。
+**記載が無いのは、本 CVE に対する修正コミットの明示と回避策である**
+（告知中のコミットハッシュは境界外メモリの修正に対応する）〈未確定4〉。
+）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年11月4日以降（随時更新） Debian セキュリティトラッカー</span> <a href="https://security-tracker.debian.org/tracker/CVE-2026-109518" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-109518 (Debian Security Tracker)</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**スイート別の修正状況を示す一次情報**（本記録の確認）。
+**Bookworm は 2.6.1 が脆弱で 2.6.2 で修正（DLA-4880-1）、
+Trixie は 3.0.3 が脆弱で 3.0.4 で修正（DSA-6607-1）、
+Forky/sid は 3.3.6 で修正**（本記録の確認）〈重要〉。
+**深刻度のスコアは示されていない**〈未確定3〉。
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年11月5日 CSO Online</span> <a href="https://www.csoonline.com/article/4245109/debian-ubuntu-patch-apt-flaw-that-could-hand-attackers-root.html" target="_blank" rel="noreferrer noopener nofollow">Debian, Ubuntu patch APT flaw that could hand attackers root</a> <span class="b kind">記事</span><span class=sm>（**報道。一次公表に無い情報を2つ含む**（本記録の確認）〈重要〉。
+**①発見者 Max Justicz の X への投稿
+「AI を2時間使って、素の Ubuntu が動くあらゆるサーバを国家が侵害できるゼロデイを見つけた」
+（原文英語）——本記録は投稿そのものを確認していない**〈齟齬1〉。
+**②2026年10月12日付の修正コミットの内容
+（ダウンロード先を排他で開き、部分ダウンロード分を書き写す前に既存ファイルを unlink する）
+——本記録はコミットそのものを確認していない**〈齟齬2〉。
+**企業のセキュリティチームの優先事項として、脆弱な導入の特定・リトライ設定の確認・
+本番システムと払い出し用イメージへのパッチ適用を挙げている**（本記録の確認）。
+）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年11月4日 The Hacker News</span> <a href="https://thehackernews.com/2026/11/debian-and-ubuntu-apt-flaw-lets-mitm.html" target="_blank" rel="noreferrer noopener nofollow">Debian and Ubuntu APT Flaw Lets MitM Attackers Swap Verified Packages and Run Code as Root</a> <span class="b kind">記事</span><span class=sm>（**報道。本記録が参照できたのは冒頭の要旨のみである**（本記録の確認）〈重要〉——
+**本文の取得に失敗しているため、記事固有の追加情報があるかは確認していない**〈未確定5〉。
+**要旨の内容は「パッケージのダウンロードを改変できる攻撃者が、
+検証済みのパッケージを自分のものに差し替えられる。
+攻撃者のコードは root として動く。
+攻撃には APT が失敗したダウンロードをリトライすることが必要で、
+これは Debian 12 以降では既定である」（原文英語）**。
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月6日</span> <span class="b rev">新規作成</span> </li></ul></div></div>
+<div class="blk " id="s20"><h3>タグ</h3><span class="b tag">APT</span><span class="b tag">Debian</span><span class="b tag">Ubuntu</span><span class="b tag">CVE-2026-109518</span><span class="b tag">DSA-6607-1</span><span class="b tag">USN-8996-1</span><span class="b tag">DLA-4880-1</span><span class="b tag">ハードリンク</span><span class="b tag">HTTP リダイレクト</span><span class="b tag">ダウンロードのリトライ</span><span class="b tag">中間者攻撃</span><span class="b tag">署名検証の回避</span><span class="b tag">root 権限</span><span class="b tag">パッケージ管理</span><span class="b tag">ソフトウェア供給網</span><span class="b tag">Max Justicz</span><span class="b tag">ミラーサーバ</span><span class="b tag">ゴールデンイメージ</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-06 10:23 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

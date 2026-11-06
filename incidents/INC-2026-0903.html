@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>EDK II のPXEに起動前RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0903</span>EDK II のPXEに起動前RCE</h1>
+<header class="site-header">
+  <p class="subtitle">UEFI の参照実装 EDK II の PXE ネットワーク起動ドライバに、 Secure Boot と計測起動の検証が終わる前に ring 0 でコードを実行させうる 境界外書き込みが公表された（CVE-2026-97631・TianoCore GHSA-99cj-7hg9-mp4m・ CVSS 4.0 で 9.5）——ICMP エラー報文の複製ループが固定504バイトの Mode.IcmpError を越えて書き、しかも宛先ポインタを分割ごとではなく 累積長で進める。公表は2027年1月の予定だったが、 修正コードを含む公開のプルリクエストが先に出たため10月22日へ繰り上がった</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月22日（TianoCore 勧告 GHSA-99cj-7hg9-mp4m の公開）</span>
+  <span>最終更新: 2026年11月6日（本記録の作成。TianoCore 勧告と Red Hat の CVE ページを取得して裏を取った時点）</span>
+</div>
+
+<div class="lead"><p><strong>TianoCore は2026年10月22日、UEFI の参照実装 EDK II のPXE ネットワーク起動ドライバに境界外書き込みがあるとして、勧告 GHSA-99cj-7hg9-mp4m を公開しました</strong>（出典1）〈重要〉。<strong>題名は「Pre-boot RCE in EDK II PXE driver」、CVE-2026-97631。深刻度は Critical、CVSS 4.0 のスコアは 9.5、ベクターは AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H です</strong>（出典1）。</p>
+<p><strong>どこにあるか。</strong> <strong>部品は NetworkPkg、場所は PXE Base Code ドライバ<code>NetworkPkg/UefiPxeBcDxe</code> です</strong>（出典1）。<strong>壊れている関数は2つ——IPv4 の <code>PxeBcIcmpErrorDpcHandle</code> とIPv6 の <code>PxeBcIcmp6ErrorDpcHandle</code> です</strong>（出典1）〈重要〉。<strong>書き込み先はドライバの私有コンテキスト構造体の中にある<code>Mode.IcmpError</code> フィールドで、固定504バイトです</strong>（出典1）。</p>
+<p><strong>何が間違っているか。</strong> <strong>勧告の原文は「複製ループの境界処理が IPv4 と IPv6 の両方のハンドラで誤っている」です</strong>（出典1。原文英語。本記録の訳）〈重要〉。<strong>誤りは2つ重なっています</strong>（出典1・3）—— <strong>①報文の長さが504バイトを超えても複製を続ける、②宛先ポインタを各分割の長さではなく累積長で進める。</strong> <strong>結果として、超長の報文が攻撃者の制御するデータをフィールドの外の隣接メモリへ書き込みます</strong>（出典1）。<strong>受信経路のどこにも、事前に報文長を制限する箇所がありません</strong>（出典3）。</p>
+<p><strong>何が起きるか。</strong> <strong>勧告は影響を2つに分けています</strong>（出典1）〈重要〉。<strong>(a) ドライバの私有データが決定的に破壊され、次の ICMP エラーで DXE コアが CPU 例外を起こし、起動が止まる。(b) 対象のファームウェアのビルドを知っている攻撃者は「偽造したイベントを仕込み」、<code>CoreSignalEvent()</code> に攻撃者が与えたバイト列を DXE フェーズで実行させうる</strong>（出典1。原文英語。本記録の訳）。</p>
+<p><strong>ここが本件の重さです</strong>（出典1。本記録の評価）〈重要〉。<strong>DXE フェーズは、Secure Boot と計測起動が検証を終える前の段階です。</strong> <strong>つまり、それらの機構が立ち上がる前にコードが走り終わります。</strong></p>
+<p><strong>修正はまだ入っていません</strong>（出典1）〈重要〉。<strong>勧告の「Patched versions」欄は本記録の取得時点で「Not patched currently」のままで、修正はプルリクエスト #13302 として参照されています</strong>（出典1）。<strong>Red Hat の CVE ページは本件を Critical とし、CVSS 3.1 では 8.8、ベクターは AV:A（隣接ネットワーク）です</strong>（出典2）〈重要〉—— <strong>TianoCore の CVSS 4.0 が AV:N（ネットワーク）であるのと食い違います</strong>〈齟齬1〉。<strong>Red Hat は「露出はネットワーク起動のシーケンスに限られ、ローカルストレージから起動する仮想マシンや、起動後に通常動作している仮想マシンは露出しない」と述べています</strong>（出典2。原文英語。本記録の訳）。</p>
+<p><strong>発見者は Alex Matrosov（Anthropic）と Dan Holmes-Mitra（Google）です</strong>（出典1）。<strong>報道によれば、調整された公表は2027年1月に予定されていました</strong>（出典3）〈重要〉。<strong>それが10月22日へ繰り上がった理由は、AMI が edk2 のリポジトリへ脆弱性を詳細に記述し修正コードを添えた公開のプルリクエスト（#13200）を提出したためだと伝えられています</strong>（出典3）〈齟齬3〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**TianoCore の勧告にも Red Hat の CVE ページにも、悪用の記載は無い** （出典1・2。本記録の確認）〈重要〉。 **報道も悪用の観測には触れていない**（出典3。本記録の確認）。 **本件は痕跡の残りにくさに特殊な事情がある**（本記録の評価）〈重要〉—— **攻撃が成立するのは OS が立ち上がる前の数秒であり、 軽い帰結（起動の停止）は「原因不明の再起動ループ」として見え、 重い帰結（ring 0 でのコード実行）は OS 側の監視に映らない。**</div></li><li><span class=ui>各ハードウェアベンダーの影響判定と BIOS/UEFI 更新の提供時期</span><span class="b rsn">公表されていない</span><div class=sm>**報道が整理するベンダーの状況はこうである**（出典3）〈重要〉〈齟齬3〉—— **Intel は「現在セキュリティサポート期間内の商用製品に既知の影響を受けるものは無い」 としつつ「OEM のボードメーカーやシステムインテグレータが統合している可能性がある」と 補っている。 Arm は「CVE-2026-97631 は Arm のポートフォリオに直接は該当しない」と答えている。 AMD・Phoenix・AMI・Microsoft・Amazon は報道の時点で回答が無かった。** **本記録はこれらの回答を一次資料で確認していない**（本記録の明示）。 **いずれにせよ、EDK II は参照実装であり各社の実際の統合状況は異なるため、 利用者は自分の機種とファームウェアのバージョンでベンダーへ照会するしかない** （出典3。本記録の整理）〈重要〉—— **更新の提供時期はどのベンダーからも公表されていない。**</div></li><li><span class=ui>安定版リリースへの修正取り込みの時期</span><span class="b rsn">公表されていない</span><div class=sm>**勧告の「Patched versions」欄は本記録の取得時点で 「Not patched currently」のままである**（出典1。本記録の確認）〈重要〉。 **報道は「TianoCore は10月15日に修正を上流の主分岐へマージしたが、 現時点で安定版には入っていない」と書いている**（出典3）〈齟齬3〉—— **安定版の予定時期は示されていない。** **上流に入ってから各独立 BIOS ベンダーが統合し、 OEM が BIOS 更新を出し、企業が適用するまでの各段の所要も公表されていない** （本記録の確認）。</div></li><li><span class=ui>Red Hat の影響製品一覧と公開・更新日</span><span class="b rsn">公表されていない</span><div class=sm>**Red Hat の CVE ページには製品表への言及があるが、 本記録が取得した内容には表が含まれていなかった**（出典2。本記録の確認）〈重要〉〈未確定4〉。 **「Last modified」欄は空欄で、公開日の表示も無い**（出典2）。 **報道は「Red Hat のセキュリティ勧告は RHEL 8・9・10 の edk2 パッケージが 影響を受けるものとして列挙している」と書いているが、 本記録はこれを Red Hat 側で裏取りできていない**（出典3）〈齟齬3〉。 **参照として Bugzilla 2559129 が挙げられているが、本記録は取得していない**（出典2）。</div></li><li><span class=ui>影響を受ける機器の台数・組織・国別の内訳</span><span class="b rsn">公表されていない</span><div class=sm>**公表はいずれも製品・コード単位であり、 台数・組織・国の集計は示されていない**（出典1・2・3。本記録の確認）〈重要〉。 **PXE が既定で有効であるという記述（出典3）があるため 潜在的な範囲は広いが、実際にネットワーク起動を使っている機器の数は分からない** （本記録の整理）—— **国内の該当台数も公表されていない。** **国内機関による注意喚起も、本記録の作成時点では確認していない。**</div></li><li><span class=ui>概念実証コードの有無と、攻撃の実証可否</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は影響 (b) を「対象のファームウェアのビルドを知っている攻撃者は 偽造したイベントを仕込み、`CoreSignalEvent()` に 攻撃者が与えたバイト列を DXE フェーズで実行させうる」と条件付きで述べている** （出典1。原文英語。本記録の訳）〈重要〉。 **概念実証コードが存在するか、公開されているかは記載が無い**（本記録の確認）。 **報道は Eclypsium の主任研究員 Jesse Michael の補足として 「この脆弱性の悪用には対象システム内の具体的なアドレスを当てる必要があるため、 1つの exploit をどこにでも投げる形にはならず、 対象の機種・版・構成ごとに個別に調整しなければならない」と伝えている** （出典3。本記録の訳）〈齟齬3〉—— **本記録はこの発言を一次資料で確認していない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>TianoCore（EDK II プロジェクト）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Alex Matrosov（Anthropic）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Dan Holmes-Mitra（Google）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Red Hat</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>AMI</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>PXE でネットワーク起動しているサーバ・ストレージの運用組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-97631 の CVSS 4.0 ベーススコア（TianoCore 評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.5<span class=fu>スコア</span></div><div class=fa>2026年11月6日（取得時点） 時点</div><div class=fn>**ベクターは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H**（出典1）〈重要〉。 **AV:N（ネットワーク）・AC:L（複雑さ低）・AT:P（攻撃前提条件あり）・ PR:N（権限不要）・UI:N（操作不要）であり、 後続システムへの影響（SC/SI/SA）もすべて高い**（本記録の整理）。 **AT:P が「PXE 起動シーケンスの最中でなければならない」という条件に対応する** （本記録の評価）。 **Red Hat の CVSS 3.1 評価は 8.8・AV:A（隣接ネットワーク）で食い違う**（出典2）〈齟齬1〉。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-97631 の CVSS 3.1 ベーススコア（Red Hat 評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.8<span class=fu>スコア</span></div><div class=fa>2026年11月6日（取得時点） 時点</div><div class=fn>**ベクターは CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H**（出典2）〈重要〉〈齟齬1〉—— **AV:A は「隣接ネットワーク」であり、TianoCore の AV:N（ネットワーク）と異なる。** **Red Hat はこの数値を「preliminary（暫定）で見直しの対象」と明記している**（出典2）。 **Red Hat 自身の深刻度評価は Critical であり、 CVSS 3.1 の 8.8 は通常の区分では High に当たる**（出典2。本記録の整理）—— **評価が数値と区分で噛み合っていない点も含めて暫定である。** **NVD と cve.org はいずれも「N/A」である**（出典2）。</div></div><div class=fig><div class=fh><span class=fl>書き込み先フィールド Mode.IcmpError の固定サイズ</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>504<span class=fu>バイト</span></div><div class=fa>2026年10月22日 時点</div><div class=fn>**ドライバの私有コンテキスト構造体の中にある固定504バイトのフィールドである**（出典1）〈重要〉。 **報文の長さがこれを超えても複製ループが続き、 しかも宛先ポインタを各分割の長さではなく累積長で進めるため、 超長の報文がフィールドの外の隣接メモリへ書き込む**（出典1）。 **受信経路のどこにも、事前に報文長を制限する箇所が無い**（出典3）。</div></div><div class=fig><div class=fh><span class=fl>境界処理を誤っているハンドラの数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>関数</span></div><div class=fa>2026年10月22日 時点</div><div class=fn>**IPv4 の `PxeBcIcmpErrorDpcHandle` と IPv6 の `PxeBcIcmp6ErrorDpcHandle`** （出典1）〈重要〉—— **勧告の原文は「複製ループの境界処理が IPv4 と IPv6 の両方のハンドラで誤っている」** （出典1。原文英語。本記録の訳）。 **つまり IPv6 のみを使う環境でも、IPv4 のみの環境でも成立する**（本記録の整理）—— **「IPv6 を無効にしたから安全」という対処が効かない**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>問題のコードの年齢（報道がコミット記録から示した年数）</span><span class="b conf">約</span><span class="b org">報道値</span></div><div class=fv>16<span class=fu>年</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**報道の記述は「このコードの年齢は、コミット記録を遡ると、だいたい16年」である** （出典3。本記録の訳）〈重要〉〈齟齬3〉—— **「だいたい」という表現のため confidence は approx とした。** **本記録はコミット記録を自分で確認していない**（本記録の明示）。 **勧告はコードの由来に触れていない**（出典1。本記録の確認）。 **報道はこの年数を、2024年初の PixieFail 以降に 複数回のファジングと研究（OSS-Fuzz の edk2 プロジェクト・NDSS の論文）が 行われたにもかかわらず見つからなかった事実と並べている**（出典3）。</div></div><div class=fig><div class=fh><span class=fl>当初予定から公表が繰り上がった月数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>か月</span></div><div class=fa>2026年10月22日 時点</div><div class=fn>**報道によれば、当初の調整された公表は2027年1月に予定されていた**（出典3）〈齟齬3〉—— **実際の公表は2026年10月22日である**（出典1）。 **2026年10月から2027年1月までの差を約3か月とした**（本記録の算出）〈重要〉—— **当初予定が1月の何日かは示されていないため approx とした。** **繰り上げの直接の原因は、修正コードを含む公開のプルリクエストが先に出たことである** （出典3）—— **「修正コードがすでに GitHub で公開されているため、 能力のある攻撃者は誰でも起動条件を読んで使える攻撃を逆算できる」** （出典3。本記録の訳）〈重要〉。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**TianoCore の勧告が記述した成立条件と影響を段階に並べたものである**（出典1）〈重要〉。 **実際の攻撃の観測ではない**〈未確定1〉。 **攻撃者は、対象が PXE ネットワーク起動を行っている数秒のあいだに 単播の ICMP 差錯報文を送り、 固定504バイトのフィールドを越える書き込みを起こす**（出典1・3）。 **各段階の「検知の機会」と「効きえた対策」は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**攻撃者が必要とするのは2つだけである**（出典1・3）〈重要〉——
+**①対象機器のIPアドレスへ到達できるネットワーク位置、
+②対象が PXE 起動シーケンスの最中であるという時機。**
+**「任意のネットワーク位置から対象機器のIPアドレスへ
+単播の報文を1つ送るだけ。パスワードも、既存のアクセス権限も要らない。
+要求されるのは1つだけ——対象が PXE ネットワーク起動を使っていること」**
+（出典3。本記録の訳）。
+**影響 (b)（コード実行）には、さらに
+「対象のファームウェアの具体的なビルドを知っていること」が要る**（出典1）。
+</div><div class=fn>根拠: 勧告の CVSS ベクター（AV:N / AT:P / PR:N / UI:N）（出典1）／報道の整理（出典3）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**PXE 起動のあいだ、`UefiPxeBcDxe` ドライバは
+ICMP 差錯報文を受け取るための受信要求を掛けている**（出典1・3）〈重要〉。
+**報文を受け取るたびに、ドライバはそれを私有コンテキスト構造体の
+`Mode.IcmpError`（固定504バイト）へ複製する**（出典1）。
+**複製ループの境界処理が IPv4（`PxeBcIcmpErrorDpcHandle`）と
+IPv6（`PxeBcIcmp6ErrorDpcHandle`）の両方で誤っている**（出典1）——
+**①報文長が504バイトを超えても複製を続け、
+②宛先ポインタを各分割の長さではなく累積長で進める**（出典1・3）。
+**「結果は、超長の報文が攻撃者の制御するデータを
+フィールドの外の隣接メモリへ書き込むことである」**（出典1・3 の趣旨。本記録の訳）。
+**受信経路のどこにも、事前に報文長を制限する箇所が無い**（出典3）。
+</div><div class=fn>根拠: 勧告の技術記述（出典1）／報道の解説（出典3）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**勧告は影響を2つに分けている**（出典1）〈重要〉。
+**(a) ドライバの私有データが決定的に破壊され、
+次の ICMP エラーで DXE コアが CPU 例外を起こし、起動が止まる**
+（出典1。原文英語。本記録の訳）——
+**報道は「無人の機械室にとって、1台が PXE 段階で止まって再起動を繰り返すと
+運用担当は夜中に出向くことになる」と現場の帰結を書いている**（出典3。本記録の訳）。
+**(b) 対象のファームウェアのビルドを知っている攻撃者は「偽造したイベントを仕込み」、
+`CoreSignalEvent()` に攻撃者が与えたバイト列を DXE フェーズで実行させうる**
+（出典1。原文英語。本記録の訳）〈重要〉。
+**DXE フェーズは Secure Boot と計測起動が検証を終える前の段階であり、
+CPU の ring 0 での実行になる**（出典1・3）。
+**報道は Dragos の最高研究責任者（Metasploit の作者）HD Moore の発言として
+「攻撃者はこのバグで、起動過程がまだ TPM のような機微な部品に
+アクセスできる時点でプログラムフローを奪える」
+「攻撃者が短期のネットワークアクセスを持つ状況で、
+これはディスク暗号化を破るために使われうる（機器が盗まれた場面ならさらに容易）」を
+伝えている**（出典3。本記録の訳）〈齟齬3〉——
+**本記録はこの発言を一次資料で確認していない。**
+</div><div class=fn>根拠: 勧告の影響記述（出典1）／報道が伝える識者の評価（出典3）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul></div>
+<section id="s5"><h2>504バイトのフィールドを越える複製と、分割ごとではなく累積長で進む宛先ポインタ<span class="b slot">原因・手口</span></h2><p><strong>場所は PXE Base Code ドライバ <code>NetworkPkg/UefiPxeBcDxe</code> です</strong>（出典1）〈重要〉。<strong>PXE ネットワーク起動のあいだ、このドライバはICMP 差錯報文——ルータが「この包は届かない」と知らせる類のもの——を受け取るための受信要求を掛けています</strong>（出典1・3）。<strong>報文を受け取るたびに、ドライバはそれを私有コンテキスト構造体の<code>Mode.IcmpError</code> フィールドへ複製します。このフィールドは固定504バイトです</strong>（出典1）。</p>
+<p><strong>誤りは複製ループの境界処理にあります</strong>（出典1）〈重要〉。<strong>勧告の原文は「複製ループの境界処理が IPv4 と IPv6 の両方のハンドラで誤っている」です</strong>（出典1。原文英語。本記録の訳）。<strong>壊れている関数は IPv4 の <code>PxeBcIcmpErrorDpcHandle</code> とIPv6 の <code>PxeBcIcmp6ErrorDpcHandle</code> の2つです</strong>（出典1）。</p>
+<p><strong>具体的には2つの誤りが重なっています</strong>（出典1・3）〈重要〉—— <strong>①報文の長さが504バイトを超えても、ループは複製を続ける。②宛先ポインタを「各分割の長さ」ではなく「累積長」で進める。</strong> <strong>結果として、超長の報文が攻撃者の制御するデータをフィールドの外の隣接メモリへ書き込みます</strong>（出典1）。<strong>そして、受信経路のどこにも事前に報文長を制限する箇所がありません</strong>（出典3）。</p>
+<p><strong>弱点の分類は3つ挙げられています</strong>（出典1）—— <strong>CWE-120（サイズ未検査のバッファ複製）・CWE-131（バッファサイズの誤計算）・CWE-787（境界外書き込み）。</strong> <strong>Red Hat の CVE ページは CWE-787 のみを挙げています</strong>（出典2）。</p>
+<p><strong>「両方のハンドラ」であることが実務に効きます</strong>（本記録の評価）〈重要〉—— <strong>IPv6 を無効にすれば済む、という対処が成立しません。IPv4 側も同じく脆弱です。</strong></p>
+<p><strong>悪用の条件は、聞くと単純です</strong>（出典3）。<strong>「任意のネットワーク位置から対象機器のIPアドレスへ単播の報文を1つ送るだけ。パスワードも、既存のアクセス権限も要らない。要求されるのは1つだけ——対象が PXE ネットワーク起動を使っていること」</strong>（出典3。本記録の訳）〈重要〉。<strong>ただしコード実行まで持っていくには、対象のファームウェアの具体的なビルドを知っている必要があります</strong>（出典1）〈未確定6〉。</p></section>
+<section id="s6"><h2>Secure Boot も TPM も、この層には届かない<span class="b slot">評価・解釈</span></h2><p><strong>勧告が記述する影響の重い側はこうです</strong>（出典1。原文英語。本記録の訳）〈重要〉—— <strong>「対象のファームウェアのビルドを知っている攻撃者は、偽造したイベントを仕込み、<code>CoreSignalEvent()</code> に攻撃者が与えたバイト列を DXE フェーズで実行させうる」。</strong></p>
+<p><strong>DXE フェーズは、Secure Boot と計測起動が検証を終える前の段階です</strong>（出典1）〈重要〉。<strong>つまり、それらの機構が立ち上がる前にコードが走り終わります。</strong> <strong>実行は CPU の ring 0 ——OS カーネルよりさらに下です</strong>（出典3）。</p>
+<p><strong>この位置で何が崩れるか</strong>（出典3。本記録の整理）〈重要〉。<strong>全ディスク暗号化の信頼の根は TPM にあり、TPM の信頼の根は起動チェーンにあり、起動チェーンの最初の環はファームウェアです。</strong> <strong>ファームウェアが取られれば、その下にあるすべての保証が仮定に変わります。</strong></p>
+<p><strong>報道は Dragos の最高研究責任者（Metasploit の作者）HD Moore の発言としてこう伝えています</strong>（出典3。本記録の訳）〈齟齬3〉—— <strong>「攻撃者はこのバグで、起動過程がまだ TPM のような機微な部品にアクセスできる時点でプログラムフローを奪える」「攻撃者が短期のネットワークアクセスを持つ状況で、これはディスク暗号化を破るために使われうる（機器が盗まれた場面ならさらに容易）」。</strong> <strong>本記録はこの発言を一次資料で確認していません</strong>（本記録の明示）。</p>
+<p><strong>遠隔証明（attestation）についても同じ問題があります</strong>（出典3）〈重要〉。<strong>「遠隔証明の機構の役目は『このハードウェアは綺麗だ』とサーバに証明することで、検証するのは起動チェーンの計測値である。このチェーンが上流で汚染されていれば、証明は依然として通る」</strong>（出典3。本記録の訳）。</p>
+<p><strong>したがって、社内説明の整理を変える必要があります</strong>（本記録の判断）〈重要〉—— <strong>「Secure Boot と TPM を入れ、ディスクも暗号化しているのでサーバが盗まれてもデータは読めない」という説明は、本件が該当する機器については成り立ちません。</strong> <strong>これらの機構を無効にするという意味ではありません</strong>（本記録の明示）—— <strong>有効にすべきものは有効にする。ただし、これを盾として使ってはいけない、という整理です</strong>（出典3の趣旨）。</p>
+<p><strong>軽い側の影響も、現場では無視できません</strong>（出典1・3）。<strong>ドライバの私有データが決定的に破壊され、次の ICMP エラーで DXE コアが CPU 例外を起こし、起動が止まります</strong>（出典1）—— <strong>報道は「無人の機械室にとって、1台が PXE 段階で止まって再起動を繰り返すと運用担当は夜中に出向くことになる」と書いています</strong>（出典3。本記録の訳）。</p></section>
+<section id="s7"><h2>修正コードが先に公開され、公表は2027年1月から10月22日へ繰り上がった<span class="b slot">発覚の端緒</span></h2><p><strong>この章の記述は、ほぼすべて報道（出典3）に依っています</strong>（本記録の明示）〈重要〉〈齟齬3〉—— <strong>本記録は一次資料で裏取りできていません。</strong></p>
+<p><strong>報道の説明はこうです</strong>（出典3）。<strong>発見者は2人——Alex Matrosov（Anthropic）と Dan Holmes（Google）で、本来は2027年1月に調整された公表を予定していました。</strong> <strong>勧告のクレジットも、発見者としてこの2人（姓は Holmes-Mitra と記載）を挙げています</strong>（出典1。本記録の確認）〈重要〉—— <strong>ここは一次資料で裏が取れました。</strong></p>
+<p><strong>繰り上げの原因として報道が挙げるのは、マザーボードメーカーの AMI が edk2 リポジトリへ提出したプルリクエスト（#13200）です</strong>（出典3）〈重要〉。<strong>そこには脆弱性が詳細に記述され、修正コードも添えられており、しかも公開でした。</strong> <strong>発見者がこれを見た結果、TianoCore プロジェクトのメンバーが勧告の公開に動き、公表時期は翌年1月から10月22日へ繰り上がったと伝えられています</strong>（出典3）。</p>
+<p><strong>帰結は明快です</strong>（出典3。本記録の訳）〈重要〉—— <strong>「修正コードはすでに GitHub で公開されており、能力のある攻撃者は誰でも起動条件を読み、使える攻撃を逆算できる」。</strong></p>
+<p><strong>報道は、これが構造的な問題だと指摘しています</strong>（出典3。本記録の訳）〈重要〉—— <strong>「オープンソースプロジェクトの修正はプルリクエストの流れを通り、プルリクエストは公開である。ベンダー内部のセキュリティチームとオープンソースコミュニティのあいだの公表の調整には、『パッチを先にマージし、公告を後に出す』機構が欠けている。今回 AMI がプルリクエストを出したのは修正を進めるためだったかもしれないが、客観的には生態系全体の公表スケジュールを乱した」。</strong></p>
+<p><strong>報道はこれを6日前の別の事案（PHP2Shell）と並べ、Ars Technica が「another botched disclosure（またも失敗した公表）」という語を使ったと伝えています</strong>（出典3）〈齟齬3〉—— <strong>本記録はこの記事を取得していません。</strong></p>
+<p><strong>本記録が確認できた一次側の事実は3点です</strong>（本記録の明示）〈重要〉—— <strong>①勧告の公開日が2026年10月22日であること、②公開者が jkmathews であること、③修正がプルリクエスト #13302 として参照されており、「Patched versions」欄が本記録の取得時点で「Not patched currently」のままであること</strong>（出典1）。<strong>プルリクエスト #13200 の存在、2027年1月という当初予定、および10月15日の上流マージは、報道でのみ確認できた事項です</strong>〈齟齬3〉。</p></section>
+<section id="s8"><h2>CVSS が 9.5 と 8.8 で、攻撃経路の判定も N と A で食い違っている<span class="b slot">評価・解釈</span></h2><p><strong>2つの一次公表が、本件に異なる評価を付けています</strong>（出典1・2）〈重要〉。</p>
+<p><strong>TianoCore の勧告は、深刻度 Critical、CVSS 4.0 で 9.5、ベクターは AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H です</strong>（出典1）。<strong>AV:N はネットワーク、AT:P は「攻撃前提条件あり」で、後続システムへの影響（SC/SI/SA）もすべて高い。</strong></p>
+<p><strong>Red Hat の CVE ページは、深刻度 Critical、CVSS 3.1 で 8.8、ベクターは AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H です</strong>（出典2）〈重要〉。<strong>AV:A は隣接ネットワークです。</strong></p>
+<p><strong>食い違いは2か所あります</strong>（本記録の整理）〈重要〉〈齟齬1〉。<strong>①攻撃経路が N（ネットワーク）か A（隣接ネットワーク）か。②数値が 9.5 か 8.8 か（ただし CVSS 4.0 と 3.1 でそもそも計算式が違います）。</strong></p>
+<p><strong>①の実務上の差は大きいです</strong>（本記録の評価）〈重要〉。<strong>AV:A なら攻撃者は同じ L2 セグメントに居る必要があり、AV:N なら任意のネットワーク位置から届きます。</strong> <strong>報道の記述は「任意のネットワーク位置から対象機器のIPアドレスへ単播の報文を1つ送る」であり、AV:N 側の読みに沿っています</strong>（出典3）—— <strong>ただし実際には、PXE 起動中の機器がルーティング可能なIPを持っていて外部からの ICMP が届く構成であるかどうかに依存します</strong>（本記録の評価）。</p>
+<p><strong>Red Hat は自分の評価を「preliminary（暫定）で見直しの対象」と明記しています</strong>（出典2）〈重要〉—— <strong>また CVSS 3.1 の 8.8 は通常の区分では High に当たるのにRed Hat 自身の深刻度評価は Critical であり、数値と区分が噛み合っていません</strong>（出典2。本記録の整理）。<strong>NVD と cve.org はいずれも「N/A」です</strong>（出典2）。</p>
+<p><strong>実務的な扱い方を1つ示します</strong>（本記録の判断）〈重要〉—— <strong>スコアで優先順位を決めるのではなく、「自組織に PXE 起動している機器があるか」で決めるべきです。</strong> <strong>無ければスコアがいくつでも該当せず、あれば攻撃経路が N でも A でも、起動用ネットワークを隔離するという同じ対処に行き着きます。</strong></p></section>
+<section id="s9"><h2>修正が行き渡るまでの時間と、「forever bug」という見立て<span class="b slot">対策・注意喚起</span></h2><p><strong>勧告の「Patched versions」欄は、本記録の取得時点で「Not patched currently」のままです</strong>（出典1。本記録の確認）〈重要〉。<strong>修正はプルリクエスト #13302 として参照されています</strong>（出典1）。</p>
+<p><strong>報道は、修正が行き渡るまでの道筋をこう整理しています</strong>（出典3。本記録の訳）〈重要〉—— <strong>「TianoCore が上流を修正する（10月15日）→ 各 IBV が統合する（数週間から数か月）→ OEM が BIOS 更新を出す（数か月）→ 企業が順次適用する（数か月から1年）→ サポートの切れた機器は永遠に適用されない」。</strong> <strong>報道は理由も挙げています</strong>（出典3）—— <strong>「ファームウェアコードのテストは敷居が高い（実機が要り、書き込めること、文鎮になったら救えること）。ファームウェアベンダーの開発プロセスの成熟度はアプリケーションソフトウェアベンダーに遅れている。問題が出たときの修正周期は四半期単位で、OEM・認証・顧客検証を通す必要があるため」。</strong></p>
+<p><strong>HD Moore の見立てとして報道が伝えるのは「この脆弱性の普遍性を考えると、これは『forever』bug になる可能性が高い——サポートの終わった機器の中に永遠に生き続ける」です</strong>（出典3。本記録の訳）〈重要〉〈齟齬3〉。</p>
+<p><strong>報道は PixieFail（2024年初）との比較も置いています</strong>（出典3）〈重要〉—— <strong>あれも EDK2 の PXE 起動の問題で、一連の脆弱性でファームウェア生態系が半年揺れました。その後、業界は複数回のファジングを行い、OSS-Fuzz に edk2 のプロジェクトがあり、NDSS にも専門の論文がある。それでもこの16年の古い穴は、それらのファジングで見つからなかった。</strong></p>
+<p><strong>したがって、実務の結論は「待たない」ことです</strong>（出典3。本記録の判断）〈重要〉。<strong>報道は「ベンダーのファームウェア更新が行き渡る前に、まず PXE の範囲を縮めること。『今日のうちに終わり、費用はほぼゼロ、効果は即座に見える』処置のごく少数の一つである」と書いています</strong>（出典3。本記録の訳）。<strong>イタリア ACN の CSIRT が2026年10月28日の警報で示した助言も同じ内容です</strong>（出典3）〈齟齬3〉—— <strong>本記録はこの警報そのものを取得できていません。</strong></p>
+<p><strong>本記録が加える注意を1つ</strong>（本記録の判断）〈重要〉—— <strong>PXE は既定で有効です</strong>（出典3）。<strong>「使っていないから無効になっているはず」という前提では点検になりません。1台ずつ設定を確認する必要があります。</strong></p></section>
+<section id="s10"><h2>悪用の報告は無い——ただし本件は痕跡が残りにくい層にある<span class="b slot">未確定事項</span></h2><p><strong>本記録の作成時点（2026年11月6日）で、TianoCore の勧告にも Red Hat の CVE ページにも悪用の記載はありません</strong>（出典1・2。本記録の確認）〈重要〉〈未確定1〉。<strong>報道も悪用の観測には触れていません</strong>（出典3）。</p>
+<p><strong>ただし本件には、痕跡の残りにくさに特殊な事情があります</strong>（本記録の評価）〈重要〉。<strong>攻撃が成立するのは OS が立ち上がる前の数秒です。</strong> <strong>軽い帰結（起動の停止）は「原因不明の再起動ループ」として見え、ネットワーク起動の失敗は日常的に起きるため「またか」で片付けられます。</strong> <strong>重い帰結（ring 0 でのコード実行）は OS 側の監視に一切映りません。</strong> <strong>さらに、計測起動の値が汚染されていても遠隔証明は通ります</strong>（出典3）。</p>
+<p><strong>概念実証コードの有無も公表されていません</strong>（本記録の確認）〈未確定6〉。<strong>一方で、修正コードを含むプルリクエストが公開されていることから、起動条件はすでに読み取れる状態にあります</strong>（出典3）〈重要〉。<strong>報道は Eclypsium の主任研究員 Jesse Michael の補足として「悪用には対象システム内の具体的なアドレスを当てる必要があるため、1つの exploit をどこにでも投げる形にはならず、対象の機種・版・構成ごとに個別に調整しなければならない」を伝えています</strong>（出典3。本記録の訳）〈齟齬3〉。<strong>報道はこの制約を逆に読んでいます</strong>（出典3。本記録の訳）—— <strong>「この制限は risk を下げるように聞こえるが、裏返せば、攻撃者を『忍耐のある側』に絞り込む。国家級の行為体、ランサムウェア集団、あるいは内部ネットワークで低権限を得て昇格の経路を探している者——この3類はどれも忍耐に欠けていない」。</strong> <strong>本記録はこの発言を一次資料で確認していません。</strong></p>
+<p><strong>公表されていないことを並べます</strong>（本記録の確認）—— <strong>①悪用の事実〈未確定1〉、②各ハードウェアベンダーの影響判定と BIOS/UEFI 更新の提供時期〈未確定2〉、③安定版リリースへの修正取り込みの時期〈未確定3〉、④Red Hat の影響製品一覧と公開・更新日〈未確定4〉、⑤影響台数・組織・国別の内訳〈未確定5〉、⑥概念実証コードの有無〈未確定6〉。</strong></p>
+<p><strong>本記録の status は updating としました</strong>（本記録の判断）〈重要〉—— <strong>勧告の「Patched versions」が未修正のままであり、各ベンダーの判定も揃っていない段階です。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> EDK II — NetworkPkg / UefiPxeBcDxe（PXE Base Code ドライバ）　<b>ベンダー:</b> TianoCore（EDK II プロジェクト）　<b>CVE番号:</b> CVE-2026-97631　<b>バージョン:</b> **勧告の「Affected versions」は「EDK II master as of 2026-09-14」である**（出典1）〈重要〉—— **バージョン番号ではなく時点で表現されている。** **「Patched versions」は「Not patched currently」のままで、 修正はプルリクエスト #13302 として参照されている**（出典1）。 **報道は影響範囲を「edk2-stable202608 およびそれ以前で、 patch #13302 を当てていないもの」と書いている**（出典3）〈齟齬2〉。　<b>概要:</b> **PXE ネットワーク起動を担うドライバである**（出典1）〈重要〉—— **起動時に ICMP 差錯報文（ルータが「この包は届かない」と知らせる類のもの）を 受け取るための受信要求を掛け、 受け取った報文を私有コンテキスト構造体の `Mode.IcmpError`（固定504バイト）へ複製する** （出典1・3）。　<b>症状:</b> **壊れている関数は IPv4 の `PxeBcIcmpErrorDpcHandle` と IPv6 の `PxeBcIcmp6ErrorDpcHandle` の2つである**（出典1）〈重要〉。 **複製ループの境界処理が誤っており、 報文長が504バイトを超えても複製を続け、 しかも宛先ポインタを各分割の長さではなく累積長で進める**（出典1・3）—— **結果として攻撃者の制御するデータが隣接メモリへ書き込まれる。** **弱点の分類は CWE-120・CWE-131・CWE-787 である**（出典1）。 **悪用は「任意のネットワーク位置から対象機器のIPアドレスへ 単播（ユニキャスト）の報文を1つ送る」だけで、 前提は対象が PXE ネットワーク起動を使っていることのみである**（出典3）〈重要〉。</div><div class=sub><b>名称:</b> Red Hat Enterprise Linux / OpenShift の edk2 パッケージ（仮想化ゲストの UEFI ファームウェア）　<b>ベンダー:</b> Red Hat　<b>CVE番号:</b> CVE-2026-97631　<b>バージョン:</b> **Red Hat の CVE ページは、EDK2 が RHEL と OpenShift の環境で 仮想化ゲスト向けの UEFI ファームウェアを提供すると述べているが、 本記録が取得した内容には影響製品の表が含まれていなかった**（出典2）〈未確定4〉。 **報道は RHEL 8・9・10 の edk2 パッケージが影響対象として 列挙されていると伝えている**（出典3）〈齟齬3〉。　<b>概要:</b> **仮想マシンのファームウェアとしての EDK2 である**（出典2）〈重要〉。　<b>症状:</b> **Red Hat は露出を限定している**（出典2）〈重要〉—— **「露出はネットワーク起動のシーケンス、すなわち PXE ドライバが 信頼されないパケットを処理する場面に限られる。 ローカルストレージから起動する仮想マシンや、 起動後に通常動作している仮想マシンは露出しない」**（出典2。原文英語。本記録の訳）。 **深刻度は Critical で、「悪用は起動前のファームウェア環境で、 権限も利用者の操作も無しに起こりうる」とされる**（出典2。原文英語。本記録の訳）。</div><div class=sub><b>名称:</b> 独立 BIOS ベンダー（IBV）および OEM のファームウェア　<b>ベンダー:</b> AMI / Insyde / Phoenix ほか　<b>CVE番号:</b> CVE-2026-97631　<b>バージョン:</b> **各社の統合状況は公表されていない**（本記録の確認）〈重要〉〈未確定2〉—— **EDK II は参照実装であり、各社の実際の統合は異なる**（出典3）。 **報道によれば、Microsoft の Project Mu（強化版と称される EDK2 の分岐）も この脆弱な部品を含むコードを使っているとされる**（出典3）〈齟齬3〉。　<b>概要:</b> **報道の整理では、ほぼすべての UEFI 供給者（AMI・Insyde・Phoenix を含む IBV）が この参照コードを多用している**（出典3）〈重要〉—— **UEFI フォーラムは EDK II を「UEFI 仕様の卓越した実装」と称しているとされる**（出典3）。　<b>症状:</b> **報道が伝えるベンダーの回答**（出典3）〈齟齬3〉—— **Intel は「現在セキュリティサポート期間内の商用製品に既知の影響を受けるものは無い」 （理由は Intel の参照コードに当該 EDK2 機能が含まれないため）としつつ、 「OEM のボードメーカーやシステムインテグレータが統合している可能性がある」と補っている。 Arm は「CVE-2026-97631 は Arm のポートフォリオに直接は該当しない」と答えている。 AMD・Phoenix・AMI・Microsoft・Amazon は報道の時点で回答が無かった。** **本記録はこれらを一次資料で確認していない。**</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **PXE でネットワーク起動している機器を洗い出し、 必要のない PXE を無効化する**（出典3）〈重要〉—— **報道によれば、イタリア ACN の CSIRT が2026年10月28日の警報で 「ベンダーのファームウェア更新が行き渡るまで、 必須でなければ PXE を無効化せよ」と助言している**（出典3）〈齟齬3〉。 **攻撃面は PXE 起動シーケンスの最中の数秒だけなので、 無効化すれば直ちに risk が下がる**（出典3）。　<b>副作用:</b> **ベアメタルの自動導入・ディスクレスワークステーション・HPC ノードの運用が止まる** （本記録の評価）〈重要〉—— **PXE は「装置を組み立てる流れ」の一部であり、 アプリケーションでもネットワークでもないため、 止める判断の権限がどこにあるか曖昧になりやすい**（出典3。本記録の整理）。 **また PXE は既定で有効であるため、 「使っていないから無効」とは限らない**（出典3）。</div><div class=sub><b>手順:</b> **必須の PXE は、導入サーバのみが到達できる信頼された隔離ネットワーク （専用 VLAN）に閉じ込める**（出典3）〈重要〉。　<b>副作用:</b> **VLAN の設計変更と、導入サーバ側の経路の見直しが必要になる**（本記録の評価）—— **既存の導入自動化の構成に手を入れることになり、 切り戻しの手順を用意しておく必要がある**（本記録の判断）。 **一方、報道はこの対処を「最も即効性がある」「費用はほぼゼロ」と評している**（出典3）。</div><div class=sub><b>手順:</b> **サーバベンダー・機種・ファームウェアのバージョンを押さえ、 CVE 番号を添えて BIOS/UEFI 更新の有無を照会する**（出典3）〈重要〉—— **EDK II は参照実装であり、各社の実際の統合状況が異なるため、 この段は省けない**（出典3）。　<b>副作用:</b> **問い合わせ件数が多くなり、回答が揃うまで判断が保留になる**（本記録の評価）〈重要〉—— **報道の時点で AMD・Phoenix・AMI・Microsoft・Amazon は回答していない**（出典3）〈齟齬3〉。 **回答が得られない機器について、 「影響なしの明記が無いものは対象とみなす」運用にすると PXE 無効化の対象が広がる**（本記録の判断）。</div><div class=sub><b>手順:</b> **BIOS/UEFI のバージョンを脆弱性管理の対象（CMDB）に取り込む** （出典3。本記録の判断）〈重要〉—— **報道は「多くの企業の脆弱性スキャンは OS・ミドルウェア・アプリを覆っているが、 BIOS/UEFI のバージョンだけが無く、 ベンダーのファームウェア公告も脆弱性データベースに入らない」と指摘している**（出典3）。　<b>副作用:</b> **ファームウェアのバージョン収集は機種ごとに取得方法が異なり、 自動化の作り込みが要る**（本記録の評価）—— **また、取り込んだ結果「更新できない機器」の一覧が可視化されるため、 経営判断（延命か置換か）を求められる**（本記録の判断）。</div><div class=sub><b>手順:</b> **Secure Boot・計測起動・TPM・ディスク暗号化を本件の対策として数えない** （出典1・3）〈重要〉—— **コードが走るのはそれらが検証を終える前である**（出典1）。　<b>副作用:</b> **これらの機構を無効にするという意味ではない**（本記録の明示）〈重要〉—— **「有効にすべきものは有効にするが、 これを盾として使ってはいけない」という整理である**（出典3の趣旨。本記録の訳）。 **社内説明では「対策済み」の根拠が1つ減るため、 risk 受容の説明を作り直す必要がある**（本記録の評価）。</div><div class=sub><b>手順:</b> **IPv6 の無効化を緩和策として当てにしない**（出典1。本記録の判断）〈重要〉—— **境界処理の誤りは IPv4 と IPv6 の両方のハンドラにある**（出典1）。　<b>副作用:</b> **IPv4 側も同じく脆弱であるため、 どちらか一方を無効にしても攻撃面は残る**（出典1。本記録の整理）—— **「片方を止めた」ことを対策として報告させないことが要る**（本記録の判断）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**報道によれば、問題のコードの年齢はコミット記録を遡ると約16年である**（出典3）〈重要〉〈齟齬3〉—— **本記録はコミット記録を自分で確認していない**（本記録の明示）。 **勧告は、影響を受けるバージョンを 「EDK II master as of 2026-09-14」と時点で表現している**（出典1）—— **コードがいつ入ったかには触れていない。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**勧告の「Affected versions」は「EDK II master as of 2026-09-14」である**（出典1）〈重要〉—— **バージョン番号ではなく時点で表現されている**（本記録の確認）。 **報道は影響範囲を「edk2-stable202608 およびそれ以前で、 patch #13302 を当てていないもの」と書いている**（出典3）〈齟齬2〉—— **2つの表現は粒度が違い、本記録は勧告の表現を一次とした。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**報道によれば、TianoCore はこの日に修正を上流の主分岐へマージしたが、 本記録の作成時点で安定版には入っていない**（出典3）〈重要〉〈齟齬3〉。 **勧告は修正をプルリクエスト #13302 として参照しているが、 マージの日付には触れていない**（出典1。本記録の確認）—— **「Patched versions」欄は「Not patched currently」のままである**（出典1）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**報道によれば、マザーボードメーカーの AMI が edk2 リポジトリへ 脆弱性を詳細に記述し修正コードを添えたプルリクエスト（#13200）を提出した** （出典3）〈重要〉〈齟齬3〉—— **このプルリクエストは公開だった。** **発見者がこれを見たことにより、TianoCore プロジェクトのメンバーが 勧告の公開に動いた**（出典3）。 **本記録はこのプルリクエストを確認していない**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**TianoCore が勧告 GHSA-99cj-7hg9-mp4m「Pre-boot RCE in EDK II PXE driver」を 公開した（公開者は jkmathews）**（出典1）〈重要〉—— **CVE-2026-97631、Critical、CVSS 4.0 で 9.5。** **報道によれば、当初の調整された公表は2027年1月に予定されていたが、 公開のプルリクエストが先に出たため繰り上がった**（出典3）〈齟齬3〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**報道によれば、イタリア ACN の CSIRT がこの日に警報を出し、 「ベンダーのファームウェア更新が行き渡るまで、 必須でなければ PXE を無効化し、必須なら信頼された隔離されたネットワークに限定せよ」と 助言した**（出典3）〈重要〉〈齟齬3〉—— **本記録はこの警報そのものを取得できていない**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**安全客（Anquanke）が本件を解説した記事を公開した**（出典3）—— **各ベンダーの回答（Intel・Arm）、未回答のベンダー（AMD・Phoenix・AMI・ Microsoft・Amazon）、識者の評価（HD Moore・Jesse Michael）、 公表の繰り上げの経緯、PixieFail との比較、 点検の進め方が整理されている**（出典3）。 **本記録はこれらを一次公表では裏取りできていない**（本記録の明示）〈齟齬3〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成時点で、勧告の「Patched versions」欄は 「Not patched currently」のままである**（出典1。本記録の確認）〈重要〉。 **Red Hat の CVE ページには公開日・最終更新日の表示が無く、 影響製品の一覧も本記録では取得できていない**（出典2。本記録の確認）〈未確定4〉。 **悪用の記載は、いずれの一次公表にも無い**〈未確定1〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>CVSS の評価が TianoCore と Red Hat で食い違う（攻撃経路 N と A）</span><div class=sm>**TianoCore の勧告は CVSS 4.0 で 9.5、ベクターは CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H である**（出典1）〈重要〉。 **Red Hat の CVE ページは CVSS 3.1 で 8.8、ベクターは CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H である**（出典2）。 **食い違いは2か所——①攻撃経路が N（ネットワーク）か A（隣接ネットワーク）か、 ②数値（ただし CVSS 4.0 と 3.1 は計算式が違う）**（本記録の整理）。 **①の実務上の差は大きい**（本記録の評価）〈重要〉—— **AV:A なら攻撃者は同じ L2 セグメントに居る必要があり、 AV:N なら任意のネットワーク位置から届く。** **報道の記述は「任意のネットワーク位置から対象機器のIPアドレスへ 単播の報文を1つ送る」であり AV:N 側の読みに沿う**（出典3）。 **Red Hat は自分の指標を「preliminary（暫定）で見直しの対象」と明記しており、 またその CVSS 3.1 の 8.8 は通常の区分では High に当たるのに 深刻度評価は Critical で、数値と区分も噛み合っていない**（出典2）。 **本記録はどちらが正しいかを判定せず、両方を figures に残した**（本記録の判断）—— **実務ではスコアではなく「PXE 起動している機器があるか」で判断すべきである。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>影響を受けるバージョンの表現（時点か安定版リリース名か）</span><div class=sm>**勧告の「Affected versions」は「EDK II master as of 2026-09-14」である** （出典1）〈重要〉—— **バージョン番号ではなく時点で表現されている。** **報道は「影響を受けるのは edk2-stable202608 およびそれ以前で、 patch #13302 を当てていないもの」と書いている**（出典3）。 **2つは粒度が違い、どちらも「自分の機器が該当するか」を 利用者が判定できる形になっていない**（本記録の評価）〈重要〉—— **EDK II は参照実装であり、各 OEM のファームウェアが どの時点のコードを取り込んでいるかは公表されない。** **本記録は勧告の表現を一次とし、報道の表現を併記した。** **実務的な判定は、機種とファームウェアバージョンでのベンダーへの照会になる** （出典3。本記録の判断）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が報道（出典3）の記述を一次資料で裏取りできていないこと</span><div class=sm>**本記録の「公表の繰り上げ」「各ベンダーの回答」「識者の評価」 「イタリア ACN CSIRT の警報」「コードの年齢16年」「10月15日の上流マージ」 「Red Hat の RHEL 8/9/10 製品一覧」は、すべて報道（出典3）のみに依っている** （本記録の明示）〈重要〉。 **本記録が取得できなかった一次資料は、 AMI のプルリクエスト #13200、Red Hat の影響製品表、 Intel・Arm の声明、Ars Technica の記事、 イタリア ACN CSIRT の2026年10月28日の警報、 edk2 のコミット記録である**（本記録の確認）。 **さらに、出典3 自体が西側の報道を引用した二次的な記述を含むため、 HD Moore と Jesse Michael の発言は二重の伝聞である**（本記録の明示）〈重要〉—— **本記録は、これらを「報道が伝える」と明示したうえで本文に残し、 一次公表で裏が取れた事項（CVSS・技術記述・影響・修正の参照・クレジット・ Red Hat の露出条件）と分けて記載した。** **なお発見者の姓は、勧告が「Dan Holmes-Mitra」、報道が「Dan Holmes」である** （出典1・3。本記録の確認）—— **本記録は勧告の表記を採った。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>修正の状態（上流にマージされたが「Not patched currently」のまま）</span><div class=sm>**勧告の「Patched versions」欄は、本記録の取得時点で 「Not patched currently」のままである**（出典1。本記録の確認）〈重要〉。 **一方、報道は「TianoCore は10月15日に修正を上流の主分岐へマージしたが、 現時点で安定版には入っていない」と書いている**（出典3）〈齟齬3〉。 **矛盾ではなく、勧告が「修正済みバージョン」として示せる 安定版リリースがまだ無いという状態である**（本記録の整理）—— **ただし、この表示のままだと「修正がまったく存在しない」と読まれうる。** **実務上は、プルリクエスト #13302 が参照されていることと、 各 OEM の BIOS 更新を待つ必要があることの両方を押さえるべきである** （出典1・3。本記録の判断）〈未確定3〉。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>本件を「ほぼすべてのサーバが該当する問題」と読むこと</span><div class=sm>**報道の見出しの一つは「影響面：ほぼすべてのサーバが関わる」である**（出典3）〈重要〉。 **同じ記事が後段で範囲を絞っている**（出典3）—— **「ローカルディスク・SSD からのみ起動する機器は影響を受けない。 家庭・小規模事務所の利用者も影響を受けない。 真に影響を受けるのはローカルネットワークから起動するサーバおよびストレージ機器」。** **Red Hat も同様に、露出をネットワーク起動のシーケンスに限定している**（出典2）。 **したがって「ほぼすべてのサーバ」は 「ほぼすべてのサーバに脆弱なコードが入っている（可能性がある）」という意味であり、 「ほぼすべてのサーバが攻撃されうる」ではない**（本記録の整理）〈重要〉—— **本記録は後者の読みを採らず、該当判定を PXE 起動の有無に置いた。** **ただし PXE が既定で有効であることから、 「使っていないつもりの機器」が該当しうる点は残る**（出典3）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>PXE 起動中の数秒に届く ICMP 報文から、Secure Boot 前の ring 0 実行までの経路</div><div class=svgwrap><svg viewBox="0 0 1814 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,60.0 C397.0,60.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C295.0,162.0 295.0,60.0 220,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,67.0 628,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,67.0 C805.0,67.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C703.0,162.0 703.0,67.0 628,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,162.0 C1417.0,162.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,111.0 C1621.0,111.0 1621.0,111.0 1648,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証されていない攻撃者（</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意のネットワーク位置）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS 4.0 は A</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">V:N・AC:L・AT:</text><rect x="220" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃の窓 — 対象が P</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">XE ネットワーク起動し</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ている数秒</text><text x="295.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">PXE は既定で有効。ロ</text><text x="295.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ーカルディスク起動のみの</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">単播の ICMP 差錯報</text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">文（504バイトを超える</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">長さ）</text><text x="499.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">受信経路のどこにも事前の</text><text x="499.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">長さ制限が無い（出典3）</text><rect x="628" y="23.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PxeBcIcmpErr</text><text x="703.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">orDpcHandle（</text><text x="703.0" y="73.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IPv4）／PxeBc…</text><text x="703.0" y="86.0" text-anchor="middle" fill="#f48fb1" font-size="10">両方のハンドラで複製ルー</text><text x="703.0" y="98.0" text-anchor="middle" fill="#f48fb1" font-size="10">プの境界処理が誤っている</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Mode.IcmpErr</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">or（私有コンテキスト内</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の固定504バイト）</text><text x="907.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">宛先ポインタを分割ごとで</text><text x="907.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">はなく累積長で進める（出</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">隣接メモリへの境界外書き</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">込み（CWE-120 /</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 131 / 787）</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">攻撃者の制御するデータが</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">フィールドの外へ書かれる</text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">影響(a) — DXE </text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">コアの CPU 例外で起</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">動が停止</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">次の ICMP エラーで</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">決定的に発生。無人機械室</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">影響(b) — 偽造イベ</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ント経由で CoreSi</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gnalEvent()…</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">対象ファームウェアの具体</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">的なビルドを知っている必</text><rect x="1444" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">DXE フェーズでの r</text><text x="1519.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ing 0 実行（Sec</text><text x="1519.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ure Boot・計測…</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">この時点でまだ TPM </text><text x="1519.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">のような機微な部品に手が</text><rect x="1648" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1723.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">無力化される前提 — S</text><text x="1723.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ecure Boot /</text><text x="1723.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 計測起動 / TPM…</text><text x="1723.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">チェーンが上流で汚染され</text><text x="1723.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">ていても遠隔証明は通る（</text><rect x="220" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">当面の対処 — PXE </text><text x="295.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の無効化／導入サーバのみ</text><text x="295.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の隔離 VLAN</text><text x="295.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">報道が伝える ACN C</text><text x="295.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">SIRT の助言（202</text><rect x="628" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">恒久対策 — プルリクエ</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スト</text><text x="703.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">上流 → IBV → O</text><text x="703.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">EM → 企業適用で年単</text></svg></div><div class=fn>**TianoCore の勧告（出典1）が記述した成立条件と2つの影響を経路として並べたものである。**
+**実際の悪用の観測ではない**〈未確定1〉。
+**右下は、Secure Boot・計測起動・TPM がこの経路に対して
+「効かない」位置関係を示す**（出典1・3。本記録の整理）。
+</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表に検知の指針は無い**（本記録の確認）〈未確定1〉。
+**実務的には、どの機器が PXE 起動を使っているかを
+把握しているかどうかが分かれ目になる**（本記録の評価）〈重要〉——
+**報道は「PXE の管理は平時に誰も見ておらず、
+アプリにもネットワークにも属さず『装置を組み立てる流れ』に属するため、
+事が起きてから『どの機械が PXE を有効にしているか』を
+誰も説明できないと分かる」と書いている**（出典3。本記録の訳）。
+**また、攻撃の時機が「起動の数秒」に限られるため、
+常時監視の網には掛かりにくい**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>PXE を使っている機器を資産台帳に明示し、使っていない機器では無効化する</div><div class=ctl><span class="b eff">侵入を防げた</span>PXE を必要とする機器を、導入サーバのみが到達できる隔離 VLAN に閉じ込める</div><div class=ctl><span class="b eff">影響を限定できた</span>起動用ネットワークへの ICMP の流入を、導入サーバ以外から遮断する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**この段での検知には現実的な機会が無い**（本記録の評価）〈重要〉——
+**OS が立ち上がる前のファームウェア環境であり、
+ホスト側の監視も EDR も存在しない。**
+**検知できる可能性があるのはネットワーク側である**（本記録の判断）——
+**起動用ネットワークに504バイトを超える ICMP 差錯報文が流れることは
+平常時には無いため、そこを見れば異常として捉えうる。**
+**ただし、起動用ネットワークに監視を置いている組織は少ない**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>起動用ネットワークで ICMP のサイズ・発生元を監視し、異常な報文を検知する</div><div class=ctl><span class="b eff">侵入を防げた</span>起動用ネットワークを導入サーバのみに限定し、報文が届かないようにする</div><div class=ctl><span class="b eff">侵入を防げた</span>PXE を無効化する（受信要求そのものが掛からない）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**(a) は観測しやすい**（本記録の評価）〈重要〉——
+**PXE 段階で起動が止まり、再起動を繰り返す形で表に出る。**
+**ただし原因の切り分けは難しい**（本記録の判断）——
+**ネットワーク起動の失敗は日常的に起きるため、
+「またか」で片付けられる可能性がある。**
+**(b) は現実的な検知機会が無い**（本記録の判断）〈重要〉——
+**計測起動の値が汚染されていても遠隔証明は通ってしまう。**
+**報道は「遠隔証明の機構の役目は『このハードウェアは綺麗だ』と
+サーバに証明することで、検証するのは起動チェーンの計測値である。
+このチェーンが上流で汚染されていれば、証明は依然として通る」と書いている**
+（出典3。本記録の訳）〈重要〉。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>PXE 段階で停止・再起動を繰り返す機器を、障害として記録し原因を追う運用にする</div><div class=ctl><span class="b eff">検知できた</span>起動の計測値（TPM の PCR）の基準値を外部に保管し、変化を検知する</div><div class=ctl><span class="b eff">効果は期待できない</span>Secure Boot・計測起動・TPM・ディスク暗号化を本件の対策として数えない（判断の誤りを避ける）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「どの機器が PXE でネットワーク起動しているか」を、 今日答えられる状態にする。**</div><div class=lw>**本件の該当条件は「ファームウェアが EDK2 ベースで PXE が有効であり、 ローカルネットワークから起動していること」であり、 PXE は既定で有効である**（出典3）〈重要〉。 **ローカルディスクからのみ起動する機器は影響を受けない**（出典2・3）—— **つまり、該当範囲の判定は PXE の棚卸しで決まる。** **報道は「PXE の管理は平時に誰も見ておらず、 アプリにもネットワークにも属さず『装置を組み立てる流れ』に属するため、 事が起きてから誰も説明できないと分かる」と指摘している**（出典3。本記録の訳）。</div><div class=la><b>取るべき行動</b> **①PXE を有効にしている機器の一覧を作る責任者を1人決める（運用の自動化担当が妥当）。 ②高確率の場面から当たる——仮想化クラスタ、ベアメタルの自動導入、 ディスクレスワークステーション、HPC ノード、一部のストレージアレイ。 ③一覧を資産台帳の正式な項目として追加し、以後の新規導入時に記入させる。**</div></li><li><div class=lp>**BIOS/UEFI のバージョンを脆弱性管理の対象に入れる。**</div><div class=lw>**報道は「多くの企業の脆弱性スキャンは OS・ミドルウェア・アプリを覆っているが、 BIOS/UEFI のバージョンだけが無く、 ベンダーのファームウェア公告も脆弱性データベースに入らない」と指摘している** （出典3。本記録の訳）〈重要〉。 **本件は OS 側のパッチでは塞げず、各 OEM の BIOS/UEFI 更新を待つことになる** （本記録の評価）—— **ファームウェアのバージョンが台帳に無ければ、 更新が出たことにも気づけない。**</div><div class=la><b>取るべき行動</b> **①主要機種のファームウェアバージョンの取得方法を調べ、自動収集を作る。 ②CMDB にファームウェアバージョンの項目を追加する。 ③サーバベンダーのファームウェア公告の購読先を登録し、 受信したときの影響判定の担当を決める。**</div></li><li><div class=lp>**「Secure Boot と TPM とディスク暗号化があるから大丈夫」という説明を撤回する。**</div><div class=lw>**コードが走るのは Secure Boot と計測起動が検証を終える前の DXE フェーズであり、 CPU の ring 0 である**（出典1・3）〈重要〉。 **全ディスク暗号化の信頼の根は TPM にあり、TPM の信頼の根は起動チェーンにあり、 その最初の環がファームウェアである**（出典3。本記録の整理）。 **さらに、計測起動の値が上流で汚染されていても遠隔証明は通る**（出典3）。 **これらの機構を無効にすべきという意味ではないが、 本件の盾としては数えられない**（本記録の明示）。</div><div class=la><b>取るべき行動</b> **①「サーバが盗まれてもデータは読めない」という社内・顧客向けの説明文を見直す。 ②本件が該当する機器について、risk 受容の説明を作り直す。 ③遠隔証明に依存している業務（ゼロトラストの機器健全性判定等）があれば、 その前提が本件で崩れうることを記録する。**</div></li><li><div class=lp>**「ベンダーの回答が無い機器」を経営報告の対象にする。**</div><div class=lw>**EDK II は参照実装であり、各社の実際の統合状況が異なるため、 利用者は自分の機種とファームウェアのバージョンでベンダーへ照会するしかない** （出典3）〈重要〉。 **報道の時点で AMD・Phoenix・AMI・Microsoft・Amazon は回答していない** （出典3）〈齟齬3〉—— **Intel も「OEM のボードメーカーやシステムインテグレータが 統合している可能性がある」と留保を置いている**（出典3）。 **回答が無い状態を「対象外」と読むと、該当機器が全部抜ける**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①CVE-2026-97631 を添えて各サーバベンダーへ照会し、 回答を「影響なしの明記」「潜在的に影響」「未回答」の3区分で記録する。 ②未回答が一定期間（例: 14日）を超えた機器を経営報告に載せる。 ③未回答の機器については、PXE 無効化または隔離を先に実施する。**</div></li><li><div class=lp>**ファームウェアの修正が「年単位」で行き渡ることを前提に、 機器のライフサイクル計画へ織り込む。**</div><div class=lw>**報道が示す道筋は「上流の修正 → 各 IBV の統合（数週間から数か月） → OEM の BIOS 更新（数か月）→ 企業の適用（数か月から1年） → サポート切れ機器には永遠に適用されない」である**（出典3。本記録の訳）〈重要〉。 **HD Moore の見立てとして「forever bug になる可能性が高い」が伝えられている** （出典3）〈齟齬3〉—— **つまり、サポートの切れた機器を持ち続ける判断そのものが risk になる。**</div><div class=la><b>取るべき行動</b> **①サポート期間の切れたサーバ・ストレージの一覧を出す。 ②そのうち PXE を使っているものを特定し、置換か PXE 無効化かを決める。 ③今後の機器調達時に「ファームウェア更新の提供期間」を評価項目に加える。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**PXE を1台ずつ確認する（既定で有効なので「使っていないから無効」は成立しない）。**</div><div class=lw>**報道は「PXE は既定で有効」と明記している**（出典3）〈重要〉—— **使っていない機器でも有効なまま放置されている可能性がある。** **一方、ローカルディスクからのみ起動する機器は影響を受けない**（出典2・3）—— **つまり「起動順序でネットワークが入っているか」が判定の分かれ目である**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①BMC / iDRAC / iLO 等の管理インタフェース経由で 起動順序と PXE の有効・無効を一括取得できるか調べる。 ②取得できるなら全台を走査し、できないなら機種別に手順を作る。 ③使っていない機器の PXE を無効化する（起動順序からネットワークを外す）。**</div></li><li><div class=lp>**必須の PXE は、導入サーバのみが到達できる隔離 VLAN に閉じ込める。**</div><div class=lw>**攻撃面は PXE 起動シーケンスの最中の数秒だけで、 必要なのは対象機器のIPへ単播の報文を1つ届けることである**（出典1・3）〈重要〉。 **したがって、報文が届かなければ成立しない**（本記録の整理）。 **報道が伝えるイタリア ACN の CSIRT の助言も 「必須なら信頼された隔離されたネットワークに限定せよ」である**（出典3）〈齟齬3〉。</div><div class=la><b>取るべき行動</b> **①導入用ネットワークを専用 VLAN に分け、導入サーバ以外からの到達を禁じる。 ②その VLAN への ICMP の流入を、導入サーバ以外から遮断する。 ③切り戻しの手順を用意してから適用する（導入自動化が止まると業務影響が出る）。**</div></li><li><div class=lp>**IPv6 の無効化を緩和策として数えない。**</div><div class=lw>**境界処理の誤りは IPv4 の `PxeBcIcmpErrorDpcHandle` と IPv6 の `PxeBcIcmp6ErrorDpcHandle` の両方にある**（出典1）〈重要〉—— **勧告の原文が「両方のハンドラで誤っている」と明記している。** **したがって、どちらか一方を無効にしても攻撃面が残る**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①緩和策の手順書から「IPv6 無効化」を本件の対策として削る。 ②代わりに PXE の無効化または隔離 VLAN を記載する。 ③「片方を止めた」ことを対策として報告させない。**</div></li><li><div class=lp>**PXE 段階での停止・再起動ループを、障害として記録する運用にする。**</div><div class=lw>**勧告の影響 (a) は「ドライバの私有データが決定的に破壊され、 次の ICMP エラーで DXE コアが CPU 例外を起こし、起動が止まる」である** （出典1。原文英語。本記録の訳）〈重要〉。 **これは観測しやすい側だが、ネットワーク起動の失敗は日常的に起きるため 「またか」で片付けられやすい**（本記録の評価）。 **報道も「無人の機械室にとって、1台が PXE 段階で止まって 再起動を繰り返すと運用担当は夜中に出向くことになる」と現場の帰結を書いている** （出典3。本記録の訳）。</div><div class=la><b>取るべき行動</b> **①PXE 起動の失敗・再起動ループを、記録に残る障害として扱う運用にする。 ②同じ機器で繰り返す場合、起動用ネットワーク側のパケット取得を試みる。 ③504バイトを超える ICMP 差錯報文が流れていないかを確認する （平常時には無い形である）。**</div></li><li><div class=lp>**起動用ネットワークでの ICMP を監視対象にする。**</div><div class=lw>**攻撃はファームウェア環境で成立するため、ホスト側の監視も EDR も無い** （本記録の評価）〈重要〉—— **検知できる可能性があるのはネットワーク側だけである。** **504バイトを超える ICMP 差錯報文は平常時には流れない**（出典1。本記録の整理）。</div><div class=la><b>取るべき行動</b> **①導入用 VLAN にパケット取得の仕組みを置く（スイッチのミラーポート等）。 ②ICMP のサイズと発生元を記録し、異常なものをアラート化する。 ③導入サーバ以外からの ICMP をそもそも遮断したうえで、 遮断ログを監視対象にする。**</div></li><li><div class=lp>**TPM の計測値（PCR）の基準値を外部に保管し、変化を検知する。**</div><div class=lw>**影響 (b) が成立した場合、ring 0 でのコード実行になり、 起動チェーンの計測値が汚染されても遠隔証明は通る**（出典1・3）〈重要〉—— **報道の表現では「このチェーンが上流で汚染されていれば、証明は依然として通る」** （出典3。本記録の訳）。 **自組織で基準値を持っていなければ、変化そのものに気づけない**（本記録の判断）。</div><div class=la><b>取るべき行動</b> **①該当機器の TPM の PCR 値を正常時に取得し、ホスト外に保管する。 ②定期的に取得して比較し、変化があれば調査する。 ③遠隔証明の結果を単独の判断材料にしない設計にする。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **ローカルネットワークから起動している（PXE ネットワーク起動を使っている） サーバ・ストレージ機器があるか**（出典2・3）。</td><td class=sm>**これが該当判定の中心である**（出典1・2・3）〈重要〉—— **ローカルディスク・SSD からのみ起動する機器は影響を受けない**（出典2・3）。 **高確率の場面は、仮想化クラスタ・ベアメタルの自動導入・ ディスクレスワークステーション・HPC ノード・一部のストレージアレイである**（出典3）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **PXE を使っていない機器でも PXE が有効なまま放置されていないか （PXE は既定で有効）**（出典3）。</td><td class=sm>**「使っていないから無効になっているはず」という前提では点検にならない** （出典3。本記録の整理）〈重要〉—— **1台ずつ起動順序と設定を確認する必要がある。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **BIOS/UEFI のバージョンを資産台帳（CMDB）に持ち、 サーバベンダーのファームウェア公告を受け取る経路があるか**（出典3）。</td><td class=sm>**本件は OS 側のパッチでは塞げず、各 OEM の BIOS/UEFI 更新を待つことになる** （本記録の評価）〈重要〉—— **ファームウェアバージョンが台帳に無ければ、更新が出たことにも気づけない**（出典3）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **導入用ネットワークが専用 VLAN に分かれており、 導入サーバ以外からの到達を禁じられるか**（出典1・3）。</td><td class=sm>**攻撃面は PXE 起動シーケンスの最中の数秒で、 必要なのは対象機器のIPへ単播の報文を1つ届けることである**（出典1・3）〈重要〉—— **報文が届かなければ成立しない**（本記録の整理）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **「ベンダーからの影響なしの明記が取れるまで対象とみなす」判定規則があるか**（出典3）。</td><td class=sm>**EDK II は参照実装であり、各社の統合状況が異なる**（出典3）〈重要〉—— **報道の時点で AMD・Phoenix・AMI・Microsoft・Amazon は回答しておらず、 Intel も OEM による統合の可能性に留保を置いている**（出典3）〈齟齬3〉。 **回答が無い状態を「対象外」と読むと、該当機器が全部抜ける**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **「Secure Boot と TPM とディスク暗号化があるから盗難時もデータは守られる」という 説明を、社内・顧客向けに行っていないか**（出典1・3）。</td><td class=sm>**コードが走るのは Secure Boot と計測起動が検証を終える前の DXE フェーズである** （出典1）〈重要〉—— **これらの機構は本件の盾として数えられない**（出典3。本記録の整理）。 **該当機器について risk 受容の説明を作り直す必要がある**（本記録の判断）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月22日（公開者 jkmathews） TianoCore（EDK II プロジェクト・GitHub Security Advisory）</span> <a href="https://github.com/tianocore/edk2/security/advisories/GHSA-99cj-7hg9-mp4m" target="_blank" rel="noreferrer noopener nofollow">GHSA-99cj-7hg9-mp4m: Pre-boot RCE in EDK II PXE driver</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**開発主体による一次公表（本件の中核）**（本記録の確認）〈重要〉。
+**記載されているのは、①CVE-2026-97631、深刻度 Critical、
+CVSS 4.0 で 9.5、ベクターが
+CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H であること、
+②影響を受けるのが「EDK II master as of 2026-09-14」で、
+「Patched versions」が「Not patched currently」であること、
+③部品が NetworkPkg、場所が PXE Base Code ドライバ
+`NetworkPkg/UefiPxeBcDxe` であること、
+④壊れている関数が IPv4 の `PxeBcIcmpErrorDpcHandle` と
+IPv6 の `PxeBcIcmp6ErrorDpcHandle` の2つであること、
+⑤書き込み先が私有コンテキスト構造体内の固定504バイトの
+`Mode.IcmpError` フィールドであること、
+⑥複製ループの境界処理が両ハンドラで誤っており、
+宛先ポインタを各分割ではなく累積長で進めるため
+超長の報文がフィールドの外へ書き込むこと、
+⑦PXE 起動（IPv4 / IPv6）のあいだ、ICMP エラーメッセージを届けられる
+認証されていない攻撃者が DXE フェーズのメモリを破壊し、
+OS が読み込まれる前に任意コードを実行しうること、
+⑧影響が2つ——(a) ドライバ私有データの決定的な破壊と
+次の ICMP エラーでの DXE コアの CPU 例外（起動の停止）、
+(b) 対象ファームウェアのビルドを知る攻撃者が偽造イベントを仕込み
+`CoreSignalEvent()` に攻撃者のバイト列を DXE フェーズで実行させうること、
+⑨修正がプルリクエスト #13302 であること、
+⑩弱点の分類が CWE-120・CWE-131・CWE-787 であること、
+⑪クレジットが Alex Matrosov（Anthropic）と Dan Holmes-Mitra（Google）で、
+推奨された修正の提供者としても挙げられていることである**（本記録の確認）。
+**記載が無いのは、悪用の観測、コードの由来・年齢、
+公表時期が繰り上がった経緯、各ハードウェアベンダーの影響判定、
+安定版への取り込み時期である**
+〈未確定1〉〈未確定2〉〈未確定3〉。
+）</span></li><li><span class=rid>[2]</span> <span class=sm>日付の表示が無い（「Last modified」欄は空欄） Red Hat（Customer Portal）</span> <a href="https://access.redhat.com/security/cve/CVE-2026-97631" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-97631 - Red Hat Customer Portal</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**影響を受ける製品の供給元による一次公表**（本記録の確認）〈重要〉。
+**記載されているのは、①EDK2 のファームウェアにおけるバッファサイズの不適切な計算に
+由来する欠陥で、認証されていない遠隔の攻撃者がバッファオーバーフローを起こし、
+任意コード実行またはサービス運用妨害に至りうること、
+②弱点の分類が CWE-787（境界外書き込み）であること、
+③Red Hat の深刻度評価が Critical であり、
+悪用が起動前のファームウェア環境で権限も利用者の操作も無しに起こりうること、
+④露出がネットワーク起動のシーケンス（PXE ドライバが信頼されないパケットを
+処理する場面）に限られ、ローカルストレージから起動する仮想マシンや
+起動後に通常動作している仮想マシンは露出しないこと、
+⑤CVSS 3.1 のベーススコアが 8.8、ベクターが
+CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H で、
+これらの指標が「preliminary（暫定）で見直しの対象」であること、
+⑥NVD と cve.org がいずれも「N/A」であること、
+⑦EDK2 が RHEL と OpenShift の環境で仮想化ゲスト向けの
+UEFI ファームウェアを提供すること、
+⑧参照として Bugzilla 2559129「edk2: Pre-boot RCE in EDK II PXE driver」、
+GitHub 勧告 GHSA-99cj-7hg9-mp4m、NVD・cve.org の記録が挙がっていることである**
+（本記録の確認）。
+**記載が無い、または本記録が取得できなかったのは、
+影響を受ける RHEL 8/9/10 の edk2 パッケージの一覧（製品表への言及はあるが
+取得内容に表が含まれていなかった）、公開日・最終更新日、
+具体的な緩和策、悪用の観測である**〈未確定1〉〈未確定4〉。
+**TianoCore の CVSS 4.0（9.5・AV:N）と
+この CVSS 3.1（8.8・AV:A）は攻撃経路の判定が食い違う**〈齟齬1〉。
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月5日11時28分（協定世界時） 安全客（Anquanke）</span> <a href="https://www.anquanke.com/post/id/316426" target="_blank" rel="noreferrer noopener nofollow">潜伏16年的UEFI漏洞：开机那几秒，你的所有防线都还没上线</a> <span class="b kind">記事</span><span class=sm>（**本件を解説した中国語の報道**（本記録の確認）〈重要〉。
+**一次公表に無く、この記事にのみあるのは、
+①問題のコードの年齢がコミット記録を遡ると約16年であること、
+②影響範囲が「edk2-stable202608 およびそれ以前で patch #13302 を
+当てていないもの」と表現されること〈齟齬2〉、
+③TianoCore が2026年10月15日に修正を上流の主分岐へマージしたが
+安定版には入っていないこと、
+④調整された公表が2027年1月に予定されていたが、
+AMI が edk2 リポジトリへ脆弱性を詳細に記述し修正コードを添えた
+公開のプルリクエスト（#13200）を提出したため10月22日へ繰り上がったこと、
+⑤Ars Technica が「another botched disclosure」という語を使い、
+6日前の PHP2Shell の事案（10月20日に Hacker News で詳細が漏れた）と
+並べられていること、
+⑥Red Hat のセキュリティ勧告が RHEL 8・9・10 の edk2 パッケージを
+影響対象として列挙していること、
+⑦Intel の回答（セキュリティサポート期間内の商用製品に既知の影響なし／
+ただし OEM やシステムインテグレータが統合している可能性あり）、
+Arm の回答（Arm のポートフォリオに直接は該当しない）、
+AMD・Phoenix・AMI・Microsoft・Amazon の未回答、
+⑧Microsoft の Project Mu も当該部品を含むコードを使っているとされること、
+⑨AMI・Insyde・Phoenix を含む独立 BIOS ベンダーが参照コードを多用しており、
+UEFI フォーラムが EDK II を「UEFI 仕様の卓越した実装」と称しているとされること、
+⑩HD Moore（Metasploit 作者・Dragos 最高研究責任者）の発言
+（起動過程がまだ TPM のような機微な部品にアクセスできる時点で
+プログラムフローを奪える／短期のネットワークアクセスで
+ディスク暗号化を破りうる／forever bug になる可能性が高い）、
+⑪Jesse Michael（Eclypsium 主任研究員）の補足
+（対象システム内の具体的なアドレスを当てる必要があり、
+機種・版・構成ごとに個別調整が要る）、
+⑫イタリア ACN の CSIRT が2026年10月28日の警報で
+PXE の無効化または信頼された隔離ネットワークへの限定を助言したこと、
+⑬影響を受けないのがローカルディスク・SSD からのみ起動する機器と
+家庭・小規模事務所の利用者であり、
+影響を受けるのがローカルネットワークから起動するサーバ・ストレージで
+PXE が既定で有効であること、
+⑭修正が行き渡る道筋（上流 → IBV の統合 → OEM の BIOS 更新 → 企業の適用 →
+サポート切れ機器には永遠に適用されない）と、
+ファームウェア修正が四半期単位になる理由、
+⑮PixieFail（2024年初）との比較と、
+その後のファジング（OSS-Fuzz の edk2 プロジェクト・NDSS の論文）でも
+見つからなかったこと、
+⑯点検の進め方（PXE の棚卸し → ファームウェアの出所確認 → 不要な PXE の無効化 →
+Secure Boot と TPM を当てにしないこと）、
+⑰企業セキュリティチームへの3点（PXE の管理を資産台帳に取り込む／
+ファームウェアのバージョンを脆弱性管理に入れる／待たずに PXE の範囲を縮める）である**
+（本記録の確認）。
+**これらはいずれも本記録が一次資料で裏取りできていない**（本記録の明示）〈重要〉〈齟齬3〉——
+**②⑥⑦⑩⑪⑫については、本記録の作成時点で
+該当する一次資料（AMI のプルリクエスト #13200、Red Hat の製品表、
+Intel・Arm の声明、Ars Technica の記事、ACN CSIRT の警報）を
+取得できていない。**
+**また、本記事自体が西側の報道を引用した二次的な記述を含むため、
+識者の発言は二重の伝聞である**（本記録の明示）。
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月6日</span> <span class="b rev">新規作成</span> </li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">CVE-2026-97631</span><span class="b tag">GHSA-99cj-7hg9-mp4m</span><span class="b tag">EDK II</span><span class="b tag">TianoCore</span><span class="b tag">UEFI</span><span class="b tag">PXE</span><span class="b tag">ネットワーク起動</span><span class="b tag">UefiPxeBcDxe</span><span class="b tag">NetworkPkg</span><span class="b tag">DXE フェーズ</span><span class="b tag">Secure Boot</span><span class="b tag">計測起動</span><span class="b tag">TPM</span><span class="b tag">遠隔証明</span><span class="b tag">ring 0</span><span class="b tag">境界外書き込み</span><span class="b tag">CWE-120</span><span class="b tag">CWE-131</span><span class="b tag">CWE-787</span><span class="b tag">ICMP</span><span class="b tag">ファームウェアセキュリティ</span><span class="b tag">独立BIOSベンダー</span><span class="b tag">AMI</span><span class="b tag">Project Mu</span><span class="b tag">調整された公表の破綻</span><span class="b tag">PixieFail</span><span class="b tag">forever bug</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-06 10:23 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
