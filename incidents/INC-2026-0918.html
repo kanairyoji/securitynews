@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>OpenSSH にパスワード認証回避の脆弱性 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0918</span>OpenSSH にパスワード認証回避の脆弱性</h1>
+<header class="site-header">
+  <p class="subtitle">2026年11月5日、OpenSSH が緊急リリース 10.6p2 を公開した。 **Linux 上で musl libc を使い PAM を無効にしてビルドした sshd では、 パスワード欄が「*」のアカウントに257〜1024バイトの長いパスワードで ログインできた**（CVE-2026-123158・通称「*sshole」）。 **正しいパスワードは要らない。** **OpenSSH は「根本原因は sshd の外にあるが sshd 経由で悪用でき、 sshd 側で回避できる」として迂回策を入れ、 把握の翌日に長い非公開期間を置かずリリースした**—— **理由として「AI エージェントによる数時間単位の再発見」を挙げている。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月5日（OpenSSH 10.6p2 のリリースと Alpine Linux のアドバイザリ）</span>
+  <span>最終更新: 2026年11月6日（本記録の作成。一次公表を取得して裏を取った時点）</span>
+</div>
+
+<div class="lead"><p><strong>これは「長いパスワードを送るだけで、パスワードを持たないアカウントに入れてしまう」脆弱性です</strong>（出典1・3・4）〈重要〉。</p>
+<p>2026年11月5日、OpenSSH は緊急リリース <strong>10.6p2</strong> を公開しました（出典1・2）。<strong>対象は、Linux 上で musl libc を使い、PAM を無効にしてビルド・実行している sshd です</strong>（出典1・4）。<strong>この構成では、/etc/shadow のパスワード欄が「*」のアカウント——鍵認証だけで使うユーザー、ディレクトリサービス由来のユーザー、Alpine の基礎イメージの root など——に対し、257〜1024バイトの長いパスワードを送るとログインが成功しました</strong>（出典3・5）。<strong>正しいパスワードは要りません。要るのはアカウント名と、SSH ポートへの到達です</strong>（出典4・5）。</p>
+<p><strong>仕組みは2つの古い判断の噛み合わせです</strong>（出典5。本記録の整理）。<strong>muslのcrypt()は、鍵が256バイトを超えると失敗し、失敗の印として文字列「*」を返します</strong>（2012年の変更。出典5）。<strong>一方 OpenSSH は2016年、利用者名の列挙を防ぐために、使えるハッシュを持たないアカウントでもハッシュ化の処理を走らせるようにしました</strong>（CVE-2016-6210 対策。出典5・7）。<strong>「<em>」は、パスワード欄の「</em>」と同じ文字列です。照合が一致します</strong>（出典1・3・5）。</p>
+<p><strong>成立条件は狭く、同時に現実的です</strong>（本記録の評価）。<strong>Alpine は、①PAM 無しの openssh-server、②PasswordAuthentication が有効、③パスワード欄が「*」のアカウントがある、④salt を借りられる <code>$5$</code>／<code>$6$</code> のハッシュを持つローカルアカウントが1つ以上ある、の4点を挙げています</strong>（出典3）〈重要〉—— <strong>④が要るのは、保存値「*」が短く salt を含まないため、sshd が別のアカウントの salt を借りる作りになっているからです</strong>（出典5）。<strong>Alpine は「パスワードを持つ利用者が1人いれば、パスワードを持たない全アカウントが露出する」と述べています</strong>（出典3・原文英語）。</p>
+<p><strong>本記録がもっとも注目するのは、公開の速さとその理由です</strong>（本記録の判断）〈重要〉。<strong>OpenSSH は「問題を知ったのは昨日」と書き、「可能な限り速く」出しています</strong>（出典2・原文英語）。<strong>理由として挙げているのが「AI エージェントによる急速なバグ再発見——ときに数時間のうちに起きる」事例の複数の確認で、「長い非公開期間は、主に攻撃者を利する危険な慣行だと考える」としています</strong>（出典2・原文英語）。<strong>発見そのものも AI エージェント群によるもので、発見者は約17,600回の異常なログイン試行を行ったと述べています</strong>（出典5）。<strong>脆弱性の発見と公開の両側で AI が前提になりつつある、という形が記録されています</strong>（本記録の評価）。</p>
+<p><strong>影響しないケースも明記されています</strong>（出典2・3）—— <strong>非 Linux、Linux/glibc（Debian・Ubuntu・Fedora 等）、パスワード認証に PAM を使う構成、PasswordAuthentication no の構成、パスワード欄が「!」でロックされたアカウント、salt を借りられるアカウントが1つも無い構成。</strong> <strong>CISA の SSVC は exploitation を poc（実証コードあり・悪用の観測なし）、automatable を no、technical impact を total と評価しています</strong>（出典4）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**CISA の SSVC は exploitation を poc としており、 これは実証コードの存在を示すが悪用の観測は示さない**（出典4）〈重要〉。 **piyolog は「現在のところ公的機関等の報告は確認していない」「KEV は未登録」とし、 Detectify が11月5日15時30分（CET）時点で公開された悪用の報告を 把握していないとしていることを伝えている**（出典6）。 **OpenSSH・Alpine・発見者のいずれも悪用の観測に触れていない** （出典1・2・3・5。本記録の確認）。 **本記録の確認時点で KEV への収載は確認できていない**（本記録の明示）。</div></li><li><span class=ui>影響を受ける公開インスタンスの数・分布</span><span class="b rsn">公表されていない</span><div class=sm>**musl かつ PAM 無しの sshd をネットワークに出している台数を示す資料は無い** （出典1・2・3・4・5。本記録の確認）〈重要〉—— **本記録もインターネット走査サービスの照会を行っていない**（本記録の明示）。 **構成の判定が外形から行えないことが、この空白の理由でもある**（本記録の読み）—— **遠隔から見えるのは SSH バナーの版数とパスワード認証を受け付けるかどうかで、 musl か・PAM があるか・該当アカウントがあるかはホスト上でしか確かめられない** （出典3。本記録の整理）。</div></li><li><span class=ui>musl 側が仕様を変更する時期と内容</span><span class="b rsn">公表されていない</span><div class=sm>**musl は「musl のバグではなく呼び出し側の誤用」との立場で、 この仕組みは次のリリースサイクルで変更される見込みと報じられている**（出典6）〈差異2〉—— **具体の変更内容・時期は示されていない**（本記録の確認）。 **本記録は musl のメーリングリスト投稿を直接取得していない**〈差異3〉。</div></li><li><span class=ui>日本国内での利用状況と影響範囲</span><span class="b rsn">公表されていない</span><div class=sm>**国内の影響台数・業種分布・JPCERT/CC や IPA の注意喚起の有無を 本記録では確認できていない**（本記録の明示）〈重要〉—— **Alpine はコンテナの基礎イメージとして広く使われているため、 「使っていない」と断定できる組織は少ないと見るのが安全である**（本記録の評価）。</div></li><li><span class=ui>2026年10月30日の pick_salt() 修正と本件の関係</span><span class="b rsn">公表されていない</span><div class=sm>**発見者は、OpenSSH が10月30日に pick_salt() を修正するコミットを出しており、 それが自分がバグを見つける4日前だったと述べている**（出典5）—— **そのコミットが本件を知った上のものか偶然かについて、 OpenSSH 側の説明は確認できていない**（本記録の確認）〈重要〉。 **本記録はどちらとも書かない。**</div></li><li><span class=ui>発見者から OpenSSH への報告の経路と日時</span><span class="b rsn">公表されていない</span><div class=sm>**OpenSSH は「問題を知ったのは昨日」（＝11月4日）と書くだけで、 誰からどの経路で知ったかを示していない**（出典2。本記録の確認）—— **リリースノートは報告者として発見者をクレジットしている**（出典1）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>OpenSSH（OpenBSD プロジェクト）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>musl libc</span><span class="b role">製品・部品の供給元</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Alpine Linux</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Özgün Kültekin（Wakefield）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>NIST NVD / MITRE（CNA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVE-2026-123158 の CVSS v3.1 ベーススコア（MITRE 評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.1<span class=fu>スコア</span></div><div class=fa>2026年11月5日（NVD 公開時点） 時点</div><div class=fn>**ベクタは CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H で、HIGH。 CNA は cve@mitre.org、type は Secondary である**（出典4）〈重要〉—— **攻撃条件の複雑さが High（AC:H）なのは、 「salt を借りられるアカウントが別に要る」等の前提条件を反映したものと読める** （本記録の読み）。 **NVD 自身の一次評価（Primary）は付いておらず、vulnStatus は Received である**（出典4）。 **一方 OpenSSH はリリースノートの冒頭でこれを「critical」と呼んでいる** （出典1・原文英語）〈差異4〉。</div></div><div class=fig><div class=fh><span class=fl>認証回避が成立するパスワードの長さ（下限）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>257<span class=fu>バイト</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**Alpine と発見者はいずれも「257〜1024バイト」と記す**（出典3・5）〈重要〉—— **muslのcrypt()の上限が256バイトであり、それを超えると失敗して「*」が返るため、 下限が257になる**（出典5。本記録の整理）。 **一方 NVD の説明文は「256 から 1024 文字のいずれのパスワードでも成功する」 と書いており、下限が1つずれて読める**（出典4・原文英語）〈差異5〉。</div></div><div class=fig><div class=fh><span class=fl>認証回避が成立するパスワードの長さ（上限）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1,024<span class=fu>バイト</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**Alpine・発見者・NVD のいずれも上限1024で一致している**（出典3・4・5。本記録の確認）—— **上限が存在するのは、sshd 側がパスワード長に上限を設けているためと読める** （本記録の読み）〈未確定5〉。</div></div><div class=fig><div class=fh><span class=fl>発見時に AI エージェント群が行ったログイン試行の回数</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>17,600<span class=fu>回</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**発見者が「約17,600回の異常なログインを投げた」と述べている**（出典5）〈重要〉—— **glibc／musl・PAM の有無・shadow の有無の組み合わせでビルドし、 すべての構成がすべてのログインで一致したのに対し、 musl かつ PAM 無しの構成だけが通してはならないログインを通した**（出典5）。 **第三者による検証値ではなく、発見者の自己申告である**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>Alpine Linux が修正パッケージを出したブランチ数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>10<span class=fu>ブランチ</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**アドバイザリの表は edge・3.24・3.23・3.22・3.21・3.20・3.19・3.18・3.17・3.16 の10行である**（出典3。本記録の計数）〈重要〉—— **3.16〜3.21 はサポート終了済みのブランチであり、 終了後にも修正を出したことになる**（出典3・6）。 **なお修正版の版番号は古いままなので、 版番号だけを見ると未修正と見分けられない**（出典3・6。本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>OpenSSH が把握してから修正版を公開するまでの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>日</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**11月4日の把握から11月5日の 10.6p2 公開まで1日である**（本記録の算出。出典2）〈重要〉—— **OpenSSH は「可能な限り速く」出したと書き、理由として 「AI エージェントによる急速なバグ再発見（ときに数時間のうちに）」の 複数の事例を挙げている**（出典2・原文英語）。 **調整型の開示（数週間〜数か月の非公開期間）とは意図的に異なる判断である** （本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>成立条件が揃ってから公表までの経過年数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>10<span class=fu>年</span></div><div class=fa>2026年11月5日 時点</div><div class=fn>**2016年7月の OpenSSH の変更（T3）から2026年11月の公表（T6）まで約10年である** （本記録の算出）〈重要〉—— **musl 側の変更（T1・T2）は2012年なので、そこから数えると約14年になる**（出典5）。 **発見者は見出しで2016年を起点とし、根本原因は2012年の musl の変更にあるとしている** （出典5）。 **「10年」は脆弱性が存在した期間であり、悪用されていた期間ではない**（本記録の明示）〈未確定1〉。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**アカウント名の取得 → SSH ポートへの到達 → 257〜1024バイトのパスワードで パスワード認証を試行 → muslのcrypt()が「*」を返す → 保存値「*」と一致して認証成功 → （構成によっては）doas 等で root 権限、という経路である**（出典1・3・5）〈重要〉—— **実際の攻撃の観測ではなく、アドバイザリの成立条件と発見者の説明を 段階に並べたものである**（本記録の明示）〈未確定1〉。 **各段階の「検知の機会」と「効きえた対策」は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">推定</span><span class=srcs>[3] [6]</span></div><div>**攻撃者は SSH ポートが開いているホストと、有効なアカウント名を集める**
+（出典3・5。本記録の整理）。
+**Alpine の tiny-cloud イメージの `alpine`、基礎イメージの `root`、
+鍵だけで使う運用上のユーザー名は、推測しやすい側に寄っている**（出典3）〈重要〉。
+**遠隔から確かめられるのは SSH バナーの版数とパスワード認証の受付可否だけで、
+musl か・PAM があるか・該当アカウントがあるかは分からない**（出典3・6）——
+**攻撃側も「試してみる」以外に判定手段を持たない**（本記録の読み）。
+</div><div class=fn>根拠: Alpine アドバイザリの成立条件（出典3）／遠隔からの可観測性についての整理（出典6）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [3] [5] [6]</span></div><div>**攻撃者は、アカウント名と257〜1024バイトの長いパスワードで
+パスワード認証を試す**（出典3・5）〈重要〉。
+**sshd は保存値が「*」で salt を含まないため、
+`$5$` または `$6$` のハッシュを持つ別のアカウントの salt を借りて
+試行パスワードを crypt() に渡す**（出典3・5）。
+**muslのcrypt()は256バイトを超えた鍵で失敗し、「*」を返す。
+それが保存値の「*」と一致し、認証が成功する**（出典1・3・5）。
+**1回の接続で成立し、再試行は要らない**（出典6）。
+</div><div class=fn>根拠: OpenSSH リリースノートの記述（出典1）／Alpine アドバイザリの成立条件（出典3）／発見者の解説（出典5）</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[3] [6] [7]</span></div><div>**到達したアカウントが root になれる構成であれば、root 権限まで至る**（出典3）〈重要〉。
+**Alpine の公式 tiny-cloud イメージ（3.18.11〜3.24.3）の alpine ユーザーは、
+パスワード欄が「*」で、パスワード不要の doas を持つ**（出典3・7）。
+**root 自身は既定の PermitRootLogin prohibit-password で守られており、
+PermitRootLogin yes にしている場合だけ直接到達できる**（出典3・6）。
+</div><div class=fn>根拠: Alpine アドバイザリの tiny-cloud に関する記述（出典3）／報道（出典7）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">推定</span><span class=srcs>[3]</span></div><div>**公表されているのは「認証なしでログインできる」ところまでで、
+その先に何が起きたかの観測は示されていない**（出典1・3・5。本記録の確認）〈未確定1〉。
+**Alpine が点検対象として挙げているのは、
+doas の使用・最近作られたユーザーとファイル・authorized_keys である**（出典3）——
+**これは「永続化と横展開を疑え」という形の指示である**（本記録の読み）。
+</div><div class=fn>根拠: Alpine アドバイザリの侵害指標（出典3）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>OpenSSH が把握してから修正版を公開するまで</div><div class=mv>1<span class=fu>日</span></div></div><div class=met><div class=ml>成立条件が揃ってから公表まで</div><div class=mv>**約10年（2016年7月15日の OpenSSH の変更 → 2026年11月5日の公表）** （本記録の算出。出典5）〈重要〉—— **musl 側の変更（2012年8月）から数えると約14年である**（出典5）。 **これは脆弱性が存在した期間であり、悪用されていた期間ではない** （本記録の明示）〈未確定1〉。</div></div><div class=met><div class=ml>修正版の公開から配布元の修正パッケージ提供まで</div><div class=mv>0<span class=fu>日</span></div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**OpenSSH は、把握の翌日に長い非公開期間を置かず 10.6p2 を公開した**（出典1・2）。</div><div class=fn><b>トレードオフ:</b> **速く出せば、攻撃者が独立に見つける前に塞ぐ機会を利用者に与えられる** （本記録の評価）—— **一方、公開した時点では誰も適用しておらず、 配布元の修正が揃っていない環境では無防備な時間が生まれる。** **本件では Alpine が同日に揃えたが、自前ビルド・組み込み側は別である** （本記録の評価）。</div></li><li><div class=ui>**Alpine は、成立条件4点・影響しない条件6点・修正パッケージの全ブランチ表・ 確認コマンド・侵害指標を1つのアドバイザリに揃えた。 一方、CVE 番号は執筆時点で未割当として公開した**（出典3）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **影響しない条件まで書けば、関係のない利用者が作業しなくて済む** （本記録の評価）—— **一方、成立条件を詳しく書くことは、攻撃側に判定材料を与える面もある。** **本件では成立条件の大半がホスト上でしか確かめられないため、 攻撃側への利得は小さいと読める**（本記録の読み）。</div></li><li><div class=ui>**責任の所在について、OpenSSH は「根本原因は sshd の外にある」とし、 musl 側は「musl のバグではなく呼び出し側の誤用」との立場と報じられている** （出典1・6）〈差異2〉。</div><div class=fn><b>トレードオフ:</b> **どちらも自分の設計判断は正しいと述べており、 それぞれの立場では筋が通っている**（本記録の評価）—— **一方、境界の責任が定まらないと、 同じ形のずれが他の呼び出し側でも残る**（本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>2012年の「安全側に倒した変更」と2016年の「列挙を防ぐ変更」が、10年後に噛み合った<span class="b slot">原因・手口</span></h2><p><strong>この脆弱性には、単独のバグがありません</strong>（本記録の評価）〈重要〉。<strong>成立させているのは、別々のプロジェクトが別々の理由で行った、どちらも妥当に見える2つの変更です。</strong></p>
+<p><strong>1つ目は musl 側です</strong>（出典5・6）。<strong>2012年8月9日、muslはcrypt()の失敗時の戻り値を、NULL から「何にも一致しないはずのハッシュ」である文字列「*」へ変えました。</strong> <strong>理由は、呼び出し側が NULL を検査しないことが多いからです</strong>（出典5）—— <strong>NULL を返して相手が検査を忘れれば、そこで落ちるか、もっと悪いことが起きます。「絶対に一致しない値」を返すほうが安全だ、という判断です。</strong> <strong>同月29日、sha256／sha512 の crypt が追加され、鍵の上限が256バイトになりました</strong>（出典5）。<strong>ここで「257バイト以上を渡すと『*』が返る」が完成します</strong>（本記録の整理）。</p>
+<p><strong>2つ目は OpenSSH 側です</strong>（出典5・6）。<strong>2016年7月15日、利用者名の列挙（CVE-2016-6210）への対策として、「Determine appropriate salt for invalid users.」がコミットされました。</strong> <strong>応答時間の差から有効な利用者名を見分けられないよう、使えるハッシュを持たないアカウントでもハッシュ化の処理を走らせる、という変更です</strong>（出典7）。<strong>保存値「*」には salt が無いので、sshd は別のアカウントの salt を借りて計算します</strong>（出典3・5）。</p>
+<p><strong>噛み合わせの結果はこうです</strong>（出典1・3・5）〈重要〉—— <strong>攻撃者が257バイト以上のパスワードを送る。sshd は他人の salt を借りて crypt() を呼ぶ。muslのcrypt()は長すぎる鍵で失敗し「<em>」を返す。sshd はその「</em>」を保存値「*」と比べる。一致する。</strong></p>
+<p><strong>「何にも一致しないはずの値」が、/etc/shadow の慣習で「パスワードを無効にする印」として使われていた値と、同じ文字列でした</strong>（本記録の整理）。<strong>どちらのプロジェクトも、相手の前提を知らずに正しく振る舞っています</strong>（本記録の評価）。</p>
+<p><strong>責任の所在については、現在も見解が分かれています</strong>〈差異2〉—— <strong>OpenSSH は「根本原因は sshd の外にあると考えるが、sshd 経由で悪用でき、sshd 側で回避できる」としました</strong>（出典1・原文英語）。<strong>musl 側は「musl のバグではなく呼び出し側の誤用」との立場と報じられています</strong>（出典6）。<strong>本記録はどちらが正しいとは書きません。</strong> <strong>記録するのは、境界をまたいだ前提のずれが10年見つからなかったという事実です</strong>（本記録の判断）。</p></section>
+<section id="s7"><h2>把握から1日で公開した——理由として「AI による数時間単位の再発見」を挙げている<span class="b slot">組織の対応</span></h2><p><strong>本記録がこの事案から最も持ち帰るべきと考えるのは、技術ではなく公開の判断です</strong>（本記録の判断）〈重要〉。</p>
+<p><strong>OpenSSH は2026年11月4日に問題を把握し、翌5日に 10.6p2 を公開しました</strong>（出典2。本記録の算出）。<strong>メーリングリストの投稿は「問題を知ったのは昨日」であり、「可能な限り速く」出していると書いています</strong>（出典2・原文英語）。</p>
+<p><strong>なぜ待たなかったのか。投稿はその理由を明示しています</strong>（出典2・原文英語）〈重要〉—— <strong>「AI エージェントによる急速なバグ再発見の事例を複数——ときに数時間のうちに——確認しており、長い非公開期間は、主に攻撃者を利する危険な慣行だと考える」。</strong></p>
+<p><strong>これは、調整型開示（coordinated disclosure）の前提が変わったという主張です</strong>（本記録の評価）。<strong>従来、非公開期間は「配布元が修正を用意し、利用者が適用する時間」を作るためにありました。</strong> <strong>その前提は、攻撃側が同じバグを独立に見つけるまでに時間がかかる、というものです。</strong> <strong>OpenSSH はその前提が崩れたと言っています。</strong></p>
+<p><strong>発見の側も同じ方向を向いています</strong>（出典5）〈重要〉—— <strong>発見者は、glibc／musl・PAM の有無・shadow の有無を組み合わせて sshd をビルドし、AI エージェント群に約17,600回の異常なログインを投げさせました。</strong> <strong>すべての構成がすべてのログインで一致したのに対し、musl かつ PAM 無しの構成だけが、通してはならないログインを通しました</strong>（出典5）。<strong>人が10年見つけなかった噛み合わせを、網羅的な組み合わせ試験が見つけた形です</strong>（本記録の読み）。</p>
+<p><strong>読者が引き取るべきは、速さの側の帰結です</strong>（本記録の判断）〈重要〉—— <strong>非公開期間が短くなるほど、「公開された時点で、まだ誰も適用していない」状態の時間が長くなります。</strong> <strong>配布元の修正が出る前に情報が出ることも増えます。</strong> <strong>本件では Alpine が同日に9ブランチ分の修正パッケージを出せましたが</strong>（出典3）、<strong>自前でビルドしている組織・組み込み機器を出荷している組織では、同じ日に出せるとは限りません</strong>（本記録の評価）。<strong>「アドバイザリが出てから動く」運用は、この速さに追いつきません。</strong></p></section>
+<section id="s8"><h2>版番号では修正済みと見分けられない——スキャナーに任せきれない形の脆弱性<span class="b slot">対策・注意喚起</span></h2><p><strong>この脆弱性は、道具で判定しにくい形をしています</strong>（本記録の評価）〈重要〉。<strong>理由は3つあります。</strong></p>
+<p><strong>1つ目。遠隔から成立条件が確かめられません</strong>（出典3・6）。<strong>ネットワーク越しに見えるのは、SSH バナーの OpenSSH の版と、パスワード認証を受け付けるかどうかだけです</strong>（出典6）。<strong>musl か glibc か、PAM があるか、パスワード欄が「*」のアカウントがあるか、salt を借りられるアカウントがあるかは、すべてホスト上でしか分かりません</strong>（出典3）。</p>
+<p><strong>2つ目。Alpine の修正版は版番号が古いままです</strong>（出典3・6）〈重要〉—— <strong>3.24 の修正は 10.3_p1-r2、3.21 の修正は 9.9_p2-r1 です。</strong> <strong>「10.6p2 より前なら影響」という判定規則を資産台帳の版数に当てると、修正済みのホストが全部ひっかかります。</strong> <strong>見るべきはパッケージのリビジョン（<code>-r2</code>・<code>-r1</code>）のほうです。</strong></p>
+<p><strong>3つ目。CVE 割当のタイミングがずれました</strong>（出典3・4・6）。<strong>Alpine のアドバイザリは「執筆時点で CVE 番号は未割当」と書いています</strong>（出典3・原文英語）〈差異1〉。<strong>CVE-2026-123158 が割り当てられ NVD が公開したのは同日ですが</strong>（出典4）、<strong>CVE に基づいて動くスキャナーが11月5日時点で検出しない可能性が指摘されています</strong>（出典6）。</p>
+<p><strong>したがって作業はホスト上の確認に落ちます</strong>（本記録の判断）—— <strong>Alpine は設定後の実効値を <code>sshd -T | grep -i passwordauthentication</code> で確かめる手順を示しています</strong>（出典3）。<strong>そしてもう1点、更新したあと <code>rc-service sshd restart</code> を忘れないことです</strong>（出典3）〈重要〉—— <strong>アドバイザリ自身が「更新は稼働中の sshd を再起動しない」と明記しています</strong>（出典3・原文英語）。<strong>更新済みの台帳と、実際に穴が塞がったホストは、別物になりえます</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>「悪用の報告は確認していない」——SSVC は poc、KEV は未登録<span class="b slot">未確定事項</span></h2><p><strong>悪用されたかどうかは、本記録の作成時点で分かりません</strong>（本記録の確認）〈未確定1〉〈重要〉。</p>
+<p><strong>分かっているのは、各機関の評価です</strong>（出典4・6）—— <strong>CISA の SSVC は exploitation を <code>poc</code>、automatable を <code>no</code>、technical impact を <code>total</code> と付けています</strong>（出典4）。<strong><code>poc</code> は実証コードの存在を示す値で、実際の悪用の観測を示す値ではありません</strong>（本記録の整理）。<strong><code>automatable: no</code> は、大量自動化の難度が高いという評価です——前提条件（musl・PAM 無し・該当アカウント・salt を借りられるアカウント）がホストごとに揃っている必要があり、外形から判定できないことに対応すると読めます</strong>（本記録の読み）。<strong><code>technical impact: total</code> は、成立したときの影響が全面的だという評価です。</strong></p>
+<p><strong>piyolog は「現在のところ公的機関等の報告は確認していない」とし、KEV が未登録であること、Detectify が11月5日15時30分（CET）時点で公開された悪用の報告を把握していないとしていることを伝えています</strong>（出典6）。<strong>OpenSSH・Alpine・発見者のいずれも、悪用の観測には触れていません</strong>（出典1・2・3・5。本記録の確認）。</p>
+<p><strong>NVD の状態も記録しておきます</strong>（出典4）〈重要〉—— <strong>本記録が API を照会した2026年11月6日時点で vulnStatus は <code>Received</code> で、NVD 自身の分析は終わっていません。</strong> <strong>CVSS 8.1 は CNA（MITRE）が付けた Secondary の値です。</strong> <strong>一方 OpenSSH はリリースノートの冒頭でこれを「critical」と呼んでいます</strong>（出典1・原文英語）〈差異4〉—— <strong>8.1（HIGH）と「critical」は食い違って見えますが、CVSS の AC:H（攻撃条件の複雑さが High）は前提条件の多さを反映した値であり、条件が揃ったホストにとっての深刻さを表していません</strong>（本記録の読み）。<strong>スコアで優先順位を決めている組織は、ここで取りこぼします</strong>（本記録の評価）。</p>
+<p><strong>もう一つの空白は規模です</strong>〈未確定2〉—— <strong>musl かつ PAM 無しの sshd をネットワークに出している台数を示す資料はありません。</strong> <strong>本記録も走査を行っていません。</strong> <strong>「どれだけ残っているか」は、本記録では語れません。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> OpenSSH（Portable）の sshd　<b>ベンダー:</b> OpenSSH（OpenBSD プロジェクト）　<b>CVE番号:</b> CVE-2026-123158　<b>バージョン:</b> **10.6p2 より前が影響を受ける。修正版は 10.6p2（2026年11月5日公開）**（出典1・4）〈重要〉—— **ただし影響するのは「Linux 上で musl libc を使い、PAM 無しでビルド・実行している」 場合に限られる**（出典1・2・4）。 **NVD も対象を「musl libc を PAM 無しで使う Linux 上の 10.6p2 より前の sshd」 としている**（出典4・原文英語）。　<b>概要:</b> **保存値「*」は短く salt を含まないため、 sshd は `$5$` または `$6$` のハッシュを持つ別のアカウントの salt を借りて 試行パスワードをハッシュ化する**（出典3・5）〈重要〉—— **この「借りる」処理は、2016年に利用者名の列挙（CVE-2016-6210）を 防ぐために入った**（出典5）。　<b>症状:</b> **muslのcrypt()は鍵が256バイトを超えると失敗し、 NULL ではなく文字列「*」を返す。 その「*」が保存値の「*」と一致し、認証が成功する**（出典1・3・5）〈重要〉—— **1回の接続で成立し、再試行は要らない**（出典6）。 **到達できたアカウントが root になれる構成（パスワード不要の doas 等）であれば、 root 権限まで至る**（出典3）。 **root 自身は既定の PermitRootLogin prohibit-password で守られ、 PermitRootLogin yes のときだけ到達できる**（出典3・6）。</div><div class=sub><b>名称:</b> musl libc の crypt()　<b>ベンダー:</b> musl libc　<b>バージョン:</b> **バージョンではなく2012年以降の仕様が成立条件の一方である**（出典5・6）〈重要〉。　<b>概要:</b> **2012年8月9日、失敗時の戻り値を NULL から「何にも一致しないはずのハッシュ」 である「*」へ変更した（呼び出し側が NULL を検査しないことが多いため）**（出典5・6）。 **同年8月29日、sha256／sha512 の crypt を追加し、 パスワードの上限を256バイトとした**（出典5・6）。　<b>症状:</b> **「何にも一致しないはず」の前提が、 /etc/shadow のパスワード欄に「*」を書く慣習と衝突していた**（出典5。本記録の整理）〈重要〉—— **musl 側は、musl のバグではなく呼び出し側の誤用との立場と報じられている** （出典6）〈差異2〉。 **musl は Dropbear など OpenSSH 以外は影響を受けないとしているとされる**（出典6）。</div><div class=sub><b>名称:</b> Alpine Linux の openssh-server パッケージ／tiny-cloud イメージ　<b>ベンダー:</b> Alpine Linux　<b>バージョン:</b> **確認した全リリース（edge・3.24〜3.16）が対象。 修正は edge 10.6_p2-r0／3.24 10.3_p1-r2／3.23 10.2_p1-r1／3.22 10.0_p1-r11／ 3.21 9.9_p2-r1／3.20 9.7_p1-r6／3.19 9.6_p1-r3／3.18 9.3_p2-r4／ 3.17 9.1_p1-r7／3.16 9.0_p1-r6**（出典3）〈重要〉—— **修正版の版番号は古いままなので、版番号では未修正と見分けられない**（出典3・6）。　<b>概要:</b> **openssh-server は PAM 無しでビルドされているため、既定で成立条件に入る （openssh-server-pam を UsePAM yes で使う構成は影響を受けない）**（出典3）〈重要〉—— **公式 tiny-cloud イメージ（3.18.11〜3.24.3）の alpine ユーザーは パスワード欄が「*」で、パスワード不要の doas を持つ**（出典3）。　<b>症状:</b> **tiny-cloud の該当イメージは、機械上に `$6$` のハッシュが1つできた時点から 悪用可能になる**（出典3）〈重要〉—— **初回起動の時点では成立せず、管理者がコンソールのパスワードを設定するなどで ハッシュができると成立する**（出典3・6）。 **修正済みのイメージは 3.21.10／3.22.8／3.23.8／3.24.4 以降から作られたもの**（出典3）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **OpenSSH 10.6p2、または配布元の修正パッケージへ更新し、sshd を再起動する** （出典1・3）〈重要〉—— **Alpine では `apk upgrade -U -a` のあと `rc-service sshd restart`**（出典3）。　<b>副作用:</b> **パッケージの更新だけでは稼働中の sshd は入れ替わらない**（出典3）〈重要〉—— **アドバイザリ自身が「更新は稼働中の sshd を再起動しない」と明記している** （出典3・原文英語）。 **再起動を忘れると、更新したつもりで穴が開いたままになる**（本記録の評価）。 **また Alpine の修正版は版番号が古いままなので、 資産管理台帳の版数照合では「修正済み」と判定できない**（出典3・6）。</div><div class=sub><b>手順:</b> **更新できないときは `PasswordAuthentication no` を設定して sshd を再起動する** （出典2・3）—— **Alpine は `/etc/ssh/sshd_config.d/00-no-passwords.conf` を作り、 `sshd -t &amp;&amp; rc-service sshd restart`、確認は `sshd -T | grep -i passwordauthentication` という手順を示している**（出典3）。　<b>副作用:</b> **パスワードでログインしている利用者・自動処理がすべて止まる**（本記録の評価）〈重要〉—— **Alpine は「事前に鍵でのログインが通ることを確かめ、 現在のセッションは新規ログインの確認が済むまで閉じないこと」としている**（出典3）。 **更新と `PasswordAuthentication no` は、どちらか一方で穴が塞がる**（出典2・3・6）。</div><div class=sub><b>手順:</b> **更新前に公開状態だったホストは、悪用の痕跡を調べる**（出典3）—— **`/var/log/messages` で、パスワードを持たないアカウント（alpine・root・ 鍵だけで使うユーザー）に対する `Accepted password for` の行を探す。 あわせて doas の使用・最近作られたユーザーとファイル・authorized_keys を点検する**（出典3）。　<b>副作用:</b> **ログを残していない、またはすでに巻き取られたホストでは何も分からない** （本記録の評価）〈重要〉—— **Alpine は「ログインを否定できない場合は、侵害されたものとして扱う」としている** （出典3・原文英語）。 **「否定できないから侵害扱い」は作業量が大きく、 コンテナ群に対して機械的に適用すると再構築の範囲が広がる**（本記録の評価）。</div><div class=sub><b>手順:</b> **スキャナーの結果を鵜呑みにしない（本記録の注意）**—— **CVE 割当前の11月5日時点では CVE に基づくスキャナーが検出しない可能性があり、 遠隔から確かめられるのは版数とパスワード認証の受付可否だけである**（出典3・6）。　<b>副作用:</b> **ホスト上の確認（musl か・PAM があるか・該当アカウントがあるか）が 人手の作業として残る**（本記録の評価）〈重要〉—— **Alpine は設定後の値を `sshd -T` で確認する手順を示している**（出典3）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**musl が、crypt() の失敗時の戻り値を NULL から 「何にも一致しないはずのハッシュ」である文字列「*」へ変更した**（出典5・6）〈重要〉—— **呼び出し側が NULL を検査しないことが多いため、より安全側に倒した変更である**（出典5）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**musl が sha256／sha512 の crypt を追加した。 パスワードの上限が256バイトで、超えると失敗する**（出典5・6）—— **T1 と合わせて「257バイト以上を渡すと『*』が返る」が成立した**（出典5。本記録の整理）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**OpenSSH が「Determine appropriate salt for invalid users.」をコミットした （CVE-2016-6210＝利用者名の列挙への対策）**（出典5・6）〈重要〉—— **使えるハッシュを持たないアカウントでもハッシュ化を行うようにしたため、 「*」との照合という経路が生まれた**（出典5）。 **発見者は、この変更以降が対象だとしている**（出典5）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**OpenSSH が pick_salt() に関する修正をコミットした**（出典5）—— **発見者は、これが自分がバグを見つける4日前のことだったと述べている**（出典5）。 **本件との関係について OpenSSH 側の説明は確認できていない**〈未確定5〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">判明</span></td><td>**OpenSSH が問題を把握した**（出典2・6）〈重要〉—— **11月5日のメーリングリスト投稿が「問題を知ったのは昨日」と書いている** （出典2・原文英語。本記録の算出）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**OpenSSH が 10.6p2 を公開し、同日メーリングリストで緊急リリースを告知した** （出典1・2）〈重要〉—— **リリースノートは「sshd(8) 経由で悪用できるパスワード認証回避を避ける」と記し、 ページの冒頭でこれを「critical な回避策」と位置づけている**（出典1・原文英語）。 **投稿は「PasswordAuthentication=no を設定するか、 該当システムの SSH を直ちに無効にする」よう促している**（出典2・原文英語）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Alpine Linux がセキュリティアドバイザリと修正パッケージを公開した**（出典3）〈重要〉—— **9ブランチ（3.16〜3.24）と edge に修正を出し、 ポイントリリース 3.21.10／3.22.8／3.23.8／3.24.4 も同日公開した**（出典3）。 **アドバイザリ執筆時点では CVE 番号は未割当だった**（出典3・原文英語）〈差異1〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**NVD が CVE-2026-123158 を公開した（CNA は MITRE）**（出典4）—— **MITRE の CVSS 3.1 は 8.1（HIGH・AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H）、 CWE-394。CISA の SSVC は exploitation: poc／automatable: no／ technical impact: total**（出典4）〈重要〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**発見者が解説（通称「*sshole」）を公開し、BleepingComputer・The Hacker News 等が報じた** （出典5・7・8）—— **発見者は、glibc／musl・PAM の有無・shadow の有無を組み合わせてビルドし、 AI エージェント群で約17,600回の異常なログイン試行を行ったところ、 musl かつ PAM 無しの構成だけが想定外のログインを許したと述べている**（出典5）〈重要〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**piyolog が日本語のまとめを公開した**（出典6）—— **「現在のところ公的機関等の報告は確認していない」「CISA の KEV は未登録」としている** （出典6）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が NVD の API を照会したところ、vulnStatus は Received（分析未了）、 最終更新は2026年11月5日 21:18（UTC）だった**（出典4。本記録の確認）。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**Alpine のアドバイザリは「執筆時点では CVE 識別子は割り当てられていなかった」と 記している**（出典3・原文英語）〈重要〉—— **一方 NVD は同じ2026年11月5日 16:17（UTC）に CVE-2026-123158 を公開している**（出典4）。 **時刻の前後は確定できないが、 CVE に基づいて動くスキャナーが11月5日時点で検出しない可能性が指摘されている** （出典6）。 **本記録は、CVE 番号が「公表と同時には存在しなかった」という事実を記録する。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**OpenSSH は「この問題の根本原因は sshd の外にあると考えるが、 sshd 経由で悪用でき、sshd 側で回避できる」としている**（出典1・原文英語）。 **musl 側は「musl のバグではなく、呼び出し側の誤用」との立場で、 この仕組みは次のリリースサイクルで変更される見込みと報じられている**（出典6）。 **本記録はどちらが正しいとは書かない**—— **記録するのは、境界をまたいだ前提のずれが10年見つからなかったこと、 および実務上は OpenSSH 側の迂回策で穴が塞がることである**（本記録の判断）。</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>**musl 側の立場は、piyolog（出典6）が引用した内容で把握している**（本記録の明示）〈重要〉—— **本記録の作成者は、muslのメーリングリスト投稿そのものを取得していない。** **したがって musl 側の表現・留保の正確な範囲は確認できていない。** **OpenSSH 側（出典1・2）・Alpine（出典3）・NVD（出典4）・ 発見者（出典5）はいずれも直接取得して確認した。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><div class=sm>**OpenSSH はリリースノートの冒頭でこれを「critical な回避策」と位置づけている** （出典1・原文英語）。 **一方 MITRE が付けた CVSS 3.1 は 8.1（HIGH）で、 攻撃条件の複雑さは High（AC:H）である**（出典4）。 **NVD 自身の一次評価は付いておらず、vulnStatus は Received（分析未了）である**（出典4）。 **本記録はこれを矛盾とは読まない**—— **AC:H は前提条件の多さを反映した値で、 条件が揃ったホストにとっての深刻さを表していない**（本記録の読み）〈重要〉。 **スコアを優先順位の一次の軸にしている組織は、ここで取りこぼす**（本記録の評価）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**Alpine と発見者は「257〜1024バイト」と記す**（出典3・5）。 **The Hacker News も「257 から 1,024 バイト」と書いている**（出典8・原文英語）。 **一方 NVD の説明文は「256 から 1024 文字のいずれのパスワードでも成功する」 としており、下限が1つ小さく、単位も bytes ではなく characters である** （出典4・原文英語）〈重要〉。 **技術的には muslのcrypt()の上限が256バイトで、 それを超えたときに失敗して「*」が返るため、下限は257が整合する** （出典5。本記録の整理）。 **本記録は図表・数値に257を採り、NVD の記述との差をここに記録する。** **なお「バイト」と「文字」は多バイト文字を含む場合に一致しない**（本記録の注意）。</div></li><li><span class="b dk">本記録による推定</span><div class=sm>**11月5日のメーリングリスト投稿が「問題を知ったのは昨日」と書いているため、 本記録は把握日を11月4日と算出した**（出典2・原文英語。本記録の算出）〈重要〉—— **投稿に「11月4日」という日付の明記は無い。** **piyolog も「OpenSSH は11月4日に脆弱性を把握」と書いており、同じ読みである**（出典6）。 **投稿の送信日時のタイムゾーンによっては1日ずれる可能性が残る**（本記録の留保）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>長いパスワードが「*」を生み、パスワード欄の「*」と一致して認証が通る経路</div><div class=svgwrap><svg viewBox="0 0 1610 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C499.0,111.0 499.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,156.0 C601.0,156.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C1009.0,60.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,111.0 C1417.0,111.0 1417.0,111.0 1444,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C1009.0,162.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SSH ポートに到達でき</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る攻撃者（資格情報なし）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">要るのはアカウント名と到</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">達のみ（出典4・5）</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">257〜1024バイトの</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">長いパスワードでパスワー</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド認証を試行</text><text x="295.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">1回の接続で成立し再試行</text><text x="295.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">は不要（出典3・6）</text><rect x="424" y="22.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="44.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パスワード欄が「*」のア</text><text x="499.0" y="58.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント（鍵専用・LDA</text><text x="499.0" y="72.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">P 由来・基礎イメージ…</text><text x="499.0" y="85.0" text-anchor="middle" fill="#8892b0" font-size="10">成立条件③（出典3）</text><rect x="424" y="112.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="134.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">salt を借りられるア</text><text x="499.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウント（$5$ / $</text><text x="499.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">6$ のハッシュを持つ）</text><text x="499.0" y="175.0" text-anchor="middle" fill="#8892b0" font-size="10">成立条件④。2016年の</text><text x="499.0" y="187.0" text-anchor="middle" fill="#8892b0" font-size="10">列挙対策で salt を</text><rect x="628" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PAM 無しの sshd</text><text x="703.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（10.6p2 より前）</text><text x="703.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">成立条件①②。Passw</text><text x="703.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">ordAuthentic</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">musl の crypt</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">()（鍵が256バイト超</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で失敗し「*」を返す）</text><text x="907.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">2012年の変更。NUL</text><text x="907.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">L を返さない安全側の設</text><rect x="1036" y="80.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">返り値「*」と保存値「*</text><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">」が一致 → 認証成功</text><text x="1111.0" y="129.0" text-anchor="middle" fill="#f48fb1" font-size="10">CWE-394（出典4）</text><rect x="1240" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">当該アカウントとしてログ</text><text x="1315.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イン</text><text x="1315.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">/var/log/mes</text><text x="1315.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">sages に Acce</text><rect x="1444" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1519.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パスワード不要の doa</text><text x="1519.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s 等があれば root</text><text x="1519.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 権限</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">tiny-cloud の</text><text x="1519.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10"> alpine ユーザー</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">OpenSSH 10.6</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">p2 / 配布元の修正パ</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッケージ（保存値が短す…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年11月5日公開</text><text x="907.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">。PasswordAut</text></svg></div><div class=fn>**OpenSSH リリースノート（出典1）・Alpine アドバイザリの成立条件（出典3）・
+発見者の解説（出典5）に対応させた経路図である。**
+**破線は 10.6p2（または配布元の修正パッケージ）で閉じる段を示す。**
+**実際の悪用の観測ではない**〈未確定1〉。
+</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**SSH ポートへの走査と認証試行は常時行われており、
+これだけでは本件に固有の兆候にならない**（本記録の評価）〈重要〉——
+**自組織側で先に気づくなら、「パスワード認証を受け付ける sshd を
+公衆網に出している資産」を棚卸しで見つけるほうが現実的である**（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>SSH を公衆網に出さず、踏み台・VPN・SSM 等の経路に限定する</div><div class=ctl><span class="b eff">侵入を防げた</span>外部公開資産の棚卸しで、パスワード認証が有効な sshd を洗い出す</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**痕跡は残る**（出典3）〈重要〉——
+**`/var/log/messages` に、パスワードを持たないアカウントに対する
+`Accepted password for` の行が記録される。
+Alpine はこれを侵害の指標として挙げている**（出典3）。
+**「パスワードを持たないはずのアカウントがパスワードで成功している」
+という組み合わせは、ログだけで機械的に判定できる形である**（本記録の評価）。
+**それでも「機会はあったが検知できなかった」と置いたのは、
+この指標が公表されたのが2026年11月5日であり、
+それ以前に該当行を警報にしていた組織はほとんど無いと見られるためである**
+（本記録の判断）。
+**ログを集約していないホスト、ログが巻き取られたホストでは何も分からない**
+（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>PasswordAuthentication no を既定とし、鍵認証のみにする</div><div class=ctl><span class="b eff">侵入を防げた</span>openssh-server-pam を UsePAM yes で使う（PAM 経路は影響を受けない）</div><div class=ctl><span class="b eff">侵入を防げた</span>使わないアカウントのパスワード欄を「*」ではなく「!」でロックする</div><div class=ctl><span class="b eff">検知できた</span>「Accepted password for」とパスワード不要アカウントの組み合わせを警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**doas の使用はログに残るため、
+「ログインの直後に doas が走る」列は見つけられる**（出典3。本記録の評価）〈重要〉——
+**Alpine 自身が、点検対象として doas の使用を挙げている**（出典3）。
+**クラウドのインスタンスでログを外に出していない構成では、
+再起動や再作成で痕跡ごと消える**（本記録の評価）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>パスワード不要の doas／sudo を既定の雲イメージから外す</div><div class=ctl><span class="b eff">影響を限定できた</span>PermitRootLogin を prohibit-password 以上に保つ</div><div class=ctl><span class="b eff">復旧を早められた</span>ホストのログを外部へ集約し、インスタンスの消滅後も参照できるようにする</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**影響段階の検知について公表された記載は無い**（本記録の確認）〈未確定1〉——
+**authorized_keys の追加は、構成管理の期待値と突き合わせれば検知できる**
+（本記録の評価）〈重要〉——
+**コンテナを使い捨てで運用しているなら、
+「中身が書き換わっていること自体が異常」という形で見つけられる**（本記録の判断）。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>authorized_keys を構成管理の期待値と突き合わせ、差分を警報にする</div><div class=ctl><span class="b eff">検知できた</span>コンテナを不変（immutable）に運用し、書き込みを検知対象にする</div><div class=ctl><span class="b eff">影響を限定できた</span>ホストに置く資格情報を減らし、短期の発行に寄せる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**OpenSSH は、把握の翌日に長い非公開期間を置かず 10.6p2 を公開した**（出典1・2）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**判断理由を明文で書いたことを含めて、機能したと評価する**（本記録の評価）〈重要〉—— **「AI エージェントによる急速なバグ再発見を複数確認しており、 長い非公開期間は主に攻撃者を利する危険な慣行だと考える」と述べている** （出典2・原文英語）。 **理由が書かれていれば、他のプロジェクトが同じ判断をするときに参照できる** （本記録の評価）。 **同時に、迂回策の提示（PasswordAuthentication no）を 更新と並べて示したことが、速さの副作用を埋めている**（出典2・3）。</td></tr><tr><td>**Alpine は、成立条件4点・影響しない条件6点・修正パッケージの全ブランチ表・ 確認コマンド・侵害指標を1つのアドバイザリに揃えた。 一方、CVE 番号は執筆時点で未割当として公開した**（出典3）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**「影響を受けないケース」を明示した点を高く評価する**（本記録の評価）〈重要〉—— **PasswordAuthentication no の構成・PAM を使う構成・ 「!」でロックされたアカウント・salt を借りられるアカウントが無い構成・ cloud-init で構成されたイメージが挙げられている**（出典3・6）。 **脆弱性の公表では「影響する範囲」だけが書かれることが多く、 読者は「自分は関係ないと言い切れるか」を判定できない**（本記録の評価）。 **また、サポート終了済みの 3.16〜3.21 にも修正を出したことは、 古いイメージが動き続けている現実に対応した判断である**（出典3・6）。</td></tr><tr><td>**責任の所在について、OpenSSH は「根本原因は sshd の外にある」とし、 musl 側は「musl のバグではなく呼び出し側の誤用」との立場と報じられている** （出典1・6）〈差異2〉。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**実務上の帰結は確保されている**（本記録の評価）〈重要〉—— **OpenSSH が「sshd 側で回避できる」として迂回策を入れたため、 見解の相違が利用者の修理を止めていない**（出典1）。 **musl 側もこの仕組みを次のリリースサイクルで変更する見込みと報じられている** （出典6）〈未確定3〉。 **評価を partial にとどめるのは、 同じ「crypt() の戻り値を検査しない呼び出し側」が他にどれだけあるかが どの資料にも示されていないためである**（本記録の確認）—— **muslはDropbear などは影響を受けないとしているとされるが**（出典6）、 **網羅的な洗い出しの公表は確認できていない**。 **本記録は musl 側の一次資料を直接取得していない**〈差異3〉。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「アドバイザリが出てから動く」運用が、公開の速さに追いつかなくなっている。**</div><div class=lw>**OpenSSH は把握の翌日に修正を出し、理由として 「AI エージェントによる数時間単位のバグ再発見」を挙げている**（出典2。本記録の評価）〈重要〉—— **非公開期間が短くなるほど、「公開済み・未適用」の時間が相対的に長くなる** （本記録の評価）。 **本件では CVE 番号の割当がアドバイザリに間に合っておらず、 CVE を軸に動く仕組みは1日遅れた**（出典3・6）。</div><div class=la><b>取るべき行動</b> **①脆弱性対応の起点を「CVE が付いたとき」ではなく 「配布元・上流プロジェクトの告知が出たとき」に変える。 ②上流プロジェクト（OpenSSH・使っている配布元）のアナウンス経路を購読対象に加える。 ③緊急リリースに1日で反応する手順（誰が判断し、誰が止める権限を持つか）を 平時に決めておく。**</div></li><li><div class=lp>**CVSS スコアで優先順位を決めると、本件のような脆弱性を取りこぼす。**</div><div class=lw>**MITRE の CVSS 3.1 は 8.1（HIGH）で、AC:H が付いている**（出典4）〈重要〉—— **一方 OpenSSH はこれを「critical」と呼んでいる**（出典1）〈差異4〉。 **AC:H は前提条件の多さを表す値で、 条件が揃ったホストにとっての深刻さを下げる根拠にはならない**（本記録の読み）。 **NVD 自身の分析は本記録の確認時点で未了（vulnStatus: Received）である**（出典4）。</div><div class=la><b>取るべき行動</b> **①優先順位の判定に「自組織に成立条件が当てはまるか」を一次の軸として入れ、 スコアは二次の軸にする。 ②配布元が「critical」と呼んだものは、スコアに関わらず緊急扱いの候補にする。 ③NVD の分析未了（Received／Awaiting Analysis）の状態でも動ける運用にする。**</div></li><li><div class=lp>**コンテナの基礎イメージが何の libc を使っているかを、把握できる形にしておく。**</div><div class=lw>**本件の成立条件の中心は「musl libc か」である**（出典1・4）〈重要〉—— **Alpine は軽量さを理由に基礎イメージとして広く使われており、 アプリケーションの開発者が意識せずに選んでいることが多い**（本記録の評価）。 **「Alpine を使っているか」を即答できない組織は、影響の判定に入れない**（本記録の判断）。</div><div class=la><b>取るべき行動</b> **①稼働中のコンテナイメージの一覧と、その基礎イメージ（distro・版）を 棚卸しの対象にする。 ②SBOM を取っている場合、libc の種別が読み取れる粒度かを確認する。 ③新規採用の基礎イメージを限定し、一覧で管理する。**</div></li><li><div class=lp>**「侵害を否定できないので侵害として扱う」の作業量を、事前に見積もっておく。**</div><div class=lw>**Alpine は「ログインを否定できない場合は、侵害されたものとして扱う」としている** （出典3・原文英語）〈重要〉—— **これを素直に適用すると、ログを集約していないホスト群がすべて再構築の対象になる** （本記録の評価）。 **本件は痕跡が `/var/log/messages` の1行であり、 巻き取られていれば判定ができない**（出典3）。</div><div class=la><b>取るべき行動</b> **①ホストのログ（少なくとも認証ログ）を外部へ集約し、 インスタンスが消えても参照できる状態にする。 ②「侵害を否定できないホスト」を再構築する手順と所要時間を、平時に測っておく。 ③集約していない資産を洗い出し、優先して集約対象に入れる。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**まず「musl か・PAM があるか・PasswordAuthentication が有効か」の3点を確認する。**</div><div class=lw>**この3点が成立条件の中核であり、遠隔からは確かめられない**（出典3・6）〈重要〉—— **Alpine の openssh-server は PAM 無しでビルドされているため、既定で条件に入る**（出典3）。</div><div class=la><b>取るべき行動</b> **①`ldd --version` 等で libc の種別を確認する（Alpine なら musl）。 ②openssh-server か openssh-server-pam か、`UsePAM` の実効値を確認する。 ③`sshd -T | grep -i passwordauthentication` で設定後の実効値を見る （設定ファイルの記述ではなく実効値を見る）。**</div></li><li><div class=lp>**パスワード欄が「*」のアカウントと、`$5$`／`$6$` のハッシュを持つアカウントを両方数える。**</div><div class=lw>**成立条件は「『*』のアカウントがある」と 「salt を借りられるアカウントが1つ以上ある」の両方である**（出典3・5）〈重要〉—— **Alpine は「パスワードを持つ利用者が1人いれば、 パスワードを持たない全アカウントが露出する」としている**（出典3・原文英語）。 **後者が0なら成立しないため、条件の片方だけを見ると判定を誤る**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **①`/etc/shadow` のパスワード欄を集計し、「*」と「!」と `$`形式の件数を出す。 ②「*」のアカウントが鍵専用ならパスワード欄を「!」に変える （「!」でロックされたアカウントは影響を受けない。出典3）。 ③tiny-cloud 由来のインスタンスでは `alpine` ユーザーと doas の設定を確認する。**</div></li><li><div class=lp>**更新したら sshd を再起動する。版番号ではなくパッケージのリビジョンで確認する。**</div><div class=lw>**アドバイザリ自身が「更新は稼働中の sshd を再起動しない」と明記している** （出典3・原文英語）〈重要〉—— **また Alpine の修正版は OpenSSH の版番号が古いままで （3.24 は 10.3_p1-r2、3.21 は 9.9_p2-r1）、版番号では未修正と見分けられない**（出典3・6）。</div><div class=la><b>取るべき行動</b> **①`apk upgrade -U -a` のあと `rc-service sshd restart` を必ず実行する。 ②確認は `apk info -v openssh` のリビジョン（`-r2` 等）で行い、 OpenSSH の版番号（9.9 等）では判定しない。 ③構成管理の冪等な処理に「更新後の再起動」を組み込む。**</div></li><li><div class=lp>**過去のログで「パスワードを持たないアカウントの Accepted password」を探す。**</div><div class=lw>**これが Alpine が示した唯一の侵害指標である**（出典3）〈重要〉—— **「パスワードを持たないはずのアカウントがパスワードで成功している」という 組み合わせは、ログだけで機械的に判定できる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **①`grep &quot;Accepted password&quot; /var/log/messages` の結果と、 `/etc/shadow` の「*」アカウントの一覧を突き合わせる。 ②該当があれば doas の使用・最近作られたユーザーとファイル・ authorized_keys を点検する（出典3）。 ③ログが無い・巻き取られたホストは「判定不能」として記録に残し、 侵害扱いにするかを別に判断する。**</div></li><li><div class=lp>**自前でビルドしている sshd と、組み込み・機器側を忘れない。**</div><div class=lw>**発見者は Alpine 以外に OpenWrt・Buildroot・Yocto を挙げている**（出典5）〈重要〉—— **これらは配布元の修正パッケージが同日に出る仕組みを持たない場合がある** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **①自前ビルドの sshd がある場合、musl を使っているか、 PAM を有効にしているかをビルド設定から確認する。 ②組み込み機器・出荷済み製品に musl ＋ PAM 無しの sshd がないか、製品側に確認を出す。 ③更新が間に合わない対象は `PasswordAuthentication no` を先に当てる。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **Linux 上で musl libc を使う環境（Alpine・OpenWrt・Buildroot・Yocto 等）で sshd を動かしているか。**</td><td class=sm>**これが影響範囲の最初の条件である**（出典1・4・5）〈重要〉—— **glibc を使う Debian・Ubuntu・Fedora 等は影響を受けない**（出典2・7）。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **その sshd は PAM 無しでビルド・実行されているか （Alpine の openssh-server は既定で PAM 無し）。**</td><td class=sm>**PAM でパスワード認証を行う構成は影響を受けない**（出典2・3）〈重要〉—— **openssh-server-pam を UsePAM yes で使っているかどうかで分かれる**（出典3）。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **`PasswordAuthentication` が有効のままか（OpenSSH の既定は yes）。**</td><td class=sm>**これを no にすれば、更新しなくても穴は塞がる**（出典2・3・6）〈重要〉—— **逆に、鍵認証に移行済みのつもりで設定が yes のまま残っている構成は影響する** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> **`/etc/shadow` にパスワード欄が「*」のアカウントがあり、 かつ `$5$`／`$6$` のハッシュを持つローカルアカウントが1つ以上あるか。**</td><td class=sm>**両方が揃ってはじめて成立する**（出典3・5）〈重要〉—— **「*」は鍵専用ユーザー・ディレクトリサービス由来のユーザー・ 基礎イメージの root に付きやすく、意図して付けたものではないことが多い**（出典3）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **SSH ポートをネットワーク（特に公衆網）から到達可能にしているか。**</td><td class=sm>**攻撃に要るのはアカウント名とポートへの到達だけである**（出典4・5）〈重要〉—— **到達経路を踏み台・VPN に限定していれば、成立条件が揃っていても悪用の難度は上がる** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **ホストの認証ログを外部に集約しており、インスタンスが消えた後も参照できるか。**</td><td class=sm>**唯一の侵害指標が `/var/log/messages` の1行である**（出典3）〈重要〉—— **集約していなければ「侵害を否定できない」状態から抜けられず、 Alpine の指示どおりなら侵害扱いになる**（出典3。本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月5日 OpenSSH（OpenBSD プロジェクト）</span> <a href="https://www.openssh.com/releasenotes.html" target="_blank" rel="noreferrer noopener nofollow">OpenSSH: Release Notes（10.6p2）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（**本件の一次公表。** **10.6p2 は2026年11月5日公開。**
+**Security 節は「sshd(8) 経由で悪用できるパスワード認証回避を避ける」とし、
+「PAM サポートを無効にしてビルド・実行した場合の一部の Linux システム」が
+対象だと記す。ページ冒頭はこれを「musl libc を使い PAM を無効にした
+Linux システムに影響する critical なセキュリティ回避策」と位置づけている。**
+**「この問題の根本原因は sshd の外にあると考えるが、sshd 経由で悪用でき、
+sshd 側で回避できる」と述べる（原文英語）。**
+**報告者として「Özgün Kültekin of Wakefield (wakefield.co)」をクレジットしている。**
+**形式的な深刻度の評点は示していない。**
+**本記録は www.openssh.org への 301 リダイレクト先を取得して確認した**）
+）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月5日 OpenSSH（openssh-unix-dev メーリングリスト）</span> <a href="https://marc.info/?l=openssh-unix-dev&amp;m=179388064263131&amp;w=2" target="_blank" rel="noreferrer noopener nofollow">urgent security release: 10.6p2</a> <span class="b kind">書簡</span><span class=sm>（（**緊急リリースの告知。** **「musl libc を PAM 無しで使う Linux システム
+（Alpine Linux がその一例）」が対象で、「問題を知ったのは昨日」であり
+「可能な限り速く」出していると述べる（原文英語）。**
+**公開を急いだ理由として「AI エージェントによる急速なバグ再発見の事例を
+複数——ときに数時間のうちに——確認しており、長い非公開期間は、
+主に攻撃者を利する危険な慣行だと考える」と明記している（原文英語）。**
+**影響しないのは非 Linux・Linux/glibc・パスワード認証に PAM を使う Linux だとする。**
+**対処として「PasswordAuthentication=no を設定するか、
+該当システムの SSH を直ちに無効にする」よう促している。**
+**URL は NVD の参照一覧（出典4）から辿った**）
+）</span></li></ol></div><div class=rg><div class=rgt>波及先組織の公表</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月5日 Alpine Linux</span> <a href="https://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass/" target="_blank" rel="noreferrer noopener nofollow">Security advisory: openssh-server password authentication bypass</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（（**配布元の一次公表で、本件の資料のうち最も実務に使える内容。**
+**成立条件4点（PAM 無しの openssh-server か UsePAM no の openssh-server-pam／
+PasswordAuthentication が有効／パスワード欄が「*」のアカウントがある／
+`$5$` か `$6$` のハッシュを持つローカルアカウントが1つ以上ある）、
+攻撃には有効なアカウント名と257〜1024バイトの長いパスワードが要ること、
+「パスワードを持つ利用者が1人いれば、パスワードを持たない全アカウントが露出する」
+ことを記す（原文英語）。**
+**対象は確認した全リリース（3.21〜3.24・edge、およびサポート終了済みの 3.16〜3.20）。
+修正は edge 10.6_p2-r0／3.24 10.3_p1-r2／3.23 10.2_p1-r1／3.22 10.0_p1-r11／
+3.21 9.9_p2-r1／3.20 9.7_p1-r6／3.19 9.6_p1-r3／3.18 9.3_p2-r4／
+3.17 9.1_p1-r7／3.16 9.0_p1-r6 の10ブランチ。**
+**対処は `apk upgrade -U -a` のあと `rc-service sshd restart`
+（「更新は稼働中の sshd を再起動しない」と明記）。
+更新できない場合は `/etc/ssh/sshd_config.d/00-no-passwords.conf` に
+`PasswordAuthentication no` を書き、`sshd -t &amp;&amp; rc-service sshd restart`、
+確認は `sshd -T | grep -i passwordauthentication`。
+鍵ログインが通ることを先に確かめ、現在のセッションは確認が済むまで閉じないこと。**
+**公式 tiny-cloud イメージは 3.18.11〜3.24.3 が対象で、
+`alpine` ユーザーはパスワード欄が「*」・パスワード不要の doas を持ち、
+機械上に `$6$` のハッシュができた時点から悪用可能になる。
+修正済みは 3.21.10／3.22.8／3.23.8／3.24.4 以降から作られたイメージ。**
+**侵害指標は `/var/log/messages` の「Accepted password for」で、
+あわせて doas の使用・最近作られたユーザーとファイル・authorized_keys を点検し、
+「ログインを否定できない場合は侵害されたものとして扱う」とする（原文英語）。**
+**「執筆時点では CVE 識別子は割り当てられていなかった」と記す**〈差異1〉。
+**悪用が観測されたかどうかには触れていない**）
+）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月5日 16:17（UTC） NIST NVD（CNA: MITRE）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-123158" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-123158</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（（**CVE の公的記録。** **sourceIdentifier は cve@mitre.org、
+公開は2026年11月5日 16:17（UTC）、最終更新は同日 21:18（UTC）、
+vulnStatus は `Received`（分析未了）。**
+**説明は「Linux 上の OpenSSH 10.6p2 より前の sshd が、
+musl libc を PAM 無しで使うとき、パスワード認証回避への迂回策を欠く
+（ある文字列がパスワードハッシュとして意図されたものかの誤解釈に関連）。
+一部のアカウント構成では、256 から 1024 文字のいずれのパスワードでも成功する。
+PAM 無しで musl libc を使う基盤の一例は Alpine Linux である」（原文英語）**〈差異5〉。
+**CVSS 3.1 は cve@mitre.org による Secondary で 8.1（HIGH）、
+ベクタは CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H
+（exploitability 2.2・impact 5.9）。NVD 自身の Primary 評価は無い。**
+**CWE-394。**
+**CISA Coordinator の SSVC v2.0.3（2026年11月5日 17:12 UTC）は
+exploitation: poc／automatable: no／technicalImpact: total。**
+**参照に OpenSSH のリリースノート・修正コミット・
+openssh-unix-dev の投稿・Alpine のアドバイザリ・
+再現環境 2件（leonjza/sshhole-lab・predkambrij/sshhole-repro）・
+sshhole.com が並ぶ。**
+**本記録は NVD の REST API v2.0 を照会して取得した
+（Web 画面は JavaScript 描画のため取得できなかった）**）
+）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年11月 Ozgun Kultekin（Wakefield）</span> <a href="https://sshhole.com" target="_blank" rel="noreferrer noopener nofollow">*sshole</a> <span class="b kind">ブログ</span><span class=sm>（（**発見者自身の解説。** **「found by ozgun kultekin」とクレジットし、
+所属は Wakefield（ozgun.sh／wakefield.co）。**
+**AI エージェント群で約17,600回の異常なログインを sshd に投げたと述べる。
+glibc／musl・PAM の有無・shadow の有無を組み合わせてビルドしたところ、
+すべての構成がすべてのログインで一致したのに対し、
+musl かつ PAM 無しの構成だけが通してはならないログインを通した。**
+**musl 以外の対象環境として Alpine・OpenWrt・Buildroot・Yocto を挙げる。**
+**起点は見出しでは2016年だが、根本原因は2012年の musl の2つのコミット
+（b3c4cc12＝失敗時に NULL ではなく「*」を返す・2012年8月／
+88bf5a8a＝256バイトの上限を伴う sha256/sha512 crypt の追加・2012年8月29日）。**
+**仕組みは、crypt() が失敗時に返す「*」が、
+パスワード欄が「*」のアカウント（鍵専用・LDAP 由来・Alpine の root）の
+保存値と一致し、musl ＋ PAM 無し ＋ パスワード認証有効の条件下で
+257〜1024文字のパスワードでログインできるというもの。**
+**2026年10月30日の OpenSSH の pick_salt() 修正コミットに言及し、
+それが自分がバグを見つける4日前のことだったとする**〈未確定5〉。
+**調整型開示の時期・報告日は記していない**）
+）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年11月6日 piyolog</span> <a href="https://piyolog.hatenadiary.jp/entry/2026/11/06/120149" target="_blank" rel="noreferrer noopener nofollow">OpenSSHのパスワード認証回避の脆弱性 CVE-2026-123158 についてまとめてみた</a> <span class="b kind">ブログ</span><span class=sm>（（**日本語の総合まとめ。一次資料14点を番号付きで整理している。**
+**本記録が出典6のみを根拠とした記述は、
+①musl 側の立場（「musl のバグではなく呼び出し側の誤用」・
+次のリリースサイクルで変更される見込み・Dropbear 等は影響を受けない）**〈差異2・3〉**、
+②KEV 未登録（11月4日公開の KEV カタログに本件は含まれない）、
+③Detectify が11月5日15時30分（CET）時点で公開された悪用の報告を
+把握していないとしていること、
+④Check Point の検証（salt を借りるアカウントは有効で実際のパスワードを持つ必要がある／
+遠隔から見えるのは版数とパスワード認証の受付可否のみ／
+CVE 割当前はスキャナーが検出しない可能性／修正済みでも版番号では対象に見える）、
+⑤Cycode の Docker Hub イメージ調査（Alpine 3.16 より前のイメージは
+ラボで悪用でき、3.16 より前には修正パッケージが提供されない／
+Gitea・Gogs・Jenkins SSH agent・linuxserver openssh-server は
+既定でパスワードログインが無効）、
+⑥1回の接続で成立し再試行は不要であること、である。**
+**これらの原典（musl・Check Point・Cycode・Detectify）は
+本記録では直接取得していない**〈差異3〉）
+）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[7]</span> <span class=sm>2026年11月5日 17:45（UTC） BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/openssh-flaw-lets-attackers-log-into-password-disabled-linux-accounts/" target="_blank" rel="noreferrer noopener nofollow">OpenSSH flaw lets attackers log into password-disabled Linux accounts</a> <span class="b kind">記事</span><span class=sm>（（**成立条件5点と2016年の CVE-2016-6210 対策との関係を整理した報道（原文英語）。**
+**「有効なパスワードハッシュを持つアカウントのパスワードを
+回避できるものではない」と明記している。**
+**Alpine の公式 AWS・Azure 雲イメージの既定 `alpine` アカウントが
+パスワード不要の doas 権限を持つため root に至りうると警告する。**
+**侵害確認のコマンド（`grep &quot;Accepted password&quot; /var/log/messages` と
+`grep &#x27;^alpine:&#x27; /etc/shadow` の突き合わせ）を示す。**
+**発見者の表記は「Ozgun Kultekin」**）
+）</span></li><li><span class=rid>[8]</span> <span class=sm>2026年11月5日 16:42（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/11/openssh-issues-emergency-fix-for-flaw.html" target="_blank" rel="noreferrer noopener nofollow">OpenSSH Issues Emergency Fix for Flaw Letting Long Passwords Bypass SSH Auth on Alpine Linux</a> <span class="b kind">記事</span><span class=sm>（（**本記録が参照できたのは冒頭段落のみである**〈重要〉——
+**収集時に本文の取得が失敗しており（`content_source: fetch_failed`）、
+保存されているのは「攻撃者は、標準の openssh-server パッケージを動かす
+一部の Alpine Linux サーバーで、パスワードを持たないアカウント
+（SSH 鍵専用のアカウント等）にログインできる。
+要るのはサーバーへのネットワーク到達、アカウント名、
+257 から 1,024 バイトの長さのパスワードである。
+OpenSSH はこの欠陥を critical と評価し、本日 10.6p2 を公開して封じた。
+Alpine はすべての……」までである（原文英語）。**
+**本記録はこの記事を、パスワード長の下限が257であることの
+裏付けの1つとしてのみ使っている**〈差異5〉）
+）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月6日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月6日収集分の記事3本
+〈output/articles/20261106/0012_piyolog_openssh-cve-2026-123158.md、
+0091_bleepingcomputer_…、0107_the-hacker-news_…〉を起点に、
+一次資料を直接取得して突き合わせた。
+**直接取得して確認したのは、OpenSSH のリリースノート（出典1・
+www.openssh.com から www.openssh.org への 301 を辿った）、
+openssh-unix-dev の緊急リリース告知（出典2）、
+Alpine Linux のアドバイザリ（出典3）、
+NVD の REST API v2.0（出典4。Web 画面は JavaScript 描画のため取得できず）、
+発見者の解説 sshhole.com（出典5）である。**
+**musl のメーリングリスト投稿、Check Point・Cycode・Detectify の各報告は
+直接取得しておらず、piyolog（出典6）の引用で把握している**〈差異3〉。
+**The Hacker News は収集時に本文取得が失敗しており、冒頭段落のみ参照した**（出典8）。
+</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">OpenSSH</span><span class="b tag">musl libc</span><span class="b tag">Alpine Linux</span><span class="b tag">CVE-2026-123158</span><span class="b tag">sshole</span><span class="b tag">パスワード認証回避</span><span class="b tag">コンテナ基礎イメージ</span><span class="b tag">緊急リリース</span><span class="b tag">AIエージェントによる脆弱性発見</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-06 14:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
