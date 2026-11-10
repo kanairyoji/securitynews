@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>露ESTT、ランサムで仮想化クラスタ停止 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0966</span>露ESTT、ランサムで仮想化クラスタ停止</h1>
+<header class="site-header">
+  <p class="subtitle">ロシアのホスティング事業者 ESTT が2026年11月8日の大規模障害の原因をランサムウェア攻撃と公表——仮想化クラスタとクラウド基盤の管理系が被害を受け顧客の仮想サーバーが停止、専用物理サーバーは無影響、顧客データ流出の兆候は確認されずとした。6日前には同国の Beget が管理系を奪われクラウドのデータを消去されている</p>
+  <div><span class="b type">ランサムウェア被害（暗号化・リークサイト恐喝が中心）</span><span class="b type2">システム障害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">公表されていない／不明</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月8日</span>
+  <span>最終更新: 2026年11月9日</span>
+</div>
+
+<div class="lead"><p><strong>ESTT（ロシアのデータセンター・ホスティング事業者）</strong>は2026年11月8日に発生した大規模障害について、<strong>原因は暗号化型マルウェア（ランサムウェア）を用いたサイバー攻撃</strong>だったと公式声明で明らかにしました。</p>
+<p>声明によれば、被害を受けたのは<strong>仮想化クラスタと、ESTT のクラウド基盤を管理するシステム</strong>で、これにより顧客サービスの動作が損なわれました。一方で<strong>顧客の専用物理サーバーは被害を受けず通常どおり稼働</strong>しており、<strong>現時点で顧客データの流出を示す兆候は確認されていない</strong>としています。「障害の原因は暗号化型マルウェアを用いたサイバー攻撃である」「専用物理サーバーは被害を受けず通常どおり稼働している」「顧客データの流出の兆候は確認されていない」（いずれも原文ロシア語）。</p>
+<p>復旧は、声明の時点で<strong>顧客の仮想サーバーの90%が復旧</strong>。その後の続報では<strong>すべての顧客仮想マシンが起動した</strong>一方、<strong>一部の VPS はネットワーク経由で到達できずネットワーク設定の復旧を要する</strong>状態が残っていました。<strong>顧客向け管理画面（личный кабинет）は引き続き利用できず</strong>、残高の入金もできない状態が続きました。完全復旧の時期は示されていません。</p>
+<p>本記録が注目するのは、<strong>壊れたのが「顧客のサーバー」ではなく「顧客のサーバーを動かす基盤」だった</strong>点です。仮想化クラスタとクラウド管理系が落ちれば、個々の顧客に過失が無くても全員が同時に止まります。そして同じ構図が、<strong>6日前の2026年11月2日にロシアの大手ホスティング Beget でも起きていました</strong>。Beget では攻撃者が<strong>アーキテクチャ全体の管理系に到達して初期化スクリプトを実行</strong>し、VPS・S3・Kubernetes のデータと <strong>VPS のバイナリバックアップが完全に失われた</strong>と報じられています。ESTT は「流出の兆候なし・90%復旧」、Beget は「データ消去・バックアップ喪失」—— <strong>管理系を取られたあとに何が残るかは、復旧の設計で決まります</strong>。一次資料は ESTT の公式声明で、評価・示唆は本記録の判断として分けて書きます。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>侵入経路・初期侵入の手口と、管理系に到達された経緯</span><span class="b rsn">公表されていない</span><div class=sm>声明は「予備的な情報によれば暗号化型マルウェアを用いたサイバー攻撃」とのみ記す。 管理系の資格情報の窃取か、管理基盤の脆弱性か、委託先経由かは示されていない</div></li><li><span class=ui>攻撃者・ランサムウェアの種別と、身代金要求・支払の有無</span><span class="b rsn">公表されていない</span><div class=sm>集団名もマルウェアのファミリも記載が無く、恐喝の有無にも触れていない</div></li><li><span class=ui>影響を受けた顧客数・仮想サーバーの総数・停止時間</span><span class="b rsn">公表されていない</span><div class=sm>復旧率90%という割合のみが示され、分母が公表されていないため台数が分からない。 顧客ごとの停止時間も示されていない</div></li><li><span class=ui>バックアップの状況（暗号化の被害を受けたか、復旧に使えたか）</span><span class="b rsn">公表されていない</span><div class=sm>復旧が進んでいることからバックアップまたはスナップショットが残っていたとみられるが、 声明はバックアップに一切触れていない。Beget では VPS のバイナリバックアップが 完全に失われたと報じられており、ここが明暗を分ける論点である</div></li><li><span class=ui>データ流出の有無についての最終的な判断</span><span class="b rsn">調査中</span><div class=sm>「現時点で入手している情報によれば流出の兆候は確認されていない」という段階の記載であり、 調査の完了は示されていない</div></li><li><span class=ui>顧客向け管理画面（личный кабинет）の復旧時期と完全復旧の見込み</span><span class="b rsn">公表されていない</span><div class=sm>「別途お知らせする」「正確な期限はまだ示せない」とされている</div></li><li><span class=ui>顧客への補償・SLA の適用の有無</span><span class="b rsn">公表されていない</span><div class=sm>声明は復旧作業への注力を述べるのみで、補償・返金に触れていない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>ESTT（ロシアのデータセンター・ホスティング事業者）</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年11月8日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>ロシアでデータセンター・クラウド・専用サーバーのホスティングを提供する事業者。 2025年7月には飲食チェーンの基幹システムを担う iiko のホスティング相手として DDoS の影響を受けたことが報じられている</p><p class=org-p><span class=org-l>影響</span>仮想化クラスタとクラウド基盤の管理システムが被害を受け、顧客の仮想サーバーが停止した。 顧客向け管理画面は復旧しておらず、完全復旧の時期は示されていない</p></div></div><div class=org><div class=org-h><span class=org-n>ESTT のクラウド顧客（件数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>ESTT のクラウド上に仮想サーバーを置いていた利用者。声明は「サーバーの背後には顧客のサイト・アプリケーション・業務がある」と記す</p><p class=org-p><span class=org-l>影響</span>仮想サーバーの停止とネットワーク到達性の喪失。管理画面が使えず残高の入金もできない状態が続いた。 専用物理サーバーの利用者は影響を受けていない</p></div></div><div class=org><div class=org-h><span class=org-n>ESTT を攻撃した主体（実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>暗号化型マルウェアを用いた攻撃とされるが、集団名・手口・身代金要求の有無は公表されていない</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>公式声明の時点で復旧した顧客仮想サーバーの割合</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>90<span class=fu>%</span></div><div class=fn>ESTT の公式声明の記載（&quot;восстановлено 90% клиентских виртуальных серверов&quot;）。 分母となる仮想サーバーの総数は公表されていないため、台数は算出できない。 その後の続報では「すべての顧客仮想マシンが起動した」とされ、一部 VPS の ネットワーク復旧が残るとされた</div></div><div class=fig><div class=fh><span class=fl>障害の発生（11月8日）から原因をランサムウェア攻撃と公表するまで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>日</span></div><div class=fn>公式声明のページに掲載日の記載が無く、Habr が転載した2026年11月9日を公表日として置いた上限値である。 実際にはより早い可能性がある</div></div><div class=fig><div class=fh><span class=fl>先行事例（Beget）のクラウドサーバー上に置かれていたサイト数</span><span class="b conf">最少</span><span class="b org">報道値</span></div><div class=fv>450,000<span class=fu>サイト</span></div><div class=fn>Beget 自身の統計として CNews が伝えた「45万以上」。本事案（ESTT）の被害規模ではなく、 ホスティング事業者の管理系が落ちたときに波及する規模感を示す背景値である。 ESTT 側の顧客数・サイト数は公表されていない</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>攻撃者が ESTT の仮想化クラスタとクラウド基盤の管理システムに到達し、暗号化型マルウェアを用いて 影響を与えた。顧客の専用物理サーバーには及んでいない。初期侵入の経路・手口・攻撃者・ 身代金要求の有無はいずれも公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>攻撃者が ESTT の環境へ侵入した。時期・経路（管理系の資格情報の窃取・管理基盤の脆弱性・ 委託先経由のいずれか）は公表されていない</div><div class=fn>根拠: ESTT 公式声明（原因を暗号化型マルウェアを用いたサイバー攻撃とする記載）</div></li><li><div class=stg><span class="b stage">2. 権限昇格</span><span class="b conf">inferred</span><span class=srcs>[1]</span></div><div>仮想化クラスタと**クラウド基盤の管理システム**に被害が及んでいることから、 基盤全体を操作できる権限に到達されたとみられる（本記録の推定）</div><div class=fn>根拠: 被害範囲の記載（&quot;пострадали кластеры виртуализации и системы управления облачной инфраструктурой&quot;）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>仮想化クラスタとクラウド管理系が機能を失い、顧客の仮想サーバーが停止した。 顧客向け管理画面も利用できなくなった。顧客の専用物理サーバーは影響を受けていない</div><div class=fn>根拠: ESTT 公式声明（2026年11月9日ごろ）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>声明は「現時点で入手している情報によれば、顧客データの流出を示す兆候は確認されていない」とする。 調査の完了は示されていない</div><div class=fn>根拠: ESTT 公式声明（&quot;признаков утечки клиентских данных не выявлено&quot;）</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 実行 / 永続化 / 検知回避 / 認証情報アクセス / 内部探索 / 横展開 / 収集 / C2通信</span><div class=sm>侵入後の挙動は一切公表されていない</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>侵入から検知まで</div><div class=mv>侵入の時期が公表されていないため算出できない</div></div><div class=met><div class=ml>障害の発生（11月8日）から原因をランサムウェア攻撃と公表するまで</div><div class=mv>1<span class=fu>日</span></div><div class=fn>公式声明のページに掲載日の記載が無く、Habr の転載日（11月9日）を上限として置いた値である</div></div><div class=met><div class=ml>障害の発生から顧客仮想サーバーの90%復旧まで</div><div class=mv>1<span class=fu>日</span></div><div class=fn>公式声明の時点で90%とされた。全仮想マシンの起動は続報で示されたが日付の記載が無く、 一部 VPS のネットワーク復旧は未了のままである</div></div><div class=met><div class=ml>障害の発生から全面復旧まで</div><div class=mv>完全復旧の時期は示されていない（顧客向け管理画面は復旧しておらず、一部 VPS のネットワーク復旧も残る）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>原因の種別（暗号化型マルウェアを用いたサイバー攻撃）と被害範囲・復旧率・流出の兆候の有無を示す一方、 侵入経路・攻撃者・身代金要求の有無・顧客数は示さなかった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 予備的な段階で原因の種別まで示したことは顧客の判断材料になるが、経路が伏せられている間は 同種の基盤を運用する他社が自社の該当性を判断できない</div></li><li><div class=ui>完全復旧の時期を約束せず、進捗を随時公表する方式を選んだ （&quot;Точные сроки полного восстановления пока назвать не можем&quot;）</div><div class=fn><b>トレードオフ:</b> 期限を示さないことは顧客の代替手段の検討を促す一方、移転の判断材料も与えないため 待つしかない顧客を生む</div></li></ul></div>
+<section id="s6"><h2>壊れたのは顧客のサーバーではなく、顧客のサーバーを動かす仮想化クラスタと管理系だった<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>ESTT の公式声明によれば、起きたことは次のとおりである。</p>
+<ul>
+<li><strong>2026年11月8日</strong>に大規模障害が発生し、顧客サービスの動作が損なわれた</li>
+<li><strong>原因は暗号化型マルウェア（ランサムウェア）を用いたサイバー攻撃</strong>（予備的な情報による）</li>
+<li>被害を受けたのは<strong>仮想化クラスタ</strong>と<strong>ESTT のクラウド基盤を管理するシステム</strong></li>
+<li><strong>顧客の専用物理サーバーは被害を受けず、通常どおり稼働している</strong></li>
+<li><strong>現時点で顧客データの流出を示す兆候は確認されていない</strong></li>
+<li>声明の時点で<strong>顧客の仮想サーバーの90%が復旧</strong>。残りの復旧作業は継続中</li>
+<li><strong>顧客向け管理画面（личный кабинет）は利用できず</strong>、復旧は別途知らせるとした</li>
+<li><strong>完全復旧の正確な時期は示せない</strong></li>
+</ul>
+<p>続報では、主要なクラウド基盤が復旧し<strong>すべての顧客仮想マシンが起動した</strong>一方、<strong>一部の VPS はネットワーク経由で到達できず、ネットワーク設定の復旧を要する</strong>状態が残っているとされた。ESTT は「割合としては小さいが作業量は大きい」としている。</p>
+<p>この被害の切り分けは重要である。<strong>専用物理サーバーの顧客は無影響、クラウド（仮想サーバー）の顧客は全員停止</strong>——顧客側の構成や設定の良し悪しではなく、<strong>どのサービス形態を選んでいたか</strong>で結果が分かれた。</p></section>
+<section id="s7"><h2>6日前の Beget では、管理系を奪われたあとにデータそのものが消された<span class="b slot">背景・過去事例</span><span class=srcs>出典 [4]</span></h2><p>ESTT の事案は単独では読めない。<strong>同じ11月、ロシアのホスティング業界で2件目</strong>である。</p>
+<p>CNews（2026年11月9日）によれば、ロシアの大手ホスティング・ドメイン登録事業者 <strong>Beget</strong> は<strong>2026年11月2日</strong>に侵害を受けた。報じられている内容は ESTT より深刻である。</p>
+<ul>
+<li>攻撃者は <strong>アーキテクチャ全体の管理系（управляющий контур）に到達</strong>し、<strong>インフラを全面的に初期化するスクリプトを実行</strong>した</li>
+<li><strong>VPS・S3・Kubernetes のデータが破壊</strong>され、<strong>IP と CDN の設定も失われた</strong></li>
+<li><strong>VPS のバイナリバックアップは完全に失われた</strong>と Beget 自身が明らかにした</li>
+<li>Beget のクラウドサーバー上には <strong>45万以上のサイト</strong>が置かれていた（Beget 自身の統計）</li>
+<li>波及先には商品トレーサビリティ基盤「Честный знак」、ロシア科学アカデミーの研究所のサイト、ナリヤン=マル市行政のポータル、カーシェアリング BelkaCar が含まれた</li>
+<li><strong>2026年11月3日、.ru／.рф の新規ドメイン登録と他レジストラからの移管受け入れができなくなった</strong>。CNews は Forbes を引いてアクレディテーションの取り消しと伝え、ドメイン調整センターが一時的措置であることを確認したとする。11月3日より前に登録されたドメインの保守・更新義務は継続する</li>
+<li>攻撃者の特定には至っていない。なお Beget の所有者3名は2026年7月から EU の制裁リストにあり、ラトビアの拠点へのアクセスを失っている</li>
+</ul>
+<p><strong>2件を並べると、分かれ目が見える。</strong> どちらも管理系を取られている。違いは<strong>その後に何が残ったか</strong>である。ESTT は90%→全仮想マシン起動まで数日で戻し、Beget は VPS のバイナリバックアップを失って「ほぼ100%のサイトは復旧可能」という水準にとどまった。<strong>管理系の侵害を防げなかった時点では同じ</strong>で、差がついたのは復旧資源が管理系から独立していたかどうかである（本記録の評価）。</p>
+<p>なお Beget の件は本記録の対象事案ではない。ここでは<strong>背景と比較</strong>として扱う。</p></section>
+<section id="s8"><h2>侵入経路・攻撃者・身代金・顧客数・バックアップの状況はいずれも公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p>ESTT の声明は原因の種別（暗号化型マルウェア）と被害の範囲、復旧の進捗を示す一方、技術者が自組織に当てはめるために必要な情報を欠いている。</p>
+<ul>
+<li><strong>侵入経路・初期侵入の手口。</strong> 管理系の資格情報の窃取か、管理基盤の脆弱性か、委託先経由かは示されていない</li>
+<li><strong>攻撃者・ランサムウェアの種別と、身代金要求・支払の有無。</strong> 恐喝の有無にも触れていない</li>
+<li><strong>影響を受けた顧客数・仮想サーバーの総数・停止時間。</strong> 復旧率90%の<strong>分母が無い</strong></li>
+<li><strong>バックアップの状況。</strong> 復旧が進んだことからバックアップかスナップショットが残っていたとみられるが、声明は一切触れていない。<strong>Beget との差を説明する鍵がここにある</strong></li>
+<li><strong>データ流出の有無の最終判断。</strong> 「現時点で入手している情報によれば兆候は確認されていない」という段階の記載である</li>
+<li><strong>顧客への補償・SLA の適用</strong></li>
+</ul>
+<p>また、ESTT のサイトに掲載された公式声明と続報の<strong>両ページに掲載日の記載が無い</strong>。本記録は Habr が転載した2026年11月9日を公表日の上限として扱った。</p></section>
+<section id="s9"><h2>ホスティングの集約は「相手のバックアップ設計を自社のリスクとして引き受ける」こと（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [4]</span></h2><p>ここから先は本記録の判断である。</p>
+<p>本件が日本の CISO に示すのは、<strong>クラウド・ホスティング事業者の管理系が自社のサービス継続性の単一障害点になりうる</strong>という当たり前の事実が、11月のロシアで2回続けて現実になったということである。</p>
+<p>注目すべきは、<strong>ESTT の専用物理サーバーの顧客は無影響だった</strong>点である。攻撃者が到達したのは仮想化クラスタとクラウド管理系であり、<strong>「共有された制御面」を持つ顧客だけが同時に落ちた</strong>。マルチテナントの効率は、制御面の侵害時には同時被害の係数に変わる。</p>
+<p>そして <strong>Beget の事例が示すのは、バックアップの置き場所の問題</strong>である。VPS のバイナリバックアップが管理系から到達できる場所にあれば、初期化スクリプトはそれも消す。<strong>自社のデータのバックアップを、自社の管理下で、事業者とは別の場所に持っているか</strong>——これはホスティング事業者を選ぶときの価格表には書かれていない。</p>
+<p>日本の組織が取るべき確認は3つに絞られる（本記録の判断）。①利用中のホスティング・クラウドについて、<strong>自社でも取得している復旧可能なバックアップ</strong>が別事業者・別アカウントにあるか。②<strong>事業者側の管理画面が使えない状態</strong>で何ができなくなるか（ESTT では残高の入金すらできなかった——つまり支払の継続も止まる）。③<strong>専用環境と共有環境の切り分け</strong>を、重要度に応じて意図的に設計しているか。</p>
+<p>なお本記録は、ロシアのホスティング2社が相次いで侵害された理由を推定しない。攻撃者も動機も公表されていない。<strong>「同じ時期に同じ国の同業2社」という事実だけを記録する。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>侵入経路</th><td>公表されていない。公式声明は「予備的な情報によれば、障害の原因は暗号化型マルウェアを用いた サイバー攻撃である」とのみ記す。被害が仮想化クラスタとクラウド基盤の管理システムに及んでいる点から 管理権限に到達されたとみられるが、経路を示す記載は無い</td></tr><tr><th>侵入経路の確度</th><td>公表なし</td></tr><tr><th>ransom</th><td><b>stance_statement:</b> 身代金の要求の有無・金額・支払いの是非について、ESTT の公式声明にも続報にも記述が無い。 同社は原因の種別（暗号化型マルウェア）と被害範囲・復旧の進捗のみを述べており、 恐喝を受けたかどうかも示していない。本記録の作成者が2026年11月10日に確認した範囲でも、 ESTT 名でのリークサイトへの掲載は確認していない。支払いの有無についての判断材料は存在しない。　<b>paymentの公表状況:</b> 公表されていない　<b>demandの公表状況:</b> 公表されていない　<b>leaksite_listedの公表状況:</b> 公表されていない　<b>leaksite（補足）:</b> 窃取データがリークサイトに掲載されたか、恐喝に用いられたかは公表されていない。 声明は「現時点で入手している情報によれば顧客データの流出を示す兆候は確認されていない」とする段階である。　<b>出典:</b> 1、2</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年11月9日　<b>補足:</b> 顧客データの流出を示す兆候は確認されていないとされており、悪用の報告も無い。 ただし調査の完了は示されていないため、確定した判断ではない。</td></tr><tr><th>ログの有無</th><td>声明はログの保全状況に触れていない。クラウド基盤の管理システムが被害を受けているため、 基盤側の監査ログが影響を受けた可能性はあるが、公表されていない。 「流出の兆候は確認されていない」という判断が、どのログに基づくものかも示されていない。</td></tr><tr><th>運用への影響</th><td><ul class=cl><li>顧客の仮想サーバーが停止（声明時点で90%が復旧）</li><li>顧客向け管理画面（личный кабинет）が利用できず、残高の入金もできない状態が継続</li><li>一部 VPS がネットワーク経由で到達できず、ネットワーク設定の復旧が別作業として残る</li><li>顧客の専用物理サーバーは影響を受けず通常稼働</li></ul><span class="b rsn">stated</span></td></tr><tr><th>復旧状況</th><td>公式声明の時点で顧客仮想サーバーの90%が復旧。続報ではすべての顧客仮想マシンが起動したとされたが、 一部 VPS のネットワーク復旧と顧客向け管理画面の復旧は未了である。完全復旧の時期は示されていない。</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期非公表（2026年11月8日以前）</td><td class=nowrap><span class="b kind">発生</span></td><td>攻撃者が ESTT の仮想化クラスタとクラウド基盤の管理システムに到達した。 初期侵入の時期・経路は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年11月8日</td><td class=nowrap><span class="b kind">発生</span></td><td>大規模障害が発生し、顧客サービスの動作が損なわれた。ESTT は当初「IT インフラの深刻な技術障害」 として告知し、一部の顧客サービスを復旧させたうえで安定化作業を継続しているとした</td></tr><tr><td class="sm nowrap tw">2026年11月8日以降（日付非公表）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>技術陣が24時間体制で復旧作業に入った。顧客向け管理画面（личный кабинет）は利用できず、 残高の入金もできない状態となった</td></tr><tr><td class="sm nowrap tw">2026年11月9日ごろ</td><td class=nowrap><span class="b kind">公表</span></td><td>ESTT が公式声明「Авария 8 ноября: официальное заявление ESTT」を公表。 原因が暗号化型マルウェアを用いたサイバー攻撃であること、被害が仮想化クラスタと クラウド基盤の管理システムに及んだこと、専用物理サーバーは無影響であること、 顧客データ流出の兆候が確認されていないこと、顧客の仮想サーバーの90%が復旧したこと、 完全復旧の時期は示せないことを明らかにした</td></tr><tr><td class="sm nowrap tw">2026年11月9日 08:52 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>Habr（情報セキュリティ HUB）が ESTT の声明を「хостинг-провайдер ESTT: причина сбоя инфраструктуры — кибератака с использованием программы-шифровальщика」として転載・報道した。 本記録はこの記事が載った11月9日の収集分を起点としている</td></tr><tr><td class="sm nowrap tw">時期非公表（2026年11月9日以降）</td><td class=nowrap><span class="b kind">復旧</span></td><td>続報「ESTT: завершаем восстановление облачной инфраструктуры」で、主要なクラウド基盤が復旧し すべての顧客仮想マシンが起動したと公表。一部の VPS はネットワーク経由で到達できず ネットワーク設定の復旧を要する状態が残るとした</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が ESTT の公式声明と続報を取得して要点を確認した。 侵入経路・攻撃者・身代金要求の有無・影響した顧客数・完全復旧の時期はいずれも記載が確認できなかった。 両ページには掲載日の記載が無かった</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>公式声明・続報の掲載日</span><div class=sm>ESTT のサイトに掲載された公式声明と続報の両ページに掲載日の記載が無い。 本記録は Habr が声明を転載した2026年11月9日 08:52 UTC を公表日の上限として扱った</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>復旧の進捗（90% と「すべての仮想マシンが起動」）</span><div class=sm>公式声明は「顧客仮想サーバーの90%が復旧」とし、続報は「すべての顧客仮想マシンが起動した」とする。 両ページに日付が無いため、どちらが新しいかは文脈（続報が「復旧を完了させつつある」と題する）から 判断した。本記録では声明 → 続報の順とした</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Beget のアクレディテーション（.ru／.рф の登録権限）の扱い</span><div class=sm>CNews は Forbes を引いて「アクレディテーションを失い新規登録・移管受け入れができなくなった」とし、 ドメイン調整センターが一時的措置であることを確認したと伝える。 本記録の作成者はドメイン調整センター（cctld.ru）の発表を確認できなかった（報道一覧ページが 404）。 検索結果には「更新の一時凍結・優先更新期間の導入」という別の説明も見られたため、 措置の正確な内容は裏取りできていない。本記録では CNews の記載として扱う</div></li><li><span class="b dk">本記録による推定</span><span class=ui>Beget 事案の位置づけ</span><div class=sm>Beget の侵害（2026年11月2日）は本記録の対象事案ではない。本記録では 「ホスティング事業者の管理系が奪われたときに何が残るか」を比較するための 背景・先行事例として扱っており、両事案の関連（同一の攻撃者・同一の手口）を示す資料は無い</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>ESTT の運営主体の正式名称</span><div class=sm>本記録の作成者が確認した範囲では、公式サイトは「ESTT」の表記を用いており、 法人としての正式名称・所在地は確認していない。サイトは dcestt.ru に移っている （estt.ru は 301 で転送される）</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>仮想化クラスタとクラウド管理系の被害が顧客の仮想サーバーへ広がり、専用物理サーバーには及ばなかった範囲</div><div class=svgwrap><svg viewBox="0 0 794 230" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,115.0 C193.0,115.0 193.0,84.0 220,84.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,115.0 C193.0,115.0 193.0,153.0 220,153.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,84.0 C397.0,84.0 397.0,121.0 424,121.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,153.0 C397.0,153.0 397.0,46.0 424,46.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,46.0 C601.0,46.0 601.0,64.0 628,64.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,121.0 C601.0,121.0 601.0,64.0 628,64.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,190.0 C601.0,190.0 601.0,64.0 628,64.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="92.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（実体非公表）</text><rect x="220" y="53.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラウド基盤の管理システ</text><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ム</text><text x="295.0" y="102.0" text-anchor="middle" fill="#64b5f6" font-size="10">被害</text><rect x="220" y="129.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="151.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">仮想化クラスタ</text><text x="295.0" y="164.0" text-anchor="middle" fill="#64b5f6" font-size="10">被害</text><rect x="424" y="16.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客の仮想サーバー</text><text x="499.0" y="51.0" text-anchor="middle" fill="#80cbc4" font-size="10">停止 → 90%復旧 →</text><text x="499.0" y="63.0" text-anchor="middle" fill="#80cbc4" font-size="10"> 全起動</text><rect x="424" y="90.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客向け管理画面（лич</text><text x="499.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ный кабинет）</text><text x="499.0" y="139.0" text-anchor="middle" fill="#f48fb1" font-size="10">利用不可が継続</text><rect x="424" y="166.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="499.0" y="188.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客の専用物理サーバー</text><text x="499.0" y="201.0" text-anchor="middle" fill="#80cbc4" font-size="10">無影響・通常稼働</text><rect x="628" y="39.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="61.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客のサイト・アプリ・業</text><text x="703.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">務（件数非公表）</text><rect x="628" y="103.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="125.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">【比較】Beget（11</text><text x="703.0" y="139.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/2・管理系奪取→初期化</text><text x="703.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スクリプト）</text><text x="703.0" y="166.0" text-anchor="middle" fill="#80cbc4" font-size="10">VPS バイナリバックア</text><text x="703.0" y="178.0" text-anchor="middle" fill="#80cbc4" font-size="10">ップ喪失</text></svg></div><div class=fn>layer 0 は攻撃者。layer 1 は被害を受けた ESTT の仮想化クラスタとクラウド基盤の管理システム。 layer 2 は停止した顧客の仮想サーバーと利用できなくなった顧客向け管理画面、および影響を受けなかった 専用物理サーバー。layer 3 は顧客の事業。侵入経路は公表されていない。 右側は比較のための先行事例（Beget・2026年11月2日）で、本事案の構成要素ではない。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>検知の端緒（監視による検知か、障害として顕在化してからの判明か）は公表されていない</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>仮想化基盤・クラウド管理系への管理アクセスを、専用の踏み台と多要素認証・接続元制限で絞る</div><div class=ctl><span class="b eff">検知できた</span>管理系の認証に対する異常時間帯・異常地理のログイン監視</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>権限昇格の過程は公表されていない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ハイパーバイザ・オーケストレータの管理権限を日常運用の権限と分離し、必要時のみ付与する</div><div class=ctl><span class="b eff">影響を限定できた</span>テナント横断の操作（一括停止・一括削除）に承認手続きと二人制を要求する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>障害として即時に顕在化した。11月8日に障害、翌日ごろに原因を公表している</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>制御面（管理系）とデータ面（顧客ワークロード）の障害を分離し、片方の喪失で全停止しない設計にする</div><div class=ctl><span class="b eff">影響を限定できた</span>顧客向け管理画面・課金系を本番基盤とは別の環境に置き、障害時も疎通と告知ができる状態を保つ</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">公表されていない</span><div class=sm>「兆候が確認されていない」は「流出していない」とは異なる。どのログで何を確認したのかは 示されていない</div></td><td><div class=ctl><span class="b eff">検知できた</span>大量の外部転送を検知できるよう、基盤側の egress を記録し閾値監視を置く</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>原因の種別（暗号化型マルウェアを用いたサイバー攻撃）と被害範囲・復旧率・流出の兆候の有無を示す一方、 侵入経路・攻撃者・身代金要求の有無・顧客数は示さなかった</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。「専用物理サーバーは無影響」「クラウドの顧客が対象」という 切り分けを早い段階で示した点は、顧客が自分の該当性を即座に判断できる形になっている。 一方で復旧率90%の分母が無く、影響規模は読者に見えない</td></tr><tr><td>完全復旧の時期を約束せず、進捗を随時公表する方式を選んだ （&quot;Точные сроки полного восстановления пока назвать не можем&quot;）</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。守れない期限を出さない判断は妥当だが、 顧客向け管理画面が使えない状態では顧客側が自分のサーバーの状況を確認する手段も無く、 進捗の公表以外に情報がない状態が続いた</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>預け先の「管理系が落ちたとき」を自社の事業継続計画の前提に入れる</div><div class=lw>被害を受けたのは顧客のサーバーではなく仮想化クラスタとクラウド管理系で、 顧客側の設定の良し悪しに関わらず全員が同時に停止した</div><div class=la><b>取るべき行動</b> 利用中のホスティング・クラウドごとに「事業者の管理系が使えない状態」で何ができなくなるかを 書き出す。ESTT では残高の入金すらできず支払の継続も止まった。 復旧見込みが示されない前提で、代替手段へ切り替える判断基準（何時間で見切るか）を事前に決める</div></li><li><div class=lp>バックアップは「預け先の管理系から到達できない場所」に置く</div><div class=lw>6日前の Beget では攻撃者が管理系に到達して初期化スクリプトを実行し、 VPS のバイナリバックアップが完全に失われたと報じられている</div><div class=la><b>取るべき行動</b> 重要なデータについて、利用中の事業者とは別の事業者・別の認証系で復元可能な複製を持つ。 「事業者がバックアップを取っている」ことを自社の備えとして数えない。 復元の試験を年1回以上、別事業者側で実施する</div></li><li><div class=lp>共有環境と専用環境の選択を、重要度に応じて意図的に設計する</div><div class=lw>ESTT では専用物理サーバーの顧客は無影響で、クラウド（仮想）の顧客だけが停止した</div><div class=la><b>取るべき行動</b> システムの重要度区分ごとに、共有制御面を受け入れるか否かを明記した基準を作る。 コスト比較だけで決めている状態をやめ、制御面の侵害時の同時被害を見積もりに含める</div></li><li><div class=lp>「流出の兆候は確認されていない」を「流出していない」と読み替えない</div><div class=lw>ESTT の記載は「現時点で入手している情報によれば」という留保つきであり、 調査の完了は示されていない</div><div class=la><b>取るべき行動</b> 預け先の公表文を受け取ったとき、留保の文言（現時点・予備的・兆候）をそのまま社内報告に残す。 確定表現への書き換えを禁止し、調査完了の報告を受けるまで未確定として扱う</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>制御面（管理系）とデータ面を障害の単位として分ける</div><div class=lw>管理系の被害が顧客ワークロードの全停止に直結した</div><div class=la><b>取るべき行動</b> 自社が基盤を運用する場合、ハイパーバイザ・オーケストレータの管理系を 業務ネットワークから分離し、管理操作は専用の踏み台のみから行う。 テナント横断の一括操作には承認と二人制を要求する</div></li><li><div class=lp>顧客向け管理画面・課金系を本番基盤から切り離す</div><div class=lw>ESTT では顧客向け管理画面が復旧せず、顧客は自分のサーバーの状態確認も入金もできなかった</div><div class=la><b>取るべき行動</b> ステータスページ・管理画面・課金系を本番基盤とは別の環境（別事業者が望ましい）に置き、 本番が全停止しても告知と疎通が続く構成にする。障害時の告知手段を本番の中に置かない</div></li><li><div class=lp>ネットワーク設定を「復旧対象の構成情報」として管理する</div><div class=lw>ESTT では仮想マシンが起動した後も一部 VPS がネットワーク経由で到達できず、 ネットワーク設定の復旧が別作業として残った。Beget では IP と CDN の設定が失われた</div><div class=la><b>取るべき行動</b> IP 割当・ルーティング・DNS・CDN の設定をコードまたはエクスポートで外部に保全し、 復旧手順に「ネットワーク設定の再適用」の工程を明示する。 仮想マシンのイメージだけを守っても疎通は戻らない</div></li><li><div class=lp>預け先の障害時に自社が何を見られるかを、平時に確かめる</div><div class=lw>管理画面が落ちた状態では、事業者の進捗公表以外に情報源が無かった</div><div class=la><b>取るべき行動</b> 自社側で監視（外部からの到達性・応答時間）を持ち、事業者の管理画面に依存せずに 自社サービスの状態が分かるようにする。監視の通知経路も当該事業者の上に置かない</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 事業上重要なシステムを、共有の制御面を持つクラウド・仮想ホスティングに置いている</td><td class=sm>ESTT では仮想化クラスタと管理系の被害でクラウド顧客が全員停止し、専用物理サーバーは無影響だった</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> バックアップを利用中の事業者の中だけに置いており、別事業者・別認証系の複製が無い</td><td class=sm>Beget では管理系を奪われたあとに VPS のバイナリバックアップが完全に失われた</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自社サービスの状態監視・障害告知の手段を、同じ事業者の基盤の上に置いている</td><td class=sm>ESTT では顧客向け管理画面が復旧せず、顧客は状態確認も入金もできなかった</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ネットワーク設定（IP 割当・ルーティング・DNS・CDN）を外部に保全していない</td><td class=sm>仮想マシンが起動しても一部 VPS はネットワーク設定の復旧を要し、疎通が戻らなかった</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 預け先の復旧見込みが示されない場合に代替手段へ切り替える判断基準を決めていない</td><td class=sm>ESTT は完全復旧の時期を示さず、顧客は待つか移転するかの判断を自ら行う必要があった</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 基盤の管理権限が日常運用の権限と分離されておらず、テナント横断操作に承認手続きが無い</td><td class=sm>被害がクラウド基盤の管理システムに及んでおり、基盤全体を操作できる権限に到達されたとみられる</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月9日ごろ（掲載日の記載なし） ESTT</span> <a href="https://dcestt.ru/company-news/estt-official-statement-november-8-2026" target="_blank" rel="noreferrer noopener nofollow">Авария 8 ноября: официальное заявление ESTT</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料・公式声明。本記録の作成者が2026年11月10日に取得した。原因が暗号化型マルウェアを 用いたサイバー攻撃であること、仮想化クラスタとクラウド基盤の管理システムが被害を受けたこと、 顧客の専用物理サーバーが無影響であること、顧客データ流出の兆候が確認されていないこと、 顧客仮想サーバーの90%が復旧したこと、顧客向け管理画面が利用できないこと、 完全復旧の時期を示せないことの出典。ページに掲載日の記載は無い)）</span></li><li><span class=rid>[2]</span> <span class=sm>掲載日の記載なし（2026年11月9日以降とみられる） ESTT</span> <a href="https://dcestt.ru/company-news/cloud-infrastructure-recovery" target="_blank" rel="noreferrer noopener nofollow">ESTT: завершаем восстановление облачной инфраструктуры</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料・復旧の続報。本記録の作成者が2026年11月10日に取得した。主要なクラウド基盤の復旧、 すべての顧客仮想マシンが起動したこと、一部 VPS がネットワーク経由で到達できず ネットワーク設定の復旧を要することの出典。ページに掲載日の記載は無く、 データ流出の有無への言及も無い)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月9日 08:52 UTC Habr（情報セキュリティ HUB）</span> <a href="https://habr.com/ru/articles/1105374/" target="_blank" rel="noreferrer noopener nofollow">Хостинг-провайдер ESTT: причина сбоя инфраструктуры — кибератака с использованием программы-шифровальщика</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった報道。本文は保存分〈output/articles/20261109/0297_habrhub_estt.md〉で確認した。 ESTT の声明の転載に加え、障害発生当初の告知内容〈IT インフラの深刻な技術障害・ 管理画面が使えず残高の入金もできないこと・24時間体制の復旧作業〉の出典。 ESTT のページに掲載日が無いため、本記録は本記事の公開日時を公表日の上限として用いた)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月9日 CNews</span> <a href="https://www.cnews.ru/news/top/2026-11-09_dobit_lezhachegoisterzannogo" target="_blank" rel="noreferrer noopener nofollow">Истерзанного кибератакой провайдера Beget лишили аккредитации и права регистрировать новые домены</a> <span class="b kind">記事</span><span class=sm>（(比較・背景。本文は保存分〈output/articles/20261109/0156_cnews_beget.md〉で確認した。 Beget の2026年11月2日の侵害、管理系への到達と初期化スクリプトの実行、VPS・S3・Kubernetes の データ破壊、IP・CDN 設定の喪失、VPS のバイナリバックアップの完全喪失、45万以上のサイト、 波及先、11月3日の .ru／.рф 新規登録・移管受け入れの停止、所有者の EU 制裁リスト掲載の出典。 本記録の作成者はドメイン調整センターの発表を確認できていない)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月10日</span> <span class="b rev">新規作成</span> 新規作成。2026年11月9日の日次ニュース（Habr・CNews）を起点に、ESTT の公式声明と復旧の続報を 取得して裏取りした。原因の種別・被害範囲・専用物理サーバーの無影響・流出の兆候なし・ 復旧率90%・管理画面の停止・完全復旧時期の未定はいずれも一次資料で確認している。 侵入経路・攻撃者・身代金・顧客数・バックアップの状況は公表されていないため未確定事項とした。 Beget（2026年11月2日）は本事案ではなく比較・背景として扱い、 ドメイン調整センターの発表を確認できなかったことを discrepancies に記録した。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">ESTT</span><span class="b tag">ロシア</span><span class="b tag">ホスティング</span><span class="b tag">データセンター</span><span class="b tag">ランサムウェア</span><span class="b tag">仮想化クラスタ</span><span class="b tag">クラウド管理系</span><span class="b tag">制御面</span><span class="b tag">VPS</span><span class="b tag">管理画面停止</span><span class="b tag">復旧</span><span class="b tag">バックアップ</span><span class="b tag">Beget</span><span class="b tag">事業継続</span><span class="b tag">マルチテナント</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-10 10:10 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
