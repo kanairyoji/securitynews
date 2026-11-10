@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Vook、分析ツールの脆弱性経由でDB侵害 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0972</span>Vook、分析ツールの脆弱性経由でDB侵害</h1>
+<header class="site-header">
+  <p class="subtitle">映像制作者向けプラットフォーム「Vook」を運営する株式会社Vookで、**社内業務で使っていたデータ分析ツールの脆弱性**が悪用され、同ツール経由でデータベースへ不正アクセスを受けた——発覚の端緒は**2026年10月14日の社内点検で見つかった「当社が作成していない不審なアカウント」**で、情報を取得されていた可能性の確認は**10月22日**、公表は**10月30日（第一報）**。漏えいの可能性がある項目は氏名・メールアドレス・電話番号・住所・生年月日・勤務先・職務経歴／学歴の一部・**ログイン用の認証情報**・登録作品の閲覧パスワード・IPアドレス・SNSプロフィール・決済サービスの顧客IDなど広範で、対象は会員・イベント申込者・問い合わせ者（未登録者を含む）・利用企業と取引先の担当者に及ぶ。**ツールは閲覧のみの設定で改ざん・破壊は確認されていない。件数・人数・ツール名・脆弱性の識別子・侵入時期はいずれも公表されていない**</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">日本の組織が当事者</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">権限管理の不備</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月30日</span>
+  <span>最終更新: 2026年10月30日</span>
+</div>
+
+<div class="lead"><p><strong>株式会社Vook</strong>は2026年10月30日、同社への不正アクセスによる個人情報漏えいの可能性について第一報を公表した。</p>
+<p>経路は<strong>社内業務で利用していたデータ分析ツール</strong>（公表文は「本ツール」と呼び、製品名を示していない）である。そのツールに<strong>存在した脆弱性が悪用され</strong>、<strong>本ツールを経由して同社のデータベースへ第三者が不正にアクセスし、情報を取得していた可能性</strong>が確認された。</p>
+<ul>
+<li><strong>2026年10月14日</strong>：社内の点検で、<strong>本ツール内に同社が作成していない不審なアカウント</strong>があることを確認</li>
+<li><strong>2026年10月22日</strong>：調査により、第三者が本ツールの脆弱性を悪用してデータベースに不正アクセスし情報を取得していた可能性を確認。同日、<strong>会員のログイン用認証情報をすべて無効化</strong>、データベース接続に用いる認証情報も変更</li>
+<li><strong>2026年10月30日</strong>：第一報を公表</li>
+</ul>
+<p><strong>本ツールはデータベースの閲覧のみが可能な設定</strong>としており、データの更新・削除はできないため、<strong>データの改ざん・破壊の被害は確認されていない</strong>。</p>
+<p>漏えいの可能性がある対象者は、<strong>Vook会員、同社主催イベントの申込者、問い合わせをした人（会員登録していない人を含む）、同社サービスを利用する企業の担当者、取引先の担当者</strong>。項目は<strong>氏名・メールアドレス・電話番号・住所・生年月日・勤務先・職務経歴／学歴の一部・ログイン用の認証情報（10月22日に無効化済み）・登録した作品の閲覧パスワード・IPアドレス・SNSプロフィール等・決済サービスの顧客ID・アンケート回答・同社からの通知内容等</strong>と広範である。<strong>クレジットカード情報・銀行口座情報は含まれず</strong>（決済は外部の決済サービス）、<strong>会員のログインパスワードも含まれない</strong>。</p>
+<p>同社は弁護士に相談のうえ<strong>個人情報保護委員会へ報告</strong>し、<strong>警察にも相談</strong>している。本ツールの利用は停止した。<strong>件数・人数、ツールの名称、脆弱性の識別子、侵入時期、実際に取得された情報の範囲はいずれも公表されておらず、調査が続いている。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>9</span></div><ul><li><span class=ui>データ分析ツールの名称・提供元と、悪用された脆弱性の識別子（CVE 等）</span><span class="b rsn">公表されていない</span><div class=sm>公表文は「データ分析ツール（以下「本ツール」といいます。）」とのみ呼び、製品名を示さない。 既知の脆弱性の放置だったのか、未知の脆弱性だったのかも区別できない。 **同じツールを社内で使っている他組織が、自社の該当性を判断できない状態である** （本記録の評価）</div></li><li><span class=ui>漏えいの可能性がある件数・人数と、実際に取得された情報の範囲</span><span class="b rsn">調査中</span><div class=sm>第一報は対象者の属性のみを示し、件数・人数を記載していない。 「情報を取得していた可能性がある」という表現にとどまり、取得の事実も確定していない。 範囲と対象者の特定は継続中である</div></li><li><span class=ui>侵入の時期と、不審なアカウントが作られてから発覚までの期間</span><span class="b rsn">公表されていない</span><div class=sm>10月14日の社内点検で不審なアカウントが見つかったことのみが示され、 それがいつ作られたかは公表されていない。侵入から発覚までの滞留時間が分からない</div></li><li><span class=ui>「ログイン用の認証情報」と「ログインパスワード」の違い</span><span class="b rsn">公表されていない</span><div class=sm>漏えいの可能性がある項目に「ログイン用の認証情報（2026年10月22日に無効化済み）」が 挙げられている一方、注記では「会員の皆様のログインパスワードは含まれておりません」とされる。 前者が何を指すのか（トークン・セッション・外部ID連携の識別子等）の説明は無い。 **読者が二次被害のリスクを評価できない**（本記録の評価）</div></li><li><span class=ui>本ツールが外部から接続できる状態にあったか、またその経路</span><span class="b rsn">公表されていない</span><div class=sm>再発防止策に「外部から接続できる社内システムの点検」が挙げられていることから、 本ツールが外部から到達できたとみられるが（本記録の推定）、公表文に明示は無い。 インターネットに直接公開されていたのか、VPN 等の背後だったのかも示されていない</div></li><li><span class=ui>「登録した作品の閲覧パスワード」の悪用による作品への到達の有無</span><span class="b rsn">公表されていない</span><div class=sm>映像制作者が未公開作品を限定共有するための鍵であり、漏えいすれば作品そのものに 到達されうる。公表文は閲覧パスワードの無効化・再設定については触れていない</div></li><li><span class=ui>攻撃者の実体・送信元・動機</span><span class="b rsn">公表されていない</span><div class=sm>個人・集団の区別も示されていない</div></li><li><span class=ui>利用企業・取引先への個別の説明と、企業側での対応</span><span class="b rsn">公表されていない</span><div class=sm>対象者に「同社サービスをご利用の企業のご担当者様」「お取引先様のご担当者様」が 含まれているが、法人向けの連絡をどう行うかは示されていない</div></li><li><span class=ui>本ツールの利用再開の条件・時期</span><span class="b rsn">公表されていない</span><div class=sm>「引き続き本ツールの利用を停止しつつ」とされるのみ</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社Vook（ヴック）</span><span class="b role">被害組織</span><span class="b lc">確認済</span><span class="b lc">判明 2026年10月22日</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>映像制作者向けのプラットフォーム「Vook」を運営する事業者。会員向けのサービスに加え、 イベントの主催、企業向けのサービス提供を行っている。公表文は代表取締役 岡本俊太郎の名で 出された「第一報」である</p><p class=org-p><span class=org-l>影響</span>社内業務で利用していたデータ分析ツールの脆弱性を悪用され、同ツール経由で データベースへ不正アクセスを受けた。会員・イベント申込者・問い合わせ者・利用企業と 取引先の担当者の個人情報が漏えいした可能性がある。本ツールの利用を停止し、 会員のログイン用認証情報をすべて無効化した。漏えいの範囲と対象者の特定は継続中</p></div></div><div class=org><div class=org-h><span class=org-n>Vook会員・イベント申込者・問い合わせ者（件数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Vook会員、同社主催イベントに申し込んだ人、同社に問い合わせをした人 （**会員登録をしていない人を含む**）。公表文は対象者をこの範囲で示している</p><p class=org-p><span class=org-l>影響</span>氏名・メールアドレス・電話番号・住所・生年月日・勤務先・職務経歴／学歴の一部・ ログイン用の認証情報・登録した作品の閲覧パスワード・IPアドレス・SNSプロフィール等・ 決済サービスの顧客ID・アンケート回答・通知内容等が漏えいした可能性がある （対象項目は個人により異なる）。会員は2026年10月22日の認証情報の無効化により 再ログインが必要になった。対象者への個別連絡は調査の結果がまとまり次第とされている</p></div></div><div class=org><div class=org-h><span class=org-n>Vook のサービスを利用する企業・取引先の担当者（件数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>同社サービスを利用する企業の担当者、および同社の取引先の担当者。 公表文が漏えいの可能性がある対象者として明記している</p><p class=org-p><span class=org-l>影響</span>担当者個人の氏名・連絡先・勤務先などが漏えいした可能性がある。 企業側での対応・影響は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>社内業務で利用していたデータ分析ツール（製品名非公表）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>同社が社内業務で利用していたデータ分析ツール。同社のデータベースへ**閲覧のみ可能な設定**で 接続していた。**このツールに存在した脆弱性が悪用され、ツールを経由してデータベースへの 不正アクセスが行われた**。製品名・提供元・自社運用か SaaS かは公表されていない</p><p class=org-p><span class=org-l>影響</span>ツール内に同社が作成していない不審なアカウントが作られていた。 本件の発生を受けて利用が停止された</p></div></div><div class=org><div class=org-h><span class=org-n>個人情報保護委員会</span><span class="b role">監督官庁</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>個人情報の保護に関する法律に基づく報告先</p><p class=org-p><span class=org-l>影響</span>Vook から弁護士への相談を経て本件の報告を受けた。報告の日付、報告後の対応は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>警察（相談先・担当部署非公表）</span><span class="b role">捜査機関</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>公表文は「警察にも相談しております」と記す。都道府県警・担当部署は示されていない</p><p class=org-p><span class=org-l>影響</span>相談の内容、捜査の有無は公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>Vook のデータベースへ不正アクセスした主体（実体非公表）</span><span class="b role">推定加害者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>データ分析ツールの脆弱性を悪用し、ツール内に同社が作成していないアカウントを作成した上で、 ツール経由でデータベースにアクセスし情報を取得していた可能性がある主体。 個人・集団の区別、所在、動機はいずれも公表されていない</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>不審なアカウントの確認（10月14日）から不正アクセスの可能性確認（10月22日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>日</span></div><div class=fn>公表文が示す2つの日付の差（本記録の算出）。**不審なアカウントという明確な異常を 見つけてから、データベースへの到達が確認されるまでに8日**かかっている。 この間に会員の認証情報は無効化されていない（無効化は10月22日）</div></div><div class=fig><div class=fh><span class=fl>不正アクセスの可能性確認（10月22日）から第一報の公表（10月30日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>8<span class=fu>日</span></div><div class=fn>公表文が示す2つの日付の差（本記録の算出）。封じ込め（認証情報の無効化・接続情報の変更）は 確認と同日の10月22日に実施されており、**公表までの8日は封じ込めの遅れではない**</div></div><div class=fig><div class=fh><span class=fl>発覚の端緒（10月14日）から第一報の公表（10月30日）まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>16<span class=fu>日</span></div><div class=fn>本記録の算出。対象者への個別連絡は公表時点でまだ開始されていない</div></div><div class=fig><div class=fh><span class=fl>漏えいの可能性がある件数・人数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>0<span class=fu>件</span></div><div class=fn>**公表されていない。** 第一報は対象者の属性（会員・イベント申込者・問い合わせ者・ 利用企業と取引先の担当者）のみを示し、件数も人数も記載していない。 「引き続き、漏えいの可能性のある情報の範囲と、対象となるお客様の特定を進めてまいります」と されている段階である。値 0 は**件数が公表されていないことを示す placeholder** であり、 被害が0件という意味ではない（本記録の注記）</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>攻撃者が Vook の社内業務用データ分析ツールに存在した脆弱性を悪用し、同ツール内に Vook が作成していないアカウントを作成した。そのうえで本ツールを経由して Vook の データベースへアクセスし、情報を取得していた可能性がある。ツールはデータベースの 閲覧のみ可能な設定であったため、改ざん・破壊は確認されていない。 脆弱性の内容・ツール名・侵入時期・取得されたデータの範囲は公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>攻撃者が社内業務用のデータ分析ツールに存在した脆弱性を悪用し、ツールへ到達した。 脆弱性の種別（認証回避・リモートコード実行・SSRF 等）、既知か未知か、 ツールが外部から直接到達できたかは公表されていない</div><div class=fn>根拠: Vook 第一報（「本ツールに存在した脆弱性が悪用され」・2026年10月30日）</div></li><li><div class=stg><span class="b stage">2. 永続化</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>攻撃者が本ツール内に **Vook が作成していないアカウント**を作成した。 これが10月14日の社内点検で見つかり、発覚の端緒となった。 作成の時期は公表されていない</div><div class=fn>根拠: Vook 第一報（「本ツール内に当社が作成していない不審なアカウントがあることを確認」）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>攻撃者は本ツールを経由して Vook のデータベースにアクセスし、情報を取得していた 可能性がある。ツールは**閲覧のみが可能な設定**であったため、データの更新・削除は できず、改ざん・破壊の被害は確認されていない。 取得された情報の範囲は調査中で確定していない</div><div class=fn>根拠: Vook 第一報（「本ツールを経由して当社のデータベースに不正にアクセスした上で、情報を取得していた可能性」）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>取得された情報の外部への持ち出しについて、公表文は「情報を取得していた可能性がある」 とするにとどまる。持ち出しの確認、流出先、二次利用の有無は公表されていない。 二次被害は現時点で確認されていないとされる</div><div class=fn>根拠: Vook 第一報（「現在のところ、本件に起因する個人情報の不正利用などの二次被害は確認されておりません」）</div></li></ol><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 実行 / 権限昇格 / 検知回避 / 認証情報アクセス / 内部探索 / 横展開 / C2通信</span><div class=sm>ツールへの到達とアカウント作成、データベースへのアクセス以外の挙動は公表されていない。 他の社内システムへの横展開の有無についても記載が無い</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>侵入から発覚（不審なアカウントの確認）まで</div><div class=mv>侵入の時期が公表されていないため算出できない</div></div><div class=met><div class=ml>データベースへの到達の確認（10月22日）から封じ込め（認証情報の無効化・接続情報の変更）まで</div><div class=mv>0<span class=fu>日</span></div><div class=fn>**同日である。** 件数も範囲も分からない段階で、会員のログイン用認証情報を すべて無効化し、データベース接続情報も変更している</div></div><div class=met><div class=ml>不正アクセスの可能性確認（10月22日）から第一報の公表（10月30日）まで</div><div class=mv>8<span class=fu>日</span></div></div><div class=met><div class=ml>確認から対象者への個別連絡まで</div><div class=mv>公表時点で未開始。「調査の結果がまとまり次第、個別にご連絡いたします」とされている</div></div><div class=met><div class=ml>確認から個人情報保護委員会への報告まで</div><div class=mv>報告日が公表されていないため算出できない（第一報の時点で報告済み）</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>データベースへの到達を確認した2026年10月22日に、**会員の同社サービスへのログイン用 認証情報をすべて無効化**し、あわせてデータベースへの接続に用いる認証情報を変更した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 全会員の強制ログアウトは、影響の範囲が分からない段階で確実に乗っ取りの経路を 閉じられる一方、全利用者に再ログインの手間をかける。 さらに**「再ログインが必要」という状況は、それを口実にしたフィッシングの 格好の文脈になる**</div></li><li><div class=ui>件数・人数・対象者が特定できていない段階で「【第一報】」として公表し、 対象者への個別連絡は調査の結果がまとまり次第とした</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 早期の公表は、利用者がなりすましの連絡に備える時間を作る。 一方で「自分が対象かどうか分からない」状態を広く作り出すため、 問い合わせが集中し、不安も広がる</div></li><li><div class=ui>漏えいの可能性がある項目を14分類にわたり列挙し、対象者の属性も 「会員登録をされていない方を含む」まで明示した。一方で、 データ分析ツールの名称と脆弱性の識別子は示さなかった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 項目を細かく挙げることは利用者が自分のリスクを見積もる助けになるが、 ツール名と脆弱性が伏せられている限り、**同じツールを使う他組織は 自社の該当性を判断できない**</div></li></ul></div>
+<section id="s6"><h2>侵害されたのは分析ツールで、持ち出された可能性があるのはツールが読んでいた本番データベースだった<span class="b slot">概観</span></h2><p>Vook の第一報によれば、起きたことは次のとおりである。</p>
+<ul>
+<li>同社が<strong>社内業務で利用していたデータ分析ツール</strong>（公表文では「本ツール」）に<strong>脆弱性が存在し、それが悪用された</strong></li>
+<li>第三者が<strong>本ツールを経由して同社のデータベースに不正にアクセス</strong>し、<strong>情報を取得していた可能性</strong>がある</li>
+<li><strong>2026年10月14日</strong>、社内の点検で<strong>本ツール内に同社が作成していない不審なアカウント</strong>を確認</li>
+<li><strong>2026年10月22日</strong>、調査により上記の可能性を確認</li>
+<li><strong>本ツールはデータベースの閲覧のみが可能な設定</strong>で、更新・削除はできないため、<strong>データの改ざん・破壊の被害は確認されていない</strong></li>
+</ul>
+<p>構造を一文にすると、<strong>「社内の分析ツールが本番データベースの読み取り口になっていて、そのツールが破られた」</strong>ということである（本記録の整理）。</p>
+<p>この形には2つの含意がある（本記録の評価）。<strong>ひとつは、被害範囲がツールの権限で決まること。</strong> Vook は本ツールに閲覧のみを許していたため、改ざんと破壊は起きなかった。権限の絞り込みは効いている。<strong>もうひとつは、閲覧権限であってもデータベースの中身は全部読める、ということ。</strong> 漏えいの可能性がある項目が氏名から職務経歴、決済サービスの顧客IDまで広範に及ぶのは、分析ツールがそれだけの範囲を読める構成だったからである。</p></section>
+<section id="s7"><h2>端緒は「自分たちが作っていないアカウント」——侵入の痕跡が残る側で気づいた<span class="b slot">発覚の端緒</span></h2><p>発覚の端緒は、公表文に次のように書かれている。</p>
+<blockquote>
+<p>2026年10月14日、社内の点検において、本ツール内に当社が作成していない不審なアカウントがあることを確認いたしました。</p>
+</blockquote>
+<p><strong>検知したのは不正アクセスそのものではなく、不正アクセスの結果として残ったアカウントだった</strong>（本記録の整理）。侵入を受けた側のシステムに「自分たちが作っていないもの」が増えており、それを点検で見つけている。</p>
+<p>この気づき方には学べる点がある（本記録の評価）。データベースへの不審なクエリを検知するには平常時のパターンを押さえる必要があるが、<strong>「管理対象のツールに、自分が作った覚えのないアカウントがある」は、台帳と突き合わせるだけで分かる異常である。</strong>アカウントの棚卸しが効いた形である。</p>
+<p>ただし、そこから先には時間がかかっている。</p>
+<table>
+<thead>
+<tr>
+<th>区間</th>
+<th>日数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>不審なアカウントの確認（10/14）→ データベースへの到達の確認（10/22）</td>
+<td><strong>8日</strong></td>
+</tr>
+<tr>
+<td>データベースへの到達の確認（10/22）→ 封じ込め（認証情報の無効化・接続情報の変更）</td>
+<td><strong>同日</strong></td>
+</tr>
+<tr>
+<td>データベースへの到達の確認（10/22）→ 第一報の公表（10/30）</td>
+<td><strong>8日</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>封じ込めは確認と同日に行われており、遅れていない。</strong> 時間がかかっているのは「不審なアカウントが何をしたのか」を突き止める調査の段階である（本記録の整理）。逆に言えば、<strong>10月14日から22日までの8日間、会員のログイン用認証情報は無効化されないままだった</strong>——この間の判断の根拠は公表されていない。</p></section>
+<section id="s8"><h2>漏えいの可能性がある項目は履歴書に近い——職務経歴・勤務先・作品の閲覧パスワードまで及ぶ<span class="b slot">被害規模・影響範囲</span></h2><p>公表された対象者と項目は次のとおり。<strong>いずれも「漏えいの可能性」の段階</strong>であり、「対象となる項目はお客様により異なります」と注記されている。</p>
+<p><strong>対象となる方</strong></p>
+<ul>
+<li>Vook会員</li>
+<li>同社主催イベントに申し込んだ方</li>
+<li>同社に問い合わせをした方（<strong>会員登録をしていない方を含む</strong>）</li>
+<li>同社サービスを利用する企業のご担当者</li>
+<li>同社のお取引先のご担当者</li>
+</ul>
+<p><strong>漏えいの可能性のある項目</strong></p>
+<table>
+<thead>
+<tr>
+<th>分類</th>
+<th>項目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>本人の識別</td>
+<td>氏名、生年月日、住所</td>
+</tr>
+<tr>
+<td>連絡先</td>
+<td>メールアドレス、電話番号</td>
+</tr>
+<tr>
+<td>職業・経歴</td>
+<td>勤務先、<strong>職務経歴・学歴の一部</strong></td>
+</tr>
+<tr>
+<td>認証</td>
+<td><strong>ログイン用の認証情報</strong>（10月22日に無効化済み）、<strong>登録した作品の閲覧パスワード</strong></td>
+</tr>
+<tr>
+<td>技術・外部ID</td>
+<td>IPアドレス、SNSプロフィール等、<strong>決済サービスの顧客ID</strong></td>
+</tr>
+<tr>
+<td>その他</td>
+<td>アンケート回答、同社からの通知内容等</td>
+</tr>
+</tbody>
+</table>
+<p><strong>含まれないもの</strong>：クレジットカード情報、銀行口座情報（決済は外部の決済サービスで行っており同社はカード情報を保有していない）、会員のログインパスワード。</p>
+<p>ここで3点を指摘する（本記録の評価）。</p>
+<p><strong>第一に、この組み合わせは履歴書に近い。</strong> 氏名・生年月日・住所・連絡先に加え、勤務先と職務経歴・学歴が並ぶ。映像制作者のプラットフォームという性質上、仕事を得るための経歴情報が登録されていたとみられる。なりすましや、本人の仕事の文脈を踏まえた標的型の接触に使える情報である。</p>
+<p><strong>第二に、「登録した作品の閲覧パスワード」が含まれる。</strong> 未公開の映像作品を限定共有するための鍵である。これが漏えいしていれば、<strong>個人情報の漏えいにとどまらず、会員の制作物そのものへの到達につながる。</strong> 公表文は閲覧パスワードの無効化・再設定には触れていない。</p>
+<p><strong>第三に、「ログイン用の認証情報」と「ログインパスワード」が別扱いになっている。</strong>前者は漏えいの可能性がある項目に挙げられ、後者は含まれないと注記されている。両者の違いの説明は無い。<strong>読者がこの差を理解できないと、自分のアカウントが乗っ取られうるのかを判断できない</strong>（本記録の評価）。なお同社は10月22日に会員の認証情報をすべて無効化しており、結果として乗っ取りの経路は閉じられている。</p></section>
+<section id="s9"><h2>対応は確認と同日の「認証情報の全無効化」と「接続情報の変更」、そして当局・警察への相談<span class="b slot">組織の対応</span></h2><p>公表された対応は次のとおり。</p>
+<p><strong>2026年10月22日（データベースへの到達を確認した日）</strong></p>
+<ul>
+<li><strong>会員の同社サービスへのログイン用認証情報をすべて無効化</strong></li>
+<li><strong>データベースへの接続に用いる認証情報の変更</strong></li>
+<li>本ツールの<strong>利用停止</strong></li>
+</ul>
+<p><strong>その後（日付非公表）</strong></p>
+<ul>
+<li>弁護士に相談のうえ、<strong>個人情報保護委員会への報告</strong></li>
+<li><strong>警察への相談</strong></li>
+<li>アクセスの記録等の詳細な調査（継続中）</li>
+</ul>
+<p><strong>顧客への案内</strong></p>
+<ul>
+<li>二次被害は現時点で確認されていない。<strong>現時点で特別なお手続きは不要</strong>（会員は次回利用時に再ログインが必要）</li>
+<li>同社や同社サービスを装った不審なメール・SMS・電話に注意。URL へのアクセスや添付ファイルの開封を行わない</li>
+<li><strong>同社が本件に関連して、電話やメール等でパスワード、認証コード、クレジットカード番号等を尋ねることはない</strong></li>
+<li>専用窓口：security-info@vook.co.jp（平日 9:30〜17:30）</li>
+</ul>
+<p>評価できる点を挙げる（本記録の評価）。<strong>到達を確認した当日に全会員の認証情報を無効化している。</strong> 件数も範囲も分からない段階で全員を強制ログアウトさせる判断は、利用者に手間をかける代わりに、乗っ取りの経路を確実に閉じる。データベース接続情報の変更も同日で、<strong>ツール側に保持されていた鍵が侵害された前提で動いている</strong>。また、<strong>自社が顧客にパスワードや認証コードを尋ねることはない</strong>と明記した点は、なりすましの見分け方を利用者に渡す記載である。</p>
+<p>一方で、<strong>公表時点で対象者への個別連絡は始まっていない。</strong>「調査の結果がまとまり次第、個別にご連絡いたします」とされており、誰が対象かが分からないまま第一報が出ている構えである。件数・人数が示されないのも同じ理由による（本記録の整理）。</p></section>
+<section id="s10"><h2>再発防止策に「外部から接続できる社内システムの点検」が挙がった<span class="b slot">再発防止</span></h2><p>公表された再発防止の方向は次の3つである。</p>
+<ol>
+<li><strong>外部から接続できる社内システムの点検</strong></li>
+<li><strong>アクセス権限の見直し</strong></li>
+<li><strong>監視体制の強化</strong></li>
+</ol>
+<p>あわせて「引き続き本ツールの利用を停止しつつ」「全社を挙げて情報セキュリティ体制の再構築に努めてまいります」とされている。完了時期と対象範囲は示されていない。</p>
+<p>ここから読み取れることが2つある（本記録の評価）。</p>
+<p><strong>第一に、1 が挙がっていること自体が、本件の構図を裏づけている。</strong>社内業務用のツールが外部から接続できる状態にあり、その棚卸しが十分でなかったと読める。公表文はツールが外部に公開されていたかを明示していないが、再発防止策の筆頭にこれが来ることは示唆的である。</p>
+<p><strong>第二に、2 の「アクセス権限の見直し」は、本件で一部は効いていた。</strong>本ツールには閲覧のみを許していたため、改ざん・破壊は起きなかった。<strong>効かなかったのは「何を読めるか」の範囲である</strong>——分析ツールが本番データベースの個人情報を広く読める構成であったために、ツールの侵害がそのまま広範な個人情報の読み取りになった。見直すべきは書き込み権限ではなく、読み取りの範囲と、分析用に個人情報を伏せた複製を使うかどうかである（本記録の評価）。</p></section>
+<section id="s11"><h2>ツール名・脆弱性の識別子・件数・侵入時期は公表されていない<span class="b slot">未確定事項</span></h2><p>第一報の段階で公表されていないことを整理する。</p>
+<ul>
+<li><strong>データ分析ツールの名称・提供元と、悪用された脆弱性の識別子。</strong>既知の脆弱性の放置か未知の脆弱性かも区別できない。<strong>同じツールを社内で使っている組織は、本件から自社の該当性を判断できない。</strong></li>
+<li><strong>件数・人数と、実際に取得された情報の範囲。</strong> 範囲と対象者の特定は継続中。</li>
+<li><strong>侵入の時期。</strong> 不審なアカウントがいつ作られたかが示されず、滞留時間が分からない。</li>
+<li><strong>「ログイン用の認証情報」が具体的に何を指すか。</strong>「ログインパスワードは含まれない」との並びの説明が無い。</li>
+<li><strong>本ツールが外部から接続できる状態にあったか、またその経路。</strong></li>
+<li><strong>「登録した作品の閲覧パスワード」の悪用による作品への到達の有無</strong>、および閲覧パスワードの無効化・再設定の方針。</li>
+<li><strong>攻撃者の実体・送信元・動機。</strong></li>
+<li><strong>利用企業・取引先への個別の説明方法。</strong></li>
+<li><strong>本ツールの利用再開の条件・時期。</strong></li>
+</ul>
+<p>公表文は「新たにお知らせすべき事項が判明した場合には、速やかにお知らせいたします」としており、第二報が見込まれる。本記録は status を updating とした。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>侵入経路</th><td>**社内業務で利用していたデータ分析ツールに存在した脆弱性の悪用**。公表文は 「当社が社内業務で利用していたデータ分析ツール（以下「本ツール」といいます。）に存在した 脆弱性が悪用され、当社のデータベースが第三者による不正アクセスを受け」と記す。 攻撃者は本ツール内に**同社が作成していないアカウント**を作り、 **本ツールを経由して**データベースへアクセスしていた。 ツールの名称、脆弱性の識別子（CVE 等）、既知か未知かは公表されていない</td></tr><tr><th>侵入経路の確度</th><td>公表あり</td></tr><tr><th>affected_asset</th><td><b>kind:</b> 社内業務用のデータ分析ツール、および同ツールが接続していた Vook のデータベース　<b>service_nameの公表状況:</b> 公表されていない　<b>service_name（補足）:</b> 公表文はツールを「データ分析ツール（以下「本ツール」といいます。）」と呼ぶだけで、 製品名・提供元・自社運用か SaaS かを示していない。**侵害されたのはツールであり、 被害が及んだのはツールが接続していた本番データベースである**（本記録の整理）。 ツールは「当社のデータベースの閲覧のみが可能な設定」とされており、 更新・削除の権限は与えられていなかった。 **分析ツールが本番データベースへ接続する構成そのものは一般的だが、 そのツールが外部から到達でき、かつ脆弱なままだと、ツールの侵害が そのままデータベースの読み取りになる**（本記録の評価）。 同社が再発防止策に「外部から接続できる社内システムの点検」を挙げていることから、 本ツールが外部から接続できる状態にあったとみられる（本記録の推定）　<b>出典:</b> 1</td></tr><tr><th>漏えいした情報項目</th><td><div class=sub><b>item:</b> 氏名</div><div class=sub><b>item:</b> メールアドレス</div><div class=sub><b>item:</b> 電話番号</div><div class=sub><b>item:</b> 住所</div><div class=sub><b>item:</b> 生年月日</div><div class=sub><b>item:</b> 勤務先</div><div class=sub><b>item:</b> 職務経歴・学歴の一部</div><div class=sub><b>item:</b> ログイン用の認証情報（2026年10月22日に無効化済み）</div><div class=sub><b>item:</b> 登録した作品の閲覧パスワード</div><div class=sub><b>item:</b> IPアドレス</div><div class=sub><b>item:</b> SNSプロフィール等</div><div class=sub><b>item:</b> 決済サービスの顧客ID</div><div class=sub><b>item:</b> アンケート回答</div><div class=sub><b>item:</b> 同社からの通知内容等</div><span class="b rsn">stated</span><div class=fn>公表文は「漏えいの**可能性のある**個人情報の項目」として列挙し、 「対象となる項目はお客様により異なります」と注記する。**流出の確定ではなく可能性の段階**で あり、範囲と対象者の特定は継続中である（本記録の整理）。 項目のうち注意を要するのは次の3つである（本記録の評価）。 ①**ログイン用の認証情報**——「会員の皆様のログインパスワードは含まれておりません」とも 書かれており、両者は別のものとして扱われている（セッション・トークン等の可能性があるが 公表文に説明は無い）。②**登録した作品の閲覧パスワード**——映像制作者が未公開の作品を 限定共有するための鍵であり、作品そのものへの到達につながりうる。 ③**職務経歴・学歴の一部／勤務先**——履歴書に近い情報で、 なりすましや標的型の接触に使える</div></td></tr><tr><th>含まれていない情報</th><td><div class=sub><b>item:</b> クレジットカード情報（決済は外部の決済サービスで行っており、同社ではカード情報を保有していない）</div><div class=sub><b>item:</b> 銀行口座情報</div><div class=sub><b>item:</b> 会員のログインパスワード</div><span class="b rsn">stated</span><div class=fn>公表文の注記は「※クレジットカード情報および銀行口座情報は含まれておりません （決済は外部の決済サービスで行っており、当社ではカード情報を保有しておりません）。 ※会員の皆様のログインパスワードは含まれておりません」。 **カード情報については「漏れなかった」ではなく「保有していない」という説明である** （本記録の整理）。一方で「決済サービスの顧客ID」は漏えいの可能性がある項目に含まれており、 決済事業者側の顧客を特定する識別子は出ている。 **「ログインパスワードは含まれない」が「ログイン用の認証情報」は含まれる**という 並びについて、両者の違いの説明は無い</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月30日　<b>補足:</b> 公表文は「現在のところ、本件に起因する個人情報の不正利用などの二次被害は 確認されておりません」とする。顧客には「現時点で特別なお手続きは不要」としつつ、 同社や同社サービスを装った不審なメール・SMS・電話が届くおそれがあるとして注意を促している。 また「当社が本件に関連して、電話やメール等でパスワード、認証コード、 クレジットカード番号等をお尋ねすることはございません」と、なりすましの見分け方を示している</td></tr><tr><th>ログの有無</th><td>公表文は「現在、アクセスの記録等の詳細な調査を進めております」と記しており、 **アクセス記録は残っており調査中である**。一方で、調査が継続中であるために 漏えいの範囲と対象者が確定していない。**「情報を取得していた可能性がある」という 表現にとどまっているのは、記録から取得の事実を確定できていない段階であることを示す** （本記録の推定）。ツール側のログとデータベース側のログのどちらを見ているかは公表されていない</td></tr><tr><th>運用への影響</th><td><ul class=cl><li>本ツール（データ分析ツール）の利用を停止（継続）</li><li>会員のサービスへのログイン用認証情報をすべて無効化（2026年10月22日）。会員は次回利用時に再ログインが必要</li><li>データベースへの接続に用いる認証情報の変更（2026年10月22日）</li></ul><span class="b rsn">stated</span><div class=fn>サービス自体の停止についての記述は無く、Vook のサービスは継続しているとみられる （本記録の推定）。会員にとっての実務上の影響は再ログインのみとされている。 社内側では分析ツールが使えなくなっており、業務への影響は公表されていない</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> 本ツールの利用停止（継続）　<b>補足:</b> 公表文は「引き続き本ツールの利用を停止しつつ」と記す。再開の条件・時期は示されていない　<b>副作用:</b> ツールを止めれば侵害経路は閉じるが、社内のデータ分析業務も止まる（本記録の評価）。 代替手段が無いまま長期化すると、別の経路で本番データベースを直接参照する 抜け道が現場に生まれるおそれがある</div><div class=sub><b>item:</b> 会員のログイン用認証情報をすべて無効化（2026年10月22日）　<b>補足:</b> 全会員が対象。会員は次回利用時に再ログインが必要になった　<b>副作用:</b> 全会員の強制ログアウトは利用者に手間と不安を与え、 **再ログインを促す偽メールの格好の口実になる**（本記録の評価）。 同社は「特別なお手続きは不要」と明示しているが、 再ログインが必要という事実自体がフィッシングの文脈として使える</div><div class=sub><b>item:</b> データベースへの接続に用いる認証情報の変更（2026年10月22日）　<b>補足:</b> ツール側に保持されていた接続情報が侵害された前提の措置とみられる（本記録の推定）　<b>副作用:</b> 接続情報を持つ他の連携先・バッチ処理が同時に止まりうる（本記録の評価）。 どこから参照されているかの一覧が無いと、変更の影響を読み切れない</div><div class=sub><b>item:</b> 外部から接続できる社内システムの点検、アクセス権限の見直し、監視体制の強化　<b>補足:</b> 「進め」「努めてまいります」という進行中の表現で、対象範囲と完了時期は示されていない。 **再発防止策としてこの3点が挙がっていること自体が、本件の時点で 外部から接続できる社内システムの棚卸しと監視が十分でなかったことを示す**（本記録の評価）　<b>副作用:</b> 点検と権限の絞り込みは、社内の分析・運用の利便を下げる（本記録の評価）。 閲覧権限を絞ると分析の範囲が狭まるため、必要な業務との折り合いを決めないと 例外運用が積み上がり、同じ状態に戻る</div><div class=sub><b>item:</b> 弁護士への相談、個人情報保護委員会への報告、警察への相談　<b>補足:</b> いずれも公表文に明記されている　<b>副作用:</b> 当局・警察への相談は、捜査上の理由で公表できる内容が絞られる場合がある（本記録の評価）。 本件でもツール名・脆弱性の識別子が示されておらず、 同じツールを使う他組織が自社の該当性を判断できない状態になっている</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">時期非公表（2026年10月14日以前）</td><td class=nowrap><span class="b kind">発生</span></td><td>第三者が社内業務用のデータ分析ツールの脆弱性を悪用し、本ツール内に Vook が作成していない アカウントを作成した。侵入の時期・経路・脆弱性の内容は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">判明</span></td><td>**社内の点検において、本ツール内に同社が作成していない不審なアカウントがあることを確認**した。 これが発覚の端緒である。点検が定期のものか、別の契機によるものかは公表されていない</td></tr><tr><td class="sm nowrap tw">2026年10月22日</td><td class=nowrap><span class="b kind">判明</span></td><td>調査の結果、**第三者が本ツールの脆弱性を悪用し、本ツールを経由して同社のデータベースに 不正にアクセスした上で、情報を取得していた可能性があることを確認**した</td></tr><tr><td class="sm nowrap tw">2026年10月22日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**会員の同社サービスへのログイン用認証情報をすべて無効化**し、 **データベースへの接続に用いる認証情報を変更**した。あわせて本ツールの利用を停止した</td></tr><tr><td class="sm nowrap tw">日付非公表（2026年10月30日まで）</td><td class=nowrap><span class="b kind">当局・上位機関への報告（組織 → 当局の向き）</span></td><td>弁護士に相談のうえ、**個人情報保護委員会への報告**を行い、**警察にも相談**した。 それぞれの日付は公表されていない</td></tr><tr><td class="sm nowrap tw">2026年10月30日</td><td class=nowrap><span class="b kind">公表</span></td><td>「不正アクセスによる個人情報漏えいの可能性に関するお詫びとお知らせ【第一報】」を公表。 漏えいの可能性がある対象者と項目、講じた措置、今後の対応、二次被害への注意喚起、 専用お問い合わせ窓口（security-info@vook.co.jp）を示した</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>ScanNetSecurity が本件を報じた</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が一次公表を取得した時点で、続報（第二報）は公表されていない。 対象者への個別連絡は「調査の結果がまとまり次第」とされた段階である</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>データ分析ツールの名称・提供元</span><div class=sm>第一報はツールを「データ分析ツール（以下「本ツール」といいます。）」と呼ぶだけで、 製品名・提供元・自社運用か SaaS かを示していない。悪用された脆弱性の識別子（CVE 等）も 記載が無く、既知の脆弱性の放置か未知の脆弱性かを区別できない。 本記録の原因の分類では「脆弱性の放置」「未知の脆弱性の悪用」のいずれも置かず、 上位の「既知の脆弱性の悪用」のみを記した</div></li><li><span class="b dk">本記録による推定</span><span class=ui>本ツールの外部からの到達性</span><div class=sm>本記録は、再発防止策に「外部から接続できる社内システムの点検」が挙げられていることから 本ツールが外部から到達できる状態にあったと推定している。 **公表文にその明示は無い。** 内部に侵入した攻撃者がツールへ到達した経路である 可能性も排除できない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>「ログイン用の認証情報」と「ログインパスワード」の関係</span><div class=sm>漏えいの可能性がある項目に「ログイン用の認証情報（2026年10月22日に無効化済み）」が 挙げられ、注記では「会員の皆様のログインパスワードは含まれておりません」とされる。 前者が何を指すのかの説明が無く、本記録も特定していない</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>件数・人数</span><div class=sm>第一報は対象者の属性のみを示し、件数・人数を記載していない。 本記録の数値の欄では「漏えいの可能性がある件数・人数」に 0 を置いているが、 これは**公表されていないことを示す仮の値**であり、被害が0件という意味ではない</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>報道と一次公表の差</span><div class=sm>ScanNetSecurity の記事は一次公表の要約であり、本記録の作成者が突き合わせた範囲で 内容の食い違いは無かった。ただし記事は弁護士への相談・個人情報保護委員会への報告・ 警察への相談に触れていない。本記録はこれらを一次公表から採った</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>社内業務用の分析ツールの脆弱性から、ツール経由で本番データベースへ到達した経路</div><div class=svgwrap><svg viewBox="0 0 794 258" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,129.0 C193.0,129.0 193.0,85.0 220,85.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,129.0 C193.0,129.0 193.0,167.0 220,167.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,167.0 C295.0,167.0 295.0,85.0 220,85.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,85.0 C397.0,85.0 397.0,46.0 424,46.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,46.0 C499.0,46.0 499.0,128.0 424,128.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,128.0 C601.0,128.0 601.0,66.0 628,66.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,128.0 C601.0,128.0 601.0,149.0 628,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,46.0 C601.0,46.0 601.0,212.0 628,212.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,46.0 C499.0,46.0 499.0,211.0 424,211.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="106.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（実体非公表）</text><rect x="220" y="54.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="76.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">社内業務用データ分析ツー</text><text x="295.0" y="90.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル（製品名非公表）</text><text x="295.0" y="103.0" text-anchor="middle" fill="#f48fb1" font-size="10">脆弱性を悪用／利用停止</text><rect x="220" y="130.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="152.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Vook が作成していな</text><text x="295.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い不審なアカウント</text><text x="295.0" y="179.0" text-anchor="middle" fill="#ffcc80" font-size="10">10/14 の社内点検で</text><text x="295.0" y="191.0" text-anchor="middle" fill="#ffcc80" font-size="10">発見</text><rect x="424" y="16.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Vook のデータベース</text><text x="499.0" y="51.0" text-anchor="middle" fill="#64b5f6" font-size="10">閲覧のみの権限で接続・改</text><text x="499.0" y="63.0" text-anchor="middle" fill="#64b5f6" font-size="10">ざんなし</text><rect x="424" y="90.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">氏名・連絡先・生年月日・</text><text x="499.0" y="126.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">職務経歴・認証情報・作品</text><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の閲覧パスワード等</text><text x="499.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">漏えいの可能性</text><rect x="628" y="22.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="44.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Vook会員・イベント申</text><text x="703.0" y="58.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">込者・問い合わせ者（件数</text><text x="703.0" y="72.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非公表）</text><text x="703.0" y="85.0" text-anchor="middle" fill="#8892b0" font-size="10">10/22 に認証情報を</text><text x="703.0" y="97.0" text-anchor="middle" fill="#8892b0" font-size="10">全無効化</text><rect x="628" y="124.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="146.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用企業・取引先の担当者</text><text x="703.0" y="160.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（件数非公表）</text><rect x="628" y="188.0" width="150" height="48" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="703.0" y="210.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報保護委員会・警察</text><text x="703.0" y="223.0" text-anchor="middle" fill="#b0bec5" font-size="10">報告・相談済み</text><rect x="424" y="180.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="202.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カード情報・銀行口座情報</text><text x="499.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（同社は非保有）</text><text x="499.0" y="229.0" text-anchor="middle" fill="#ffcc80" font-size="10">対象外</text></svg></div><div class=fn>layer 0 は攻撃者。layer 1 は脆弱性を悪用されたデータ分析ツールと、そこに作られた 不審なアカウント。layer 2 は閲覧のみの権限で接続されていた Vook のデータベース。 layer 3 は漏えいの可能性がある対象者と、報告・相談先の個人情報保護委員会・警察。 右端は同社が保有していなかった情報（クレジットカード情報・銀行口座情報）。 ツールの名称・脆弱性の識別子・外部からの到達経路は公表されていない。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>脆弱性の悪用そのものを検知できたかは公表されていない。 再発防止策に「外部から接続できる社内システムの点検」「監視体制の強化」が 挙げられていることから、この段階の監視は十分でなかったとみられる（本記録の推定）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>社内業務用ツールをインターネットから直接到達できない位置に置き、VPN・ゼロトラストプロキシの背後に収める</div><div class=ctl><span class="b eff">侵入を防げた</span>社内ツールもパッチ適用の対象台帳に載せ、提供元の脆弱性情報を購読して適用期限を管理する</div><div class=ctl><span class="b eff">検知できた</span>社内ツールのアクセスログを集約し、想定外の送信元からの到達を警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">検知した</span><div class=sm>**この段階で実際に検知されている。** 社内の点検でアカウント台帳と 突き合わせることで、自組織が作成していないアカウントの存在が見つかった。 ただし作成から発覚までの期間は公表されていない</div></td><td><div class=ctl><span class="b eff">検知できた</span>管理対象ツールのアカウント一覧を定期的に台帳と突き合わせ、差分を洗い出す（本件で実際に機能した）</div><div class=ctl><span class="b eff">検知できた</span>アカウント作成・権限変更を即時に通知対象とし、作成者と承認記録を必須にする</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>データベースへの異常なクエリ・大量参照の検知については公表されていない。 「アクセスの記録等の詳細な調査を進めております」とあり、記録は残っているが、 取得の事実を確定できていない段階である</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>分析用の参照先を本番データベースから切り離し、個人情報を仮名化・マスクした複製に向ける</div><div class=ctl><span class="b eff">影響を限定できた</span>ツールが使うデータベース接続のアカウントを、読み取り可能なテーブル・列の単位で絞る</div><div class=ctl><span class="b eff">検知できた</span>データベースの参照行数・応答データ量に閾値監視を置き、平常時からの乖離を警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">公表されていない</span><div class=sm>持ち出しの検知についての記載は無い</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>社内ツールからの外部通信を egress 制御で絞り、許可した宛先以外への送信を遮断する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>データベースへの到達を確認した2026年10月22日に、**会員の同社サービスへのログイン用 認証情報をすべて無効化**し、あわせてデータベースへの接続に用いる認証情報を変更した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。**件数も対象者も特定できていない段階で全員分を 無効化したのは妥当な判断である**——対象を絞る調査を待てば、その間に 認証情報が使われうる。接続情報の変更を同日に行っている点も、 ツール側に保持された鍵が侵害された前提で動けていることを示す。 ただし**不審なアカウントの発見（10月14日）から無効化（10月22日）までの8日間は この措置が取られていない**——この間の判断の根拠は公表されていない</td></tr><tr><td>件数・人数・対象者が特定できていない段階で「【第一報】」として公表し、 対象者への個別連絡は調査の結果がまとまり次第とした</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。**【第一報】と明記して段階的な公表の構えを示した点、 および「当社がパスワード・認証コード・カード番号を尋ねることはない」と なりすましの見分け方を渡した点は機能している。** 一方で、漏えいの可能性がある項目に「ログイン用の認証情報」と 「登録した作品の閲覧パスワード」が並ぶ割に、前者が何を指すのか、 後者をどうすべきか（再設定の要否）が示されていない。 「現時点で特別なお手続きは不要」という案内は、 作品の閲覧パスワードを設定している会員にとっては判断材料が足りない</td></tr><tr><td>漏えいの可能性がある項目を14分類にわたり列挙し、対象者の属性も 「会員登録をされていない方を含む」まで明示した。一方で、 データ分析ツールの名称と脆弱性の識別子は示さなかった</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。項目と対象者の記載は、国内の同種の公表文のなかでも 詳しいほうである。とくに「会員登録をしていない問い合わせ者」「利用企業・取引先の担当者」まで 対象に含めた点は、台帳の外にいる人を落とさない姿勢として評価できる。 ただしツール名・脆弱性の非公表は、業界全体での同種被害の予防を妨げる。 警察への相談を行っている段階であることが理由の可能性はあるが、 公表文に説明は無い</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>社内の分析・BI ツールを「本番データベースの読み取り口」として管理対象に入れる</div><div class=lw>侵害されたのはツールだが、持ち出された可能性があるのは本番データベースの個人情報である。 社内利用のツールは、顧客向けシステムほど棚卸しと監視の対象になりにくい</div><div class=la><b>取るべき行動</b> 本番データベースに接続している社内ツール・バッチ・連携を**一覧化し、 それぞれが読める範囲（テーブル・列）と外部からの到達性を台帳に書く**。 顧客向けシステムと同じ基準でパッチ適用・認証・監視の対象に含める</div></li><li><div class=lp>分析のために本番の個人情報を読ませる必要があるかを問い直す</div><div class=lw>漏えいの可能性がある項目が氏名・住所・生年月日から職務経歴・決済サービスの顧客IDまで 広範に及ぶのは、分析ツールがその範囲を読める構成だったためである</div><div class=la><b>取るべき行動</b> 分析用途の参照先を、**個人情報を仮名化・マスクした複製**に切り替えられるかを検討する。 切り替えられない業務を洗い出し、そこだけを例外として扱い、 例外には追加の監視と期限を付ける</div></li><li><div class=lp>「異常を見つけた日」と「封じ込めた日」の間を縮める判断基準を先に決めておく</div><div class=lw>不審なアカウントの発見（10月14日）から会員の認証情報の無効化（10月22日）まで8日あった。 封じ込め自体は到達の確認と同日に行われており、遅れていたのは 「どこまで分かったら全員分を止めるか」の判断である</div><div class=la><b>取るべき行動</b> **影響範囲が未確定な段階で全利用者の認証情報を無効化する基準**を、 平時に決めておく（例：管理系に未知のアカウントが見つかった時点で即時）。 判断を事故の最中に行うと、調査の完了を待つ方向に流れやすい</div></li><li><div class=lp>公表文で「含まれない」と書く項目の対義語を点検する</div><div class=lw>「ログインパスワードは含まれない」と注記する一方、「ログイン用の認証情報」は 漏えいの可能性がある項目に挙げられている。両者の違いの説明が無い</div><div class=la><b>取るべき行動</b> 公表文の草案を**「読者が自分の取るべき行動を決められるか」で点検する**。 認証に関する項目は、名称の違いではなく「乗っ取られうるか／何を変えるべきか」を 書く。自社の案内文の雛形に、この観点のチェック項目を入れる</div></li><li><div class=lp>顧客の制作物・成果物を預かるサービスでは、個人情報と成果物のリスクを分けて説明する</div><div class=lw>漏えいの可能性がある項目に「登録した作品の閲覧パスワード」が含まれている。 これは個人情報の漏えいとは別に、**会員の制作物への到達**という損害になりうる</div><div class=la><b>取るべき行動</b> 預かっている成果物への到達手段（共有リンク・閲覧パスワード・ダウンロードURL）を 棚卸しし、**インシデント時に一括で無効化・再発行できる仕組み**を用意する。 公表文でも個人情報と成果物のリスクを分けて書く</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>ツールの台帳とアカウント台帳を突き合わせる点検を、仕組みとして回す</div><div class=lw>本件の発覚は「本ツール内に当社が作成していない不審なアカウントがあることを確認」した 社内点検である。**不正なクエリを検知するより、作った覚えのないアカウントを 見つけるほうが簡単だった**</div><div class=la><b>取るべき行動</b> 社内ツール・SaaS ごとにアカウント一覧を定期的に取得し、 **人事台帳・申請記録との差分を自動で出す**。差分が0でないときだけ人が見る形にする。 アカウント作成イベントそのものを通知対象にできるツールなら、そちらを優先する</div></li><li><div class=lp>データベース接続のアカウントを、読み取り可能なテーブル・列の単位まで絞る</div><div class=lw>本ツールは「閲覧のみ可能な設定」で、更新・削除の権限が無かったため改ざんは防げた。 **効かなかったのは「何を読めるか」の範囲である**</div><div class=la><b>取るべき行動</b> ツールごとに専用のデータベースユーザーを作り、**必要なテーブル・列にだけ SELECT 権限を与える**。個人情報の列はビュー経由でマスクして見せる。 「読み取り専用だから安全」という前提を置かない</div></li><li><div class=lp>社内ツールの外部到達性を、設定ではなく外からの実測で確認する</div><div class=lw>再発防止策の筆頭に「外部から接続できる社内システムの点検」が挙がっている。 社内利用のつもりのツールが外部から到達できていた可能性がある（本記録の推定）</div><div class=la><b>取るべき行動</b> 自社のIPレンジ・ドメインに対して**外部からのポート走査とサブドメイン列挙を 定期的に実行し、到達できた管理系・分析系を一覧にする**。 「社内からしか使わない」という運用上の前提と、実際の到達性を突き合わせる</div></li><li><div class=lp>社内ツールもパッチ適用の対象台帳に載せ、提供元の脆弱性情報を購読する</div><div class=lw>悪用されたのはツールに「存在した脆弱性」である。既知か未知かは公表されていないが、 既知であれば適用の遅れ、未知であれば到達性の制限が論点になる</div><div class=la><b>取るべき行動</b> 社内ツール・OSS を含めた**ソフトウェア台帳を作り、提供元のセキュリティ告知を 購読して適用期限を管理する**。適用が間に合わないものは、 到達性の制限（VPN 背後・IP制限）で埋める</div></li><li><div class=lp>成果物への到達手段（閲覧パスワード・共有リンク）を一括で無効化できるようにする</div><div class=lw>「登録した作品の閲覧パスワード」が漏えいの可能性に含まれるのに、 公表文は再設定の要否に触れていない。無効化の仕組みが無いと、案内も書けない</div><div class=la><b>取るべき行動</b> 共有用のパスワード・リンクに**失効と一括再発行の機能を実装**し、 インシデント時に一斉に切り替えられる状態にする。 利用者への再発行の通知手順も合わせて用意する</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 社内業務用の分析・BI ツールが本番データベースに直接接続している</td><td class=sm>本件ではツールの脆弱性の悪用が、そのままツール経由のデータベース読み取りに変換された</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> ツールが使うデータベース接続アカウントの権限を、読み取り可能なテーブル・列の単位まで絞っていない</td><td class=sm>Vook は閲覧のみに制限していたため改ざんは防げたが、読める範囲は広く、漏えいの可能性がある項目が14分類に及んだ</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 社内ツール・SaaS のアカウント一覧を台帳と突き合わせる点検を定期的に行っていない</td><td class=sm>本件の発覚の端緒は「自社が作成していない不審なアカウント」であり、台帳との突き合わせで見つかった</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 社内利用のつもりのツールについて、外部からの到達性を実測で確認していない</td><td class=sm>再発防止策の筆頭が「外部から接続できる社内システムの点検」であり、到達性が論点であることを示す</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 顧客の成果物への到達手段（閲覧パスワード・共有リンク）を一括で無効化・再発行できない</td><td class=sm>「登録した作品の閲覧パスワード」が漏えいの可能性に含まれるが、再設定の要否が示されていない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 影響範囲が未確定な段階で全利用者の認証情報を無効化する基準を、平時に決めていない</td><td class=sm>Vook は到達の確認と同日に全会員分を無効化したが、不審なアカウントの発見からは8日が経っていた</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月30日 株式会社Vook</span> <a href="https://vook.co.jp/574" target="_blank" rel="noreferrer noopener nofollow">不正アクセスによる個人情報漏えいの可能性に関するお詫びとお知らせ【第一報】</a> <span class="b kind">ニュースリリース</span><span class=sm>（(一次資料。本記録の作成者が2026年11月10日に取得し全文を確認した。代表取締役 岡本俊太郎の名で 出された第一報。経路〈社内業務用データ分析ツールの脆弱性の悪用とツール経由のデータベースへの 不正アクセス〉、経緯の日付〈10月14日の不審なアカウント確認・10月22日の可能性確認〉、 ツールが閲覧のみの設定で改ざん・破壊が確認されていないこと、 講じた措置〈10月22日の会員認証情報の全無効化・データベース接続情報の変更・ 弁護士への相談・個人情報保護委員会への報告・警察への相談・アクセス記録の詳細調査〉、 漏えいの可能性がある対象者と14分類の項目、含まれない情報 〈クレジットカード情報・銀行口座情報・会員のログインパスワード〉、 二次被害が確認されていないこと、顧客への注意喚起、本ツールの利用停止、 再発防止の方向〈外部から接続できる社内システムの点検・アクセス権限の見直し・ 監視体制の強化〉、専用窓口〈security-info@vook.co.jp・平日9:30〜17:30〉の出典。 件数・人数・ツール名・脆弱性の識別子・侵入時期の記載は無い)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月10日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/11/10/56722.html" target="_blank" rel="noreferrer noopener nofollow">Vookにデータ分析ツールの脆弱性を悪用した不正アクセス、会員情報等が漏えいした可能性</a> <span class="b kind">記事</span><span class=sm>（(本記録の起点となった報道。本文は保存分〈output/articles/20261110/0056_scannetsecurity_vook.md〉で 確認した。内容は一次資料の要約で、一次資料に無い事実の追加は確認していない。 弁護士への相談・個人情報保護委員会への報告・警察への相談には触れていない)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月10日</span> <span class="b rev">新規作成</span> 新規作成。2026年11月10日の ScanNetSecurity 報道を起点に、Vook の一次公表 〈https://vook.co.jp/574・2026年10月30日・第一報〉を取得して全文で裏取りした。 経路（データ分析ツールの脆弱性の悪用とツール経由のデータベースへの不正アクセス）・ 経緯の日付・漏えいの可能性がある対象者と項目・含まれない情報・講じた措置・ 弁護士への相談と個人情報保護委員会への報告・警察への相談・再発防止の方向は いずれも一次資料で確認している。報道は後3者に触れていない。 ツール名・脆弱性の識別子・件数・人数・侵入時期・実際に取得された範囲は 公表されていないため未確定事項とした。本ツールが外部から到達できたという推定は 再発防止策の記載からの導出であり、discrepancies に authored_inference として記録した。 第二報が見込まれるため status を updating とした。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">Vook</span><span class="b tag">データ分析ツール</span><span class="b tag">脆弱性の悪用</span><span class="b tag">社内システム</span><span class="b tag">日本</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-10 16:40 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Qubole 経由で顧客AWSへ横断侵入 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0980</span>Qubole 経由で顧客AWSへ横断侵入</h1>
+<header class="site-header">
+  <p class="subtitle">データレイク基盤 Qubole の AWS アカウントに属する IAM 認証情報が悪用され、顧客が残していた信頼ポリシー経由で2026年10月14〜26日に顧客の AWS 環境へ横断的に侵入——Lambda・Secrets Manager・SSM から秘密情報を抜き、TruffleHog で有効性を確かめ、S3 からバケットごと持ち出した。Qubole の利用をやめた後も信頼を残していた組織ほど被害が深く、Qubole と親会社 Idera の公表は確認できていない</p>
+  <div><span class="b type">委託先・再委託先起因で委託元多数に波及</span><span class="b type2">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">委託先・供給元起因</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月9日</span>
+  <span>最終更新: 2026年11月10日</span>
+</div>
+
+<div class="lead"><p><strong>Qubole</strong>（Idera 傘下のデータレイク基盤。顧客の AWS 環境で計算資源を動かしストレージへ到達するために、<strong>クロスアカウントの IAM ロール</strong>を使う）のAWS アカウントに属する IAM 認証情報が悪用され、<strong>2026年10月14日から26日まで</strong>、複数の顧客の AWS 環境が横断的に侵入されました。Wiz と Sentra が2026年11月9日にそれぞれ分析を公開しています。</p>
+<p>攻撃者は Qubole の AWS アカウント <strong>805246085872</strong> の IAM 利用者として<code>sts:AssumeRole</code> を呼び、顧客側が作成した連携用ロールを引き受けました。<strong>観測された引受要求はすべて External ID を伴い、すべて成功</strong>しています。環境に入った後は、計算・ストレージ・データベース・鍵と ID の棚卸しを行い、<strong>Lambda の環境変数・Secrets Manager・SSM パラメータストア</strong>から秘密情報を集め、<strong>TruffleHog</strong> で AWS キーの有効性を確かめ、見つけた資格情報で<strong>Microsoft Entra ID のサービスプリンシパルとしてのサインイン</strong>や<strong>Okta のクライアント資格情報による OAuth トークンの取得</strong>まで試しています。<strong>S3 からはバケットを丸ごと持ち出した例</strong>があり、書き込み操作は1件もありませんでした。</p>
+<p>発見の端緒は Sentra でした。同社が複数の顧客環境で異常を認めて Wiz に連絡し、Wiz の対応チームが Google の Mandiant とともに調査しています。規模について Wiz は件数を明かさず「広範で機会便乗型の供給網キャンペーン」と表現し、Sentra は「十数組織以上」（導入部では「数十の Qubole 顧客」）と記しています。帰属は示されておらず、Wiz は<strong>国家背景の優先順位とは合わない機会便乗型</strong>と評価しています。</p>
+<p>本記録が注目するのは、<strong>被害の深さを決めたのが「解約後に残した信頼」だった</strong>点です。Wiz によれば、攻撃者が引き受けたロールの多くは<strong>ほかに使われていないロール</strong>でした。Qubole を使うのをやめても信頼ポリシーを消していなかったため、「もう使っていない連携」が広い読み取り権限を持ったまま生きていたのです。Wiz は「本件で観測したすべての引受は、<strong>送信元IPの条件だけで防げた</strong>」と明記しています。<strong>Qubole と親会社 Idera の公表は、本記録の作成者が確認した範囲では存在しません。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>Qubole の AWS 認証情報がどのように盗まれたか</span><span class="b rsn">公表されていない</span><div class=sm>本件の起点であり、同種の事故が他の提供元で起きるかを判断する材料でもあるが、 どちらの分析にも示されていない。Qubole 自身の説明も確認できていない</div></li><li><span class=ui>影響を受けた組織の確定数と、その業種・国</span><span class="b rsn">公表されていない</span><div class=sm>Wiz は件数の開示を断り、Sentra は「十数組織以上」「数十の顧客」と記す。 業種・所在国はいずれも示されていない。日本の組織が含まれるかも分からない</div></li><li><span class=ui>持ち出されたデータの内容と、その後の用途</span><span class="b rsn">公表されていない</span><div class=sm>Wiz は攻撃者がデータをどう使っているかについて手掛かりが無いとしている。 S3 のデータイベントが無効な環境では、読まれたオブジェクトの特定自体ができていない</div></li><li><span class=ui>10月8〜11日の別活動と本件の関係</span><span class="b rsn">調査したが確定せず</span><div class=sm>顧客自身が作成した Qubole 連携用のアクセスキーが試された活動が別に観測されており、 少数の環境では侵害に至ったが、Wiz は両者を確実に結びつけることはできないとしている</div></li><li><span class=ui>攻撃者の帰属と動機</span><span class="b rsn">公表されていない</span><div class=sm>Wiz は既知の公表済み活動との結びつきを特定しておらず、 標的選定と持ち出しの様子が国家背景の優先順位と合わない機会便乗型だと評価するにとどまる</div></li><li><span class=ui>Qubole・Idera の公表と顧客への通知状況</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録の作成者は2026年11月10日時点で両社の公表を確認できなかった。 報道各社の問い合わせにも応答していないとされ、AWS も応答していない</div></li><li><span class=ui>被害が無かったと確認された連携組織の扱い</span><span class="b rsn">公表されていない</span><div class=sm>連携ロールを持ちながら引受を受けずに済んだ組織がどれだけあったのかは示されていない。 そのため「Qubole と連携していれば全員が被害を受けた」とは言えない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Qubole（Idera 傘下）</span><span class="b role">侵害の起点となった組織（損失を負う組織とは別のことがある）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>データレイク基盤の提供元。顧客の AWS 環境で計算資源を管理しストレージへ到達するため、 長期の AWS アクセスキーを顧客に預けさせず、クロスアカウントの IAM ロールを引き受ける方式を取る</p><p class=org-p><span class=org-l>影響</span>同社の AWS アカウント（805246085872）に属する IAM 認証情報が悪用され、 顧客環境への入口になった。認証情報がどう盗まれたかは公表されていない</p></div></div><div class=org><div class=org-h><span class=org-n>Idera</span><span class="b role">親会社</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Qubole の親会社</p><p class=org-p><span class=org-l>影響</span>本件に関する公表は確認できていない</p></div></div><div class=org><div class=org-h><span class=org-n>Qubole と連携していた顧客組織（組織名・件数非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>自社の AWS 環境に Qubole 用のクロスアカウント連携ロールを作成していた組織。 業種は公表されていない（データレイクを運用する規模の組織という以外に手掛かりが無い）</p><p class=org-p><span class=org-l>影響</span>連携ロールを引き受けられ、資源の棚卸し・秘密情報の収集・S3 からのデータ持ち出しを受けた。 Sentra は「十数組織以上」とし、1社では数百万件のファイル取得が記録に残っていたとする</p></div></div><div class=org><div class=org-h><span class=org-n>Sentra</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>データセキュリティ事業者。流出した資料の内容（ファイル名ではなく中身）を自社で走査済みの データと突き合わせて出所のバケットを絞り、外部 ID の挙動を履歴と比較して Qubole を特定した</p><p class=org-p><span class=org-l>影響</span>複数の顧客環境で同じ活動を確認し、Wiz へ連絡した</p></div></div><div class=org><div class=org-h><span class=org-n>Wiz（Wiz CIRT・Wiz Research）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Sentra の連絡を受けて調査を実施。CloudTrail の記録から引受の経緯・使用された IAM 利用者・ 送信元IP・収集された秘密情報・S3 の持ち出しを再構成し、2026年11月9日に分析を公開した</p></div></div><div class=org><div class=org-h><span class=org-n>Mandiant（Google）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Sentra・Wiz とともに調査に参加した</p></div></div><div class=org><div class=org-h><span class=org-n>Amazon Web Services（AWS）</span><span class="b role">プラットフォーム事業者</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>クロスアカウントの引受（`sts:AssumeRole`）と External ID の仕組みを提供する基盤。 仕組み自体の脆弱性ではなく、信頼の設計と運用が問題になった事案である</p><p class=org-p><span class=org-l>影響</span>報道の問い合わせには応答していないとされる</p></div></div><div class=org><div class=org-h><span class=org-n>攻撃者（帰属未公表）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Wiz は既知の公表済み活動との結びつきを特定しておらず、標的選定と持ち出しの様子は 国家背景の優先順位と合わない機会便乗型だと評価している。盗んだデータの用途も不明</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>引受活動が観測された期間（10月14日〜10月26日）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>13<span class=fu>日</span></div><div class=fn>両端を含めた日数。Wiz が CloudTrail で観測した範囲</div></div><div class=fig><div class=fh><span class=fl>影響を受けた組織の数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>12<span class=fu>組織</span></div><div class=fn>Sentra の「十数組織以上」を下限12として置いた。同社の導入部は「数十の Qubole 顧客」とも記す。 Wiz は件数の開示を断り「複数」「広範で機会便乗型」と表現している。確定値は存在しない</div></div><div class=fig><div class=fh><span class=fl>7分間に読み出された資格情報・鍵の数（Sentra の事例）</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>100<span class=fu>件</span></div><div class=fn>Sentra の要約欄の記載で、3か所の保管場所（秘密情報の保管サービス・パラメータストア・ 関数の環境変数など）から読み出されたとする。母数も対象組織も示されていない</div></div><div class=fig><div class=fh><span class=fl>1社のアカウントで記録に残っていた取得ファイル数</span><span class="b conf">桁のみ</span><span class="b org">第三者調査</span></div><div class=fv>1,000,000<span class=fu>ファイル</span></div><div class=fn>Sentra は「数百万件のファイル取得」と記す。1社のアクセス記録に限った数で、 全体の合計ではない。桁のみの値として扱う</div></div><div class=fig><div class=fh><span class=fl>攻撃者による書き込み操作の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>0<span class=fu>件</span></div><div class=fn>Sentra の記載。削除・改ざんは行われておらず、目的は持ち出しに絞られていたとみられる</div></div><div class=fig><div class=fh><span class=fl>悪用された Qubole アカウントの IAM 利用者の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>AIDA3W7DIFLYOLTK63SFS（攻撃活動以外では観測されていない）と AIDAJYRRH5Y3A7AAJM2HW（10月18日から。正規の基盤通信にも現れる）の2つ</div></div><div class=fig><div class=fh><span class=fl>別活動（顧客自身の AWS アクセスキーが試された）の期間（10月8日〜11日）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fn>Wiz はこの活動を本件と確実に結びつけることはできないとしている。 10月8日には対象のキーが1時間のうちにまとめて試された</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>侵入は提供元の AWS アカウントに属する IAM 認証情報の悪用から始まり、 顧客側が作った連携ロールの引受という正規の経路を通った。 脆弱性の悪用は無く、すべての段階が正規の API 呼び出しで構成されている。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>提供元の IAM 利用者として `sts:AssumeRole` を呼び、顧客の連携ロールの一時認証情報を得た。 観測されたすべての要求に External ID が含まれ、すべて成功した。 セッション名には `quiam-enum`・`quiam-scope-full` が使われた</div><div class=fn>根拠: CloudTrail の記録（Wiz CIRT の分析）</div></li><li><div class=stg><span class="b stage">2. 内部探索</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>引き受けたロールの権限で、ストレージとデータ（バケット・オブジェクト・ データベースとテーブル・クラスタ）、計算（インスタンス・イメージ・ セキュリティグループ・仮想網）、データベース（インスタンス・スナップショット）、 鍵と ID（ロール・鍵・鍵の方針）を一覧した</div><div class=fn>根拠: CloudTrail の記録（Wiz CIRT の分析）</div></li><li><div class=stg><span class="b stage">3. 認証情報アクセス</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>Lambda の関数設定（環境変数が返る）・Secrets Manager の値・ SSM パラメータストアの値・EC2 のユーザーデータから、ソース管理・ID 基盤・ 継続的統合・データベースの資格情報、提供元のトークン、External ID を収集した。 Sentra の例では3か所の保管場所から7分間で約100件が読み出された</div><div class=fn>根拠: CloudTrail の記録（Wiz CIRT・Sentra の分析）</div></li><li><div class=stg><span class="b stage">4. 検知回避</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>送信元を Mullvad VPN とホスティング上の仮想サーバーの間で切り替え、 2人目の IAM 利用者（正規の基盤通信にも現れるもの）を使い始めた。 これにより利用者IDだけでは正規と攻撃を切り分けられなくなった</div><div class=fn>根拠: 送信元IPと IAM 利用者の使い分け（Wiz CIRT の分析）</div></li><li><div class=stg><span class="b stage">5. 横展開</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>収集した資格情報の有効性を確認した。AWS のキーは TruffleHog の利用者文字列を伴う 呼び出しで検証し、Entra ID ではサービスプリンシパルとしてサインインし、 Okta ではクライアント資格情報で OAuth トークンを取得した。 確認された資格情報はいずれも被害組織のもので、提供元のものではなかった</div><div class=fn>根拠: CloudTrail と Entra ID・Okta のサインイン記録（Wiz CIRT の分析）</div></li><li><div class=stg><span class="b stage">6. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1] [2]</span></div><div>引き受けたロールで到達できる S3 のバケットを一覧し、オブジェクトのヘッダを確かめてから 取得した。1回のセッションでバケットを丸ごと落とした例がある。 Sentra の例では、顧客プロファイルのファイル、資格情報を含むファイル、 本番データベースのバックアップが対象になり、1社では数百万件の取得が記録に残っていた</div><div class=fn>根拠: CloudTrail とアクセス記録（Wiz CIRT・Sentra の分析）</div></li></ol><div class=sub><b>参照・持ち出された情報</b></div><ul class=cl></ul><div class="box unk" style="margin:14px 0"><div class=bt>公表されていない攻撃段階<span class=bc>1</span></div><ul><li><span class=ui>偵察 / 実行 / 永続化 / 権限昇格 / C2通信 / 影響（暗号化・破壊・改ざん）</span><div class=sm>提供元の正規の信頼を通ったため、権限昇格も永続化も必要がなかった。 起動可能なイメージ（sso_agent.iso）が攻撃者の仮想サーバー上に見つかっているが、 使われた形跡は確認されていない。暗号化・破壊・改ざんは行われていない</div></li></ul></div></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>最初の引受（10月14日）から最後の活動（10月26日）まで</div><div class=mv>13<span class=fu>日</span></div><div class=fn>検知の日付が公表されていないため、活動が続いた期間で代用した。 Sentra の検知は10月下旬から11月上旬とみられるが、同社は日付を示していない</div></div><div class=met><div class=ml>検知から封じ込めまで</div><div class=mv>被害組織ごとの対応であり、検知日・封じ込め日はいずれも公表されていない。 Sentra は自社顧客の点検を約1時間で終えたと記している</div></div><div class=met><div class=ml>最後の活動（10月26日）から第三者による公表（11月9日）まで</div><div class=mv>14<span class=fu>日</span></div><div class=fn>公表したのは提供元ではなく調査にあたった事業者である。 Qubole・Idera の公表は確認できていない</div></div><div class=met><div class=ml>被害組織・その顧客への通知</div><div class=mv>通知の有無・時期・方法はいずれも公表されていない</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>調査にあたった Wiz と Sentra が、提供元の公表を待たずに2026年11月9日に分析を公開し、 提供元の AWS アカウントID・IAM 利用者ID・送信元IP・調査手順を示した</div><div class=fn><b>トレードオフ:</b> 識別子の公開は攻撃者に調査の進展を知らせるが、公開しなければ 連携ロールを持つ組織が自分の記録を調べられない。 提供元の公表が無い状況では、顧客が動く材料は第三者の分析しかない</div></li><li><div class=ui>Qubole と親会社 Idera は、本記録の作成者が確認した範囲では公表を行っておらず、 報道の問い合わせにも応答していない</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 公表しないことで、顧客は「自社が連携していたか」「どの期間を調べるべきか」を 提供元から確認できない。認証情報の窃取経路も分からないため、 同じ提供元を使い続けるかの判断材料も得られない</div></li></ul></div>
+<section id="s6"><h2>提供元の認証情報で正規の信頼を通られ、13日間にわたり複数の顧客環境が横断された<span class="b slot">概観</span><span class=srcs>出典 [1] [2]</span></h2><p>Wiz と Sentra の分析（いずれも2026年11月9日公開）から、事実関係は次のとおりである。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10月8〜11日</td>
+<td>別活動——顧客自身が作った連携用アクセスキーがまとめて試される（本件との結びつきは未確定）</td>
+</tr>
+<tr>
+<td>10月14日</td>
+<td>Qubole の AWS アカウントの IAM 利用者として連携ロールの引受が始まる</td>
+</tr>
+<tr>
+<td>10月15日</td>
+<td>送信元がホスティング上の仮想サーバーへ移る</td>
+</tr>
+<tr>
+<td>10月16〜19日</td>
+<td>収集した資格情報の有効性確認（AWS・Entra ID・Okta）</td>
+</tr>
+<tr>
+<td>10月18日</td>
+<td>2人目の IAM 利用者の使用が始まる</td>
+</tr>
+<tr>
+<td>10月26日</td>
+<td>観測された最後の活動</td>
+</tr>
+<tr>
+<td>11月9日</td>
+<td>Wiz・Sentra が分析を公開</td>
+</tr>
+</tbody>
+</table>
+<p>環境内での行動は次の順序だった。</p>
+<ol>
+<li><strong>引受</strong>——<code>sts:AssumeRole</code> で顧客の連携ロールの一時認証情報を得る（セッション名は <code>quiam-enum</code>・<code>quiam-scope-full</code> 等）</li>
+<li><strong>棚卸し</strong>——ストレージとデータ（バケット・オブジェクト・データベースとテーブル・クラスタ）、計算（インスタンス・イメージ・セキュリティグループ・仮想網）、データベース（インスタンス・スナップショット）、<strong>鍵と ID</strong>（ロール・鍵・鍵の方針）を一覧する</li>
+<li><strong>秘密情報の収集</strong>——Lambda の関数設定（環境変数が返る）、Secrets Manager の値、SSM パラメータストアの値、EC2 のユーザーデータ</li>
+<li><strong>有効性の確認</strong>——TruffleHog の利用者文字列を伴う呼び出しで AWS キーを検証し、見つけたクライアントシークレットで <strong>Entra ID のサービスプリンシパル</strong>としてサインインし、<strong>Okta</strong> のクライアント資格情報で OAuth トークンを取得する</li>
+<li><strong>持ち出し</strong>——S3 を一覧し、ヘッダを確かめて取得する。<strong>バケットを丸ごと落とした例</strong>がある</li>
+</ol>
+<p><strong>書き込み操作は1件も無い。</strong> 削除も改ざんも行われていない。有効性を確認された資格情報は、いずれも被害組織のものであって提供元のものではなかった。</p></section>
+<section id="s7"><h2>被害の深さを決めたのは「解約後に残した信頼」だった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>この事案で最も重要な事実は、<strong>攻撃者が何も破っていない</strong>ことである。</p>
+<ul>
+<li>引受要求には<strong>すべて External ID が付いていた</strong>。そして<strong>すべて成功した</strong></li>
+<li>Wiz は「多くの環境では、10月中に提供元アカウントから引受が行われたのは<strong>攻撃者の要求だけだった</strong>」と記している</li>
+<li>つまり攻撃者が引き受けたロールの多くは、<strong>ほかに使われていないロール</strong>だった</li>
+</ul>
+<p>Sentra の記述はさらに踏み込んでいる。悪用されたロールの多くは<strong>2026年春以降使われていなかった</strong>。同社は攻撃の前に、ある Qubole 用ロールを「数か月使われていないのに機微なデータへ到達できる」として指摘していた。同社の結論は一文である——<strong>使われていない特権的な外部ロールは、監視するのではなく消すもの</strong>。</p>
+<p>External ID についても整理が要る。これは AWS が推奨する確認の仕組みだが、<strong>CloudTrail に平文で記録される</strong>。したがって秘密ではない。Wiz の評価は明快で、<strong>「本件で観測したすべての引受は、送信元IPの条件だけで防げた」</strong>。Sentra も「Qubole の公表アドレスへの絞り込みだけで、観測されたすべてのログインを止められた」と書いている。両社が同じ結論に達している。</p>
+<p>一方で、<strong>Qubole 側の認証情報がどう盗まれたかは公表されていない</strong>。起点が分からないため、同種の事故が他の提供元で起きるかを判断する材料が無い。</p></section>
+<section id="s8"><h2>検知の端緒は「流出資料の中身」だった——出所から信頼関係をたどった<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [2]</span></h2><p>発見の経路は、この事案の実務的な示唆の半分を占める。</p>
+<p>Sentra の説明では、同社はまず<strong>流出した資料の中身</strong>（ファイル名ではなく内容）を、自社が走査済みのデータと突き合わせた。これで出所が<strong>数個の S3 バケット</strong>に絞られた。次に、そのバケットを読める<strong>外部の主体</strong>を列挙した。候補のうち、直近の活動（時刻・頻度・送信元IP・操作）を各主体の履歴と比べて<strong>平常と違っていたのは Qubole だけ</strong>だった。同社は Qubole 連携のある自社顧客を<strong>約1時間で点検</strong>し、同じ活動を確認して Wiz へ連絡した。</p>
+<p>ここから読み取れることが2つある。</p>
+<p>第一に、<strong>「誰が読めるか」の一覧が引けることが前提</strong>になっている。外部アカウントを信頼しているロールと、そのロールが到達できるデータの対応表が無ければ、出所から提供元へさかのぼれない。第二に、<strong>提供元ごとの平常の挙動を持っていた</strong>ことが決め手になっている。引受そのものは正規の操作なので、「正規かどうか」では切り分けられない。切り分けられるのは「<strong>この提供元のいつもと違うか</strong>」である。</p>
+<p>なお Wiz は、S3 のデータイベントやアクセスログが有効でない環境では<strong>どのオブジェクトが読まれたかを特定できなかった</strong>と明記している。引受は管理イベントに残るが、<strong>読まれた中身はデータイベントが無いと分からない</strong>。</p></section>
+<section id="s9"><h2>Qubole と Idera の公表は確認できていない——顧客は第三者の分析から自衛する形になった<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>2026年11月10日時点で確認できていないことを並べる。</p>
+<ul>
+<li><strong>Qubole・親会社 Idera の公表。</strong> 本記録の作成者は確認できなかった。報道各社の問い合わせにも応答していないとされ、AWS も応答していない</li>
+<li><strong>Qubole の認証情報がどう盗まれたか</strong></li>
+<li><strong>影響を受けた組織の確定数・業種・所在国。</strong> Wiz は件数の開示を断り、Sentra は「十数組織以上」「数十の顧客」と記す。日本の組織が含まれるかは分からない</li>
+<li><strong>持ち出されたデータの内容と用途。</strong> Wiz は手掛かりが無いとしている</li>
+<li><strong>10月8〜11日の別活動との関係。</strong> Wiz は確実に結びつけられないとしている</li>
+<li><strong>攻撃者の帰属</strong></li>
+<li><strong>連携はあったが被害が無かった組織の扱い。</strong> どちらの分析にも示されていない</li>
+</ul>
+<p>この並びが意味するのは、<strong>顧客側が自衛のために必要な情報を、提供元からではなく第三者の分析から得ている</strong>ということである。顧客は Wiz・Sentra が公開した AWS アカウントID・IAM 利用者ID・送信元IPを使って、自分の記録を自分で調べることになる。</p></section>
+<section id="s10"><h2>「使っていない連携」は資産ではなく負債である（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>ここからは本記録の判断である。</p>
+<p>SaaS との連携は、契約の終了とともに消えない。消えるのは<strong>請求</strong>だけである。残るのは、①顧客側に作った IAM ロール、②その信頼ポリシー、③その権限、④連携のために保管した資格情報、である。本件で深く入られたのは、まさにこの4つを片付けていなかった組織だった。</p>
+<p>ここには、通常の委託先管理が取りこぼす構造がある。委託先の棚卸しは<strong>契約</strong>を単位に行われる。契約が終われば一覧から消える。しかし<strong>権限は契約ではなくクラウドの設定として残る</strong>。台帳の側では「もう委託していない」のに、環境の側では「いまも読める」という食い違いが生じる。この食い違いは、<strong>契約の棚卸しでは見えない</strong>。見えるのは、クラウド側で「外部を信頼しているロール」を引いたときだけである。</p>
+<p>もうひとつ、本件は<strong>一時認証情報の性質</strong>を突いている。資格情報を取り替えても、<strong>すでに発行された一時セッションは終わらない</strong>。Wiz がこれを明記しているのは、取り替えだけで対応を終えた組織が「もう安全」と誤解するからである。必要なのはロールのセッション無効化まで含めた手順である。</p>
+<p>最後に、本件を「Qubole の事故」として読むと学びを失う。同じ構図を持つのは、データ基盤・監視・バックアップ・費用管理・セキュリティ製品——<strong>顧客の AWS 環境に引受権限を持つすべての SaaS</strong> である。自組織で引けるべき問いは「Qubole を使っているか」ではなく、<strong>「いま外部アカウントを信頼しているロールは何本あり、それぞれ最後に引き受けられたのはいつか」</strong>である。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>trust_mechanism</th><td>Qubole は顧客に長期の AWS アクセスキーを預けさせず、顧客側が作った IAM ロールを Qubole の AWS アカウントから引き受ける方式を使う。引受時には External ID の一致を求める。 この設計は AWS が推奨する形であり、攻撃者はその正規の経路をそのまま通った</td></tr><tr><th>qubole_aws_account</th><td>805246085872</td></tr><tr><th>iam_user_ids</th><td><ul class=cl><li>AIDA3W7DIFLYOLTK63SFS（攻撃活動以外では観測されていない）</li><li>AIDAJYRRH5Y3A7AAJM2HW（2026年10月18日から。正規の基盤通信にも現れるため送信元IPで切り分ける）</li></ul></td></tr><tr><th>role_session_names</th><td><ul class=cl><li>quiam-enum</li><li>quiam-scope-full</li></ul></td></tr><tr><th>source_ips</th><td><ul class=cl><li>45.83.220.211（Mullvad VPN・10月14日）</li><li>57.129.54.120（OVH の仮想サーバー・10月15日以降）</li><li>2001:41d0:70d:7800::（10月16〜24日・資格情報の列挙と有効性確認）</li><li>185.209.199.73（Mullvad VPN・10月18日）</li><li>89.37.63.175（Datacamp Limited／Mullvad VPN AB 登録・10月25日）</li></ul></td></tr><tr><th>external_id_behavior</th><td>Wiz が帰属させたすべての引受要求に External ID が含まれ、すべて成功した。 External ID は CloudTrail に平文で記録されるため、秘密として扱えない</td></tr><tr><th>credential_theft_vector</th><td>公表されていない。Qubole 側の認証情報がどう盗まれたかは示されていない<span class="b rsn">公表されていない</span></td></tr><tr><th>secrets_sources</th><td><ul class=cl><li>Lambda の関数設定（環境変数が返る）</li><li>Secrets Manager（一覧の取得と値の取得）</li><li>SSM パラメータストア（一覧の取得と値の取得）</li><li>EC2 のユーザーデータ（Sentra の記載）</li></ul></td></tr><tr><th>credentials_validated</th><td><ul class=cl><li>AWS のアクセスキー（TruffleHog の利用者文字列を伴う呼び出しで有効性を確認）</li><li>Microsoft Entra ID のサービスプリンシパル（発見したクライアントシークレットでサインイン）</li><li>Okta のクライアント資格情報（OAuth トークンを取得）</li></ul></td></tr><tr><th>validated_credentials_ownership</th><td>有効性を確認された資格情報はいずれも被害組織のものであり、提供元のものではなかった</td></tr><tr><th>iso_artifact</th><td>Wiz は攻撃者が制御していた仮想サーバー上に、起動可能な Linux イメージ（sso_agent.iso）を 見つけている。起動から90分の計時を始め、システム情報・インターフェイスとディスクの情報を 送信し、TCP 23458 をたどってシェルスクリプトを取得し、最後に強制再起動で痕跡を消す作りで、 ntfs3 ドライバを読み込む点から Windows の端末を想定しているとみられる。 実際に使われた形跡は確認されていない</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年11月9日　<b>補足:</b> 秘密情報の読み出しと S3 からの持ち出しは記録で確認されている。 ただし持ち出されたデータがその後どう使われたかについて、Wiz は手掛かりが無いとしている</td></tr><tr><th>ログの有無</th><td>Wiz は、S3 のデータイベントやアクセスログが有効になっていない環境では **どのオブジェクトが読まれたかを特定できなかった**と記している。 引受そのものは CloudTrail の管理イベントに残る</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 外部アカウントを信頼している IAM ロールを棚卸しし、使っていない連携は削除する　<b>副作用:</b> 稼働中の連携を誤って消すと基盤の処理が止まる。削除の前に、 直近の引受実績（どのアカウントがいつ引き受けたか）で使用中かを確かめる必要がある</div><div class=sub><b>数え方:</b> 信頼する主体をアカウント全体ではなく個別の主体に絞り、送信元IPの条件を付ける　<b>副作用:</b> 提供元が送信元の範囲を公表していない場合は条件を書けない。 提供元の基盤移転で通信が止まるため、範囲の変更を追う運用が要る</div><div class=sub><b>数え方:</b> External ID を秘密として扱わず、事故後は提供元と取り替える　<b>副作用:</b> 取り替えは提供元側の設定変更を伴うため、連携の一時停止が発生しうる</div><div class=sub><b>数え方:</b> 連携ロールの権限を最小化する（関数設定・秘密情報・パラメータ・広い S3 読み取りを外す）　<b>副作用:</b> 権限を削ると提供元の機能の一部が動かなくなる。何を落とすかの判断に 提供元の仕様確認が必要になる</div><div class=sub><b>数え方:</b> 読まれた可能性のある秘密・パラメータ・関数の環境変数をすべて取り替え、セッションを無効化する　<b>副作用:</b> 資格情報の一斉取り替えは広い停止を伴う。すでに発行済みの一時セッションは 資格情報の取り替えだけでは終わらないため、ロールのセッション無効化も必要になる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年春ごろ（Sentra の記述）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>Sentra によれば、後に悪用されるロールの多くは「春以降は使われていない」状態だった。 同社は攻撃前に、ある Qubole 用ロールを「数か月使われていないのに機微なデータへ到達できる」 として指摘していた</td></tr><tr><td class="sm nowrap tw">2026年10月8日</td><td class=nowrap><span class="b kind">発生</span></td><td>本件とは別の活動として、**顧客自身が作成した AWS アクセスキー**（Qubole 連携用とみられる）が 1時間のうちにまとめて試された。Wiz はこの活動を10月11日まで観測したが、 10月14日以降の引受活動と確実に結びつけることはできないとしている</td></tr><tr><td class="sm nowrap tw">2026年10月11日</td><td class=nowrap><span class="b kind">発生</span></td><td>上記の別活動の終わり。少数の環境では、この経路でも顧客の AWS 環境が侵害されたとされる</td></tr><tr><td class="sm nowrap tw">2026年10月14日</td><td class=nowrap><span class="b kind">発生</span></td><td>Mullvad VPN の IP（45.83.220.211）から、Qubole の AWS アカウントの IAM 利用者 AIDA3W7DIFLYOLTK63SFS として `sts:AssumeRole` が呼ばれ、顧客の連携ロールの 一時認証情報が取得された。Wiz が観測した最初の活動</td></tr><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">発生</span></td><td>活動の主な送信元が OVH のホスティング上の仮想サーバー（57.129.54.120）へ移った</td></tr><tr><td class="sm nowrap tw">2026年10月16日</td><td class=nowrap><span class="b kind">発生</span></td><td>TruffleHog の利用者文字列を伴う `GetCallerIdentity` の呼び出しが始まり、 収集した AWS キーの有効性確認が行われた（10月19日まで）。 同じ時期に Entra ID のサービスプリンシパルとしてのサインインと、 Okta のクライアント資格情報による OAuth トークンの取得も行われた</td></tr><tr><td class="sm nowrap tw">2026年10月18日</td><td class=nowrap><span class="b kind">発生</span></td><td>2人目の IAM 利用者（AIDAJYRRH5Y3A7AAJM2HW）の使用が始まった。 この利用者は正規の基盤通信にも現れるため、送信元IPで切り分ける必要がある。 同日、別の Mullvad の IP（185.209.199.73）から複数環境の連携ロールが 短時間に連続して引き受けられた</td></tr><tr><td class="sm nowrap tw">2026年10月25日</td><td class=nowrap><span class="b kind">発生</span></td><td>Datacamp Limited に割り当てられ Mullvad VPN AB に登録された IP（89.37.63.175）から、 顧客アカウントでのロール引受が行われた</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">露出の解消</span></td><td>Wiz が観測した最後の活動</td></tr><tr><td class="sm nowrap tw">時期非公表（2026年10月下旬〜11月上旬）</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>Sentra が複数の顧客環境で異常を認め、流出資料の中身を自社の走査結果と突き合わせて 出所のバケットを絞り、外部 ID の挙動を履歴と比較して Qubole を特定した。 Qubole 連携のある自社顧客を約1時間で点検し、同じ活動を確認して Wiz へ連絡した</td></tr><tr><td class="sm nowrap tw">2026年11月9日</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>Wiz が分析「Trusted by Default: Qubole Cross-Account Access Abused in the Wild」を公開し、 Qubole の AWS アカウントID・2つの IAM 利用者ID・送信元IP・調査の手順と対策を示した。 同日 Sentra も検知の経緯を公開した</td></tr><tr><td class="sm nowrap tw">2026年11月9日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>The Register・The Hacker News が報じ、Wiz が影響組織数の開示を断ったこと、 AWS と Qubole が問い合わせに応答していないこと、 認証情報がどう盗まれたかが公表されていないことを伝えた</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が Wiz・Sentra の分析を取得して要点を確認した。 Qubole および親会社 Idera の公表は確認できなかった</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響を受けた組織の数</span><div class=sm>Wiz は件数の開示を断り「複数」「広範で機会便乗型の供給網キャンペーン」と表現する。 Sentra は要約欄で「十数組織以上」、導入部で「数十の Qubole 顧客」と記しており、 同じ記事の中で表現が揺れている。本記録は下限12組織として扱い、確定値は無いものとした</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>Qubole・Idera・AWS の公表</span><div class=sm>本記録の作成者は2026年11月10日時点で Qubole・親会社 Idera の公表を確認できなかった。 The Hacker News は両社のサイトに声明が無かったと記し、The Register は AWS と Qubole が 問い合わせに応答しなかったと記している。本記録は一次資料なしとして扱い、 当事者公表の必要性からは免除した</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>Sentra が示した数値の母数</span><div class=sm>「7分間に約100件の資格情報・鍵」「数百万件のファイル取得」「数千件の資格情報記録」 「数千件の顧客プロファイルのファイル」はいずれも母数と対象組織が示されていない。 数百万件のファイル取得は「1社のアクセス記録に限った数」と明記されているため、 本記録は桁のみの値として扱った</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>10月8〜11日の別活動との関係</span><div class=sm>Wiz は顧客自身が作成した Qubole 連携用アクセスキーが試された別の活動を観測しているが、 10月14日以降の引受活動と確実に結びつけることはできないとしている。 本記録も同一の攻撃者によるものと断定しない</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>起動可能なイメージ（sso_agent.iso）の位置づけ</span><div class=sm>Wiz は攻撃者が制御していた仮想サーバー上でこのイメージを見つけているが、 実際に配備された形跡は確認しておらず、使用も確認できないとしている。 本記録は本事案の手口としては数えず、観測された周辺の痕跡として記録する</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>被害組織側の公表</span><div class=sm>被害組織はいずれも公表しておらず、本記録の事実関係は調査にあたった2社の分析に依存している。 被害の範囲・通知の有無・規制当局への報告はいずれも確認できていない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>提供元の認証情報から、顧客が残していた信頼ポリシーを通って顧客環境へ届いた経路</div><div class=svgwrap><svg viewBox="0 0 794 302" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,106.0 C91.0,106.0 91.0,183.0 16,183.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,183.0 C193.0,183.0 193.0,151.0 220,151.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,151.0 C397.0,151.0 397.0,80.0 424,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,80.0 C499.0,80.0 499.0,151.0 424,151.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,80.0 C499.0,80.0 499.0,222.0 424,222.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,151.0 C601.0,151.0 601.0,41.0 628,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,151.0 C601.0,151.0 601.0,112.0 628,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,222.0 C601.0,222.0 601.0,183.0 628,183.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,183.0 C703.0,183.0 703.0,254.0 628,254.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,254.0 C601.0,254.0 601.0,80.0 424,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="81.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属未公表・機会</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">便乗型）</text><rect x="16" y="145.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Qubole の AWS</text><text x="91.0" y="181.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> アカウント 80524</text><text x="91.0" y="195.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">6085872 の I…</text><text x="91.0" y="208.0" text-anchor="middle" fill="#f48fb1" font-size="10">窃取経路は非公表</text><rect x="220" y="113.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客が作った連携ロールの</text><text x="295.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">信頼ポリシー（Exter</text><text x="295.0" y="163.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nal ID 付き）</text><text x="295.0" y="176.0" text-anchor="middle" fill="#f48fb1" font-size="10">引受は全件成功</text><rect x="424" y="55.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客の AWS 環境（十</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">数組織以上）</text><rect x="424" y="119.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Secrets Mana</text><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ger / SSM / </text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Lambda 環境変数…</text><rect x="424" y="197.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S3（顧客プロファイル・</text><text x="499.0" y="233.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">本番DBバックアップ）</text><rect x="628" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TruffleHog に</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">よる有効性確認</text><rect x="628" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Entra ID / O</text><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">kta（被害組織の ID</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 基盤）</text><rect x="628" y="158.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">持ち出されたデータ（用途</text><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は不明）</text><rect x="628" y="222.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Sentra → Wiz</text><text x="703.0" y="258.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> CIRT・Mandia</text><text x="703.0" y="272.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nt（調査・11/9 …</text></svg></div><div class=fn>layer 0 は攻撃者と、悪用された提供元アカウントの認証情報。 layer 1 は引受の仕組み（信頼ポリシーと External ID）。 layer 2 は顧客環境の中で触られた場所。layer 3 は持ち出されたものと、 そこから到達した外部の ID 基盤。矢印はすべて正規の API 呼び出しである。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>引受は正規の操作として記録されるため、操作名では異常にならない。 多くの環境では10月中の引受が攻撃者の要求だけであり、 「提供元の平常の挙動」と比べていれば浮かんだ（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>信頼ポリシーの主体をアカウント全体ではなく個別の主体に絞り、送信元IPの条件を付ける</div><div class=ctl><span class="b eff">侵入を防げた</span>使っていない連携ロールを削除する（提供元を信頼ポリシーから外す）</div><div class=ctl><span class="b eff">検知できた</span>提供元がこれまで使っていない通信元（VPN・ホスティング）からの引受を警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>短時間に多種の一覧 API が連続する形は、提供元の通常の処理とは異なる。 引受セッション単位で後続の操作を追えば異常として見える（本記録の評価）</div></td><td><div class=ctl><span class="b eff">検知できた</span>外部ロールのセッションから出た一覧系 API の急増を検知ルールにする</div><div class=ctl><span class="b eff">影響を限定できた</span>連携ロールの権限を提供元の機能に必要な範囲へ最小化する</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>秘密情報の値の取得は件数が跳ねれば目立つ。7分で約100件という速度は 人の操作でも提供元の定常処理でもない（本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>連携ロールから関数設定・秘密情報・パラメータの読み取り権限を外す （提供元の機能に不要なら与えない）</div><div class=ctl><span class="b eff">検知できた</span>秘密情報の値の取得について、主体ごとの単位時間あたり件数を警報にする</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>共用の VPN 出口は単独では決め手にならないと Wiz も記している。 切り分けの鍵は「提供元が使っていない通信元か」である</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>提供元が公表する通信元の範囲を信頼ポリシーの条件に書き、範囲外を落とす</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">検知した</span><div class=sm>Wiz は検知の手掛かりとして、TruffleHog の利用者文字列を伴う呼び出しと、 対応する Entra ID・Okta のサインイン記録の突き合わせを挙げている</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>クラウドの秘密情報から到達できる ID 基盤の資格情報を棚卸しし、 サービスプリンシパルのサインインに条件付きアクセスを適用する</div><div class=ctl><span class="b eff">検知できた</span>既知の秘密情報探索ツールの利用者文字列を検知ルールに入れる</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>S3 のデータイベントやアクセスログが有効でない環境では、 **どのオブジェクトが読まれたかを後から特定できなかった**と Wiz が明記している。 記録が無ければ検知も事後の特定もできない</div></td><td><div class=ctl><span class="b eff">検知できた</span>機微なバケットで S3 のデータイベントまたはアクセスログを有効にする</div><div class=ctl><span class="b eff">検知できた</span>組織全体の CloudTrail を1本用意し、記録の欠けを作らない</div><div class=ctl><span class="b eff">影響を限定できた</span>連携ロールの S3 読み取りを必要なバケット・接頭辞に限定する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>調査にあたった Wiz と Sentra が、提供元の公表を待たずに2026年11月9日に分析を公開し、 提供元の AWS アカウントID・IAM 利用者ID・送信元IP・調査手順を示した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の作成者の評価である。アカウントID・IAM 利用者ID・送信元IP・ 見るべき API（引受・秘密情報の取得・S3 の取得）まで示されているため、 利用組織は自力で点検できる。「広範で機会便乗型」としつつ件数を明かさない点は、 被害組織の保護と読者の判断材料の間の妥当な線引きだと考える</td></tr><tr><td>Qubole と親会社 Idera は、本記録の作成者が確認した範囲では公表を行っておらず、 報道の問い合わせにも応答していない</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>本記録の作成者の評価である。起点は提供元のアカウントの認証情報であり、 顧客が自分で調べるには提供元の協力（影響範囲・期間・取り替えるべき External ID）が要る。 進行中の可能性があるため、後続で公表が出れば評価は変わる</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>委託先の棚卸しを「契約」ではなく「クラウドの権限」から引く</div><div class=lw>契約が終わっても、顧客側に作った連携ロールと信頼ポリシーは残る。 本件で深く入られたのは、利用をやめた後も信頼を残していた組織だった</div><div class=la><b>取るべき行動</b> 四半期ごとに「外部アカウントを信頼している IAM ロール」を一覧し、 ①最後に引き受けられた日 ②到達できるデータ ③対応する契約の有無を並べた表を作る。 契約が無いものは監視対象ではなく削除対象として扱う</div></li><li><div class=lp>提供元が公表しない前提で、自社が動ける手順を用意する</div><div class=lw>起点は提供元の認証情報だったが、Qubole・Idera の公表は確認できていない。 顧客は第三者の分析に載った識別子で自分の記録を調べる形になった</div><div class=la><b>取るべき行動</b> 主要な SaaS 連携について「提供元から説明が無いまま侵害が報じられた場合」の手順を作る。 調べる記録の種類（クラウドの監査記録・ID 基盤のサインイン）、 取り替える資格情報の一覧、連携を止める判断権者を事前に決めておく</div></li><li><div class=lp>「確認の仕組みがある」を「防げる」と読み替えない</div><div class=lw>引受要求はすべて External ID を伴い、すべて成功した。 External ID はクラウドの監査記録に平文で残るため、秘密として機能しない</div><div class=la><b>取るべき行動</b> 連携の設計レビューで「この条件は秘密に依存していないか」を確認項目にする。 提供元との契約・設定の見直し時に、送信元の範囲（公表アドレス）を条件に 書けるかを必ず聞く</div></li><li><div class=lp>データの持ち出しは「読まれたことを特定できるか」で被害が決まる</div><div class=lw>S3 のデータイベントやアクセスログが有効でない環境では、 どのオブジェクトが読まれたかを特定できなかった</div><div class=la><b>取るべき行動</b> 機微なデータを置くバケット・ストレージについて、データ読み取りの記録を有効にする。 費用を理由に全体で無効にするのではなく、分類に応じて有効にする範囲を決める。 記録が無い範囲は「事故時に説明できない範囲」として経営リスクの一覧に載せる</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>信頼ポリシーの主体を絞り、送信元の条件を付ける</div><div class=lw>Wiz は「送信元IPの条件だけで、観測されたすべての引受を防げた」と明記している。 信頼する主体がアカウント全体のままでは、提供元のどの資格情報でも通る</div><div class=la><b>取るべき行動</b> 外部連携のロールについて、信頼ポリシーの主体をアカウント全体から個別の主体へ変更し、 提供元が公表する送信元の範囲（IPまたは仮想網の端点）を条件に加える。 提供元が範囲を公表していない場合は、公表を求めるか連携方式の見直しを検討する</div></li><li><div class=lp>連携ロールから秘密情報の読み取り権限を外す</div><div class=lw>攻撃者は Lambda の関数設定・秘密情報の保管サービス・パラメータストア・ EC2 のユーザーデータから資格情報を集め、ID 基盤の資格情報まで到達した</div><div class=la><b>取るべき行動</b> 連携ロールの権限を点検し、関数設定の取得・秘密情報の値の取得・ パラメータの値の取得・広い S3 読み取りを、提供元の機能に不要なら削除する。 必要な場合は対象を名前・接頭辞で限定する</div></li><li><div class=lp>資格情報の取り替えだけで終わらせず、セッションを無効化する</div><div class=lw>資格情報を取り替えても、すでに発行された一時セッションは終わらない。 Wiz はこの点を明記している</div><div class=la><b>取るべき行動</b> 対応手順に①読まれた可能性のある秘密・パラメータ・環境変数の取り替え ②該当ロールの有効セッションの無効化 ③External ID の取り替え（提供元と調整）を入れる。 ①だけで完了にしない</div></li><li><div class=lp>提供元ごとの「平常」を記録しておく</div><div class=lw>引受は正規の操作なので、操作名では異常にならない。 Sentra は提供元ごとの時刻・頻度・送信元IP・操作の履歴と比べて1社を切り出した</div><div class=la><b>取るべき行動</b> 外部ロールの引受について、提供元ごとの時間帯・頻度・送信元・後続操作の傾向を ダッシュボードに出す。これまで使われていない通信元からの引受、 長く使われていないロールの引受を警報にする</div></li><li><div class=lp>引受セッション単位で後続の操作を追えるようにする</div><div class=lw>Wiz の調査手順は「見つけたセッションごとに、その後の操作を全部見る」ことだった。 特に秘密情報・パラメータ・関数・ストレージへの操作が対象になる</div><div class=la><b>取るべき行動</b> 組織全体の監査記録を1本にまとめ、セッション名・主体でひも付けて検索できる状態にする。 調査の起点となる問い（提供元アカウントからの引受のうち、クラウド外の通信元のもの）を あらかじめ保存したクエリにしておく</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 顧客側の IAM ロールを外部の SaaS に引き受けさせる連携（クロスアカウント方式）を 1つ以上使っている</td><td class=sm>本件は提供元の認証情報が悪用され、この正規の経路がそのまま通られた</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 信頼ポリシーの主体がアカウント全体のままで、送信元の条件が付いていない</td><td class=sm>Wiz は送信元IPの条件だけで観測されたすべての引受を防げたとしている</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> SaaS の解約・停止の手順に「顧客側に作った連携ロールと信頼ポリシーの削除」が入っていない</td><td class=sm>攻撃者が引き受けたロールの多くは、ほかに使われていないロールだった</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 連携ロールに、関数設定の取得・秘密情報の値の取得・パラメータの取得・ 広い S3 読み取りの権限が付いている</td><td class=sm>攻撃者はこの4か所から資格情報を集め、ID 基盤の資格情報まで到達した</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 機微なデータのストレージでデータ読み取りの記録を有効にしていない</td><td class=sm>記録が無い環境では、どのオブジェクトが読まれたかを特定できなかった</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 外部ロールの引受について、提供元ごとの平常の挙動を記録・可視化していない</td><td class=sm>引受は正規の操作であり、平常との差分でしか切り分けられない</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月9日 Wiz（Wiz CIRT・Wiz Research）</span> <a href="https://www.wiz.io/blog/qubole-cross-account-access-abused-in-the-wild" target="_blank" rel="noreferrer noopener nofollow">Trusted by Default: Qubole Cross-Account Access Abused in the Wild</a> <span class="b kind">調査レポート</span><span class=sm>（(本事案の中核資料。10月14〜26日の時系列、Qubole の AWS アカウントID 805246085872、 2つの IAM 利用者ID、セッション名 quiam-*、送信元IP、すべての引受に External ID が付き すべて成功したこと、棚卸し・秘密情報収集・TruffleHog による有効性確認・S3 からの持ち出し、 起動可能なイメージ、10月8〜11日の別活動、「送信元IPの条件だけで観測されたすべての引受を 防げた」との評価、S3 のデータ記録が無い環境では読まれたオブジェクトを特定できなかったこと、 および対策一覧の出典。本記録の作成者が2026年11月10日に取得した)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月9日 Sentra（Ron Reiter）</span> <a href="https://www.sentra.io/blog/breaches/inside-the-qubole-supply-chain-attack" target="_blank" rel="noreferrer noopener nofollow">One Stolen Vendor Key, Every Customer&#x27;s Data Exposed: Inside the Qubole Supply Chain Attack</a> <span class="b kind">ブログ</span><span class=sm>（(検知の端緒。流出資料の中身から出所のバケットを絞り、外部主体の挙動を履歴と比べて 提供元を特定した経緯、約1時間での顧客点検、「十数組織以上」「数十の顧客」の表現、 7分間に約100件の資格情報・鍵、1社で数百万件のファイル取得、書き込み0件、 ロールが春以降使われていなかったこと、攻撃前に同社が未使用ロールを指摘していたこと、 「使われていない特権的な外部ロールは監視するのではなく消すもの」との主張の出典。 本記録の作成者が2026年11月10日に取得した)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月9日 The Register</span> <a href="https://www.theregister.com/security/2026/11/09/attackers-backdoor-trusted-aws-integrations-to-steal-secrets/5308553" target="_blank" rel="noreferrer noopener nofollow">Attackers backdoor trusted AWS integrations to steal secrets</a> <span class="b kind">記事</span><span class=sm>（(Wiz が影響組織数の開示を断ったこと、「広範で機会便乗型の供給網キャンペーン」との表現、 「多くの組織が基盤の利用をやめた後も信頼ポリシーを残していたため引受に成功した」との Wiz の説明、AWS と Qubole が問い合わせに応答しなかったこと、 顧客向けの点検手順〈10月1日以降の記録でアカウントID 805246085872 からの引受を見る〉の出典)）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月9日 The Hacker News</span> <a href="https://thehackernews.com/2026/11/hackers-exploit-quboles-trusted-aws.html" target="_blank" rel="noreferrer noopener nofollow">Hackers Exploit Qubole&#x27;s Trusted AWS Access to Breach Customer Accounts and Steal Data</a> <span class="b kind">記事</span><span class=sm>（(10月14〜26日という期間、Qubole が Idera 傘下のデータレイク基盤であること、 認証情報の入手経路が公表されていないこと、Qubole・Idera のサイトに声明が無かったことの出典。 保存分〈output/articles/20261110/0103_…〉は本文取得に失敗しており冒頭のみ)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月10日</span> <span class="b rev">新規作成</span> 新規作成。2026年11月10日の収集分（The Hacker News・The Register）を起点に、 一次分析である Wiz のレポートと、検知の端緒である Sentra のブログを取得して裏取りした。 時系列・識別子（アカウントID・IAM 利用者ID・送信元IP）・環境内での行動・対策は Wiz の記述で確認し、検知の経緯と数値は Sentra の記述で確認している。 当事者（Qubole・親会社 Idera）および被害組織の公表は確認できなかったため、 当事者公表の必要性からは免除し、その事実を齟齬として記録した。 続報（提供元の公表・認証情報の窃取経路・影響組織数）が出る見込みがあるため 状態を「続報が続いている」とした。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Qubole</span><span class="b tag">Idera</span><span class="b tag">AWS</span><span class="b tag">クロスアカウント</span><span class="b tag">AssumeRole</span><span class="b tag">ExternalId</span><span class="b tag">信頼ポリシー</span><span class="b tag">供給網攻撃</span><span class="b tag">秘密情報の窃取</span><span class="b tag">Secrets Manager</span><span class="b tag">SSMパラメータストア</span><span class="b tag">Lambda環境変数</span><span class="b tag">S3</span><span class="b tag">TruffleHog</span><span class="b tag">EntraID</span><span class="b tag">Okta</span><span class="b tag">CloudTrail</span><span class="b tag">休眠ロール</span><span class="b tag">最小権限</span><span class="b tag">Wiz</span><span class="b tag">Sentra</span><span class="b tag">Mandiant</span><span class="b tag">一時認証情報</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-10 16:40 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

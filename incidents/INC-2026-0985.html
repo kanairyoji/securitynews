@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Chrome 157 でゼロデイ修正 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0985</span>Chrome 157 でゼロデイ修正</h1>
+<header class="site-header">
+  <p class="subtitle">Google が2026年11月9日に Chrome 157 の安定版更新（157.0.8103.50/.51）を公開し9件の脆弱性を修正、うち **XML 処理の解放済みメモリ使用（Use after free）CVE-2026-125350** は**すでに実際の攻撃で悪用**されている——報告は11月6日の匿名提供で修正までわずか3日、悪用の手口・標的・規模は一切公表されておらず、本記録の確認では CISA の悪用済み脆弱性カタログにも NVD にも収載されていない</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月9日</span>
+  <span>最終更新: 2026年11月10日</span>
+</div>
+
+<div class="lead"><p><strong>Google</strong> は2026年11月9日（米国時間）、Web ブラウザ <strong>Chrome</strong> の安定版更新を公開しました。Windows・macOS 向けが <strong>157.0.8103.50／157.0.8103.51</strong>、Linux 向けが<strong>157.0.8103.50</strong> で、今後数日から数週間かけて順次展開されます。同日、Android 向けにも同じ修正を含む <strong>157.0.8103.50</strong> が公開されました。</p>
+<p>この更新では<strong>9件</strong>の脆弱性が修正されました。4段階で最も高い「<strong>Critical</strong>」に分類されたものはなく、<strong>7件が「High」・2件が「Medium」</strong>です。そのうち1件について、Google はこう記しています（原文英語）。</p>
+<blockquote>
+<p><strong>Google は、CVE-2026-125350 に対する攻撃用コードが実際に存在することを認識している。</strong></p>
+</blockquote>
+<p><strong>CVE-2026-125350 は、XML 処理における解放済みメモリの使用（Use after free）</strong>で、深刻度は High です。Google の公表によれば、<strong>報告は2026年11月6日</strong>に<strong>匿名の報告者</strong>から行われており、<strong>修正までの日数は3日</strong>です。この更新には、同じ XML 処理の解放済みメモリ使用が<strong>もう1件</strong>（<strong>CVE-2026-125346</strong>、Arni Hardarson／Neonix Security による2026年10月12日の報告）含まれています。</p>
+<p><strong>悪用の手口・標的・規模・時期は一切公表されていません。</strong> Google は「大多数の利用者が修正版に更新されるまで、不具合の詳細と関連リンクへのアクセスを制限することがある」という恒例の注記を置いており、悪用済みの CVE-2026-125350 についても技術的な詳細は示されていません。</p>
+<p>本記録の作成者は2026年11月10日、<strong>CISA の悪用が確認された脆弱性のカタログ（KEV）</strong>と<strong>NVD</strong> を確認しました。KEV のカタログ版 <strong>2026.11.09</strong>（11月9日公開）にはCVE-2026-125350 は<strong>収載されていません</strong>。NVD でも<strong>この CVE はまだ公開されていません</strong>（照会結果は0件）。参照できる一次資料は、<strong>現時点では Google のリリース告知だけ</strong>です。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>CVE-2026-125350 の悪用の手口・攻撃の経路</span><span class="b rsn">意図的に非開示</span><div class=sm>Google は「大多数の利用者が更新されるまで詳細を制限することがある」という 方針のもとで、技術的な詳細を公開していない。 iThome も「どのように悪用されたかを明らかにしていない」と記す。 **利用者側は「更新する」以外の対処を選べない**（本記録の指摘）</div></li><li><span class=ui>悪用の標的・地域・業種・規模</span><span class="b rsn">公表されていない</span><div class=sm>標的型の限定的な悪用なのか、広く行われているのかが分からない。 **対応の緊急度を自分で判断するための材料が無い**（本記録の指摘）</div></li><li><span class=ui>悪用の開始時期（いつから悪用されていたか）</span><span class="b rsn">公表されていない</span><div class=sm>報告が2026年11月6日であることは公表されているが、 悪用がいつから行われていたかは示されていない。 **報告の時点ですでに悪用されていたのか、報告後に悪用が始まったのかも読めない**</div></li><li><span class=ui>攻撃主体の帰属</span><span class="b rsn">公表されていない</span><div class=sm>国家背景の攻撃者か、商用の監視ツール事業者か、犯罪目的かの言及は無い。 報告者が匿名であることも、帰属の手掛かりにはならない</div></li><li><span class=ui>悪用を検知するための指標（IoC）と、影響を受けた利用者への通知</span><span class="b rsn">公表されていない</span><div class=sm>利用者が自分の端末で悪用の有無を確かめる手段は示されていない。 対象となった利用者への個別通知を行ったかも公表されていない</div></li><li><span class=ui>Chromium を基盤とする他のブラウザへの影響と修正時期</span><span class="b rsn">公表されていない</span><div class=sm>本告知は Chrome についてのみ述べている。 Edge・Brave・Opera 等や組み込みの WebView が同じ経路を持つか、 いつ修正されるかは各提供元の告知を待つ必要がある</div></li><li><span class=ui>CVE-2026-125346（もう1件の XML の解放済みメモリ使用）との関係</span><span class="b rsn">公表されていない</span><div class=sm>同じ更新に、同じ部位・同じ類型の脆弱性が2件含まれている （10月12日報告の CVE-2026-125346 と、11月6日報告で悪用済みの CVE-2026-125350）。 **同じ調査から派生したものか、独立した発見かは公表されていない** （本記録の疑問）</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Google LLC（Chrome）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Chrome の開発・提供元。2026年11月9日に安定版更新を公開し、 9件の脆弱性の修正と、CVE-2026-125350 の悪用の存在を告知した</p><p class=org-p><span class=org-l>影響</span>自社製品の脆弱性が修正版の公開前に悪用された。 9件のうち6件は Google 自身の報告によるものである</p></div></div><div class=org><div class=org-h><span class=org-n>Chrome の利用者・利用組織（規模は非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Windows・macOS・Linux・Android 版 Chrome の利用者。 および Chromium を基盤とする他のブラウザの利用者（影響範囲は本更新では示されていない）</p><p class=org-p><span class=org-l>影響</span>修正版に更新するまで、悪用が確認されている脆弱性を含む版を使い続けることになる。 **実際に悪用された利用者の規模・地域・業種は公表されていない**</p></div></div><div class=org><div class=org-h><span class=org-n>匿名の報告者（CVE-2026-125350）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>Google の公表では「anonymous」として、2026年11月6日の報告者と記載されている。 **報奨金の扱いは「N/A」と記されている**</p></div></div><div class=org><div class=org-h><span class=org-n>Arni Hardarson（Neonix Security）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>同じ XML 処理の解放済みメモリ使用である CVE-2026-125346 の報告者 （2026年10月12日報告。報奨金は「TBD」）。 **悪用が確認されたのはこちらではなく CVE-2026-125350 である**</p></div></div><div class=org><div class=org-h><span class=org-n>Vo Duc Thang（ugvxb）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>CVE-2026-125342（GPU の未初期化リソース・Medium）の報告者（2026年9月26日報告）</p></div></div><div class=org><div class=org-h><span class=org-n>CISA（米国サイバーセキュリティ・インフラストラクチャセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">関係未公表</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>悪用が確認された脆弱性のカタログ（KEV）の運用主体。 **本記録の確認時点（カタログ版 2026.11.09）で CVE-2026-125350 は未収載**である</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>本更新で修正された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9<span class=fu>件</span></div><div class=fn>Google の公表による。**Critical は0件、High が7件、Medium が2件。** うち1件（CVE-2026-125350）は悪用が確認されている</div></div><div class=fig><div class=fh><span class=fl>悪用が確認された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1<span class=fu>件</span></div><div class=fn>CVE-2026-125350（XML 処理の解放済みメモリ使用・High）。 **同じ更新に含まれるもう1件の XML の解放済みメモリ使用 （CVE-2026-125346）については悪用の記載は無い**</div></div><div class=fig><div class=fh><span class=fl>報告から修正版公開までの日数（CVE-2026-125350）</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>2026年11月6日の報告から11月9日の安定版公開まで。 **本記録の作成者が Google の公表に記載された報告日と公開日から算出した。** ただし利用者の端末に届くまでの時間は別である （Google は「数日から数週間かけて順次展開する」と記す）</div></div><div class=fig><div class=fh><span class=fl>2026年に CISA の悪用済み脆弱性カタログへ追加された Google／Chromium 系の件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>9<span class=fu>件</span></div><div class=fa>2026年11月10日 時点</div><div class=fn>**本記録の作成者が KEV のカタログ（版 2026.11.09）を集計した背景値。** 内訳は Chromium V8 が4件（CVE-2026-87491・CVE-2026-85046・CVE-2026-11645・ CVE-2026-3910）、Chromium 本体1件（CVE-2026-2441）、 Skia・Dawn・Brotli・Pixel が各1件。 **V8 に偏っており、XML 処理の脆弱性は含まれていない**（本記録の読み）。 本事案の CVE-2026-125350 はこの集計時点で未収載である</div></div><div class=fig><div class=fh><span class=fl>本更新のうち未初期化リソースの脆弱性の件数</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fn>iThome の分類による（最も多い類型）。解放済みメモリ使用が2件で次ぐ。 残りは不適切な認可・バッファオーバーフロー・境界外書き込み・型の取り違えが各1件。 **本記録は Google の公表の記載と照合して一致を確認した**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**悪用の手口は公表されていない。** 以下は、Chrome の描画・解析処理に存在する 解放済みメモリ使用（Use after free）の脆弱性が悪用される場合の一般的な段階を、 **「公表されていない」ことを明示しながら**並べたものである。 本事案について確認できる事実は、Google が「攻撃用コードが実際に存在する」と 述べ、報告の3日後に修正版を公開したことだけである</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">undisclosed</span><span class=srcs>[1]</span></div><div>**公表されていない。** Google は悪用の存在のみを告知し、 到達の経路（細工された Web ページ・広告・文書・アプリ内のブラウザ等）を 明らかにしていない。**本記録は経路を推定して書かない**</div><div class=fn>根拠: Google の告知（悪用の存在のみ）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">undisclosed</span><span class=srcs>[1]</span></div><div>**公表されていない。** 欠陥の類型は XML 処理における解放済みメモリの使用であり、 一般にこの類型は処理の流れを乗っ取る足がかりになりうる。 **本件で実際に何が実行されたか、Google は述べていない**</div><div class=fn>根拠: Google の告知（脆弱性の類型と部位のみ）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">undisclosed</span><span class=srcs>[1]</span></div><div>**公表されていない。** 影響の範囲（ブラウザ内に留まったか、 サンドボックスを越えたか、情報の持ち出しに至ったか）について 記述は無い。深刻度が Critical ではなく High とされていることは、 **サンドボックスの外に直接出る類型ではない**という Google の分類を示すが、 実際の攻撃では複数の脆弱性を連鎖させるのが通例である（本記録の読み）</div><div class=fn>根拠: Google の分類（High）と悪用の告知</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>報告から修正版公開まで</div><div class=mv>3<span class=fu>日</span></div><div class=fn>2026年11月6日の報告 → 11月9日の安定版公開。 **提供元の処理としては非常に速い。** ただし利用者の端末に届くまでは別の時間がかかる （「数日から数週間かけて順次展開する」）</div></div><div class=met><div class=ml>悪用の認識から公表まで</div><div class=mv>**算出できない**（Google が悪用を認識した時点が公表されていない）。 悪用の告知は修正版の公開と同時に行われている</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>修正版の公開と同時に「悪用が存在する」ことのみを告知し、 技術的な詳細と不具合の記録は非公開に留めた</div><div class=fn><b>トレードオフ:</b> 詳細を伏せることで、更新が行き渡る前に攻撃用コードが広まることを抑えられる。 一方で利用者は**緩和策を設計できず、悪用の有無を自分で確かめることもできない**。 対応の優先度を判断する材料も「悪用あり」の一語だけになる</div></li><li><div class=ui>**影響を受けた利用者への通知や、資格情報の変更の推奨は示されていない** （本記録の確認）</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 悪用の規模が不明な状況で一律の資格情報変更を推奨すれば、 膨大な利用者に負担を課す。推奨しなければ、 実際に悪用された利用者は気づかないまま残る</div></li></ul></div>
+<section id="s6"><h2>報告から3日で修正、悪用の事実だけが告知された<span class="b slot">概観</span><span class=srcs>出典 [1]</span></h2><p>Google の告知から読み取れる事実は、次のとおりです。</p>
+<table>
+<thead>
+<tr>
+<th>項目</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>公開日</td>
+<td><strong>2026年11月9日</strong>（米国時間）</td>
+</tr>
+<tr>
+<td>版</td>
+<td>Windows・macOS: <strong>157.0.8103.50／.51</strong>／Linux: <strong>157.0.8103.50</strong>／Android: <strong>157.0.8103.50</strong></td>
+</tr>
+<tr>
+<td>修正件数</td>
+<td><strong>9件</strong>（Critical 0・High 7・Medium 2）</td>
+</tr>
+<tr>
+<td>悪用済み</td>
+<td><strong>CVE-2026-125350</strong>（XML 処理の解放済みメモリ使用・High）</td>
+</tr>
+<tr>
+<td>報告日</td>
+<td><strong>2026年11月6日</strong>・報告者は<strong>匿名</strong></td>
+</tr>
+<tr>
+<td>報告から公開まで</td>
+<td><strong>3日</strong></td>
+</tr>
+</tbody>
+</table>
+<p>悪用についての Google の記述は1文です（本記録の訳）——「<strong>Google は、CVE-2026-125350 に対する攻撃用コードが実際に存在することを認識している。</strong>」</p>
+<p>本記録が注目するのは、<strong>この1文以外に何も無いこと</strong>です。悪用の時期・標的・地域・規模・手口・攻撃主体、いずれも公表されていません。Google は「大多数の利用者が修正版に更新されるまで、不具合の詳細と関連リンクへのアクセスを制限することがある」という恒例の注記を置いており、当該脆弱性の不具合番号（582442907）も非公開のままです。</p>
+<p>結果として、<strong>利用者が選べる対処は「更新する」の一択</strong>になります（本記録の評価）。危険なサイトを避けるという緩和策は、どの閲覧が危険かが分からないため設計できません。</p></section>
+<section id="s7"><h2>同じ更新に XML の解放済みメモリ使用が2件入っている<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p>9件の内訳を、Google の記載どおりに並べます。</p>
+<table>
+<thead>
+<tr>
+<th>CVE</th>
+<th>深刻度</th>
+<th>類型</th>
+<th>部位</th>
+<th>報告日</th>
+<th>報告者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE-2026-125345</td>
+<td>High</td>
+<td>未初期化リソース</td>
+<td>WebGL</td>
+<td>2026-08-21</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125347</td>
+<td>High</td>
+<td>不適切な認可</td>
+<td>FileSystem</td>
+<td>2026-09-15</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125343</td>
+<td>High</td>
+<td>バッファオーバーフロー</td>
+<td>Compositing</td>
+<td>2026-09-15</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125348</td>
+<td>High</td>
+<td>境界外書き込み</td>
+<td>GPU</td>
+<td>2026-09-18</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125344</td>
+<td>High</td>
+<td>型の取り違え</td>
+<td>V8</td>
+<td>2026-10-02</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125346</td>
+<td>High</td>
+<td><strong>解放済みメモリの使用</strong></td>
+<td><strong>XML</strong></td>
+<td>2026-10-12</td>
+<td>Arni Hardarson（Neonix Security）</td>
+</tr>
+<tr>
+<td><strong>CVE-2026-125350</strong></td>
+<td>High</td>
+<td><strong>解放済みメモリの使用</strong></td>
+<td><strong>XML</strong></td>
+<td><strong>2026-11-06</strong></td>
+<td><strong>匿名（悪用あり）</strong></td>
+</tr>
+<tr>
+<td>CVE-2026-125349</td>
+<td>Medium</td>
+<td>未初期化リソース</td>
+<td>GPU</td>
+<td>2026-07-20</td>
+<td>Google</td>
+</tr>
+<tr>
+<td>CVE-2026-125342</td>
+<td>Medium</td>
+<td>未初期化リソース</td>
+<td>GPU</td>
+<td>2026-09-26</td>
+<td>Vo Duc Thang（ugvxb）</td>
+</tr>
+</tbody>
+</table>
+<p>ここで目を引くのは、<strong>同じ部位（XML）・同じ類型（解放済みメモリの使用）が2件並んでいる</strong>ことです。一方は10月12日に外部の研究者から報告されたもの、他方は11月6日に匿名で報告され、<strong>悪用が確認されている</strong>ものです。</p>
+<p><strong>両者の関係は公表されていません</strong>（本記録の疑問として記録します）。同じ調査の派生なのか、独立した発見なのか、あるいは一方の修正が他方の存在を明らかにしたのかは分かりません。ただ、<strong>同じ部位の近接した2件</strong>という並びは、XML 処理の周辺に類似の不備が残っている可能性を示唆します（本記録の読み）。次の更新で同じ部位の修正が続くかは、見ておく価値があります。</p>
+<p>なお、<strong>Critical が0件</strong>であることに安心は要りません（本記録の評価）。Google の分類では、Critical はブラウザのサンドボックスを越えて端末全体に及ぶ種類の欠陥に与えられます。High の解放済みメモリ使用は、<strong>それ自体では描画処理の内部に留まる</strong>想定ですが、<strong>悪用が確認されたという事実は、それが実際の攻撃で使える形になっていたことを意味します</strong>。深刻度の分類は「悪用されやすさ」の指標ではありません。</p></section>
+<section id="s8"><h2>KEV にも NVD にも無い——参照できる一次資料は Google の告知だけである<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [4] [6]</span></h2><p>本記録の作成者は2026年11月10日、2つの公的な情報源を確認しました。</p>
+<ul>
+<li><strong>CISA の悪用が確認された脆弱性のカタログ（KEV）</strong>——カタログ版 <strong>2026.11.09</strong>（11月9日19時54分 UTC 公開・収載1,773件）に<strong>CVE-2026-125350 は収載されていない</strong></li>
+<li><strong>NVD</strong>——照会の結果は<strong>0件</strong>。この CVE はまだ公開されていない（確認時刻は11月10日06時41分 UTC）</li>
+</ul>
+<p>これが意味することは2つあります（本記録の評価）。</p>
+<p>第一に、<strong>CVSS の基本値がまだ無い</strong>ため、深刻度は Google の4段階評価（High）だけで読む必要があります。社内のリスク評価を CVSS の数値で回している組織では、<strong>「値が無いので評価できない」という扱いになり、対応が後回しになる</strong>危険があります。</p>
+<p>第二に、<strong>KEV への未収載は「悪用されていない」ことを意味しません。</strong> KEV は追加に時間差があり、Google の告知が先に出ることは通常です。米国の連邦機関では KEV 収載が対応期限の根拠になりますが、<strong>収載を待ってから動く運用は、提供元の告知より遅れる</strong>ことになります。</p>
+<p>参考として、本記録の作成者が同じカタログを集計したところ、<strong>2026年に KEV へ追加された Google／Chromium 系の脆弱性は9件</strong>でした。内訳は <strong>Chromium V8 が4件</strong>、Chromium 本体が1件、Skia・Dawn・Brotli・Pixel が各1件で、<strong>XML 処理のものは含まれていません。</strong>悪用される Chromium の脆弱性は V8（スクリプトエンジン）に偏ってきた、という読み方ができます（本記録の読み）。今回の XML 処理の件は、その偏りから外れています。</p></section>
+<section id="s9"><h2>「更新を配った」ではなく「到達した版」を測る必要がある<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2]</span></h2><p>対処は単純です——<strong>157.0.8103.50／.51 以上に上げる</strong>。Android 版も同じ版番号です。</p>
+<p>ただし、実務で問題になるのは配布ではなく<strong>到達</strong>です（本記録の評価）。理由は告知自体に書かれています——「<strong>今後数日から数週間かけて順次展開する</strong>」。Chrome の更新は段階的に配られ、さらに<strong>利用者がブラウザを再起動するまで適用されません</strong>。長時間ブラウザを閉じない利用者の端末では、更新が降りていても古い版が動き続けます。</p>
+<p>したがって、確認すべきは次の3点です。</p>
+<ol>
+<li><strong>実際に動いている版の集計</strong>——配布の完了ではなく、端末ごとの <code>chrome://version</code> 相当の値を集めて分布を見る</li>
+<li><strong>更新の延期設定の有無</strong>——企業向けの方針設定で更新を遅らせている場合、本更新については例外扱いにするかを判断する</li>
+<li><strong>Chromium を基盤とする他の実行環境</strong>——Edge・Brave 等のブラウザに加えて、業務アプリに組み込まれた WebView・Electron 系アプリも対象になりうる（<strong>本告知はそれらを扱っていません</strong>）</li>
+</ol>
+<p>悪用の手口が公表されていないため、<strong>「危険なサイトを避ける」という緩和策は設計できません</strong>（本記録の指摘）。更新が間に合わない端末について閲覧制限をかける場合も、効果を測る手段が無いことを前提にすべきです。</p></section>
+<section id="s10"><h2>匿名の報告と3日の修正——誰が持ち込んだかは分からない<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p>悪用済みの CVE-2026-125350 について、Google の記載は「<strong>anonymous</strong>（匿名）による2026年11月6日の報告」で、報奨金の欄は「<strong>N/A</strong>」です。</p>
+<p>本記録はここから帰属を推測しません。ただし、記録しておく価値のある観察が2つあります（いずれも本記録の読み）。</p>
+<p><strong>第一に、報告から修正版の公開まで3日</strong>です。通常の報告（本更新の他の8件は7月から10月に報告されている）とは明らかに扱いが違い、<strong>緊急の経路で処理された</strong>ことが読み取れます。</p>
+<p><strong>第二に、報奨金が「N/A」であること</strong>です。外部の研究者による報告であれば、通常は金額か「TBD」（検討中）が入ります（同じ更新の CVE-2026-125346 と CVE-2026-125342 は「TBD」です）。「N/A」は、報奨金の対象にならない経路——たとえば<strong>悪用の観測から得られた情報</strong>や、報奨金を受け取らない立場からの提供——を示す可能性があります。<strong>これは推測であり、Google は経路を説明していません。</strong></p>
+<p>実務上の意味はこうです（本記録の評価）。<strong>悪用済みの脆弱性は、研究の成果としてではなく、攻撃の観測の結果として持ち込まれることがある。</strong>その場合、修正は速い一方で、<strong>悪用の詳細は（捜査や継続的な観測のために）長く公表されません。</strong>詳細が出るのを待って対応の優先度を決める運用は、この型の事案と相性が悪いのです。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_products</th><td><div class=sub><b>product:</b> Google Chrome（Windows・macOS）　<b>fixed_version:</b> 157.0.8103.50 / 157.0.8103.51</div><div class=sub><b>product:</b> Google Chrome（Linux）　<b>fixed_version:</b> 157.0.8103.50</div><div class=sub><b>product:</b> Google Chrome（Android）　<b>fixed_version:</b> 157.0.8103.50　<b>補足:</b> Google Play 経由で数日かけて提供される。 告知は「Android 版は対応するデスクトップ版と同じセキュリティ修正を含む」と記す</div><span class="b rsn">stated</span><div class=fn>**Chromium を基盤とする他のブラウザ（Edge・Brave・Opera・Vivaldi 等）への影響は、 この告知では扱われていない**（各提供元の更新を待つ必要がある。本記録の指摘）。 iOS 版 Chrome は WebKit を使うため、同じ XML 処理の経路を持つとは限らない （本記録の読み。告知に iOS 版の記載は無い）</div></td></tr><tr><th>exploited_vulnerability</th><td><b>CVE番号:</b> CVE-2026-125350　<b>cwe_class:</b> 解放済みメモリの使用（Use after free）　<b>component:</b> XML　<b>severity:</b> High　<b>reported:</b> 2026年11月6日　<b>reporter:</b> 匿名（anonymous）　<b>bounty:</b> N/A（Google の公表の記載）　<b>bug_id:</b> 582442907　<b>exploitation_statement:</b> 「Google は、CVE-2026-125350 に対する攻撃用コードが実際に存在することを 認識している」（原文英語。本記録の訳）。 **これ以上の記述は無い**——悪用の時期・標的・地域・規模・手口・攻撃主体は いずれも公表されていない</td></tr><tr><th>all_cves</th><td><div class=sub><b>CVE番号:</b> CVE-2026-125345　<b>severity:</b> High　<b>type:</b> 未初期化リソース　<b>component:</b> WebGL　<b>reported:</b> 2026-08-21　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125347　<b>severity:</b> High　<b>type:</b> 不適切な認可　<b>component:</b> FileSystem　<b>reported:</b> 2026-09-15　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125343　<b>severity:</b> High　<b>type:</b> バッファオーバーフロー　<b>component:</b> Compositing　<b>reported:</b> 2026-09-15　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125348　<b>severity:</b> High　<b>type:</b> 境界外書き込み　<b>component:</b> GPU　<b>reported:</b> 2026-09-18　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125344　<b>severity:</b> High　<b>type:</b> 型の取り違え　<b>component:</b> V8　<b>reported:</b> 2026-10-02　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125346　<b>severity:</b> High　<b>type:</b> 解放済みメモリの使用　<b>component:</b> XML　<b>reported:</b> 2026-10-12　<b>reporter:</b> Arni Hardarson（Neonix Security）</div><div class=sub><b>CVE番号:</b> CVE-2026-125350　<b>severity:</b> High　<b>type:</b> 解放済みメモリの使用　<b>component:</b> XML　<b>reported:</b> 2026-11-06　<b>reporter:</b> 匿名　<b>exploited:</b> はい</div><div class=sub><b>CVE番号:</b> CVE-2026-125349　<b>severity:</b> Medium　<b>type:</b> 未初期化リソース　<b>component:</b> GPU　<b>reported:</b> 2026-07-20　<b>reporter:</b> Google</div><div class=sub><b>CVE番号:</b> CVE-2026-125342　<b>severity:</b> Medium　<b>type:</b> 未初期化リソース　<b>component:</b> GPU　<b>reported:</b> 2026-09-26　<b>reporter:</b> Vo Duc Thang（ugvxb）</div><span class="b rsn">stated</span><div class=fn>Google の公表の記載をそのまま整理したもの（深刻度・類型・部位・報告日・報告者）。 **9件のうち6件は Google 自身の報告**であり、外部からの報告は3件である。 Google は「AddressSanitizer・MemorySanitizer・UndefinedBehaviorSanitizer・ Control Flow Integrity・libFuzzer・AFL によって多くの不具合を検出している」と 恒例の注記を添えている</div></td></tr><tr><th>advisory_detail</th><td><b>状況:</b> 公表されていない　<b>補足:</b> **技術的な詳細は公開されていない。** Google は 「大多数の利用者が修正版に更新されるまで、不具合の詳細と関連リンクへのアクセスを 制限することがある。第三者のライブラリに存在し他の企画が未修正の場合も 制限を維持する」という恒例の注記を置いている。 悪用済みの CVE-2026-125350 の不具合番号（582442907）も非公開のままである</td></tr><tr><th>kev_status</th><td><b>状況:</b> 該当なし　<b>補足:</b> **CISA の悪用が確認された脆弱性のカタログ（KEV）には収載されていない** （本記録の作成者が2026年11月10日に確認。カタログ版 2026.11.09・ 11月9日19時54分 UTC 公開・収載1,773件）。 KEV への追加は Google の告知より遅れることがあるため、 **未収載は「悪用されていない」ことを意味しない**（本記録の明示）</td></tr><tr><th>nvd_status</th><td><b>状況:</b> 該当なし　<b>補足:</b> **NVD では当該 CVE はまだ公開されていない** （本記録の作成者が2026年11月10日06時41分 UTC に照会し、結果0件）。 CVSS 基本値も付与されていないため、**深刻度は Google の4段階評価 （High）のみで読む必要がある**</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年11月9日　<b>補足:</b> Google が「攻撃用コードが実際に存在することを認識している」と明記している。 **ただし悪用の規模・標的は公表されていない。** 「悪用が確認された」と「広く悪用されている」は別である（本記録の指摘）</td></tr><tr><th>ログの有無</th><td>**利用者側で悪用の有無を確かめる手段は示されていない。** Google は検知の指標（IoC）・影響を受けた利用者への通知の有無・ 悪用の兆候の調べ方を公表していない。 ブラウザの脆弱性は端末上で完結するため、組織側のログに痕跡が残るとも限らない （本記録の指摘）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 配布中の全端末を 157.0.8103.50／.51 以上に上げ、**実際に到達した版を集計で確かめる**　<b>副作用:</b> Chrome の更新は再起動で完了するため、長時間再起動しない端末が残る。 強制再起動の設定は作業中の中断を招く</div><div class=sub><b>数え方:</b> 企業向けの方針設定（ポリシー）で更新の延期を設けている場合は、本更新について例外的に解除する　<b>副作用:</b> 延期は互換性検証のために設けられている。解除すると業務アプリの不具合が 検証前に出る可能性がある</div><div class=sub><b>数え方:</b> Chromium を基盤とする他のブラウザ・組み込みの WebView も更新対象として棚卸しする　<b>副作用:</b> 提供元ごとに更新の時期が異なり、同じ修正が届くまでの期間を制御できない</div><div class=sub><b>数え方:</b> 更新が間に合わない端末では、信頼できないサイトの閲覧を制限する　<b>副作用:</b> 悪用の手口が公表されていないため、**どの閲覧が危険かを絞れない**。 制限は業務の妨げになるうえ効果も測れない</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月20日〜2026年10月12日 〜 2026年10月12日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>本更新で修正された9件のうち8件が、この期間に報告された （7月20日・8月21日・9月15日×2・9月18日・9月26日・10月2日・10月12日）。 **6件は Google 自身の報告**である</td></tr><tr><td class="sm nowrap tw">2026年11月6日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**匿名の報告者から CVE-2026-125350（XML 処理の解放済みメモリ使用・High）が 報告された。** Google の公表に報告日として記載されている</td></tr><tr><td class="sm nowrap tw">不明（悪用の時期は公表されていない）</td><td class=nowrap><span class="b kind">発生</span></td><td>CVE-2026-125350 を悪用する攻撃用コードが実際に存在する状態になった。 **Google は「悪用が実際に存在することを認識している」と述べるのみで、 いつから・誰が・どの標的に対して・どの規模で、のいずれも公表していない**</td></tr><tr><td class="sm nowrap tw">2026年11月9日（米国時間）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Google が安定版更新を公開した。Windows・macOS 向けが 157.0.8103.50／.51、 Linux 向けが 157.0.8103.50。**9件の脆弱性を修正**し、 CVE-2026-125350 の悪用の存在を告知した。展開は数日から数週間かけて行われる</td></tr><tr><td class="sm nowrap tw">2026年11月9日（米国時間）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Android 向けにも Chrome 157（157.0.8103.50）が公開された。 告知は「Android 版は対応する デスクトップ版と同じセキュリティ修正を含む」と記す</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>国内外で報道された（Security NEXT・iThome）。 iThome は「Google は当該脆弱性がどのように悪用されたかを明らかにしていない」と記す</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が CISA の悪用が確認された脆弱性のカタログ（KEV。 カタログ版 2026.11.09・11月9日19時54分 UTC 公開・収載1,773件）と NVD を確認した。 **CVE-2026-125350 はいずれにも収載・公開されていない** （NVD の照会結果は0件。確認時刻は11月10日06時41分 UTC）</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>悪用済みの脆弱性の部位と件数の記述</span><div class=sm>Security NEXT は CVE-2026-125350 を「XML の処理において解放済みのメモリを使用する 脆弱性」とし、同じ更新の CVE-2026-125346 も「XML の処理における Use After Free」と 記す。iThome も CVE-2026-125350 を XML 部位の Use After Free とし、 **類型別の内訳（未初期化リソース3件・解放済みメモリ使用2件・ 不適切な認可／バッファオーバーフロー／境界外書き込み／型の取り違えが各1件）**を 示している。**本記録は Google の公表の記載と照合し、 いずれも一致していることを確認した**（齟齬は無い）</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の詳細</span><div class=sm>**Google は悪用の存在のみを述べ、手口・標的・時期・規模・帰属のいずれにも 触れていない。** iThome も「Google は当該脆弱性がどのように悪用されたかを 明らかにしていない」と明記している。 恒例の注記（大多数の利用者が更新されるまで詳細を制限する）に沿った扱いである</div></li><li><span class="b dk">本記録による推定</span><span class=ui>公的な脆弱性情報源の状態</span><div class=sm>**本記録の作成者が2026年11月10日に確認した事実である**—— CISA の悪用済み脆弱性カタログ（版 2026.11.09）に CVE-2026-125350 は未収載、 NVD でも未公開（照会結果0件）。 また同カタログの集計から、2026年に追加された Google／Chromium 系が9件 （うち V8 が4件）であることを算出した。 **いずれも確認時点の状態であり、以後収載される可能性が高い**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>報奨金欄の「N/A」の意味</span><div class=sm>悪用済みの CVE-2026-125350 は報告者が匿名で、報奨金欄が「N/A」である （同じ更新の外部報告2件は「TBD」）。 **本記録はここから報告の経路を推測して書かない。** 本文では「報奨金の対象にならない経路の可能性がある」と留保付きで触れているが、 Google は経路を説明していない</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>報告から利用者の端末に修正が届くまでの流れと、公表されていない部分</div><div class=svgwrap><svg viewBox="0 0 794 238" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,190.0 C91.0,190.0 91.0,41.0 16,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,41.0 C397.0,41.0 397.0,41.0 628,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,112.0 C193.0,112.0 193.0,41.0 220,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,41.0 C295.0,41.0 295.0,112.0 220,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,41.0 C295.0,41.0 295.0,190.0 220,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,112.0 C397.0,112.0 397.0,80.0 424,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,190.0 C397.0,190.0 397.0,80.0 424,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,80.0 C601.0,80.0 601.0,41.0 628,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,190.0 C295.0,190.0 295.0,151.0 424,151.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,41.0 C499.0,41.0 499.0,112.0 628,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,41.0 C499.0,41.0 499.0,190.0 628,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（帰属・標的・規模</text><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">はいずれも非公表）</text><rect x="16" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="91.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">匿名の報告者（2026年</text><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">11月6日・報奨金 N/</text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">A）</text><rect x="16" y="158.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-125</text><text x="91.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">350: XML 処理の</text><text x="91.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">解放済みメモリ使用（H…</text><rect x="220" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Google（報告から3</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">日で修正）</text><rect x="220" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">安定版 157.0.81</text><text x="295.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">03.50/.51（20</text><text x="295.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26年11月9日）</text><rect x="220" y="158.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Android 版 15</text><text x="295.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">7.0.8103.50（</text><text x="295.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同日・同じ修正）</text><rect x="424" y="55.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">段階的な展開（数日〜数週</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">間）＋再起動で適用</text><rect x="424" y="119.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="141.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Chromium 系の他</text><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のブラウザ・組み込み W</text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ebView（本告知の…</text><rect x="628" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者の端末（到達の確認</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は利用組織側の仕事）</text><rect x="628" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="703.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（版 2</text><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">026.11.09 時点</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で未収載）</text><rect x="628" y="158.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="703.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NVD（2026年11月</text><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">10日時点で未公開・CV</text><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SS 無し）</text></svg></div><div class=fn>layer 0 は報告者と悪用（**悪用の時期・標的・手口はいずれも非公表**）。 layer 1 は Google 側の処理（報告から3日で安定版を公開）。 layer 2 は配布の経路。layer 3 は利用者の端末と、 公的な情報源の状態（KEV 未収載・NVD 未公開）である。 **点線で示したい関係**——攻撃者から利用者への経路は確認されているが （Google が悪用の存在を認めている）、その規模と標的は公表されていない。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>検知の指標（IoC）は公表されていない。 ブラウザの脆弱性の悪用は端末上で完結するため、 組織側の通信記録に残るとは限らない（本記録の指摘）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版（157.0.8103.50／.51 以上）へ更新し、到達した版を集計で確認する</div><div class=ctl><span class="b eff">侵入を防げた</span>ブラウザの自動更新の延期設定を見直し、緊急更新を例外として適用する</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>ブラウザプロセスの異常終了・再起動は端末側に記録されることがあるが、 本件に固有の兆候は示されていない</div></td><td><div class=ctl><span class="b eff">検知できた</span>ブラウザの異常終了（クラッシュ）の集計を監視に載せ、特定サイトの閲覧と相関があるかを見る</div><div class=ctl><span class="b eff">検知できた</span>端末側の防御（EDR）でブラウザプロセスからの異常な子プロセス生成を検知する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>影響を受けた利用者への通知の有無も公表されていない。 利用者が自分の端末で悪用の有無を確かめる手段は示されていない</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ブラウザに保存された資格情報・セッションの持ち出しを前提に、更新後のセッション失効と資格情報の変更を検討する</div><div class=ctl><span class="b eff">影響を限定できた</span>業務上の重要なアカウントについて、端末に紐づく認証（パスキー・証明書）を用いる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>修正版の公開と同時に「悪用が存在する」ことのみを告知し、 技術的な詳細と不具合の記録は非公開に留めた</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の作成者の評価である。ブラウザのように利用者数が膨大で、 更新の到達に時間がかかる製品では、詳細の伏せ方は合理的である。 一方で、**悪用の規模の示唆（標的型か広域か）だけでも示されれば、 組織側は緊急更新の是非を判断できる**。 そこが示されないため、すべての組織が同じ「最大の緊急度」で動くか、 逆に「毎月あること」として流すかに二極化する</td></tr><tr><td>**影響を受けた利用者への通知や、資格情報の変更の推奨は示されていない** （本記録の確認）</td><td class=nowrap><span class="b assess">評価材料なし</span></td><td class=sm>本記録の作成者の評価である。悪用の規模・標的が公表されていないため、 通知しないという判断の妥当性を評価する材料が無い</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>ブラウザの緊急更新は「配布した」ではなく「到達した版の分布」で報告させる</div><div class=lw>Chrome の更新は数日から数週間かけて段階的に配られ、 さらにブラウザの再起動まで適用されない。配布の完了は適用の完了ではない</div><div class=la><b>取るべき行動</b> 脆弱性対応の報告様式に「**対象端末数／修正版に到達した端末数／最古の版**」の 3欄を設ける。到達率が一定を下回る場合の強制再起動の判断基準も決めておく</div></li><li><div class=lp>CVSS が付与されていない段階でも動ける判断基準を持つ</div><div class=lw>本件は提供元の告知の翌日時点で NVD に未公開であり、CVSS 基本値が無い。 数値を起点にした運用では「評価できない」として滞留する</div><div class=la><b>取るべき行動</b> 「**提供元が悪用を認めた脆弱性は、CVSS の有無に関わらず最優先**」という 一文を脆弱性管理の規程に入れる。KEV 収載も待たない （KEV は追加に時間差があり、本件は告知翌日時点で未収載）</div></li><li><div class=lp>悪用の詳細が出ない前提で、緩和策に頼らない計画を立てる</div><div class=lw>提供元は更新が行き渡るまで詳細を伏せる方針を公言している。 手口が分からなければ「危険なサイトを避ける」という緩和策は設計できない</div><div class=la><b>取るべき行動</b> ブラウザ・OS の緊急更新について、**緩和策の検討を省いて更新に直行する**経路を あらかじめ承認しておく（検証の省略範囲・業務影響の受容・事後の確認方法）</div></li><li><div class=lp>ブラウザを「資格情報の保管庫」として扱い、侵害時の想定を決めておく</div><div class=lw>ブラウザの脆弱性の悪用は、保存された資格情報・セッション・ 閲覧内容の持ち出しにつながりうる。本件では影響範囲が公表されていない</div><div class=la><b>取るべき行動</b> 業務上重要なアカウントについて、端末に紐づく認証（パスキー・証明書）への 移行を進める。ブラウザへのパスワード保存の方針を決め、 侵害が疑われる場合のセッション一括失効の手順を用意する</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>Chromium を使っている場所を棚卸しする（ブラウザだけではない）</div><div class=lw>本告知は Chrome についてのみ述べている。Edge・Brave 等のブラウザ、 業務アプリに組み込まれた WebView、Electron 系アプリも同じ基盤を使う</div><div class=la><b>取るべき行動</b> 社内の端末・サーバー・業務アプリで Chromium 系の実行環境を使っている箇所を 一覧にし、**それぞれの更新経路と更新の責任者**を書き出す。 自社開発アプリに組み込んでいる場合は、基盤の版を上げる手順を作る</div></li><li><div class=lp>実際に動いている版を集計する仕組みを持つ</div><div class=lw>更新は段階的に配られ、再起動まで適用されない。 「更新を有効にしている」ことと「修正版が動いている」ことは別である</div><div class=la><b>取るべき行動</b> 端末管理の仕組みでブラウザの版を収集し、**分布（最古・中央・最新）**を 定期的に見る。収集できない端末（持ち込み・外部委託先）の扱いを決めておく</div></li><li><div class=lp>ブラウザの異常終了を監視の材料として扱う</div><div class=lw>メモリ破壊系の脆弱性の悪用は、失敗時にブラウザの異常終了として現れることがある。 本件の検知指標は公表されていないため、汎用の兆候に頼るしかない</div><div class=la><b>取るべき行動</b> 端末側の防御（EDR）でブラウザプロセスの異常終了と、 **ブラウザからの想定外の子プロセス生成**を検知対象にする。 異常終了の急増が特定サイトの閲覧と相関するかを見られるようにしておく</div></li><li><div class=lp>同じ部位の脆弱性が続くかを追う</div><div class=lw>本更新には XML 処理の解放済みメモリ使用が2件含まれている （10月12日報告と、悪用済みの11月6日報告）。 同じ部位に類似の不備が残っている可能性がある</div><div class=la><b>取るべき行動</b> 提供元の更新告知を、**件数ではなく部位と類型で記録**する。 同じ部位の修正が続く場合は、当該機能を使う業務アプリの点検を優先する</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 端末のブラウザの版を集計しておらず、「自動更新が有効」であることだけを 対応の根拠にしている</td><td class=sm>更新は数日から数週間かけて段階的に配られ、再起動まで適用されない。 配布と適用は別である</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 企業向けの方針設定でブラウザの自動更新を延期しており、 緊急時に例外として解除する手順・権限が決まっていない</td><td class=sm>悪用が確認された脆弱性では、互換性検証を待つ時間が無い</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 業務アプリに Chromium 系の実行環境（WebView・Electron 等）を組み込んでおり、 その基盤の版を管理していない</td><td class=sm>本告知は Chrome 本体のみを対象としている。 組み込みの実行環境は提供元の更新では直らない</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性対応の優先度を CVSS 基本値や KEV 収載に基づいて決めており、 どちらも無い段階の判断基準が無い</td><td class=sm>本件は提供元の告知の翌日時点で NVD 未公開・KEV 未収載である。 数値や収載を待つと対応が遅れる</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 業務アカウントの資格情報をブラウザに保存しており、 セッションの一括失効の手順を試したことがない</td><td class=sm>ブラウザの脆弱性の悪用は、保存された資格情報・セッションの持ち出しに つながりうる（本件の影響範囲は非公表）</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 持ち込み端末・委託先端末からの業務利用があり、 それらのブラウザの版を把握する手段が無い</td><td class=sm>集計できない端末が残ると、到達率の数値そのものが意味を失う</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月9日 Google（Chrome Releases）</span> <a href="https://chromereleases.googleblog.com/2026/11/stable-channel-update-for-desktop_018223192.html" target="_blank" rel="noreferrer noopener nofollow">Stable Channel Update for Desktop</a> <span class="b kind">ニュースリリース</span><span class=sm>（(**本件の一次公表。** 版番号（Windows・Mac: 157.0.8103.50/.51、Linux: 157.0.8103.50）、 「数日から数週間かけて順次展開する」、9件の修正、 各 CVE の深刻度・類型・部位・報告日・報告者・不具合番号・報奨金欄、 「Google は CVE-2026-125350 に対する攻撃用コードが実際に存在することを 認識している」の1文、詳細の公開制限についての恒例の注記、 検出に用いている道具（AddressSanitizer 等）の記載の出典。 本記録の作成者が2026年11月10日に Chrome Releases の配信から取得した)）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月9日 Google（Chrome Releases）</span> <a href="https://chromereleases.googleblog.com/2026/11/chrome-for-android-update_01533302390.html" target="_blank" rel="noreferrer noopener nofollow">Chrome for Android Update</a> <span class="b kind">ニュースリリース</span><span class=sm>（(Android 向け Chrome 157（157.0.8103.50）の公開と、 「Android 版は対応するデスクトップ版と同じセキュリティ修正を含む （Windows &amp; Mac: 157.0.8103.50/.51、Linux: 157.0.8103.50）」との記載の出典。 本記録の作成者が2026年11月10日に取得した)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月9日 CISA（米国サイバーセキュリティ・インフラストラクチャセキュリティ庁）</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（カタログ版 2026.11.09）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(**CVE-2026-125350 が未収載であることの確認に用いた。** 本記録の作成者が2026年11月10日に取得。 カタログ版 2026.11.09（2026年11月9日19時54分 UTC 公開）・収載1,773件。 同カタログから、2026年に追加された Google／Chromium 系が9件 （Chromium V8 4件・Chromium 1件・Skia・Dawn・Brotli・Pixel 各1件）であることも 集計した)）</span></li><li><span class=rid>[6]</span> <span class=sm>NVD（米国国立標準技術研究所）</span> <a href="https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2026-125350" target="_blank" rel="noreferrer noopener nofollow">NVD CVE API — CVE-2026-125350 の照会結果（0件）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(**当該 CVE が NVD にまだ公開されていないことの確認に用いた。** 本記録の作成者が2026年11月10日06時41分 UTC に照会し、結果は0件 （totalResults: 0）。したがって CVSS 基本値も付与されていない)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月10日 iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/180360" target="_blank" rel="noreferrer noopener nofollow">Google發布Chrome 157更新，修補已遭利用的資安漏洞</a> <span class="b kind">記事</span><span class=sm>（(脆弱性の類型別の内訳（未初期化リソース3件・解放済みメモリ使用2件・その他各1件）と、 「Google は当該脆弱性がどのように悪用されたかを明らかにしていない」との記述の出典)）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年11月10日 Security NEXT</span> <a href="https://www.security-next.com/192553" target="_blank" rel="noreferrer noopener nofollow">「Chrome」にセキュリティアップデート - ゼロデイ脆弱性に対応</a> <span class="b kind">記事</span><span class=sm>（(国内での報道。版番号、9件の修正、Critical が無く High が7件であること、 CVE-2026-125350 の悪用確認と11月6日の報告、 同じ XML の解放済みメモリ使用（CVE-2026-125346）・V8 の型の取り違え・ GPU の境界外書き込み・WebGL のリソース初期化不備・FileSystem の認可処理の不備・ Compositing のバッファオーバーフローへの言及、修正された CVE の一覧の出典)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月10日</span> <span class="b rev">新規作成</span> 新規作成。2026年11月10日の収集分（Security NEXT・iThome）を起点に、 **提供元の一次公表（Chrome Releases のデスクトップ版・Android 版の告知）を 取得して裏取りした**。9件の CVE の深刻度・類型・部位・報告日・報告者・ 報奨金欄・不具合番号、および悪用についての1文は一次公表の記載である。 加えて、**CISA の悪用済み脆弱性カタログ（版 2026.11.09）と NVD を直接確認し、 CVE-2026-125350 が未収載・未公開であることを記録した** （KEV の集計から2026年の Google／Chromium 系9件の内訳も算出した）。 悪用の手口・標的・規模・時期・帰属はいずれも公表されていないため、 attack の各段階は「公表されていない」と明示して推定を書かなかった。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Google Chrome</span><span class="b tag">Chromium</span><span class="b tag">ゼロデイ</span><span class="b tag">悪用確認</span><span class="b tag">Use after free</span><span class="b tag">解放済みメモリの使用</span><span class="b tag">XML</span><span class="b tag">V8</span><span class="b tag">WebGL</span><span class="b tag">GPU</span><span class="b tag">FileSystem</span><span class="b tag">ブラウザ更新</span><span class="b tag">到達率</span><span class="b tag">KEV</span><span class="b tag">NVD</span><span class="b tag">CVSS 未付与</span><span class="b tag">匿名報告</span><span class="b tag">WebView</span><span class="b tag">パッチ管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-10 16:40 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
