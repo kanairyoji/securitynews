@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ESXi実装GhostFrame、TAG-218が使用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-0992</span>ESXi実装GhostFrame、TAG-218が使用</h1>
+<header class="site-header">
+  <p class="subtitle">**Recorded Future（Insikt Group）は2026年11月10日、 VMware ESXi を狙う未文書化の侵入後フレームワーク「GhostFrame」を公表した**（出典1）。 **脆弱性を突くものではなく、すでに root を取った ESXi ホストに置く実装で、 ホスト1台の上で動く複数の仮想マシンへ横から入り、 スナップショットや仮想ディスクから認証情報を抜き、 SOCKS5 で奥へ中継する**（出典1）。 **Insikt Group はこれを TAG-218 のインフラ監視の過程で見つけており、 同グループの活動は Settra ランサムウェアと重なるとしている**（出典1） ——**ただし本フレームワークが Settra 専用であると立証はされていない**（出典1）。 **本記録がこの事案の中心と見るのは、攻撃の作業場が 「仮想マシンの中」から「仮想マシンの下」へ移っていることである**（本記録の評価）—— **ESXi ホストに置かれた実装は、ゲスト OS に入れた EDR から見えない層にあり、 ホスト1台の掌握が、その上の全ゲストとそのデータへの到達を同時に意味する**（出典1）。 **もう1つは、この実装が検知回避を「設定の書き換え」ではなく 「約5秒ごとの書き戻し」で維持していることである**（出典1）—— **ファイアウォールと execInstalledOnly を手で戻しても、 永続化の本体（/opt/vmhostd-core と /etc/rc.local.d/local.sh）を消さなければ 数秒で元に戻る**（出典1）。 **初期侵入は米国と欧州の VPN 機器（SonicWall・Palo Alto Networks・Fortinet が中心）で、 標的のうち4組織が後に Settra のリークサイトへ掲載されている**（出典1）。</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">ランサムウェア被害（暗号化・リークサイト恐喝が中心）</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">権限管理の不備</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月10日</span>
+  <span>最終更新: 2026年11月11日</span>
+</div>
+
+<div class="lead"><p><strong>Recorded Future の Insikt Group は2026年11月10日、VMware ESXi 環境を標的とする、これまで文書化されていなかった侵入後フレームワーク「GhostFrame」を公表しました</strong>（出典1）。</p>
+<p><strong>GhostFrame は、攻撃者が ESXi ホストの root 権限を得たあとに置く実装です</strong>（出典1）。<strong>公表文は「実装の配置と実行には、ESXi ホストの root 権限をすでに取得している必要がある」と述べており、実装そのものは脆弱性を突きません</strong>（原文英語。出典1）。<strong>置かれると、1つの操作画面からハイパーバイザ上の仮想マシンへ到達し、認証情報を収集し、コマンドを実行し、被害組織のネットワークの奥へ中継できるとされています</strong>（出典1）。</p>
+<p><strong>Insikt Group は、TAG-218 という脅威活動グループのインフラを監視する過程でGhostFrame を見つけたとしています</strong>（出典1）。<strong>TAG-218 の活動は Settra ランサムウェアと重なるとされますが、公表文は「入手できた証跡は、本フレームワークが Settra 専用であることを立証していない」としています</strong>（原文英語。出典1）。</p>
+<p><strong>日本の CISO・技術者にとっての読みどころは2つあります。</strong></p>
+<p><strong>1つは、攻撃の作業場が仮想マシンの「中」から「下」へ移っていることです</strong>（本記録の評価）。<strong>ゲスト OS に入れた EDR は、ESXi ホスト上で動くプロセスを見ません。</strong> <strong>一方で、ホスト1台の掌握は、その上で動く全ゲストと、そのゲストが抱えるデータへの到達を同時に意味します</strong>（出典1）——<strong>公表文も「単一の侵害された ESXi ホストが、複数の仮想マシンとそれらが含むシステム・データへのアクセスを与えうる」と書いています</strong>（原文英語。出典1）。</p>
+<p><strong>もう1つは、検知回避の維持のしかたです</strong>（出典1）。<strong>この実装は ESXi のファイアウォールと execInstalledOnly（署名済み実行ファイルのみを許す制御）を、およそ5秒ごとに無効へ書き戻します</strong>（出典1）——<strong>設定を手で戻すだけの対処では、数秒で元に戻ります</strong>（本記録の評価）。<strong>公表文も「設定を再有効化するだけでなく、永続化の仕組みそのものを調査せよ」と勧めています</strong>（原文英語。出典1）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>被害組織の名称・業種・国の内訳、リークサイトへ掲載された4組織の特定</span><span class="b rsn">公表されていない</span><div class=sm>**公表文は標的の地理を米国と欧州に限って述べ、 業種・組織名を示していない**（出典1）。 **関係する標的のうち4組織が後に Settra のリークサイトへ 掲載されたとされるが、名称・掲載日・掲載データの種別と量は 示されていない**（出典1） ——**本記録は、被害組織側の公表を1件も確認できていない**〈齟齬1〉。</div></li><li><span class=ui>TAG-218 の国家・組織への帰属</span><span class="b rsn">公表されていない</span><div class=sm>**本報告は TAG-218 を脅威活動グループとして記述するにとどまり、 国家・組織への帰属を述べていない**（出典1。本記録の観測） ——**TAG-#### は公開プロファイルを持たないのが通常であり、 本記録はこの記号に説明を足さない**（本記録の整理）。</div></li><li><span class=ui>VMware（Broadcom）の見解・対応</span><span class="b rsn">探索したが未発見</span><div class=sm>**本報告は ESXi の脆弱性を扱っておらず、 ベンダーの声明・勧告は本報告に含まれていない**（出典1）。 **本記録の作成日（2026年11月11日）時点で、 VMware／Broadcom による本件への言及を確認できていない** （本記録の観測） ——**脆弱性ではないため、ベンダーが修正を出す性質の事案ではない** （本記録の評価）。</div></li><li><span class=ui>観測窓の正確な期間（開始日・終了日）</span><span class="b rsn">公表されていない</span><div class=sm>**公表文は「2026年8月下旬から10月」としており、 日付までは示していない**（出典1） ——**本記録は timeline で月の精度にとどめている**（本記録の整理）。</div></li><li><span class=ui>ESXi ホストの root 権限をどう取得したか</span><span class="b rsn">公表されていない</span><div class=sm>**公表文は root 権限が前提であることを明記するが、 その取得の経路（管理用認証情報の窃取か、ESXi の脆弱性か、 vCenter 経由か）を示していない**（出典1） ——**本記録の評価では、ここが防御の要点であるにもかかわらず 最も材料が無い箇所である。**</div></li><li><span class=ui>影響を受ける ESXi のバージョン範囲</span><span class="b rsn">公表されていない</span><div class=sm>**GhostFrame は脆弱性を突く実装ではないため、 「影響を受けるバージョン」という形で切れない**（出典1。本記録の整理） ——**公表文もバージョン範囲を示していない。** **ただし、挙動（/etc/rc.local.d/local.sh・auto-backup.sh・ execInstalledOnly）が通用するバージョンの範囲は 分からないままである。**</div></li><li><span class=ui>身代金の要求額・交渉・支払いの有無、暗号化被害の内容</span><span class="b rsn">公表されていない</span><div class=sm>**本報告は実装の分析であり、 被害組織側の対応（支払いの是非・交渉）には触れていない** （出典1。本記録の観測）。</div></li><li><span class=ui>被害組織側で検知の機会が実際に見逃されたか</span><span class="b rsn">公表されていない</span><div class=sm>**本報告は実装の挙動を述べており、 被害組織側の監視体制・検知の有無を述べていない**（出典1） ——**本記録が攻撃の段階ごとに置いた 「機会はあったが検知できなかった」という判定は、 侵入が ESXi 層まで進んだ事実からの本記録の評価であり、 被害組織の体制についての事実ではない**（本記録の整理）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Recorded Future（Insikt Group）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>TAG-218（Insikt Group が付与した脅威活動グループの呼称）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Settra（ランサムウェア運用）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>VMware（Broadcom）</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>特定された GhostFrame の C2 サーバ数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>2<span class=fu>台</span></div><div class=fn>**IoC 一覧に GhostFrame の C2 として2件の IP が挙げられている** （出典1） ——**別に TAG-218 の MeshCentral C2 が1件ある**（出典1）。 **これは「公表された分」であり、インフラ全体の規模ではない** （本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>この活動に関係する標的のうち Settra のリークサイトへ掲載された組織数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>組織</span></div><div class=fn>**標的のうち4組織が後に Settra のリークサイトへ掲載されたとされる** （出典1） ——**組織名・業種・掲載日は公表されていない**〈未確定1〉。 **掲載は攻撃者側の主張であり、 被害組織の公表による裏付けは本記録では取れていない**〈齟齬1〉。</div></div><div class=fig><div class=fh><span class=fl>実装が同時に接続を試みる TCP ポートの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>6<span class=fu>ポート</span></div><div class=fn>**53・2222・3389・4444・8443・9443 の6ポートへ同時に接続を試み、 最初に成功した接続を C2 に使い、残りを閉じるとされる**（出典1） ——**結果として、1つの宛先 IP へ6本の SYN がほぼ同時に出る**（出典1）。 **公表文はこれを検知の手がかりとして挙げている**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>ファイアウォールと execInstalledOnly を無効へ書き戻す間隔</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>5<span class=fu>秒</span></div><div class=fn>**実装は ESXi のファイアウォールと execInstalledOnly を およそ5秒ごとに再び無効化するとされる**（出典1） ——**設定を手で戻す対処では維持できない間隔である**（本記録の評価）。 **「およそ」は公表文の表現（roughly every five seconds）による** （原文英語。出典1）。</div></div><div class=fig><div class=fh><span class=fl>どのポートにもつながらない場合に再試行へ移るまでの待ち時間</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>30<span class=fu>秒</span></div><div class=fn>**30秒のうちにどの接続も成立しない場合、 5〜12秒のランダムな間隔を置いて再試行するとされる**（出典1） ——**周期が一定でないため、 間隔の規則性だけを見る検知では拾いにくい**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>公表された IoC の件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>件</span></div><div class=fn>**IP 3件（GhostFrame C2 2件・MeshCentral C2 1件）と SHA-256 1件**（出典1）。 **本記録は、これらの悪性を自前で検証していない** ——**照合先のテレメトリを持たないため、検知への投入は推奨しない** （本記録の整理）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**公表されている段階は、初期侵入（VPN 機器）→ ESXi ホストの root 取得 （経路は未公表）→ 実装の配置と永続化 → 検知回避の維持 → 認証情報の収集 → 中継と横展開 →（関係するとされる）リークサイト掲載 である**（出典1。事実）。 **GhostFrame 自身が担うのは、root 取得より後の段階である**（出典1） ——**ESXi ホストの root をどう取ったかは示されていない**〈未確定5〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class=srcs>[1]</span></div><div>**TAG-218 は米国と欧州の VPN 機器を標的としており、 SonicWall・Palo Alto Networks・Fortinet の機器が中心だったとされる** （出典1）。 **GlobalProtect の認証バイパス CVE-2026-0257 への言及がある**（出典1）。 **2026年10月12日には、被害組織の Fortinet 製 VPN 機器が GhostFrame の C2 と MeshCentral の両方へビーコンを出していた**（出典1）。</div></li><li><div class=stg><span class="b stage">2. 権限昇格</span><span class=srcs>[1]</span></div><div>**攻撃者は ESXi ホストの root 権限を取得している**（出典1）。 **公表文は「実装の配置と実行には、ESXi ホストの root 権限を すでに取得している必要がある」と述べ、 実装が脆弱性を突くものではないとしている**（原文英語。出典1）。 **root をどう取ったか（管理用認証情報の窃取か、 ESXi の脆弱性か、vCenter 経由か）は示されていない**〈未確定5〉。</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class=srcs>[1]</span></div><div>**操作側の画面の「Builder」区画が実装（vmhostd-core）を生成する** （出典1）。 **実装はメモリ上でシェルコードを読み込んで動作し、 実行可能メモリを確保できない場合は /bin/sh のリバースシェルへ退く** （出典1）。</div></li><li><div class=stg><span class="b stage">4. 永続化</span><span class=srcs>[1]</span></div><div>**実装は自身を /opt/vmhostd-core に複製し、 /etc/rc.local.d/local.sh を書き換えて起動時に実行させる**（出典1）。 **さらに /sbin/auto-backup.sh を実行して、 変更を再起動後も残す**（出典1）。 **プロセス名を vmhostd に変え、 VMware の vmware-hostd に似せる**（出典1）。</div></li><li><div class=stg><span class="b stage">5. 検知回避</span><span class=srcs>[1]</span></div><div>**実装は ESXi のファイアウォールと execInstalledOnly を、 およそ5秒ごとに再び無効化する**（出典1）。</div></li><li><div class=stg><span class="b stage">6. 認証情報アクセス</span><span class=srcs>[1]</span></div><div>**sdkmon が認証情報を傍受し、ログインを捕まえるとされる**（出典1）。 **統合されている VMkatz は、仮想マシンのスナップショットと ディスクから、NTLM ハッシュ・WDigest の資格情報・ Kerberos チケット・SAM／LSA の秘密・NTDS.dit のデータを 取り出すとされる**（出典1）。</div></li><li><div class=stg><span class="b stage">7. 横展開</span><span class=srcs>[1]</span></div><div>**gfsox が SOCKS5 プロキシとして、被害環境の奥への中継に使われる** （出典1）。 **実装は個々の仮想マシンへの VNC を有効にし、 画面のセッションを C2 経由で中継する**（出典1）。 **ESXi の HTML Host Client を操作側のトンネルで 露出させることもできるとされる**（出典1）。</div></li><li><div class=stg><span class="b stage">8. C2通信</span><span class=srcs>[1]</span></div><div>**実装は 53・2222・3389・4444・8443・9443 の6ポートへ 同時に TCP 接続を試み、最初に成功した接続を C2 に使い、 残りを閉じる**（出典1）。 **30秒のうちにどれもつながらない場合は、 5〜12秒のランダムな間隔を置いて再試行する**（出典1） ——**結果として、1つの宛先 IP へ6本の SYN がほぼ同時に出る**（出典1）。</div></li><li><div class=stg><span class="b stage">9. 影響（暗号化・破壊・改ざん）</span><span class=srcs>[1]</span></div><div>**この活動に関係する標的のうち4組織が、 後に Settra のリークサイトへ掲載されたとされる**（出典1） ——**掲載は攻撃者側の主張である**（本記録の整理）。 **暗号化の有無・身代金の要求額・各組織の被害内容は 公表されていない**〈未確定7〉。</div></li></ol></div>
+<section id="s5"><h2>攻撃の作業場が、仮想マシンの「中」から「下」へ移っている<span class="b slot">原因・手口</span></h2><p><strong>GhostFrame が置かれるのは ESXi ホストである</strong>（出典1。事実）。</p>
+<p><strong>公表文は「単一の侵害された ESXi ホストが、複数の仮想マシンと、 それらが含むシステム・データへのアクセスを与えうる」と述べ、 「仮想マシンを個別に侵害することなく、 被害環境全体へアクセスを広げうる」としている</strong>（原文英語。出典1）。</p>
+<p><strong>本記録の評価では、ここに2つの含意がある。</strong></p>
+<p><strong>①見えない。</strong> <strong>ゲスト OS に入れた EDR は、 ESXi ホスト上で動くプロセスを見ない。</strong> <strong>実装はメモリ上でシェルコードを読み込んで動き、 プロセス名を vmhostd に変えて VMware の vmware-hostd に似せる</strong> （出典1） ——<strong>ホスト側を見る仕組みを別に持たない限り、 この層の観測点は0である。</strong></p>
+<p><strong>②1台が全部になる。</strong> <strong>VMkatz は仮想マシンのスナップショットと ディスクから NTDS.dit のデータまで取り出すとされる</strong>（出典1） ——<strong>ドメインコントローラにログインしなくても、 その中身が手に入る形である。</strong></p>
+<p><strong>したがって、ハイパーバイザは「仮想マシンを載せる台」ではなく、 その上の全資産と同じ重みを持つ資産として扱う必要がある</strong> （本記録の評価）。</p></section>
+<section id="s6"><h2>脆弱性ではなく、root を取られた後の「居座り方」が中核である<span class="b slot">評価・解釈</span></h2><p><strong>公表文は「実装の配置と実行には、ESXi ホストの root 権限を すでに取得している必要がある」と明記し、 実装は脆弱性を突かないとしている</strong>（原文英語。出典1。事実）。</p>
+<p><strong>本記録の評価では、この性質が対策の形を決める。</strong></p>
+<p><strong>CVE の番号で管理する運用では、この脅威は拾えない。</strong> <strong>影響を受けるバージョンが無く、適用すべきパッチも無い。</strong> <strong>代わりに問うべきは「ESXi ホストの root に、 誰がどの経路で到達できるか」である</strong>（本記録の評価）。</p>
+<p><strong>居座り方の具体は3点に集約されている</strong>（出典1。事実）—— <strong>①/opt/vmhostd-core への複製と /etc/rc.local.d/local.sh の書き換え。</strong> <strong>②/sbin/auto-backup.sh の実行による、再起動をまたいだ保持。</strong> <strong>③ファイアウォールと execInstalledOnly を、 およそ5秒ごとに無効へ書き戻すこと。</strong></p>
+<p><strong>③が運用に対して持つ意味は大きい</strong>（本記録の評価） ——<strong>設定が無効になっていることに気づいて手で戻しても、 数秒で元に戻る。</strong> <strong>「直したのに直らない」という形で現場の時間が溶け、 原因（永続化の本体）は残る。</strong> <strong>公表文が「設定を再有効化するだけでなく、 永続化の仕組みそのものを調査せよ」と勧めているのは、 この構造への警告である</strong>（原文英語。出典1）。</p></section>
+<section id="s7"><h2>C2 の「同一宛先へ6ポート同時」は、正規の通信にほぼ現れない形である<span class="b slot">対策・注意喚起</span></h2><p><strong>実装は 53・2222・3389・4444・8443・9443 の6ポートへ 同時に TCP 接続を試み、最初に成功した接続を C2 に使い、 残りを閉じる</strong>（出典1。事実）。 <strong>30秒のうちにどれもつながらない場合は、 5〜12秒のランダムな間隔を置いて再試行する</strong>（出典1）。 <strong>結果として、1つの宛先 IP へ6本の SYN がほぼ同時に出る</strong>（出典1）。</p>
+<p><strong>本記録の評価では、これは条件が具体的で誤検知が少ない検知規則になる。</strong> <strong>業務の通信で、1台のホストが同一の宛先に対して 53（DNS）・2222・3389（RDP）・4444・8443・9443 を 同時に叩くことはほぼ無い。</strong></p>
+<p><strong>ただし前提がある</strong>（本記録の評価） ——<strong>ESXi ホストの外向き通信がフローログに載っていなければ、 この形は誰にも観測されない。</strong> <strong>「ESXi の通信を記録しているか」を先に確かめる必要がある。</strong></p>
+<p><strong>間隔がランダム（5〜12秒）である点も踏まえておきたい</strong>（出典1） ——<strong>ビーコンの周期性だけを見る検知では拾いにくい。</strong> <strong>拾えるのは周期ではなく、ポートの組み合わせの形である</strong> （本記録の評価）。</p></section>
+<section id="s8"><h2>TAG-218 と Settra の関係は「重なる」までで、専用とは立証されていない<span class="b slot">帰属</span></h2><p><strong>Insikt Group は、TAG-218 のインフラ監視の過程で GhostFrame を 見つけたとし、同グループの活動は Settra ランサムウェアと 重なるとしている</strong>（出典1。事実）。 <strong>関係する標的のうち4組織が、後に Settra のリークサイトへ 掲載されたとされる</strong>（出典1）。</p>
+<p><strong>一方で、公表文は「入手できた証跡は、本フレームワークが Settra 専用であることを立証していない」と明記している</strong> （原文英語。出典1。事実）。 <strong>さらに「他の金銭目的の脅威アクターが GhostFrame を採用する 可能性が高い」とも述べている</strong>（原文英語。出典1）。</p>
+<p><strong>本記録の整理では、層を分けて読む必要がある。</strong></p>
+<p>| 層 | 本件で言えること | | --- | --- | | 観測（Insikt Group の自前） | TAG-218 のインフラ上で GhostFrame を確認した | | 重なり | TAG-218 の活動と Settra の運用が重なる | | 専用性 | 立証されていない（公表文が明示的に否定） | | 国家・組織への帰属 | 本報告では述べられていない〈未確定2〉 |</p>
+<p><strong>TAG-218 という記号について</strong>（本記録の整理）—— <strong>TAG-#### は Insikt Group の命名規則による活動群の記号で、 公開プロファイルを持たないのが通常である。</strong> <strong>本記録は、この記号に説明を足さない。</strong></p>
+<p><strong>Settra については、本記録は別に2件の記録を持っている</strong> （本記録の整理）—— <strong>INC-2026-0074（アンビションDXホールディングスのリークサイト掲載。 2026年6月に現れた名称として記録）と、 INC-2026-0478（Palo Alto の VPN 脆弱性 CVE-2026-0257 の継続悪用。 ReliaQuest が Qilin と並べて挙げた）である。</strong> <strong>本報告は、この CVE への言及を含む点で INC-2026-0478 と接続する</strong> （出典1） ——<strong>ただし本報告も Settra そのものの実体を解明していないため、 本記録は Settra の扱いを変えない。</strong></p></section>
+<section id="s9"><h2>日本の組織にとっての距離は「ESXi を使っているか」で決まる<span class="b slot">評価・解釈</span></h2><p><strong>本報告が挙げた標的の地理は米国と欧州に限られ、 日本の組織への言及は無い</strong>（出典1。本記録の観測）。</p>
+<p><strong>それでも本記録が日本の読者向けに記録するのは、 この脅威の距離が地理ではなく構成で決まるからである</strong>（本記録の評価）。</p>
+<p><strong>本件の前提は3つである</strong>（出典1）—— <strong>①外部公開された VPN 機器があること。</strong> <strong>②その先に ESXi で仮想化された環境があること。</strong> <strong>③ハイパーバイザの管理面へ到達できる経路があること。</strong></p>
+<p><strong>この3つは、日本の中堅・大企業の多くに当てはまる</strong>（本記録の評価） ——<strong>①と②の組み合わせは、 コロナ以降のリモートアクセス整備と仮想化統合の標準形である。</strong></p>
+<p><strong>公表文は「他の金銭目的の脅威アクターが GhostFrame を採用する 可能性が高い」としている</strong>（原文英語。出典1） ——<strong>本記録の評価では、 TAG-218 と Settra の動向を追うことよりも、 自社の ESXi ホストが observable（観測可能）になっているかを 確かめることのほうが先である。</strong> <strong>具体的には「ホスト上のファイルとプロセスを見ているか」 「ホストの外向き通信を記録しているか」の2点である。</strong></p></section>
+<section id="s10"><h2>IoC は公表されているが、本記録は悪性を検証していない<span class="b slot">対策・注意喚起</span></h2><p><strong>公表文は IoC 4件を示している</strong>（出典1。事実）—— <strong>GhostFrame の C2 とされる IP 2件、 TAG-218 の MeshCentral C2 とされる IP 1件、 GhostFrame の SHA-256 1件である。</strong></p>
+<p><strong>本記録はこれらの悪性を自前で検証していない</strong>（本記録の整理） ——<strong>照合先のテレメトリを持たないため、検知への投入は推奨しない。</strong></p>
+<p><strong>本記録の評価では、本件で防御に使える価値が高いのは IoC ではなく挙動のほうである。</strong> <strong>IP は捨てて立て直せるが、 /opt/vmhostd-core・/etc/rc.local.d/local.sh の書き換え・ vmhostd というプロセス名・execInstalledOnly の書き戻し・ 6ポート同時接続は、実装の作りに結びついている。</strong></p>
+<p><strong>したがって点検の順序は、 ①ホスト上のファイルとプロセスの照合、 ②構成（ファイアウォール・execInstalledOnly）の乖離の有無、 ③ホストの外向き通信の形、であり、 IoC の照合はその後である</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>侵入経路</th><td>**GhostFrame 自体は脆弱性を突かない**（出典1）。 **公表文は「実装の配置と実行には、ESXi ホストの root 権限を すでに取得している必要がある」と明記している**（原文英語。出典1）。 **TAG-218 の初期侵入は、米国と欧州の VPN 機器 （SonicWall・Palo Alto Networks・Fortinet が中心）を標的としたもので、 GlobalProtect の認証バイパス CVE-2026-0257 への言及がある**（出典1） ——**ESXi ホストの root をどう取ったかの具体的な経路は 公表されていない**〈未確定5〉。</td></tr><tr><th>侵入経路の確度</th><td>presumed</td></tr><tr><th>affected_asset</th><td><b>kind:</b> VMware ESXi ホスト（ハイパーバイザ）と、 その上で動作する仮想マシン、ならびに仮想マシンの スナップショットおよび仮想ディスク　<b>service_nameの公表状況:</b> stated　<b>service_name（補足）:</b> **公表文が名指しているのは VMware ESXi である**（出典1）。 **対象となる ESXi のバージョン範囲は示されていない**〈未確定6〉 ——**脆弱性を突く実装ではないため、 バージョンによる影響の有無という形では切れない**（本記録の評価）。　<b>範囲（補足）:</b> **影響の単位は「仮想マシン1台」ではなく「ESXi ホスト1台」である** （本記録の評価） ——**公表文は「単一の侵害された ESXi ホストが、 複数の仮想マシンと、それらが含むシステム・データへのアクセスを 与えうる」と述べている**（原文英語。出典1）。</td></tr><tr><th>implant_components</th><td><b>状況:</b> stated　<b>補足:</b> **公表文が挙げる構成要素**（出典1。事実）——
+
+**vmhostd-core** ——**実装の本体。ビルダーが生成する。**
+**メモリ上でシェルコードを読み込んで動く。**
+**実行可能メモリを確保できない場合は /bin/sh のリバースシェルへ退く。**
+
+**gfsox** ——**SOCKS5 プロキシ。被害環境の奥への中継に使う。**
+
+**sdkmon** ——**認証情報の傍受。ログインを捕まえるとされる。**
+
+**VMkatz（統合されている道具）** ——**仮想マシンのスナップショットと
+ディスクから、NTLM ハッシュ・WDigest の資格情報・Kerberos チケット・
+SAM／LSA の秘密・NTDS.dit のデータを取り出す。**
+
+**操作側の画面** ——**「Sessions」と「Builder」の2区画を持つ。**
+**Builder が実装（vmhostd-core）を生成する。**
+</td></tr><tr><th>capabilities</th><td><b>状況:</b> stated　<b>補足:</b> **公表文が挙げる機能**（出典1。事実）——
+
+**仮想マシンの管理** ——**名称と電源状態の一覧、電源状態の変更、
+スナップショットの作成・削除。**
+
+**遠隔操作** ——**個々の仮想マシンへの VNC を有効にし、
+画面のセッションを C2 経由で中継する。**
+**ESXi の HTML Host Client を操作側のトンネルで露出させることもできる。**
+
+**検知回避の維持** ——**ESXi のファイアウォールと execInstalledOnly を
+およそ5秒ごとに再び無効化する。**
+
+**擬装** ——**プロセス名を vmhostd に変え、
+VMware の vmware-hostd に似せる。**
+</td></tr><tr><th>persistence</th><td><b>状況:</b> stated　<b>補足:</b> **実装は自身を /opt/vmhostd-core に複製し、 /etc/rc.local.d/local.sh を書き換えて起動時に実行させる**（出典1）。 **さらに /sbin/auto-backup.sh を実行して、 変更を再起動後も残す**（出典1） ——**ESXi は構成を揮発領域で持つため、 auto-backup.sh を呼ばないと再起動で消える。 攻撃側がこの作法を知っていることを示す**（本記録の評価）。</td></tr><tr><th>ransom</th><td><b>stance_statement:</b> **身代金・恐喝についての記述は本報告に無い**（出典1。本記録の観測） ——**本報告は実装の分析であり、 被害組織側の対応（支払いの是非・交渉）には触れていない。** **関係するとされる標的のうち4組織が Settra のリークサイトへ 掲載されたとされるが、要求額・交渉・支払いの有無はいずれも 公表されていない**〈未確定7〉。　<b>paymentの公表状況:</b> 公表されていない　<b>demandの公表状況:</b> 公表されていない　<b>leaksite_listedの公表状況:</b> stated　<b>leaksite（補足）:</b> **この活動に関係する標的のうち4組織が、 後に Settra のリークサイトへ掲載されたとされる**（出典1） ——**組織名・掲載日・掲載されたデータの種別と量は 公表されていない**〈未確定1〉。 **掲載は攻撃者側の主張である**（本記録の整理）。　<b>出典:</b> 1</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> ESXi ホストの root 権限での操作を制限し、監視する。 管理面への到達を限られた踏み台・端末に絞り、 想定外の特権アクセスや変更を調査する　<b>副作用:</b> **緊急時の作業経路も狭まる。** **踏み台が落ちたときにハイパーバイザへ入れなくなる構成は、 障害対応の足を止める**（本記録の評価） ——**非常時の代替経路を、記録の残る形で別に用意する必要がある。**　<b>source:</b> 出典1（公表文の勧告）＋副作用は本記録の評価</div><div class=sub><b>数え方:</b> /etc/rc.local.d/local.sh の変更、/opt/vmhostd-core の存在、 vmhostd という名前のプロセス、 ファイアウォールの無効化や execInstalledOnly を 0 にする試みを探す。 設定を再有効化するだけでなく、永続化の仕組みそのものを調査する　<b>副作用:</b> **ESXi ホストでのファイル・プロセスの確認は、 ゲスト側の EDR の管轄外で、人手か別の仕組みが要る** （本記録の評価） ——**台数が多い環境では、点検の自動化そのものが課題になる。**　<b>source:</b> 出典1（公表文の勧告）＋副作用は本記録の評価</div><div class=sub><b>数え方:</b> ESXi の通信を監視し、同一の宛先へ 53・2222・3389・4444・8443・9443 の複数ポートへ ほぼ同時に接続が出ることを探す　<b>副作用:</b> **ESXi ホストからの外向き通信を見る仕組みが無い環境では、 この検知は成立しない**（本記録の評価） ——**ハイパーバイザの通信をフローログに載せる作業が先に要る。**　<b>source:</b> 出典1（公表文の勧告）＋副作用は本記録の評価</div><div class=sub><b>数え方:</b> 仮想マシンのスナップショットと仮想ディスクを、 それ自体が認証情報の塊であるものとして扱う。 保管場所・複製・取得権限を資産として管理する　<b>副作用:</b> **スナップショットの運用（検証・切り戻し）に手間と承認が増える** （本記録の評価） ——**開発・検証の速度と引き換えになる。**　<b>source:</b> 本記録の評価（出典1 の VMkatz の記述にもとづく）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年5月13日</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**（背景）Palo Alto Networks が GlobalProtect の認証バイパス CVE-2026-0257 の修正を公表した日** （本記録の別件 INC-2026-0478 で記録した事実）。 **本報告は TAG-218 の活動を同 CVE に結びつけている**（出典1） ——**本記録は、この背景を「初期侵入の入口の1つ」として置く** （本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年8月下旬</td><td class=nowrap><span class="b kind">発生</span></td><td>**Insikt Group の観測窓の始まり**（出典1）。 **TAG-218 のインフラと、米国・欧州の VPN 機器を狙う活動が この時期から10月まで観測されたとされる**（出典1） ——**観測の開始日は日付まで示されていない**〈未確定4〉。</td></tr><tr><td class="sm nowrap tw">2026年10月12日</td><td class=nowrap><span class="b kind">発生</span></td><td>**被害組織の Fortinet 製 VPN 機器が、GhostFrame の C2 と MeshCentral の両方へビーコンを出していたことが観測された**（出典1） ——**公表文はこれを、GhostFrame が侵入の連鎖の中に位置することの 根拠として挙げている**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月</td><td class=nowrap><span class="b kind">発生</span></td><td>**観測窓の終わり**（出典1）。 **この活動に関係する標的のうち4組織が、後に Settra の リークサイトへ掲載されたとされる**（出典1） ——**掲載の日付と組織名は公表されていない**〈未確定1〉。</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Recorded Future（Insikt Group）が GhostFrame の分析を公表した** （出典1）。 **実装の配置方法・永続化・C2 の挙動・構成要素・緩和策と、 IoC 4件（C2 3件・SHA-256 1件）が示されている**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年11月11日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成日。** **この時点で、被害組織側の公表、CISA 等の当局勧告、 VMware（Broadcom）の声明はいずれも確認できていない** （本記録の観測）〈齟齬1〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>被害組織側の公表・当局勧告による裏付け</span><div class=sm>**本記録の事実関係は、Recorded Future（Insikt Group）の公表1件に 依拠している**（出典1）。 **被害組織の公表、CISA 等の当局勧告、 VMware（Broadcom）の声明はいずれも確認できていない** （本記録の観測。2026年11月11日時点） ——**単独のベンダー報告に依拠した記録であることを明示しておく。** **IoC 4件の悪性も本記録は検証していない** （照合先のテレメトリが無いため）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>attack.chain の段階（stage）の割り当て</span><div class=sm>**公表文は ATT&amp;CK 技術 ID を示していない**（出典1）。 **本記録の attack.chain における段階（initial-access・ persistence 等）は、公表された挙動の記述を 本記録がスキーマの語彙に当てはめたものである**（本記録の整理） ——**公表文がその段階名を使っているわけではない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>GhostFrame と Settra の専用性</span><div class=sm>**公表文は「入手できた証跡は、本フレームワークが Settra 専用である ことを立証していない」と明示的に留保している**（原文英語。出典1） ——**本記録は、見出し・本文で「Settra のツール」という 言い方をしない**（本記録の整理）。 **なお、本記録の別件 INC-2026-0478 で記録したとおり、 Settra そのものの実体（運用の主体・規模）は いずれの系統の資料でも解明されていない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>VPN 機器からハイパーバイザへ降りて、その上の全ゲストへ横から入る経路</div><div class=svgwrap><svg viewBox="0 0 1202 252" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,126.0 C193.0,126.0 193.0,126.0 220,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,126.0 C397.0,126.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C499.0,48.0 499.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C499.0,126.0 499.0,204.0 424,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C601.0,126.0 601.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C601.0,126.0 601.0,126.0 628,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C703.0,126.0 703.0,94.0 832,94.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,204.0 C703.0,204.0 703.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C805.0,126.0 805.0,94.0 832,94.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,165.0 C703.0,165.0 703.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,94.0 C1009.0,94.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">TAG-218（Sett</text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ra の運用と重なるとさ</text><text x="91.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れる活動グループ）</text><rect x="220" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部公開された VPN </text><text x="295.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">機器（SonicWall</text><text x="295.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／Palo Alto／…</text><rect x="424" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ESXi ホストの ro</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ot 権限（取得の経路は</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未公表）</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GhostFrame（/</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">opt/vmhostd-</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">core・local.…</text><rect x="424" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ファイアウォールと ex</text><text x="499.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ecInstalledO</text><text x="499.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nly を約5秒ごとに…</text><rect x="628" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">同一ホスト上の仮想マシン</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（VNC 有効化・電源操</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">作・スナップショット作…</text><rect x="628" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スナップショット／仮想デ</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ィスク（NTDS.dit</text><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・NTLM・Kerbe…</text><rect x="628" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ゲスト OS 上の ED</text><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">R（ホスト層の実装を見な</text><text x="703.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い）</text><rect x="832" y="62.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（6ポート同時接続／</text><text x="907.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">gfsox の SOCK</text><text x="907.0" y="112.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S5 中継）</text><rect x="832" y="140.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">米国・欧州の被害組織（名</text><text x="907.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">称・業種は未公表）</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Settra のリークサ</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イト（関係する標的のうち</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4組織が掲載）</text></svg></div><div class=fn>**初期侵入（VPN 機器）→ ESXi ホストの root（経路は未公表）→ GhostFrame の配置・永続化 → 仮想マシンとスナップショットへの到達 → 中継と持ち出し → リークサイト掲載 という構図** （出典1にもとづき本記録が作成）。 **ゲスト OS に入れた EDR の管轄は図の右上（ゲストの中）だけで、 GhostFrame が動く層はその下にある**（本記録の評価）。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**境界機器そのものがビーコンの発信元になっている**（出典1） ——**本記録の評価では、ここが最初の機会である。** **VPN 機器から外部への能動的な接続は、業務の通信ではない。** **ただし本報告は被害組織側の検知状況を述べていないため、 機会が実際に見逃されたかは断定できない**〈未確定8〉 ——**本記録が「機会はあったが検知できなかった」と置いたのは、 侵入が ESXi 層まで進んでいる事実による**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>外部公開している VPN・境界機器の更新状況を一覧で管理し、 KEV 収載済みの脆弱性については期限を切って適用する<span class=sm>　**本記録の評価。** **CVE-2026-0257 は2026年5月13日に修正が出て 5月29日に CISA KEV へ収載されている** （本記録の別件 INC-2026-0478 の事実） ——**本報告の観測窓（8月下旬〜10月）は、 その3〜5か月後である。**</span></div><div class=ctl><span class="b eff">検知できた</span>境界機器から外部への発信（ビーコン）をフローログで監視し、 機器自身が能動的に外へつなぐ事象を異常として扱う<span class=sm>　**本記録の評価。** **本件では Fortinet 製機器が2つの C2 へ発信していた**（出典1） ——**機器を「守る対象」としてだけ見ると、 機器が「発信元」になった状態を見逃す。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>**root 取得の経路が公表されていないため、 その時点で検知の機会があったかを判断する材料が無い**（出典1） ——**本記録の評価では、 ESXi ホストへの SSH／シェルでのログインと、 管理者アカウントの追加・変更がここでの観測点になるが、 本件でそれが記録されていたかは分からない**〈未確定8〉。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>ESXi ホストの SSH とシェルを常時無効にし、 必要時のみ期限付きで有効化する。 有効化そのものを警報として記録する<span class=sm>　**本記録の評価。** **GhostFrame はファイルを置いてシェルを実行する必要がある** （出典1） ——**ホスト上でのコマンド実行経路を常時閉じていれば、 配置の手数が増える。**</span></div><div class=ctl><span class="b eff">侵入を防げた</span>vCenter・ESXi の管理アカウントを業務アカウントと分離し、 多要素認証と踏み台を必須にする<span class=sm>　**本記録の評価。** **本件の root 取得の経路は不明だが**〈未確定5〉**、 ハイパーバイザの管理面が業務ネットワークから直接到達できる構成は、 VPN 機器の侵害がそのまま root への距離になる**（本記録の評価）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**本報告は実装の挙動を述べており、 被害組織側でこの実行が検知されたかは示されていない**（出典1） ——**本記録の評価では、 ゲスト OS に入れた EDR はこの実行を見ない。** **ESXi ホスト上のプロセスと、 /opt 配下のファイルの変化を見る仕組みが別に要る。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>ESXi の execInstalledOnly（署名済み実行ファイルのみを許す制御）を 有効にし、その設定値の変更を構成監査で検出する<span class=sm>　**本記録の評価。** **実装はこの制御をおよそ5秒ごとに無効へ書き戻す**（出典1） ——**したがって「有効にしてある」ことではなく 「有効のままか」を外から定期に確かめることが要る。**</span></div><div class=ctl><span class="b eff">検知できた</span>ESXi ホストのファイルシステム（/opt・/etc/rc.local.d）の 既知の状態を記録し、差分を定期に照合する<span class=sm>　**本記録の評価。** **公表文は /opt/vmhostd-core の存在と /etc/rc.local.d/local.sh の変更を探すよう勧めている**（出典1） ——**台数が多い環境では、この照合を自動で回す仕組みが先に要る。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価では、ここが最も確実な機会である。** **/etc/rc.local.d/local.sh の変更と auto-backup.sh の実行は、 正規の運用でもまれにしか起きない操作である** ——**公表文も、設定を戻すだけでなく 永続化の仕組みを調査せよと勧めている**（出典1）。 **ただし被害組織側でこれが見られていたかは示されていない** 〈未確定8〉。</div></td><td><div class=ctl><span class="b eff">検知できた</span>/etc/rc.local.d/local.sh の内容をハッシュで台帳に持ち、 変更を警報にする。auto-backup.sh の実行も記録する<span class=sm>　**本記録の評価。** **ESXi の永続化はこの2つの操作に収れんする**（出典1） ——**ファイルの数が少ないので、全台の照合は現実的である。**</span></div><div class=ctl><span class="b eff">検知できた</span>vmware-hostd に似た名前（vmhostd 等）のプロセスを 許可リストの外として扱う<span class=sm>　**本記録の評価。** **正規の名前は vmware-hostd である**（出典1） ——**人の目には区別がつきにくいが、 機械での完全一致照合なら確実に分かれる。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価では、これは見逃しにくい挙動である。** **設定が無効へ戻り続ける状態は、 構成監査が1回でも回れば異常として出る。** **一方で、気づいて設定を手で戻す対処だけでは 数秒で元に戻るため、 「直したのに直らない」という形で現場の時間が溶ける** （本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>ESXi の構成（ファイアウォール・execInstalledOnly）を 意図した値と定期に比べ、乖離が繰り返し起きる状態を警報にする<span class=sm>　**本記録の評価。** **1回の乖離ではなく「戻しても戻る」ことが決定的な兆候である** （出典1 の5秒周期の記述にもとづく）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>設定の乖離を見つけたら、設定を戻す前に プロセス・ファイル・起動スクリプトを保全して調査する手順にする<span class=sm>　**本記録の評価。** **公表文も、再有効化だけでなく永続化の仕組みを調査せよと 勧めている**（出典1） ——**先に設定を戻すと、攻撃側に気づかれる契機を与えるうえ、 原因は残る。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価では、ゲスト側から見えない。** **スナップショットと仮想ディスクをホスト側で読む操作は、 ゲスト OS のプロセスとして現れない** ——**ドメインコントローラの NTDS.dit が、 ドメインコントローラにログインせずに持ち出される。** **この段階での検知を期待するのではなく、 ホストへの到達を防ぐ側に投資するのが筋である**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ドメインコントローラを、他の業務仮想マシンと同じ ESXi ホスト・ 同じスナップショット運用に載せない<span class=sm>　**本記録の評価。** **ホスト1台の掌握が、そのホスト上の全ゲストに及ぶ**（出典1） ——**ドメインの中核を同じ箱に入れるかどうかが、 被害の上限を決める。**</span></div><div class=ctl><span class="b eff">検知できた</span>仮想マシンのスナップショット・仮想ディスクの保管先への アクセスを認証情報と同等に扱い、取得・複製を記録する<span class=sm>　**本記録の評価。** **VMkatz が読むのはスナップショットとディスクである**（出典1） ——**「バックアップ」として扱うと、権限管理が緩くなりがちである。**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>WDigest の資格情報をメモリに残さない設定にし、 Kerberos チケットの有効期間を短くする<span class=sm>　**本記録の評価。** **抜かれた素材の使える範囲と時間を縮める措置である** ——**抜かれること自体は防げない。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">公表されていない</span><div class=sm>**本報告は被害組織側の検知状況を述べていない**（出典1） ——**本記録の評価では、 ESXi ホストが中継点として振る舞うこと（ホスト経由で 内部セグメントへの通信が出入りすること）が観測点になる。** **ハイパーバイザを「通信の発生源にならないもの」として 扱っている設計では、この通信は想定されていない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ESXi の管理ネットワークを業務セグメントから分け、 ホストから業務セグメントへの通信を既定で拒否する<span class=sm>　**本記録の評価。** **SOCKS5 の中継も VNC の中継も、 ホストから先へ通信が出られることを前提とする**（出典1）。</span></div><div class=ctl><span class="b eff">検知できた</span>仮想マシンの VNC が有効化された事象（構成の変更）を検出する<span class=sm>　**本記録の評価。** **VNC の有効化はゲスト側の設定ではなく ホスト側の仮想マシン構成の変更である**（出典1） ——**構成変更の記録を見ていれば出る。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**本記録の評価では、ここに特徴的な痕跡がある。** **「同一宛先へ6ポート同時」は正規の通信にほぼ現れない形である** ——**公表文も検知の手がかりとして明示している**（出典1）。 **ただし ESXi ホストの外向き通信をフローログに載せていない環境では、 この形は観測されない**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>ESXi ホストの外向き通信をフローログに記録し、 同一宛先への複数ポート同時接続を検出する規則を入れる<span class=sm>　**本記録の評価。** **検出の条件が具体的で、誤検知が少ない形である**（出典1） ——**まず「ESXi の通信が記録されているか」から確かめる。**</span></div><div class=ctl><span class="b eff">侵入を防げた</span>ESXi ホストからインターネットへの直接通信を既定で拒否し、 必要な宛先（更新・時刻同期）だけを許可する<span class=sm>　**本記録の評価。** **6ポートのどれもつながらなければ、 実装は再試行を続けるだけで C2 を確立できない**（出典1）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**リークサイトへの掲載は、被害組織の外で起きる事象である** （本記録の整理） ——**この段階に検知の機会という概念は当てはまらない。** **本記録の評価では、 ここで測るべきは「掲載されるまでに自分で気づけたか」であり、 本件についてその材料は公表されていない**〈未確定8〉。</div></td><td><div class=ctl><span class="b eff">復旧を早められた</span>仮想マシンのバックアップを、ハイパーバイザから到達できない場所に 分けて置き、復元の手順と所要時間を定期に試す<span class=sm>　**本記録の評価。** **ESXi ホストを掌握した攻撃者は、 その上の仮想マシンとスナップショットの両方に手が届く**（出典1） ——**同じ箱の中のバックアップは、バックアップではない。**</span></div><div class=ctl><span class="b eff">影響を限定できた</span>リークサイトの掲載を監視し、自社・主要取引先の名前と ドメインが現れたことを自分で知る経路を持つ<span class=sm>　**本記録の評価。** **本件の4組織についても、掲載が先に外から見えている**（出典1） ——**第三者から知らされる前に把握できるかが、 初動と公表の順序を決める。**</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**ハイパーバイザを「台」ではなく「その上の全資産と同じ重みの資産」として 台帳に載せる。**</div><div class=lw>**公表文は、単一の侵害された ESXi ホストが複数の仮想マシンと そのシステム・データへのアクセスを与えうると述べている** （原文英語。出典1） ——**ホスト1台の重要度は、 その上に載っている最も重要なシステムと同じになる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **ESXi ホストごとに「載っている最重要システム」を書き出し、 ホストの重要度をそれに合わせて付け直す。** **とくにドメインコントローラ・認証基盤・バックアップ管理が 同じホストや同じクラスタに載っていないかを確認し、 載っているなら分離の計画を立てる。**</div></li><li><div class=lp>**「パッチの無い脅威」に予算を割く枠を持つ。**</div><div class=lw>**GhostFrame は脆弱性を突かない**（出典1） ——**影響バージョンも適用すべき修正も無い。** **CVE の件数と適用率で測る運用では、 この種の脅威に対する投資判断の根拠が作れない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性管理とは別に「特権到達経路の棚卸し」を独立した項目として 予算と期限を付ける。** **測る指標を「ESXi ホストの root に到達できる経路の数」 「そのうち多要素認証と踏み台を経るものの割合」に置く。**</div></li><li><div class=lp>**バックアップが「同じ箱の中」にないかを、構成図ではなく権限で確かめる。**</div><div class=lw>**ESXi ホストを掌握した攻撃者は、 その上の仮想マシンとスナップショットの両方に手が届く**（出典1） ——**VMkatz はスナップショットと仮想ディスクから 認証情報を取り出す**（出典1）。 **スナップショットはバックアップではなく、 攻撃者にとっての資格情報の塊である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **バックアップの保管先について「ハイパーバイザの root から 消せるか・読めるか」を実機で確かめる。** **消せる・読めるなら、到達できない場所への複製を1系統作る。** **復元の所要時間を実測し、業務の許容停止時間と比べる。**</div></li><li><div class=lp>**リークサイトでの掲載を、第三者から知らされる前に自分で知る経路を持つ。**</div><div class=lw>**本件では、関係する標的のうち4組織の掲載が 外部の調査によって先に見えている**（出典1） ——**本記録の評価では、 掲載を他人から知らされる状態は、初動と公表の順序を 自社で決められない状態である。**</div><div class=la><b>取るべき行動</b> **自社名・自社ドメイン・主要取引先のドメインを リークサイト監視の対象として登録し、 掲載が出た場合に誰が何時間以内に何をするかを手順に書く。** **「攻撃者側の主張である」という前提での公表文の型も、 あらかじめ用意しておく。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**ESXi ホストの点検項目は4つに絞れる。今日から回せる。**</div><div class=lw>**公表文が挙げる痕跡は、/opt/vmhostd-core の存在、 /etc/rc.local.d/local.sh の変更、vmhostd という名前のプロセス、 ファイアウォールの無効化と execInstalledOnly を 0 にする試みである** （出典1） ——**いずれも ESXi 上の決まった場所を見るだけで済む** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **全 ESXi ホストに対して、 ①/opt 配下の予期しないファイル、 ②/etc/rc.local.d/local.sh のハッシュと台帳の照合、 ③プロセス名 vmhostd の有無（正規は vmware-hostd）、 ④ファイアウォールと execInstalledOnly の現在値、 を一括で取る点検スクリプトを作り、定期実行に載せる。** **乖離が見つかったら、設定を戻す前に保全する手順にする。**</div></li><li><div class=lp>**設定を「有効にしてある」ことではなく「有効のままか」を外から測る。**</div><div class=lw>**実装はファイアウォールと execInstalledOnly を およそ5秒ごとに無効へ書き戻す**（出典1） ——**1回の設定作業では維持されない。** **決定的な兆候は「戻しても戻る」ことである**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **構成監査を定期に回し、同じ項目の乖離が繰り返し検出される状態を 単発の乖離とは別の警報として扱う。** **人が手で戻した記録と、自動で戻した記録を区別して残す。**</div></li><li><div class=lp>**ESXi ホストの外向き通信をフローログに載せる。載っていなければ検知は無い。**</div><div class=lw>**実装は 53・2222・3389・4444・8443・9443 の6ポートへ 同一宛先に同時接続する**（出典1） ——**この形は正規の通信にほぼ現れないが、 ホストの通信が記録されていなければ誰にも見えない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **まず「ESXi ホストからの外向き通信がフローログにあるか」を確かめる。** **無ければ記録を開始する。** **あれば、同一宛先への複数ポート同時接続（6ポート）を 検出する規則を入れる。** **あわせて、ESXi ホストからインターネットへの直接通信を 既定で拒否し、必要な宛先だけを許可する。**</div></li><li><div class=lp>**ドメインコントローラの NTDS.dit は、DC にログインせずに持ち出される。**</div><div class=lw>**VMkatz は仮想マシンのスナップショットとディスクから NTLM ハッシュ・WDigest の資格情報・Kerberos チケット・ SAM／LSA の秘密・NTDS.dit のデータを取り出すとされる**（出典1） ——**DC 上のログイン記録やプロセスには何も残らない** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **DC の仮想マシンについて、スナップショットの作成・保管・複製の 権限を棚卸しし、取得を記録する。** **DC を他の業務仮想マシンと同じホスト・同じデータストアに 載せているなら分離する。** **WDigest をメモリに残さない設定と、 Kerberos チケットの有効期間の短縮も併せて確認する。**</div></li><li><div class=lp>**IoC より挙動を先に見る。IP は捨てられるが、作りは変わらない。**</div><div class=lw>**公表された IoC は4件（IP 3件・SHA-256 1件）で、 C2 はいつでも立て直せる**（出典1。本記録の評価） ——**一方で、/opt/vmhostd-core・local.sh の書き換え・ vmhostd という名前・5秒ごとの書き戻し・6ポート同時接続は 実装の作りに結びついている。** **本記録はこれらの IoC の悪性を自前で検証していない。**</div><div class=la><b>取るべき行動</b> **点検は、ファイル・プロセス・構成・通信の形から始める。** **IoC の照合は補助として扱い、 検出できなかったことを「無かった」と読まない。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **VMware ESXi で仮想化した環境があり、 1台のホストに複数の業務システムが載っているか。**</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **ESXi ホストの root および vCenter の管理アカウントが、 業務ネットワークから直接到達できる経路を持っているか。 多要素認証と踏み台を必須にしているか。**</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **ESXi ホスト上のファイル・プロセス・構成値を定期に点検しているか。 ホストからの外向き通信をフローログに記録しているか。**</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> **仮想マシンのスナップショットと仮想ディスクの保管先・複製・取得権限を 資産として管理しているか。**</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **仮想マシンのバックアップが、ハイパーバイザの root から 読めない・消せない場所にあるか。実機で確かめたか。**</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **外部公開している VPN・境界機器について、 KEV 収載済みの脆弱性の適用状況を機器単位で把握しているか。**</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月10日 Recorded Future（Insikt Group）</span> <a href="https://www.recordedfuture.com/blog/ghostframe-esxi-implant-settra-ransomware" target="_blank" rel="noreferrer noopener nofollow">GhostFrame: A new ESXi Implant Linked to Settra Ransomware</a> <span class="b kind">調査レポート</span><span class=sm>（**本記録の事実関係の中核（唯一の一次的な資料）。** **GhostFrame が未文書化の侵入後フレームワークであること、 ESXi ホストの root 権限が前提で脆弱性を突かないこと、 操作画面が Sessions と Builder の2区画を持つこと、 実装（vmhostd-core）がメモリ上のシェルコードローダで /bin/sh のリバースシェルへ退く経路を持つこと、 /opt/vmhostd-core への複製と /etc/rc.local.d/local.sh の書き換え、 /sbin/auto-backup.sh による再起動をまたいだ保持、 プロセス名 vmhostd による擬装、 ファイアウォールと execInstalledOnly の約5秒ごとの無効化、 仮想マシンの一覧・電源操作・スナップショットの作成と削除、 個々の仮想マシンへの VNC 有効化と C2 経由の中継、 ESXi HTML Host Client のトンネル経由の露出、 gfsox（SOCKS5 プロキシ）、sdkmon（認証情報の傍受）、 VMkatz による NTLM ハッシュ・WDigest・Kerberos チケット・ SAM／LSA の秘密・NTDS.dit の抽出、 53・2222・3389・4444・8443・9443 への同時接続と 30秒のタイムアウト・5〜12秒のランダム再試行、 TAG-218 の標的が米国・欧州の VPN 機器（SonicWall・ Palo Alto Networks・Fortinet が中心）であること、 CVE-2026-0257 への言及、2026年10月12日の Fortinet 機器からの GhostFrame／MeshCentral 両方へのビーコン、 標的のうち4組織の Settra リークサイト掲載、 観測窓（2026年8月下旬〜10月）、 Settra 専用であることは立証されていないという留保、 他の金銭目的アクターによる採用の見込み、 緩和・検知の勧告、IoC 4件がこの資料に書かれている。** **ATT&amp;CK 技術 ID の記載は無い。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月11日</span> <span class="b rev">新規作成</span> **2026年11月10日収集分の記事 〈output/articles/20261110/0374_recorded-future-insikt-gr_ghostframe-a-new-esxi-implant-linked-to-settra-ran.md〉 を起点に、記事の url フィールドから一次の公表（出典1）を取得して作成した。** **記事の本文は RSS の要約のみで、構成要素・永続化・C2 の挙動・ IoC・緩和策はいずれも公表文からのみ得られた**（本記録の整理）。 **Settra については、本記録が既に持つ INC-2026-0074 （アンビションDXホールディングス）と INC-2026-0478 （Palo Alto の VPN 脆弱性 CVE-2026-0257 の継続悪用）との接続を 本文に記した——重複ではなく、 本件は GhostFrame という実装の分析が主題である**（本記録の整理）。 **被害組織の公表・当局勧告・VMware の声明は確認できず、 単独のベンダー報告に依拠した記録であることを 〈齟齬1〉に明示した。**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">GhostFrame</span><span class="b tag">TAG-218</span><span class="b tag">Settra</span><span class="b tag">VMware ESXi</span><span class="b tag">ハイパーバイザ</span><span class="b tag">ESXi インプラント</span><span class="b tag">侵入後フレームワーク</span><span class="b tag">VMkatz</span><span class="b tag">認証情報の窃取</span><span class="b tag">ランサムウェア</span><span class="b tag">CVE-2026-0257</span><span class="b tag">VPN機器</span><span class="b tag">Recorded Future</span><span class="b tag">Insikt Group</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-11 09:08 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
