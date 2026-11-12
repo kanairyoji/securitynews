@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Citrus ランサム・委託先経由とLLM生成 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1013</span>Citrus ランサム・委託先経由とLLM生成</h1>
+<header class="site-header">
+  <p class="subtitle">これまで記録の無かったランサムウェア集団「Citrus」が、 委託先の従業員から盗んだ認証情報で VPN と外部公開の RDP ターミナルサーバに入り、 AD CS の認証バイパス（CVE-2026-54121・Certighost）でドメインコントローラになりすまして 権限を奪い、Go 製の Sn00py（RaaS）で暗号化していた—— Kaspersky が2026年11月11日に公表。 通信は Xray の VLESS トンネルを REALITY で mirror.yandex.ru・yastatic.net 宛に見せかけ、 配布は「Kaspersky GPO」と名付けた悪性グループポリシーで行う。 アカウント無効化コマンドや並列実行スクリプトは LLM が生成したものとみられる。 被害はロシア企業に限られ、組織名・件数は公表されていない。</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b type2">ランサムウェア被害（暗号化・リークサイト恐喝が中心）</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">委託先・供給元起因</span><span class="b cause">認証情報の悪用（使い回し・推測可能・窃取）</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">権限管理の不備</span><span class="b cause">設定不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月11日</span>
+  <span>最終更新: 2026年11月12日</span>
+</div>
+
+<div class="lead"><p><strong>Kaspersky は2026年11月11日、これまで記録の無かったランサムウェア集団「Citrus」の手口を公表しました</strong>（出典1）〈重要〉。</p>
+<p><strong>出典1が「興味深い」としているのは2点です</strong>（出典1）。<strong>ネットワークトンネリングの型破りなやり方</strong>と、<strong>補助的な道具を作るのに AI を使っていること</strong>です。</p>
+<p><strong>侵入の経路は、すべて委託先です</strong>（出典1）〈重要〉。<strong>委託先の従業員から盗んだ認証情報を使い、企業の VPN、または外部公開された RDP のターミナルサーバへ直接接続します。</strong> <strong>我々が知るすべての事例で、その委託先のドメインアカウントはきわめて限定的な権限しか持っていなかった</strong>と出典1は述べています。</p>
+<p><strong>そこから権限を上げる手段が、本件の核心です</strong>（出典1）。<strong>AD CS の認証バイパス脆弱性 CVE-2026-54121（Certighost）を試行し、Active Directory に <code>GHOST</code> ＋ 8文字のランダムな英字という名前のマシンアカウントを作ります</strong>（例: <code>GHOSTAUFTAFGS</code>・<code>GHOSTCZYQVAZS</code>・<code>GHOSTIVPRLDZA</code>）。<strong>この名前は GitHub に公開されたエクスプロイトを使うスクリプトが生成するものです</strong>（出典1）。仕組みはこうです（出典1）。</p>
+<ul>
+<li><strong>作ったアカウントの名義で、AD CS の役割を持つ機器に<code>Machine</code> テンプレートに基づく証明書を要求する。</strong></li>
+<li><strong>要求の <code>Attributes</code> には<code>CertificateTemplate:Machine</code> / <code>SAN:dns=dc01.victim.domain</code> / <code>cdc:91.210.109[.]118</code> / <code>rmd:dc01.victim.domain</code> のような値を入れる。</strong></li>
+<li><strong><code>cdc</code> 属性は、認証局がデータの検証のために接続すべき機器のIP または名前を指定するもの。攻撃者はここに自分が支配する機器の address を書き、そこから偽のデータを返す。</strong></li>
+<li><strong>悪用が成功すると、認証局は指定されたテンプレートに基づき、指定されたパラメータを持つ証明書を発行する。</strong></li>
+<li><strong>発行された証明書の <code>SubjectAlternativeName</code> にドメインコントローラの名前が入るため、攻撃者はドメインコントローラのアカウントとして認証できる。</strong></li>
+</ul>
+<p><strong>最終段は Go 製の Sn00py です</strong>（出典1）。<strong>RSA-2048 と ChaCha20 で利用者のファイルを暗号化し（システムファイルは対象外）、拡張子は <code>.citrus</code>。出典1は「現時点では、攻撃者の秘密鍵なしに復号することは不可能である」としています。</strong> <strong>身代金要求メモ（<code>CITRUS_README.txt</code>）には「We`re going to do something special today :). Made with RaaS platform Sn00py.」という文字列があり、Sn00py が RaaS として提供されていることを示しています</strong>（出典1）。</p>
+<p><strong>配布にはグループポリシーが使われます</strong>（出典1）〈重要〉。<strong>「Kaspersky GPO」という名前のグループポリシーオブジェクトがランサムウェアを配り、WinRM を有効化し、ボリュームシャドウコピーと Windows Defender を無効化し、身代金要求メモを壁紙に設定します。</strong> <strong><code>host_blacklist</code> では DC01 から DC04 が除外されており、ポリシーが配り続けられるようにしてあります。</strong></p>
+<p><strong>被害の範囲は公表されていません</strong>（本記録の確認）〈未確定1〉。<strong>出典1が示すのは「いくつかのインシデント」であり、被害組織の名称・業種・件数・時期のいずれも記載がありません。国については「ロシア企業のみを攻撃している」とのみ述べられています。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>被害組織・件数・業種・時期</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は「いくつかのインシデント」「ロシア企業」とのみ書き、 組織名・件数・業種・侵害の時期のいずれも示していない**（本記録の確認）〈重要〉—— **ベンダーのインシデント対応報告としては通常の扱いだが、 被害の規模・広がりは読めない。** **したがって本記録は「どれだけ広がっているか」を評価できない。**</div></li><li><span class=ui>身代金の額と支払いの有無</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は身代金の額を示していない**（本記録の確認）—— **期限（72時間）、連絡手段（ProtonMail のアドレス登録＋メールまたは Telegram。 いずれも出典1では伏せられている）、 公開を脅す対象（サービスのダンプ・従業員の個人データ・会計記録・契約・ソースコード）は 示されている。** **支払いが行われたかについては記載が無い。**</div></li><li><span class=ui>Citrus と Toy Ghouls の関係の性質</span><span class="b rsn">調査したが確定せず</span><div class=sm>**出典1は TTP の共有（1C-Shell・mimikatz・PsExec・ADRecon・ 道具を置くディレクトリの一致）を示す一方、 「インフラは直接には重複しない」としている**（出典1）〈重要〉—— **さらに「同じインフラが両方のグループによって 同時に侵害されていたことがある」とも述べている。** **同一主体なのか、道具や手順書を共有する別主体なのか、 同じ侵入経路を買っている別の顧客なのかは確定していない。** **出典1は結論を出していない。**</div></li><li><span class=ui>Sn00py を使う他の集団の有無</span><span class="b rsn">公表されていない</span><div class=sm>**身代金要求メモは Sn00py が RaaS 基盤であることを明示しているが、 出典1は他の利用者（アフィリエイト）に触れていない**（本記録の確認）—— **RaaS である以上、同じ道具を使う別の集団が存在する可能性があるが、 これは本記録の推測であって出典に根拠は無い。**</div></li><li><span class=ui>持ち出された量と送信先のサービス</span><span class="b rsn">公表されていない</span><div class=sm>**Telegram Desktop の `tdata` を 7-Zip で固め、 Google Chrome 経由で「外部のウェブサービス」へ送ったとあるが、 サービス名も量も示されていない**（出典1）—— **また `tdata` 以外のデータの持ち出しについては、 身代金要求メモの脅し（会計記録・契約・ソースコード）から 行われた可能性が読めるが、観測としては示されていない。**</div></li><li><span class=ui>日本の組織における観測の有無</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は「ロシア企業のみを攻撃している」としており、 日本への言及は無い**（本記録の確認）—— **これは Kaspersky の観測範囲での記述であり、 他地域での活動が無いことの証明ではない。**</div></li><li><span class=ui>CVE-2026-54121（Certighost）の悪用の成否</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は「権限昇格を試みた（attempted）」という書き方をしており、 毎回成功したかは明示されていない**（本記録の確認）〈重要〉—— **一方で「悪用が成功すると、認証局は証明書を発行する」 「発行された証明書により、攻撃者はドメインコントローラのアカウントとして 認証できる」と仕組みを説明しているため、 少なくとも成功した事例があるとみられる。** **これは本記録の読みであり、出典1は件数を示していない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Kaspersky（Securelist）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Citrus（ランサムウェア集団）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Toy Ghouls（ランサムウェア集団）</span><span class="b role">推定加害者</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Sn00py（RaaS 基盤）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>ロシア企業（被害組織・名称非公表）</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>出典1が扱っているインシデントの件数</span><span class="b conf">最少</span><span class="b org">第三者調査</span></div><div class=fv>0<span class=fu>件</span></div><div class=fn>**出典1は「いくつかのインシデント（several incidents）」と書くだけで、 件数を示していない**（本記録の確認）〈重要〉〈未確定1〉—— **値を 0 としているのは「公表された件数が無い」ことを示すためであり、 被害が無かったことを意味しない。 confidence は min（少なくとも）としているが、 下限として示せる数値も公表されていない。** **集計に使ってはならない数値である**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>身代金要求メモが示す期限</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>72<span class=fu>時間</span></div><div class=fn>**メモは ProtonMail のアドレスを登録して メールまたは Telegram で連絡するよう求め、72時間の期限を示す**（出典1）—— **期限後に何をするかは「公開する」という脅しとして示されている。** **身代金の額は出典1に記載が無い**〈未確定2〉。</div></div><div class=fig><div class=fh><span class=fl>作成されるマシンアカウント名のランダム部分の文字数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>8<span class=fu>文字</span></div><div class=fn>**`GHOST` ＋ 8文字のランダムな英字**（出典1）〈重要〉—— **`GHOSTAUFTAFGS`・`GHOSTCZYQVAZS`・`GHOSTIVPRLDZA` が例として挙げられている。** **この命名規則は GitHub に公開されたエクスプロイトを使うスクリプトが 生成するものであり、検知の手がかりとして使える**（出典1。本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>ランサムウェアの配布対象から除外されたドメインコントローラの数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>4<span class=fu>台</span></div><div class=fn>**`host_blacklist` では DC01 から DC04 が除外されている**（出典1）〈重要〉—— **出典1は理由を「ポリシーが配り続けられるようにするため」としている。 つまり配布の仕組みを自ら壊さないための設計である**（本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>出典1が公開した検体のハッシュ（MD5）の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>6<span class=fu>個</span></div><div class=fn>**Xray 1個・Meterpreter ステージャ1個・キーロガー1個・Sn00py 2個・fscan 1個**（出典1）—— **IP は 91.210.109[.]118 と 91.210.108[.]180 の2つ。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**委託先の限定権限アカウントで入り、AD CS を使ってドメインコントローラになりすまし、 中央管理コンソールを奪って防御を一斉に止め、 グループポリシーでランサムウェアを配る**（出典1。本記録の整理）〈重要〉—— **通信は VLESS トンネルで正規の国内 CDN 宛に見せかけ、 痕跡はログ消去と「Kaspersky」を名乗るファイル名で隠す。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**委託先の従業員から盗んだ認証情報で、 企業の VPN、または外部公開された RDP のターミナルサーバへ接続する**（出典1）。 **使われた委託先のドメインアカウントは、 知られているすべての事例で きわめて限定的な権限しか持っていなかった。**</div><div class=fn>根拠: **出典1のインシデント対応の観測による**（出典1）—— **認証情報の入手方法は公表されていない。**</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">推定</span><span class=srcs>[1]</span></div><div>**標準の Windows コマンドインタプリタと PowerShell でコマンドを実行する**（出典1）。 **進行につれて PowerShell スクリプト・バッチファイル・ LLM が生成したコマンドを作って動かす。 Impacket の `atexec` でスケジュールタスクを作り、 各ホストでコマンドを走らせる（タスク名 `sIErKswD`・`PpMBCCSR`・`QwZtLmNp`、 起動するのは `cmd.exe`）。 1C:Enterprise サーバでは外部データ処理（1C-Shell）を使う。**</div><div class=fn>根拠: **LLM の使用の根拠はコメントの付き方である**（出典1）〈重要〉—— **管理者アカウントを無効化するコマンドに 「# アカウントを無効化」「# 結果を確認」のコメントが付いていた。 出典1は「攻撃者はコメントをわざわざ書かないので、 コメントは LLM の使用を強く示唆する」としている。**</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**AD CS の認証バイパス（CVE-2026-54121・Certighost）を使う**（出典1）〈重要〉。 **`GHOST` ＋ 8文字のランダムな英字のマシンアカウントを Active Directory に作り、 その名義で `Machine` テンプレートに基づく証明書を要求する。 要求の `Attributes` に `cdc:91.210.109[.]118` を入れ、 認証局がデータ検証のために接続する先を攻撃者の機器に向けて偽のデータを返す。 成功すると、ドメインコントローラの名前を `SubjectAlternativeName` に持つ 証明書が発行され、攻撃者はドメインコントローラのアカウントとして認証できる。** **別に、Metasploit とみられる実行ファイル経由で CVE-2020-1337 のエクスプロイトも使われた。 1C:Enterprise の安全でない構成にも関心を示した。**</div><div class=fn>根拠: **AD に残ったマシンアカウント名（`GHOSTAUFTAFGS`・`GHOSTCZYQVAZS`・ `GHOSTIVPRLDZA`）と、証明書要求の `Attributes` の記録**（出典1）—— **`Attributes` には `CertificateTemplate:Machine`・ `SAN:dns=dc01.victim.domain`・`cdc:91.210.109[.]118`・ `rmd:dc01.victim.domain` のような値が入っていた。** **名前は GitHub に公開されたエクスプロイトを使うスクリプトが生成する。**</div></li><li><div class=stg><span class="b stage">4. 検知回避</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**道具と出力ファイルを削除し、コマンド履歴を消す。 使用中の道具には正規に見える名前を付ける （`KasperskyGPO_Deploy_64.exe`・GPO 名「Kaspersky GPO」・ タスク名 `KasperskyAgentInstallTask`・`Sysvc` 等）**（出典1）。 **`wevtutil` で一部の機器のイベントログを消去する。 十分な権限を得るとホストのアンチウイルスを無効化し、 自分の道具を除外リストに手で追加する。 セキュリティ製品の集中管理コンソールを狙い、 それを使って防御を一斉に無効化する。 Impact 段ではグループポリシーで Windows Defender の レジストリ設定を変更して停止させる—— 出典1は「その結果、ランサムウェアが起動したときに アンチウイルスは反応しなかった」としている。**</div><div class=fn>根拠: **残存した配布物とログ、GPO の内容**（出典1）—— **出典1は「悪性ファイル名に Kaspersky の名を使っても 検知を避けられない」と述べている。**</div></li><li><div class=stg><span class="b stage">5. 認証情報アクセス</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**mimikatz でメモリから認証情報を抜く （`C:\ProgramData\x64\` に `mimidrv.sys`・`mimikatz.exe`・ `mimilib.dll`・`mimispool.dll`）**（出典1）。 **GitHub 公開の peeping-tom を改変したキーロガーを `C:\ProgramData\Oracle\Java\jhost.exe` に置き、 ログを `C:\Users\&lt;username&gt;\AppData\Roaming\Microsoft\CLR\ErrorLog.txt` に書き、 窃取データを 91.210.109[.]118 へ送る。 ネットワーク共有上のファイルから認証情報や秘密（SSH 鍵・アクセストークン等）を 探すのに Snaffler を使い、設定ファイルを置いて実行を簡単にしていた。 管理者の端末では KeePass のようなパスワード管理ソフトのデータにも関心を示した。**</div><div class=fn>根拠: **検体のハッシュ（キーロガー MD5 e251df2d0b7c3682965efb4d2009a2f4）と ファイルパス、送信先IP**（出典1）。</div></li><li><div class=stg><span class="b stage">6. 内部探索</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**ローカルでは `whoami`・`tasklist`・`quser`・`ipconfig`・ `curl 2ip[.]io`（外部IPの確認）**（出典1）。 **遠隔では初期に fscan で内部インフラを調べ、 135（RPC）・139（NetBIOS-SSN）・1433（Microsoft SQL）・ 8006（Proxmox VE）に関心を示した。 横展開後はドメインコントローラで ADRecon、 ある端末で SharpHound を実行。 隣接ドメインのコントローラには PowerShell で LDAP 照会を行い、 機器・ユーザー・グループの一覧を取得。 `net users /domain`・`net group &quot;Domain Admins&quot; /domain` も使われた。**</div><div class=fn>根拠: **実行されたコマンドと fscan の検体 （MD5 cf903e4a1629aa0582fd0363b5786676）**（出典1）。</div></li><li><div class=stg><span class="b stage">7. 横展開</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**SSH・WinRM・RDP を使い、 設置したトンネル経由または侵害したホストから直接、横に移動する**（出典1）。 **道具の搬入には標準の機能（`certutil`・BITS・cURL・PowerShell）を使う。 AnyDesk をパスワードを設定して無人で導入し、遠隔操作に使う。**</div><div class=fn>根拠: **出典1の観測による**（出典1）。</div></li><li><div class=stg><span class="b stage">8. C2通信</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**Xray で C2 サーバへポート443の逆方向 VLESS トンネルを張る**（出典1）〈重要〉。 **REALITY を使って、通信を `mirror.yandex.ru` と `yastatic.net` 宛のものに見せかける。 設定ファイルは起動後に削除されることがあった。**</div><div class=fn>根拠: **Xray の検体（MD5 d631627131b90d576d77f4bf530e1abe）と、 設定の内容**（出典1）。</div></li><li><div class=stg><span class="b stage">9. 持ち出し</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**暗号化の前に `steal_tgs.ps1` が Telegram Desktop の `tdata` ディレクトリを集め、 7-Zip で固め、書庫を Google Chrome 経由で 外部のウェブサービスへ送った**（出典1）。</div><div class=fn>根拠: **スクリプト名と、収集先のパス （`C:\ProgramData\tdatas` が IoC に含まれる）**（出典1）。</div></li><li><div class=stg><span class="b stage">10. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**グループポリシー（「Kaspersky GPO」）が ランサムウェアを配り、WinRM を有効化し、 ボリュームシャドウコピーと Windows Defender を無効化し、 身代金要求メモを壁紙に設定する**（出典1）〈重要〉。 **Go 製の Sn00py が RSA-2048 と ChaCha20 で 利用者のファイルを暗号化する（システムファイルは対象外）。 拡張子は `.citrus`、メモは `CITRUS_README.txt`。 `host_blacklist` では DC01 から DC04 が除外されており、 ポリシーが配り続けられるようにしてある。** **出典1は「現時点では、攻撃者の秘密鍵なしに 復号することは不可能である」としている。**</div><div class=fn>根拠: **Sn00py の検体2個 （MD5 17b29b6c9de80402a45e321bbe1168fa・ 9eee984b187423c46c10a63d080da15d）と、GPO の内容**（出典1）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**攻撃者が自社（Kaspersky）の名前を道具に使っていたことを、 伏せずに書いた**（出典1）〈重要〉—— **`KasperskyGPO_Deploy_64.exe`・GPO 名「Kaspersky GPO」・ タスク名 `KasperskyAgentInstallTask` 等を列挙し、 「悪性ファイル名に Kaspersky の名を使っても 検知を避けられない」と添えている。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **自社名が悪用された事実の公表は、 読者に「ベンダー名のファイルは安全」という前提を捨てさせる一方、 自社製品への不安を招きうる**（本記録の評価）。</div></li><li><div class=ui>**LLM の使用を「推定」として書き、断定していない**（出典1）。</div><div class=fn><b>トレードオフ:</b> **推定にとどめると見出しの訴求は弱くなるが、 断定すれば根拠を越える**（本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>限定権限の委託先アカウントが、AD CS でドメインコントローラの権限に化ける<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>本件の分かれ目は、権限昇格の段にあります</strong>（出典1。本記録の評価）〈重要〉。</p>
+<p>侵入の入口は委託先です。<strong>委託先の従業員から盗んだ認証情報で、企業の VPN、または外部公開された RDP のターミナルサーバへ接続します</strong>（出典1）。ここで重要なのは、出典1が明記している次の一文です。</p>
+<blockquote>
+<p><strong>我々が知るすべての事例で、初期侵入に使われた委託先のドメインアカウントはきわめて限定的な権限しか持っていなかった</strong>（出典1。原文英語より訳）。</p>
+</blockquote>
+<p><strong>つまり最小権限は実施されていました。</strong>それでもドメインコントローラの権限まで到達しています。</p>
+<p>使われたのは <strong>AD CS の認証バイパス脆弱性 CVE-2026-54121（Certighost）</strong>です（出典1）。手順はこうです。</p>
+<ol>
+<li><strong>Active Directory に <code>GHOST</code> ＋ 8文字のランダムな英字という名前のマシンアカウントを作る</strong>（<code>GHOSTAUFTAFGS</code>・<code>GHOSTCZYQVAZS</code>・<code>GHOSTIVPRLDZA</code>）。<strong>この命名は GitHub に公開されたエクスプロイトを使うスクリプトが生成するものです。</strong></li>
+<li><strong>そのアカウントの名義で、AD CS の役割を持つ機器に<code>Machine</code> テンプレートに基づく証明書を要求する。</strong>要求の <code>Attributes</code> には<code>CertificateTemplate:Machine</code> / <code>SAN:dns=dc01.victim.domain</code> / <code>cdc:91.210.109[.]118</code> / <code>rmd:dc01.victim.domain</code> のような値が入ります。</li>
+<li><strong><code>cdc</code> 属性は、認証局がデータの検証のために接続すべき機器のIP または名前を指定するもの。</strong> <strong>攻撃者はここに自分が支配する機器を書き、そこから偽のデータを返します。</strong></li>
+<li><strong>成功すると、認証局は指定されたパラメータを持つ証明書を発行する。</strong> <strong>証明書の <code>SubjectAlternativeName</code> にドメインコントローラの名前が入るため、攻撃者はドメインコントローラのアカウントとして認証できます。</strong></li>
+</ol>
+<p><strong>別経路として、Metasploit とみられる実行ファイル経由でCVE-2020-1337 のエクスプロイトも使われています</strong>（出典1）。根拠は、常駐用にアップロードされた実行ファイルの名義で起動されたPowerShell スクリプトの <code>HostName</code> フィールドが<strong><code>MSFConsole</code></strong> という非標準の値だったことです。ファイルは後に削除されていました。</p>
+<p><strong>ロシア圏に固有の足場もあります</strong>（出典1）。<strong>1C:Enterprise サーバの安全でない構成に攻撃者が関心を示しており、出典1は「設定上の不備に加えて、1C:Enterprise には Active Directory で高い権限を持つ保守担当者や管理者が日常的にアクセスする。この2つが合わさって、権限昇格と横展開が容易になる」としています。</strong></p>
+<p><strong>なぜこの段が分かれ目なのか</strong>（本記録の評価）〈重要〉。ドメインコントローラとして認証できた時点で、後述するとおり<strong>配布・防御の無効化・バックアップの破壊がすべて1つの仕組み（グループポリシー）で実行可能になります。</strong>暗号化の検知で止めようとするのは、既に手遅れの地点です。</p></section>
+<section id="s7"><h2>配布と防御の無効化とバックアップの破壊が、1つのグループポリシーに収まっている<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p><strong>「Kaspersky GPO」という名前のグループポリシーオブジェクトが、次のすべてを行います</strong>（出典1）〈重要〉。</p>
+<ul>
+<li><strong>ランサムウェアを配る。</strong></li>
+<li><strong>WinRM を有効化する。</strong></li>
+<li><strong>ボリュームシャドウコピーを無効化する。</strong></li>
+<li><strong>Windows Defender を無効化する。</strong></li>
+<li><strong>身代金要求メモを壁紙に設定する。</strong></li>
+</ul>
+<p><strong><code>host_blacklist</code> では DC01 から DC04 が除外されています</strong>（出典1）。出典1は理由を<strong>「ポリシーが配り続けられるようにするため」</strong>としています。<strong>自分の配布の仕組みを壊さないための設計です</strong>（本記録の整理）。</p>
+<p><strong>防御の無効化は、これだけではありません</strong>（出典1）。</p>
+<ul>
+<li><strong><code>wevtutil</code> で一部の機器のイベントログを消去する。</strong></li>
+<li><strong>十分な権限を得ると、ホスト上のアンチウイルスを無効化する（これにより mimikatz が動く）。</strong></li>
+<li><strong>セキュリティ製品の集中管理コンソールを狙い、それを使って防御を一斉に無効化する。</strong></li>
+<li><strong>自分の道具をアンチウイルスの除外リストに手で追加する。</strong></li>
+</ul>
+<p><strong>結果として、出典1はこう書いています——「その結果、ランサムウェアが起動したときにアンチウイルスは反応しなかった」</strong>（出典1）〈重要〉。</p>
+<p><strong>道具の名前も、正規に見えるものが選ばれています</strong>（出典1）。<strong><code>KasperskyGPO_Deploy_64.exe</code>・<code>KasperskyGPO_Deploy_64_FIXED.exe</code>（自己展開書庫。中身は <code>Deploy-KasperskyGPO.ps1</code>・悪性 GPO のディレクトリ・<code>KasperskyAgent.exe</code> または <code>agent.exe</code>）、<code>KasperskyAgentInstaller.exe</code>、GPO 名「Kaspersky GPO」、スケジュールタスク名 <code>KasperskyAgentInstallTask</code>・<code>Sysvc</code>、ログ <code>Kaspersky_GPO_Deployment.log</code>。</strong> <strong>キーロガーのパスも <code>C:\ProgramData\Oracle\Java\jhost.exe</code>、ログは <code>C:\Users\&lt;username&gt;\AppData\Roaming\Microsoft\CLR\ErrorLog.txt</code> です。</strong></p>
+<p><strong>出典1はこれについて「悪性ファイル名に Kaspersky の名を使っても検知を避けられない」と添えています</strong>（出典1）。<strong>自社名が悪用された事実を伏せずに書いている点を本記録は評価します</strong>（本記録の評価）—— <strong>ベンダー名を含むパスを広く除外設定している組織は多く、そこを突かれていることは実務上必要な情報です。</strong></p>
+<p><strong>最終段の Sn00py は Go 製で、RaaS です</strong>（出典1）。<strong>RSA-2048 と ChaCha20 で利用者のファイルを暗号化し（システムファイルは対象外）、拡張子は <code>.citrus</code>。出典1は「現時点では、攻撃者の秘密鍵なしに復号することは不可能である」としています。</strong> <strong>身代金要求メモ（<code>CITRUS_README.txt</code>）には「Made with RaaS platform Sn00py.」の文字列があり、Citrus が暗号化の道具を借りていることを示します</strong>（出典1）。<strong>メモは ProtonMail のアドレスを登録してメールまたは Telegram で連絡するよう求め、72時間の期限を示し、サービスのダンプ・従業員の個人データ・会計記録・契約・ソースコードの公開を脅します。金額の記載はありません</strong>〈未確定2〉。</p></section>
+<section id="s8"><h2>トンネルは正規の国内CDN宛に見え、自作の道具はほとんど無い<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p><strong>出典1が「型破り」としているのはトンネリングです</strong>（出典1）〈重要〉。</p>
+<p><strong>Xray で C2 サーバへポート443の逆方向 VLESS トンネルを張り、REALITY を使って、通信を <code>mirror.yandex.ru</code> と<code>yastatic.net</code> 宛のものに見せかけます</strong>（出典1）。<strong>設定ファイルは起動後に削除されることもありました。</strong></p>
+<p><strong>これは宛先ベースの監視では見えません</strong>（本記録の評価）〈重要〉。TLS の SNI と証明書が正規の国内 CDN を指すため、許可リストを通ります。<strong>見えるとすれば「どの機器が外向きに443の常時接続を持っているか」の側です。</strong> <strong>なお、ここで挙がる具体的なドメインはロシア圏の環境に固有なので、国内の検知規則にそのまま移せません</strong>（本記録の整理）—— <strong>移すべきは「正規の CDN 宛に偽装される」という考え方のほうです。</strong></p>
+<p>道具の搬入は標準の機能（<strong><code>certutil</code>・BITS・cURL・PowerShell</strong>）で行い、別に <strong>AnyDesk をパスワードを設定して無人で導入</strong>して遠隔操作に使います（出典1）。横展開は <strong>SSH・WinRM・RDP</strong> で、トンネル経由または侵害したホストから直接です。</p>
+<p><strong>一方で、自作のものはほとんどありません</strong>（本記録の評価）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>用途</th>
+<th>使われたもの</th>
+<th>出所</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>遠隔実行</td>
+<td>Impacket の <code>atexec</code></td>
+<td>公開</td>
+</tr>
+<tr>
+<td>権限昇格</td>
+<td>CVE-2026-54121 のエクスプロイト</td>
+<td><strong>GitHub 公開</strong></td>
+</tr>
+<tr>
+<td>権限昇格</td>
+<td>CVE-2020-1337 のエクスプロイト</td>
+<td><strong>Metasploit</strong></td>
+</tr>
+<tr>
+<td>認証情報</td>
+<td>mimikatz</td>
+<td>公開</td>
+</tr>
+<tr>
+<td>認証情報</td>
+<td>peeping-tom キーロガー</td>
+<td><strong>GitHub 公開の改変版</strong></td>
+</tr>
+<tr>
+<td>認証情報</td>
+<td>Snaffler</td>
+<td>公開</td>
+</tr>
+<tr>
+<td>探索</td>
+<td>fscan・ADRecon・SharpHound・<code>net.exe</code></td>
+<td>公開</td>
+</tr>
+<tr>
+<td>トンネル</td>
+<td>Xray（VLESS・REALITY）</td>
+<td>公開</td>
+</tr>
+<tr>
+<td>遠隔操作</td>
+<td>AnyDesk</td>
+<td>正規製品</td>
+</tr>
+<tr>
+<td>圧縮</td>
+<td>7-Zip</td>
+<td>正規製品</td>
+</tr>
+<tr>
+<td>暗号化</td>
+<td><strong>Sn00py</strong></td>
+<td><strong>RaaS（借り物）</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>出典1の結論もここを突いています——「攻撃者は大部分、よく知られた道具と手法に頼っている。そのため早期の検知はいくぶん容易になる」</strong>（出典1）。</p>
+<p><strong>LLM の関与も、この文脈で読むべきです</strong>（本記録の評価）〈重要〉。<strong>出典1が LLM の使用を推定した根拠は、コメントの付き方です</strong>（出典1）。管理者アカウントを無効化するコマンドに<strong>「# アカウントを無効化」「# 結果を確認」</strong>のコメントが付いており、出典1は<strong>「攻撃者はコメントをわざわざ書かないので、コメントは LLM の使用を強く示唆する」</strong>としています。ドメイン上のアクティブなセッションを列挙するスクリプトには<strong>「# 各コンピュータについてスレッド数の上限付きでバックグラウンドタスクを作成」「# 同時実行タスク数の制御」「# 迅速な ping」</strong>のコメントがありました。<strong>グループポリシー用の PowerShell スクリプトにもLLM による編集の痕跡があったとしています。</strong></p>
+<p><strong>つまり観測されているのは「補助スクリプトの作成が速くなった」水準です</strong>（本記録の評価）。<strong>能力の飛躍ではありません。</strong> <strong>実務上の意味は、「攻撃者ごとの字面の差異が増え、文字列一致の検知規則が効きにくくなる」という方向にあります</strong>（本記録の判断。<strong>出典1はこの推論を示していない</strong>）。</p>
+<p><strong>探索の対象から読めることもあります</strong>（出典1）。<strong>fscan が関心を示したポートは135（RPC）・139（NetBIOS-SSN）・1433（Microsoft SQL）・8006（Proxmox VE）です。</strong> <strong>8006 が入っていることは、仮想化基盤の管理面を狙う意図を示します</strong>（本記録の整理）—— <strong>仮想化基盤を取られると、個々のサーバの防御は意味を失います。</strong></p></section>
+<section id="s9"><h2>委託先アクセスの管理が結論だが、多要素認証には触れられていない<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1]</span></h2><p><strong>出典1の結論は1点に絞られています</strong>（出典1）〈重要〉。</p>
+<blockquote>
+<p><strong>組織のインフラへの委託先のアクセスは、厳格に管理し制限しなければならない</strong>（出典1。原文英語より訳）。</p>
+</blockquote>
+<p><strong>ただし「権限を絞る」だけでは足りないことも、同じ報告が示しています</strong>（本記録の評価）〈重要〉—— <strong>使われた委託先アカウントは「きわめて限定的な権限しか持っていなかった」のです。</strong> <strong>足りないのは、権限の広さ以外の制限です。</strong></p>
+<p>以下は出典1の観測から本記録の作成者が導いたものです（<strong>出典1は対策の節を持ちません</strong>）。</p>
+<p><strong>1. 委託先アカウントの点検項目を、権限以外に広げる。</strong></p>
+<ul>
+<li>接続元IPの制限があるか。</li>
+<li><strong>多要素認証があるか。</strong> <strong>出典1は多要素認証に触れていません</strong>（本記録の確認）〈重要〉—— <strong>窃取した認証情報だけで VPN・RDP に入られている以上、少なくとも観測された事例では有効に働いていなかったとみられますが、これは本記録の推測です。</strong></li>
+<li>ドメイン参加の機器アカウントを作れる権限（<code>ms-DS-MachineAccountQuota</code>）が残っていないか。</li>
+<li>AD CS の証明書を要求できるか。</li>
+</ul>
+<p><strong>2. AD CS のログを取り、遡って探す。</strong> <strong>攻撃者は端末のイベントログを <code>wevtutil</code> で消しています</strong>（出典1）。<strong>それでも経路が再構成できたのは、痕跡が端末の外にあったからです</strong>（出典1）。探すべきは次の3つです。</p>
+<ul>
+<li><strong><code>GHOST</code> で始まるマシンアカウントの作成。</strong></li>
+<li><strong><code>Machine</code> テンプレートへの要求のうち、SAN にドメインコントローラ名を含むもの。</strong></li>
+<li><strong><code>cdc</code> 属性に外部IPを指定する要求。</strong></li>
+</ul>
+<p><strong>ただし①の命名規則はエクスプロイトの実装に依存するので、攻撃者が変えれば効かなくなります</strong>（本記録の評価）—— <strong>②③のほうが寿命があります。</strong></p>
+<p><strong>3. 集中管理コンソールを分離する。</strong> <strong>攻撃者はここを奪って防御を一斉に無効化しています</strong>（出典1）。コンソールの管理者を通常のドメイン管理者と分け、<strong>コンソール上の重要操作のログをコンソールの外へ転送します</strong>（コンソールを失っても記録が残る形にする）。</p>
+<p><strong>4. バックアップを「GPO で消せるか」で判定する。</strong> <strong>配布・WinRM の有効化・シャドウコピーの無効化・Defender の停止がすべて同じグループポリシーで行われています</strong>（出典1）〈重要〉。<strong>AD の認証で到達できる範囲のバックアップは、同時に失われます。</strong>少なくとも1系統を、別の認証系・物理的分離・不変ストレージに置きます。</p>
+<p><strong>5. 外向き通信を、宛先ではなく出所で見る。</strong> <strong>REALITY 偽装により宛先ベースの許可リストは通ります</strong>（出典1）。<strong>サーバからの外向き通信を既定で拒否する構成になっているかを確認し、なっていなければ「どの機器が外へ443の常時接続を持っているか」を一覧で出せるようにします。</strong></p>
+<p><strong>6. 再起動されないサーバを、プロセスと接続の側から点検する。</strong> <strong>出典1は「定期的に再起動されない機器（ターミナルサーバ等）では、攻撃者は常駐をまったく確立せずに道具を動かすことがある」としています</strong>（出典1）〈重要〉—— <strong>スケジュールタスク・サービス・自動起動の確認だけでは見落とします。</strong></p>
+<p><strong>7. 防御の無効化を最優先の警報として扱う。</strong> <strong>「保護が無効化された」「除外が追加された」「GPO が作成・変更された」「ボリュームシャドウコピーが無効化された」は、暗号化より必ず前に現れます</strong>（出典1）。<strong>これらが情報レベルの記録になっているなら、重大度を上げます。</strong></p></section>
+<section id="s10"><h2>被害の規模も、Toy Ghouls との関係も確定していない<span class="b slot">未確定事項</span><span class=srcs>出典 [1]</span></h2><p><strong>出典1が確定させていないことを、そのまま残します</strong>（本記録の明示）〈重要〉。</p>
+<p><strong>被害の規模</strong>〈未確定1〉。<strong>出典1が示すのは「いくつかのインシデント（several incidents）」と「ロシア企業」だけです。</strong> <strong>組織名・業種・件数・侵害の時期のいずれも記載がありません。</strong>ベンダーのインシデント対応報告としては通常の扱いですが、<strong>本記録は「どれだけ広がっているか」を評価できません。</strong> <strong>本記録の数値欄で「出典1が扱っているインシデントの件数」を0件・「少なくとも」として記録しているのは「公表された件数が無い」ことを示すためで、集計に使ってはならない数値です</strong>（本記録の明示）。</p>
+<p><strong>身代金の額と支払いの有無</strong>〈未確定2〉。<strong>示されているのは要求側の条件のみ</strong>—— ProtonMail のアドレスを登録してメールまたは Telegram で連絡（連絡先は出典1では伏せられています）、<strong>72時間の期限</strong>、公開を脅す対象（サービスのダンプ・従業員の個人データ・会計記録・契約・ソースコード）。<strong>金額の記載はなく、支払いが行われたかも示されていません。</strong> <strong>なお、脅しの内容は攻撃者側の主張であり、持ち出しの範囲を裏づけるものではありません</strong>（本記録の明示）。</p>
+<p><strong>Citrus と Toy Ghouls の関係</strong>〈未確定3〉〈重要〉。出典1は<strong>TTP の共有</strong>（1C-Shell・mimikatz・PsExec・ADRecon・道具を置くディレクトリの一致）を示す一方、<strong>「インフラは直接には重複しない」</strong>としています。さらに<strong>「同じインフラが両方のグループによって同時に侵害されていたことがある」</strong>とも述べています。<strong>同一主体なのか、道具や手順書を共有する別主体なのか、同じ侵入経路を買っている別の顧客なのかは確定していません。</strong> <strong>出典1は結論を出しておらず、本記録も断定しません。</strong></p>
+<p><strong>CVE-2026-54121 の悪用の成否</strong>〈未確定7〉。<strong>出典1は「権限昇格を試みた（attempted）」という書き方をしており、毎回成功したかは明示されていません。</strong>一方で仕組みの説明（「悪用が成功すると証明書が発行される」「発行された証明書により、攻撃者はドメインコントローラのアカウントとして認証できる」）から、<strong>少なくとも成功した事例があるとみられます</strong>—— <strong>これは本記録の読みであり、出典1は件数を示していません。</strong></p>
+<p><strong>Sn00py を使う他の集団</strong>〈未確定4〉。<strong>身代金要求メモは Sn00py が RaaS 基盤であることを明示していますが、出典1は他のアフィリエイトに触れていません。</strong> <strong>RaaS である以上、同じ道具を使う別の集団が存在する可能性がありますが、これは本記録の推測であって出典に根拠はありません。</strong></p>
+<p><strong>持ち出された量と送信先</strong>〈未確定5〉。<strong>Telegram Desktop の <code>tdata</code> を 7-Zip で固め、Google Chrome 経由で「外部のウェブサービス」へ送ったとありますが、サービス名も量も示されていません。</strong></p>
+<p><strong>日本での観測</strong>〈未確定6〉。<strong>「ロシア企業のみを攻撃している」という記述はKaspersky の観測範囲でのものであり、他地域での活動が無いことの証明ではありません</strong>（本記録の明示）。</p>
+<p><strong>本記録の取得についての断り</strong>（本記録の明示）〈齟齬2〉。<strong>収集済みの記事本文は本文上限（12,000字）で切れていたため、一次公表を直接取得して後半（横展開・トンネリング・持ち出し・Sn00py の挙動・身代金要求メモ・結論・IoC）を補っています。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>campaign_name</th><td>**出典1の表題は 「Citrus Ransomware: VLESS for traffic, Sn00py for encryption, and LLMs lending a hand」**（原文英語。 訳: Citrus ランサムウェア——通信には VLESS、暗号化には Sn00py、 そして手を貸す LLM）〈重要〉—— **集団名は「Citrus」、暗号化の道具は「Sn00py」（RaaS 基盤）、 暗号化後の拡張子は `.citrus`、メモは `CITRUS_README.txt`。**</td></tr><tr><th>主体</th><td><b>名称:</b> Citrus　<b>attribution:</b> **国家への帰属は行われていない**（出典1。本記録の確認）〈重要〉—— **出典1が述べるのは 「Citrus と Toy Ghouls はいずれもロシア語話者であり、 ロシア企業のみを攻撃している」という性格づけである。** **Toy Ghouls との関係は TTP の共有として示されるが、 インフラは直接には重複しないとされ、関係の性質は確定していない**〈未確定3〉。 **本記録は同一主体とも別主体とも断定しない。**　<b>attribution_confidence:</b> presumed　<b>active_since:</b> **不明**——**出典1は活動開始時期を示していない**〈未確定1〉。</td></tr><tr><th>components</th><td><div class=sub><b>名称:</b> 委託先の認証情報（初期侵入）　<b>role:</b> 初期侵入　<b>詳細:</b> **委託先の従業員から盗んだ認証情報で、 企業の VPN、または外部公開された RDP のターミナルサーバへ接続する**（出典1）〈重要〉—— **出典1は「我々が知るすべての事例で、 その委託先のドメインアカウントはきわめて限定的な権限しか 持っていなかった」としている。** **認証情報の入手方法（インフォスティーラー・フィッシング・購入等）は 公表されていない。**</div><div class=sub><b>名称:</b> LLM が生成したコマンドとスクリプト　<b>role:</b> 実行・探索の補助　<b>詳細:</b> **出典1の根拠はコメントの付き方である**（出典1）〈重要〉—— **管理者アカウントを無効化するコマンドに 「# アカウントを無効化」「# 結果を確認」のようなコメントが付いていた。 出典1は「攻撃者はコメントをわざわざ書かないので、 コメントは LLM の使用を強く示唆する」としている。** **ドメイン上の機器のアクティブなユーザーセッションを列挙するスクリプトには 「# 各コンピュータについてスレッド数の上限付きでバックグラウンドタスクを作成」 「# 同時実行タスク数の制御」「# 迅速な ping」のコメントがあった。** **グループポリシー用の PowerShell スクリプトにも LLM による編集の痕跡があったとしている。** **本記録の整理では、これは「LLM が攻撃を自動化した」ではなく 「補助スクリプトの作成が速くなった」という水準の話である。**</div><div class=sub><b>名称:</b> Impacket の atexec　<b>role:</b> 遠隔実行　<b>詳細:</b> **スケジュールタスクを作って各ホストでコマンドを走らせる**（出典1）—— **観測されたタスク名は `sIErKswD`・`PpMBCCSR`・`QwZtLmNp` で、 起動する実行ファイルは `cmd.exe` （`C:\Windows\System32\..\System32\cmd.exe` のような冗長なパス表記を含む）。** **出典1は「タスクの背後にあった正確なコマンドは見ていないが、 実行後にグループポリシーが更新されていたため、 おそらく `gpupdate /force` だった」としている。**</div><div class=sub><b>名称:</b> 1C-Shell（1C:Enterprise の外部データ処理）　<b>role:</b> 実行　<b>詳細:</b> **1C:Enterprise サーバを侵害したときは、 外部データ処理（1C-Shell）を使ってコマンドを実行する**（出典1）—— **ロシア圏に固有の業務システムを実行基盤として使う経路である**（本記録の整理）。</div><div class=sub><b>名称:</b> CVE-2026-54121（Certighost）　<b>role:</b> 権限昇格　<b>詳細:</b> **AD CS の認証バイパス脆弱性**（出典1）〈重要〉—— **`GHOST` ＋ 8文字のランダムな英字のマシンアカウントを作り、 その名義で `Machine` テンプレートに基づく証明書を要求する。 要求の `Attributes` に `cdc:91.210.109[.]118` を入れ、 認証局がデータ検証のために接続する先を攻撃者の機器に向けて偽のデータを返す。 成功すると、ドメインコントローラの名前を `SubjectAlternativeName` に持つ 証明書が発行され、攻撃者はドメインコントローラのアカウントとして認証できる。** **使われたエクスプロイトは GitHub に公開されているもの。**</div><div class=sub><b>名称:</b> CVE-2020-1337 と Metasploit　<b>role:</b> 権限昇格　<b>詳細:</b> **常駐用にアップロードされた実行ファイルの名義で PowerShell スクリプトが起動されており、 その `HostName` フィールドが非標準の値だった**（出典1）—— **値 `MSFConsole` から、出典1はこのファイルを Metasploit フレームワークの構成要素とみている。 このファイル経由で実行された PowerShell スクリプトには CVE-2020-1337 のエクスプロイトが含まれていた （同じエクスプロイトが Metasploit の GitHub リポジトリにある）。 ファイルは後に削除されていた。**</div><div class=sub><b>名称:</b> 「Kaspersky」を名乗る配布物　<b>role:</b> 検知回避・配布　<b>詳細:</b> **正規に見える名前を付ける**（出典1）〈重要〉—— **`KasperskyGPO_Deploy_64.exe`・`KasperskyGPO_Deploy_64_FIXED.exe` は 自己展開書庫で、`Deploy-KasperskyGPO.ps1`・ 悪性グループポリシーオブジェクトのディレクトリ・ `KasperskyAgent.exe` または `agent.exe` のいずれかを含む。 `KasperskyAgentInstaller.exe`・`KasperskyAgent.exe`・`agent.exe` は ランサムウェア本体と補助ファイルを含む自己展開書庫。 GPO 名は「Kaspersky GPO」、 スケジュールタスク名は `KasperskyAgentInstallTask` と `Sysvc`、 ログは `Kaspersky_GPO_Deployment.log`。** **出典1は「悪性ファイル名に Kaspersky の名を使っても 検知を避けられない」と述べている。**</div><div class=sub><b>名称:</b> 中央管理コンソールの奪取　<b>role:</b> 防御の無効化　<b>詳細:</b> **出典1が明示しているのは 「攻撃者はセキュリティ製品の集中管理コンソールを狙い、 それを使って防御を一斉に無効化する」**（出典1）〈重要〉—— **併せて `wevtutil` でイベントログを消去し、 十分な権限を得た後はホスト上のアンチウイルスを無効化して mimikatz を動かし、 自分の道具をアンチウイルスの除外リストに手で追加する。 Impact 段ではグループポリシーで Windows Defender のレジストリ設定を変更して停止させる。**</div><div class=sub><b>名称:</b> mimikatz・改変 peeping-tom キーロガー・Snaffler　<b>role:</b> 認証情報アクセス　<b>詳細:</b> **mimikatz は `C:\ProgramData\x64\` に `mimidrv.sys`・`mimikatz.exe`・`mimilib.dll`・`mimispool.dll` として置かれる**（出典1）—— **キーロガーは GitHub に公開された peeping-tom の改変版で、 実行ファイルは `C:\ProgramData\Oracle\Java\jhost.exe`、 ログは `C:\Users\&lt;username&gt;\AppData\Roaming\Microsoft\CLR\ErrorLog.txt`。 見つかった検体では窃取データを 91.210.109[.]118 へ送っていた。 常駐は前述のスケジュールタスクによる。 ネットワーク共有上のファイルから認証情報や秘密（SSH 鍵・アクセストークン等）を 探すのに Snaffler を使い、設定ファイルを機器に置いて実行を簡単にしていた。 管理者の端末では KeePass のようなパスワード管理ソフトのデータにも関心を示した。**</div><div class=sub><b>名称:</b> fscan・ADRecon・SharpHound・net.exe　<b>role:</b> 内部探索　<b>詳細:</b> **初期は fscan で内部インフラの情報を集め、 とくに 135（RPC）・139（NetBIOS-SSN）・1433（Microsoft SQL）・ 8006（Proxmox VE）に関心を示した**（出典1）〈重要〉—— **必要な権限を得て横展開した後は、 ドメインコントローラで ADRecon、ある端末で SharpHound を走らせた。 隣接ドメインのコントローラには PowerShell で LDAP 照会を行い、 機器・ユーザー・グループの一覧を取得。 代替として `net users /domain`・ `net group &quot;Domain Admins&quot; /domain` も使われた。** **ローカルでは `whoami`・`tasklist`・`quser`・`ipconfig`・ `curl 2ip[.]io`（外部IPの確認）。**</div><div class=sub><b>名称:</b> Xray の VLESS トンネル（REALITY）　<b>role:</b> C2・トンネリング　<b>詳細:</b> **Xray で C2 サーバへポート443の逆方向 VLESS トンネルを張る**（出典1）〈重要〉—— **REALITY を使って、通信を `mirror.yandex.ru` と `yastatic.net` 宛のものに見せかける。 設定ファイルは起動後に削除されることがあった。** **道具の搬入には標準の機能（`certutil`・BITS・cURL・PowerShell）を使う。** **別に AnyDesk をパスワードを設定して無人で導入し、遠隔操作に使う。**</div><div class=sub><b>名称:</b> steal_tgs.ps1（Telegram の tdata 収集）　<b>role:</b> 収集・持ち出し　<b>詳細:</b> **暗号化の前に Telegram Desktop の `tdata` ディレクトリを集める**（出典1）—— **7-Zip で固め、書庫を Google Chrome 経由で外部のウェブサービスへ送る。** **送信先のサービス名と量は公表されていない**〈未確定5〉。</div><div class=sub><b>名称:</b> Sn00py（Go 製ランサムウェア・RaaS）　<b>role:</b> 影響（暗号化）　<b>詳細:</b> **Go で書かれ、RSA-2048 と ChaCha20 で利用者のファイルを暗号化する （システムファイルは対象外）**（出典1）〈重要〉—— **拡張子は `.citrus`。 出典1は「現時点では、攻撃者の秘密鍵なしに復号することは不可能である」としている。 身代金要求メモに 「Made with RaaS platform Sn00py.」の文字列があり、RaaS として提供されている。 `host_blacklist` では DC01 から DC04 が除外され、 ポリシーが配り続けられるようにしてある。**</div><span class="b rsn">stated</span><div class=fn>**自作はほとんど無い**（本記録の評価）〈重要〉—— **Impacket・mimikatz・Snaffler・fscan・ADRecon・SharpHound・ Metasploit・AnyDesk・Xray・7-Zip はいずれも公開されている道具で、 キーロガーは GitHub の peeping-tom の改変版、 CVE-2026-54121 のエクスプロイトも GitHub 公開のもの、 暗号化の本体は RaaS で借りたものである。** **出典1の結論もここを突いており、 「攻撃者は大部分、よく知られた道具と手法に頼っている。 そのため早期の検知はいくぶん容易になる」としている。**</div></td></tr><tr><th>c2_infrastructure</th><td><b>状況:</b> stated　<b>補足:</b> **IP は 91.210.109[.]118 と 91.210.108[.]180 の2つが示されている**（出典1）—— **91.210.109[.]118 は、キーロガーの送信先と、 CVE-2026-54121 の悪用で `cdc` 属性に指定された機器の両方として現れる。** **トンネルは Xray による逆方向 VLESS（ポート443）で、 REALITY により `mirror.yandex.ru`・`yastatic.net` 宛の通信に見せかける**〈重要〉—— **TLS の宛先だけを見ている監視では、正規のロシア国内 CDN への通信に見える** （本記録の整理）。 **ドメイン・ホスティング事業者・設置時期は公表されていない。**</td></tr><tr><th>initial_access</th><td><b>状況:</b> stated　<b>補足:</b> **委託先の従業員から盗んだ認証情報を使った、 企業 VPN または外部公開の RDP ターミナルサーバへの接続である**（出典1）〈重要〉—— **認証情報の入手方法は公表されていない。** **多要素認証の有無についても出典1は触れていない**（本記録の確認）—— **窃取した認証情報だけで接続できていることから、 少なくとも観測された事例では多要素認証が 有効に働いていなかったとみられるが、これは本記録の推測である。**</td></tr><tr><th>exfiltration_volume</th><td><b>状況:</b> 公表されていない　<b>補足:</b> **Telegram Desktop の `tdata` の収集と送信は観測されているが、 量も送信先のサービス名も公表されていない**（出典1）〈未確定5〉—— **身代金要求メモは、サービスのダンプ・従業員の個人データ・ 会計記録・契約・ソースコードの公開を脅しているが、 これらが実際に持ち出されたかは観測として示されていない。** **掲載は攻撃者側の主張であり、本記録は持ち出しの範囲を確定しない**（本記録の明示）。</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年11月12日　<b>補足:</b> **暗号化は実際に行われている**（出典1）〈重要〉—— **出典1は Sn00py の挙動（RSA-2048 と ChaCha20・`.citrus` 拡張子・ 壁紙の変更・ボリュームシャドウコピーの無効化）を実物から記述しており、 「攻撃者の秘密鍵なしに復号することは不可能である」としている。** **一方、持ち出したデータが実際に公開されたかは示されていない**〈未確定5〉。 **被害組織数・被害額は公表されていない**〈未確定1〉〈未確定2〉。</td></tr><tr><th>ログの有無</th><td>**攻撃者はイベントログを消している**（出典1）〈重要〉—— **`wevtutil` で一部の機器のイベントログを消去し、 道具と出力ファイルを削除し、コマンド履歴を消す。** **それでも出典1が再構成できているのは、 消し残った痕跡（AD 上のマシンアカウント名・ 証明書要求の `Attributes` の記録・スケジュールタスク名・ PowerShell の `HostName` フィールド）を使っているためである**（本記録の整理）。 **特に AD CS の証明書要求のログは、 攻撃者が端末側のログを消しても残る場所である**（本記録の評価。 **出典1はログ設計についての推奨を書いていない**）。</td></tr><tr><th>ransom</th><td><b>stance:</b> **被害組織の支払いの方針・支払いの有無は公表されていない**（本記録の確認）〈未確定2〉—— **出典1はインシデント対応のベンダーとして手口を記述しており、 被害組織の判断には触れていない。** **出典1が示すのは要求側の条件のみである—— ProtonMail のアドレスを登録してメールまたは Telegram で連絡（連絡先は伏せられている）、 72時間の期限、 サービスのダンプ・従業員の個人データ・会計記録・契約・ソースコードの公開の脅し。**　<b>payment:</b> **公表されていない**〈未確定2〉——**金額の記載も無い。**　<b>補足:</b> **二重恐喝の型である**（本記録の整理）〈重要〉—— **暗号化（Sn00py）と、持ち出したデータの公開の脅しを組み合わせている。** **ただし公開の実行（リークサイトへの掲載等）は出典1に記載が無く、 本記録はリークサイトの存在を確認していない。** **身代金要求メモの内容は攻撃者側の主張であり、 持ち出しの範囲を裏づけるものではない**（本記録の明示）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **委託先のインフラへのアクセスを厳格に管理・制限する**（出典1）〈重要〉—— **出典1の結論そのものであり、 「組織のインフラへの委託先のアクセスは 厳格に管理し制限しなければならない」としている。**　<b>副作用:</b> **委託先の作業効率が落ち、 例外申請・一時解除の運用が増える**（本記録の評価）—— **「限定的な権限しか持っていなかった」アカウントから 昇格されている点を踏まえると、 権限の最小化だけでは足りず、 接続元・接続時間・接続先の制限と組み合わせる必要がある。**</div><div class=sub><b>数え方:</b> **AD CS の証明書要求を監視し、 `GHOST` ＋ 8文字のランダムな英字のマシンアカウントの作成を検知する** （出典1の観測に基づく。本記録の判断）。　<b>副作用:</b> **AD CS のログ量が増える**（本記録の評価）—— **また命名規則はエクスプロイトの実装に依存するため、 攻撃者が変えれば効かなくなる。 より持続する検知は「`Machine` テンプレートへの 異常な属性（`cdc`・`rmd`・SAN に DC 名）を伴う要求」の側である。**</div><div class=sub><b>数え方:</b> **セキュリティ製品の集中管理コンソールを、 一般の管理者権限から分離する**（出典1の観測に基づく。本記録の判断）。　<b>副作用:</b> **運用の手数が増え、緊急時の一括操作が遅くなる**（本記録の評価）—— **一方、攻撃者が最も効率よく防御を止める経路がここである。**</div><div class=sub><b>数え方:</b> **TLS の宛先ではなく、通信の出所（どの機器が443を外へ張っているか）で見る** （出典1の観測に基づく。本記録の判断）。　<b>副作用:</b> **正規の更新・CDN 通信との切り分けが必要になる**（本記録の評価）—— **REALITY により `mirror.yandex.ru`・`yastatic.net` 宛に見える以上、 宛先ベースの許可リストでは止まらない。 国内環境では偽装先が別のドメインになるため、 出典1の具体的なドメイン名はそのまま検知に使えない。**</div><div class=sub><b>数え方:</b> **再起動されないサーバ（ターミナルサーバ等）を、 常駐が無い前提でも点検する**（出典1の観測に基づく。本記録の判断）。　<b>副作用:</b> **定期的な調査の工数が増える**（本記録の評価）—— **出典1は「定期的に再起動されない機器では、 常駐を確立せずに道具を動かすことがある」としている。 常駐の痕跡を探す調査だけでは見つからない。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**Citrus が、委託先の従業員から盗んだ認証情報で 被害組織の VPN または外部公開の RDP ターミナルサーバへ接続した**（出典1）〈重要〉—— **出典1は「我々が知るすべての事例で、 初期侵入に使われた委託先のドメインアカウントは きわめて限定的な権限しか持っていなかった」としている。** **侵害の時期・件数は公表されていない**〈未確定1〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**AD CS の認証バイパス（CVE-2026-54121・Certighost）の悪用を試み、 `GHOST` ＋ 8文字のランダムな英字という名前のマシンアカウントを Active Directory に作った**（出典1）—— **`cdc` 属性に攻撃者が支配する機器（91.210.109[.]118）を指定し、 そこから偽のデータを返すことで、 ドメインコントローラの名前を `SubjectAlternativeName` に持つ証明書を発行させた。** **別に CVE-2020-1337 のエクスプロイト（Metasploit 由来）も使われた。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**防御の無効化とランサムウェアの配布が、 「Kaspersky GPO」と名付けたグループポリシーで行われた**（出典1）〈重要〉—— **ポリシーはランサムウェアを配り、WinRM を有効化し、 ボリュームシャドウコピーと Windows Defender を無効化し、 身代金要求メモを壁紙に設定する。 `host_blacklist` では DC01 から DC04 が除外されている。** **出典1は「その結果、ランサムウェアが起動したときに アンチウイルスは反応しなかった」としている。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**暗号化の前に Telegram Desktop の `tdata` ディレクトリが収集され、 7-Zip で固めて Google Chrome 経由で外部のウェブサービスへ送られた**（出典1）—— **収集に使われたスクリプトは `steal_tgs.ps1`。** **持ち出された量・送信先のサービス名は公表されていない**〈未確定5〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">発生</span></td><td>**Go 製の Sn00py が、RSA-2048 と ChaCha20 で利用者のファイルを暗号化した （システムファイルは対象外）**（出典1）—— **拡張子は `.citrus`、メモは `CITRUS_README.txt`。 身代金要求メモは ProtonMail のアドレスを登録して メールまたは Telegram で連絡するよう求め、72時間の期限を示す。 公開を脅す対象は、サービスのダンプ・従業員の個人データ・会計記録・契約・ソースコード。** **身代金の額は出典1に記載が無い**〈未確定2〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Kaspersky Securelist が 「Citrus Ransomware: VLESS for traffic, Sn00py for encryption, and LLMs lending a hand」を公開した**（出典1）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が出典1を全文取得し、 攻撃連鎖・IoC・結論を確認した**（本記録の観測）—— **収集済みの記事本文は本文上限（12,000字）で切れていたため、 一次公表を直接取得して後半（横展開・トンネリング・持ち出し・ Sn00py の挙動・身代金要求メモ・結論・IoC）を補っている。**</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Citrus と Toy Ghouls の関係</span><div class=sm>**出典1は TTP の共有を示す一方で 「インフラは直接には重複しない」とし、 さらに「同じインフラが両方のグループによって 同時に侵害されていたことがある」とも述べている**（出典1）〈重要〉—— **この3つの記述は、同一主体説・道具共有説・ 同じ侵入経路を買った別顧客説のいずれにも読める。** **出典1は結論を出しておらず、本記録も断定しない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>収集済み記事の本文の切れ</span><div class=sm>**本記録の起点となった収集済み記事（出典1の本文）は、 本文保存の上限（12,000字）に達して 「Администраторы доме…」の位置で切れていた** （本記録の観測・2026年11月12日）—— **そのため本記録の作成者は一次公表（出典1のURL）を直接取得し、 後半（横展開・トンネリング・収集と持ち出し・ Sn00py の挙動・身代金要求メモ・結論・IoC）を補っている。** **切れていた区間の内容は、取得した一次公表で裏が取れている。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>多要素認証についての沈黙</span><div class=sm>**出典1は、委託先の認証情報が窃取されたことを初期侵入として示す一方、 多要素認証の有無に一切触れていない**（本記録の確認）〈重要〉—— **窃取した認証情報だけで VPN と RDP に接続できていることから、 少なくとも観測された事例では有効に働いていなかったとみられるが、 これは本記録の推測である。** **読者が最初に確認したい点が論点として現れない。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>LLM の使用の根拠</span><div class=sm>**出典1が LLM の使用を推定した根拠は、 コメントの付き方という間接証拠である**（出典1）—— **「攻撃者はコメントをわざわざ書かないので、 コメントは LLM の使用を強く示唆する」。** **本記録はこれを「推定」として記録し、断定しない。** **また本記録が加えた「字面の差異が増え、 文字列一致の検知規則が効きにくくなる」という含意は 本記録の作成者の推論であり、出典1に根拠は無い。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>ビルドに残っていたロシア語の出力</span><div class=sm>**出典1には、PowerShell の LDAP 照会の出力として ロシア語の文字列（「memberOf に追加のグループが無い（プライマリのみ）」 「ユーザーが見つからない」等）と、 `net group &quot;Администраторы доме…&quot;` のようなコマンドが現れる**（出典1）—— **これは攻撃対象の環境がロシア語環境であることを示すものであり、 攻撃者の言語を直接示すものではない**（本記録の整理）。 **攻撃者がロシア語話者であるという判断は、 出典1が別途「Russian-speaking」として述べているものである。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>委託先の限定権限アカウントから、グループポリシーによる一斉暗号化まで</div><div class=svgwrap><svg viewBox="0 0 1814 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,111.0 424,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C601.0,111.0 601.0,111.0 628,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,111.0 C805.0,111.0 805.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1009.0,111.0 1009.0,60.0 1036,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,111.0 C1111.0,111.0 1111.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,60.0 C1213.0,60.0 1213.0,60.0 1240,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,60.0 C1417.0,60.0 1417.0,60.0 1444,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,60.0 C1621.0,60.0 1621.0,111.0 1648,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C805.0,111.0 805.0,155.0 1036,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,155.0 C1213.0,155.0 1213.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,111.0 C1009.0,111.0 1009.0,162.0 1444,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,162.0 C1417.0,162.0 1417.0,162.0 1240,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Citrus（ロシア語話</text><text x="91.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">者・ロシア企業を標的）</text><text x="91.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">**Toy Ghouls</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10"> と TTP を共有する</text><rect x="220" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">委託先の従業員（認証情報</text><text x="295.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を窃取された）</text><text x="295.0" y="123.0" text-anchor="middle" fill="#80cbc4" font-size="10">**入手方法は公表されて</text><text x="295.0" y="135.0" text-anchor="middle" fill="#80cbc4" font-size="10">いない**（出典1）。</text><rect x="424" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">企業 VPN / 外部公</text><text x="499.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">開の RDP ターミナル</text><text x="499.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サーバ</text><text x="499.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">**接続に使われたドメイ</text><text x="499.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">ンアカウントは きわめて</text><rect x="628" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AD CS（CVE-20</text><text x="703.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">26-54121・Cer</text><text x="703.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tighost）</text><text x="703.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">**`GHOST`＋8文</text><text x="703.0" y="142.0" text-anchor="middle" fill="#64b5f6" font-size="10">字のマシンアカウントを作</text><rect x="832" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ドメインコントローラのア</text><text x="907.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">カウントとしての認証</text><text x="907.0" y="123.0" text-anchor="middle" fill="#ffcc80" font-size="10">**発行された証明書の </text><text x="907.0" y="135.0" text-anchor="middle" fill="#ffcc80" font-size="10">SubjectAlter</text><rect x="1036" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セキュリティ製品の集中管</text><text x="1111.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理コンソール</text><text x="1111.0" y="72.0" text-anchor="middle" fill="#64b5f6" font-size="10">**奪取して防御を一斉に</text><text x="1111.0" y="84.0" text-anchor="middle" fill="#64b5f6" font-size="10">無効化する**（出典1）</text><rect x="1240" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">「Kaspersky G</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PO」（悪性グループポリ</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">シー）</text><text x="1315.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">**配布・WinRM 有</text><text x="1315.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">効化・シャドウコピー無効</text><rect x="1444" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Sn00py（Go・RS</text><text x="1519.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">A-2048＋ChaCh</text><text x="1519.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">a20・.citrus）</text><text x="1519.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">**RaaS 基盤。利用</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">者ファイルのみ暗号化。 </text><rect x="1648" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1723.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ロシア企業（名称・件数非</text><text x="1723.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表）</text><text x="1723.0" y="123.0" text-anchor="middle" fill="#80cbc4" font-size="10">**「いくつかのインシデ</text><text x="1723.0" y="135.0" text-anchor="middle" fill="#80cbc4" font-size="10">ント」とのみ**（出典1</text><rect x="1036" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Xray の VLESS</text><text x="1111.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> トンネル（443・RE</text><text x="1111.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ALITY 偽装）</text><text x="1111.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">**`mirror.ya</text><text x="1111.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">ndex.ru`・`ya</text><rect x="1240" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（91.210.10</text><text x="1315.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9[.]118 / 91</text><text x="1315.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.210.108[.]…</text><text x="1315.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">**キーロガーの送信先と</text><text x="1315.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">、`cdc` 属性の指定</text><rect x="1444" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Telegram Des</text><text x="1519.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ktop の tdata</text><text x="1519.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（steal_tgs.…</text><text x="1519.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">**7-Zip で固め、</text><text x="1519.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">Google Chrom</text></svg></div><div class=fn>**出典1が記述した段階を並べたもの**（本記録の整理）〈重要〉—— **要点は、権限昇格（AD CS）を越えた時点で 「配布」と「防御の無効化」と「バックアップの破壊」が 1つの仕組み（グループポリシー）に収まることである。**</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**正規の認証情報による正規の接続であるため、 認証の成否では見えない**（本記録の評価）〈重要〉—— **見えるとすれば接続元・接続時刻・その後の挙動の側である。 出典1は検知機会について明示していない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**委託先のアクセスを厳格に管理・制限する（出典1の結論）**（出典1）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**委託先アカウントに多要素認証と接続元の制限をかける** （本記録の判断。**出典1は多要素認証に触れていない**）。</div><div class=ctl><span class="b eff">検知できた</span>**委託先アカウントの接続時刻・接続元の逸脱を検知する** （本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**スケジュールタスクの作成と、 `C:\Windows\System32\..\System32\cmd.exe` のような 冗長なパス表記は検知の手がかりになる**（出典1。本記録の整理）—— **出典1は「タスクの背後のコマンドは見ていないが、 実行後にグループポリシーが更新されていたため おそらく `gpupdate /force` だった」としている。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**スケジュールタスクの作成を監視する**（出典1の観測に基づく）。</div><div class=ctl><span class="b eff">検知できた</span>**PowerShell のスクリプトブロックログを有効にする** （本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**痕跡は AD と AD CS の側に残る**（本記録の評価）〈重要〉—— **`GHOST` で始まるマシンアカウントの作成、 `Machine` テンプレートへの異常な属性を伴う証明書要求、 外部IPを指す `cdc` 属性。 攻撃者は端末側のログを `wevtutil` で消しているが、 これらは端末の外にある。** **出典1は検知機会について明示していない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**AD CS の証明書要求を監視し、 `Machine` テンプレートへの異常な属性を伴う要求を検知する** （出典1の観測に基づく。本記録の判断）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**一般利用者によるマシンアカウントの作成を制限する （`ms-DS-MachineAccountQuota` の見直し）** （本記録の判断。**出典1は対策を書いていない**）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**CVE-2026-54121 の修正を適用する**（本記録の判断）。</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**防御の無効化そのものが検知対象になりうる**（本記録の評価）〈重要〉—— **アンチウイルスの除外リストへの追加、 管理コンソールからの一括ポリシー変更、 Defender を無効化するレジストリ設定を含む GPO の作成。 ただし管理コンソール自体を奪われている場合、 その警報も止められる。 出典1は検知機会について明示していない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>**集中管理コンソールを一般の管理者権限から分離する** （出典1の観測に基づく。本記録の判断）。</div><div class=ctl><span class="b eff">検知できた</span>**アンチウイルスの除外リストの変更を、 製品の外（SIEM 等）へ転送して監視する** （本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">検知できた</span>**GPO の作成・変更を監視する**（出典1の観測に基づく。本記録の判断）。</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**mimikatz の実行にはアンチウイルスの無効化が先行している**（出典1）—— **したがって「mimikatz を検知する」より 「アンチウイルスが止められたことを検知する」ほうが前に来る**（本記録の評価）。 **キーロガーのパス（`Oracle\Java\jhost.exe`）と ログのパス（`Microsoft\CLR\ErrorLog.txt`）は 正規の名前を装っており、名前だけでは判別できない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**LSASS へのアクセスを保護する（Credential Guard 等）** （本記録の判断。**出典1は対策を書いていない**）。</div><div class=ctl><span class="b eff">影響を限定できた</span>**ネットワーク共有上の秘密情報の棚卸しと削除** （本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">影響を限定できた</span>**管理者端末でのパスワード管理ソフトのデータ保護 （多要素・鍵ファイルの分離）**（本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**SharpHound と ADRecon は AD への大量照会を発生させる**（本記録の評価）—— **8006（Proxmox VE）への関心は、 仮想化基盤を狙う意図を示す手がかりである**（本記録の整理）。 **出典1は検知機会について明示していない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>**AD への異常な列挙（SharpHound 相当）を検知する** （本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">影響を限定できた</span>**仮想化基盤の管理面（Proxmox VE の 8006 等）を 業務ネットワークから分離する**（本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**AnyDesk の無人導入は、 正規の遠隔操作ソフトの新規導入として検知できる**（本記録の評価）—— **また WinRM はランサムウェア配布用の GPO が有効化しているため、 WinRM の有効化自体が手がかりになる**（出典1。本記録の整理）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>**遠隔操作ソフトの導入を、許可リスト方式で制限する** （本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">検知できた</span>**GPO による WinRM の有効化を検知する** （出典1の観測に基づく。本記録の判断）。</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**宛先ベースの監視では見えない**（本記録の評価）〈重要〉—— **TLS の SNI・証明書が正規の国内 CDN を指すため、 許可リストを通る。 見えるとすれば「どの機器が外へ443を張り続けているか」 「サーバが外向きに常時接続を持っているか」の側である。** **出典1は検知機会について明示していない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**サーバからの外向き通信を既定で拒否し、 必要な宛先のみ許可する**（本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">検知できた</span>**宛先ではなく「接続を開始した機器と常時性」で異常を見る** （本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ブラウザ経由の送信は、 正規のアップロードと区別しにくい**（本記録の評価）—— **一方、サーバ上で Google Chrome が起動して ファイルをアップロードする行為自体は異常である**（本記録の整理）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>**サーバ上でのブラウザの起動を検知・制限する** （本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">影響を限定できた</span>**外部のファイル共有サービスへの送信を制限する** （本記録の判断。**出典に根拠は無い**）。</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**この段階では防御が既に止められている**（出典1）〈重要〉—— **出典1は「その結果、ランサムウェアが起動したときに アンチウイルスは反応しなかった」としている。 検知の機会は前段（防御の無効化・GPO の作成）にある**（本記録の評価）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>**GPO の作成・変更の監視（配布の直前に必ず現れる）** （出典1の観測に基づく。本記録の判断）。</div><div class=ctl><span class="b eff">検知できた</span>**ボリュームシャドウコピーの無効化を検知する** （出典1の観測に基づく。本記録の判断）。</div><div class=ctl><span class="b eff">復旧を早められた</span>**ドメインから切り離されたバックアップを持つ （GPO で到達できない場所に置く）** （本記録の判断。**出典1はバックアップに触れていない**）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**攻撃者が自社（Kaspersky）の名前を道具に使っていたことを、 伏せずに書いた**（出典1）〈重要〉—— **`KasperskyGPO_Deploy_64.exe`・GPO 名「Kaspersky GPO」・ タスク名 `KasperskyAgentInstallTask` 等を列挙し、 「悪性ファイル名に Kaspersky の名を使っても 検知を避けられない」と添えている。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**検知の実務にとって、この情報は必要である**（本記録の評価）〈重要〉—— **ベンダー名を含むパスを広く除外設定している組織は多く、 そこを突かれていることは伏せてはいけない情報である。**</td></tr><tr><td>**LLM の使用を「推定」として書き、断定していない**（出典1）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録は、この留保の置き方を評価する**（本記録の評価）—— **「AI を使う攻撃者」は過大に語られやすい論点であり、 根拠（コメントの様式）と推定の範囲 （補助スクリプトの生成）を明示したことで、 読者が能力の飛躍と読み違えにくくなっている。**</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**「委託先アカウントの権限を絞ってある」は、 この手口に対する答えになっていない**（本記録の評価）〈重要〉。</div><div class=lw>**出典1は「我々が知るすべての事例で、 初期侵入に使われた委託先のドメインアカウントは きわめて限定的な権限しか持っていなかった」と明記している**（出典1）—— **権限の最小化は実施されていた。 それでも AD CS の経路でドメインコントローラの権限まで到達している。 最小権限は必要条件だが十分条件ではない。**</div><div class=la><b>取るべき行動</b> **委託先アカウントの棚卸しを「権限の広さ」だけで終わらせない。 同じ棚卸しで、①接続元IPの制限があるか、 ②多要素認証があるか、 ③ドメインに参加した機器を作る権限 （`ms-DS-MachineAccountQuota`）が残っていないか、 ④AD CS の証明書を要求できるかを確認する。**</div></li><li><div class=lp>**セキュリティ製品の集中管理コンソールは、 最も効率のよい攻撃対象である**（本記録の評価）〈重要〉。</div><div class=lw>**出典1は「攻撃者はセキュリティ製品の集中管理コンソールを狙い、 それを使って防御を一斉に無効化する」と明記している**（出典1）—— **端末ごとに無効化するより速く、 かつ警報も止められる。 結果として「ランサムウェアが起動したときに アンチウイルスは反応しなかった」。**</div><div class=la><b>取るべき行動</b> **集中管理コンソールの管理者を、 通常の Windows ドメイン管理者と分離する。 コンソール上の重要操作（ポリシー変更・除外追加・保護の無効化）のログを コンソールの外（SIEM・別テナント）へ転送し、 コンソールを失っても記録が残る形にする。**</div></li><li><div class=lp>**配布・防御の無効化・バックアップの破壊が 1つの仕組み（グループポリシー）で行われる**（本記録の評価）〈重要〉。</div><div class=lw>**「Kaspersky GPO」という名前のグループポリシーオブジェクトが、 ランサムウェアを配り、WinRM を有効化し、 ボリュームシャドウコピーと Windows Defender を無効化し、 身代金要求メモを壁紙に設定する**（出典1）—— **ドメインの権限を取られた時点で、 AD に到達できるすべての防御とバックアップが同時に失われる。**</div><div class=la><b>取るべき行動</b> **バックアップのうち少なくとも1系統を、 ドメインの認証で到達できない場所に置く （別の認証系・物理的に分離・不変ストレージ）。 「GPO で消せるか」を判定基準にして現在のバックアップを点検する。**</div></li><li><div class=lp>**LLM の関与は、能力の飛躍ではなく「手数の増加」として読む** （本記録の評価）。</div><div class=lw>**出典1が LLM の使用を推定した根拠は、 コメントの付き方である**（出典1）—— **アカウント無効化のコマンドと セッション列挙のスクリプトに、 LLM の出力に典型的なコメントが付いていた。 使われた道具自体は Impacket・mimikatz・Snaffler・fscan 等、 すべて既知の公開ツールである。 出典1の結論も「攻撃者は大部分、よく知られた道具と手法に頼っており、 そのため早期の検知はいくぶん容易になる」である。**</div><div class=la><b>取るべき行動</b> **「AI を使った攻撃」の報告に対して、 新しい防御製品の検討から始めない。 既知の手口に対する検知が効いているかの確認を先に行う。 想定すべき変化は、補助スクリプトの作成が速くなり、 攻撃者ごとの字面の差異が増えることである。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**AD CS の証明書要求のログは、端末のログを消されても残る** （本記録の評価）〈重要〉。</div><div class=lw>**攻撃者は `wevtutil` でイベントログを消し、 道具と出力ファイルを削除し、コマンド履歴を消している**（出典1）—— **それでも出典1が経路を再構成できたのは、 AD 上のマシンアカウント名（`GHOST` ＋ 8文字）と 証明書要求の `Attributes` （`CertificateTemplate:Machine`・`SAN:dns=dc01.victim.domain`・ `cdc:91.210.109[.]118`・`rmd:dc01.victim.domain`）が 端末の外に残っていたためである。**</div><div class=la><b>取るべき行動</b> **AD CS の証明書要求ログを取得・保全しているかを確認する。 取れていなければ有効化する。 既存のログに対して、 ①`GHOST` で始まるマシンアカウント、 ②`Machine` テンプレートへの要求のうち SAN にドメインコントローラ名を含むもの、 ③`cdc` 属性に外部IPを指定するもの、を遡って探す。**</div></li><li><div class=lp>**REALITY で偽装された VLESS トンネルは、宛先では見えない** （本記録の評価）〈重要〉。</div><div class=lw>**Xray が C2 へポート443の逆方向 VLESS トンネルを張り、 REALITY により通信を `mirror.yandex.ru`・`yastatic.net` 宛に見せかける** （出典1）—— **TLS の SNI と証明書が正規の国内 CDN を指すため、 宛先ベースの許可リストを通る。 設定ファイルは起動後に削除されることもある。**</div><div class=la><b>取るべき行動</b> **サーバからの外向き通信を既定で拒否する構成になっているかを確認する。 なっていなければ、 「どの機器が外向きに443の常時接続を持っているか」を 一覧で出せるようにする。 出典1のドメイン名はロシア圏の環境に固有なので、 そのまま検知規則にはしない——自環境で偽装先になりうる 正規サービスで同じ確認を行う。**</div></li><li><div class=lp>**「Kaspersky」など正規ベンダー名のファイル・GPO・タスクは、 名前では判別できない**（本記録の評価）。</div><div class=lw>**攻撃者は `KasperskyGPO_Deploy_64.exe`・ `KasperskyAgentInstaller.exe`・GPO 名「Kaspersky GPO」・ タスク名 `KasperskyAgentInstallTask`・`Sysvc`・ ログ `Kaspersky_GPO_Deployment.log` を使っていた**（出典1）〈重要〉—— **キーロガーのパスも `C:\ProgramData\Oracle\Java\jhost.exe`、 ログは `...\Microsoft\CLR\ErrorLog.txt` である。 正規の名前を避ける検知規則は、これらを通してしまう。**</div><div class=la><b>取るべき行動</b> **自社のアンチウイルス・EDR の除外設定に ベンダー名を含むパスの広い除外が入っていないかを確認する。 また GPO の一覧を取得し、 作成者・作成日時と変更管理の記録を突き合わせる （名前が正しそうでも由来が説明できないものを洗い出す）。**</div></li><li><div class=lp>**再起動されないサーバでは、常駐の痕跡を探しても見つからない** （本記録の評価）。</div><div class=lw>**出典1は「定期的に再起動されない機器 （ターミナルサーバ等）では、 攻撃者は常駐をまったく確立せずに道具を動かすことがある」としている**（出典1）〈重要〉—— **スケジュールタスク・サービス・自動起動の確認だけでは、 稼働中のプロセスとして存在する侵入を見落とす。**</div><div class=la><b>取るべき行動</b> **長期間再起動していないサーバの一覧を出し、 それらでは稼働中のプロセスとネットワーク接続の側から点検する。 同時に、再起動の運用（計画停止）を持てるかを検討する。**</div></li><li><div class=lp>**防御の無効化は、暗号化より前に必ず現れる**（本記録の評価）〈重要〉。</div><div class=lw>**出典1は Impact 段の前に、 アンチウイルスの無効化、除外リストへの手動追加、 集中管理コンソールからの一括無効化、 Defender のレジストリ設定を変更する GPO を記述している**（出典1）—— **「その結果、ランサムウェアが起動したときに アンチウイルスは反応しなかった」。 暗号化の検知に賭けるのは、最後の砦が既に無い状態への賭けである。**</div><div class=la><b>取るべき行動</b> **「保護が無効化された」「除外が追加された」「GPO が作成・変更された」 「ボリュームシャドウコピーが無効化された」を 最優先の警報として扱う設定になっているかを確認する。 これらが情報レベルの記録になっているなら、 重大度を上げて即時通知の対象にする。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **外部の委託先に自社ドメインのアカウントを発行しているか。 そのアカウントで VPN または RDP のターミナルサーバへ接続できるか。**</td><td class=sm>**これが本件の唯一の初期侵入経路であり、 出典1の結論もここに置かれている**（出典1）〈重要〉—— **「組織のインフラへの委託先のアクセスは 厳格に管理し制限しなければならない」。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **AD CS（証明書サービス）を運用しているか。 `Machine` テンプレートで証明書を要求できる主体を把握しているか。 一般利用者がドメイン参加の機器アカウントを作れる状態か。**</td><td class=sm>**限定権限のアカウントからドメインコントローラの権限まで 届いた経路がここである**（出典1）〈重要〉—— **AD CS を運用していない組織には、 この権限昇格の経路は当てはまらない。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **セキュリティ製品の集中管理コンソールの管理者が、 通常のドメイン管理者と分離されているか。 コンソール上の操作ログが製品の外へ転送されているか。**</td><td class=sm>**攻撃者はこのコンソールを奪って防御を一斉に無効化している**（出典1）—— **分離されていない組織では、 ドメイン権限の奪取と防御の全面停止が同じ出来事になる。**</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> **バックアップのうち少なくとも1系統が、 ドメインの認証で到達できない場所にあるか （「GPO で消せるか」で判定する）。**</td><td class=sm>**ランサムウェアの配布・WinRM の有効化・ ボリュームシャドウコピーと Defender の無効化は すべて同じグループポリシーで行われている**（出典1）〈重要〉—— **AD に到達できる範囲のバックアップは、同時に失われる。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **サーバからの外向き通信が既定で拒否されているか。 許可を宛先（SNI・ドメイン）ベースで行っていないか。**</td><td class=sm>**Xray の VLESS トンネルは REALITY により 正規の国内 CDN 宛の通信に見える**（出典1）—— **宛先ベースの許可リストでは止まらず、 「どの機器が外へ443を張っているか」で見る必要がある。**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **長期間再起動していないサーバ（ターミナルサーバ等）があり、 それらを稼働中のプロセス・接続の側から点検できるか。**</td><td class=sm>**出典1は、再起動されない機器では 攻撃者が常駐を確立せずに道具を動かすことがあるとしている**（出典1）—— **常駐の痕跡を探す調査だけでは見落とす。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月11日 10時00分（UTC） Kaspersky（Securelist）</span> <a href="https://securelist.com/citrus-ransomware/121879/" target="_blank" rel="noreferrer noopener nofollow">Citrus Ransomware: VLESS for traffic, Sn00py for encryption, and LLMs lending a hand</a> <span class="b kind">調査レポート</span><span class=sm>（**一次資料（インシデント対応を行った当事者の報告）**（本記録の確認）〈重要〉—— **本記録の作成者が2026年11月12日に全文を取得し、 攻撃連鎖（初期侵入〜影響）・IoC（MD5 6個・IP 2個・ タスク名・ファイルパス・GPO 名・拡張子）・ Toy Ghouls との関係・結論を確認した。** **収集済みの記事本文は本文上限（12,000字）で切れていたため、 後半はこの取得で補っている**〈齟齬2〉。 **ATT&amp;CK の技術IDは出典1に記載が無い**（本記録の確認）—— **本記録も技術IDの対応付けは行わない。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月12日</span> <span class="b rev">新規作成</span> **2026年11月11日収集の記事1本（Kaspersky Securelist）を起点に作成**—— **収集済みの本文は本文上限（12,000字）で切れていたため、 一次公表を直接取得して全文を確認し、 後半（横展開・トンネリング・持ち出し・Sn00py の挙動・ 身代金要求メモ・結論・IoC）を補った**〈重要〉。 **被害規模・身代金・Toy Ghouls との関係・ CVE-2026-54121 の悪用の成否はいずれも出典1が確定していないため、 本記録も確定させていない。**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Citrus</span><span class="b tag">Sn00py</span><span class="b tag">Toy Ghouls</span><span class="b tag">RaaS</span><span class="b tag">ランサムウェア</span><span class="b tag">委託先</span><span class="b tag">認証情報窃取</span><span class="b tag">AD CS</span><span class="b tag">CVE-2026-54121</span><span class="b tag">Certighost</span><span class="b tag">CVE-2020-1337</span><span class="b tag">グループポリシー</span><span class="b tag">VLESS</span><span class="b tag">Xray</span><span class="b tag">REALITY</span><span class="b tag">mimikatz</span><span class="b tag">Snaffler</span><span class="b tag">Impacket</span><span class="b tag">SharpHound</span><span class="b tag">AnyDesk</span><span class="b tag">LLM生成コマンド</span><span class="b tag">1C:Enterprise</span><span class="b tag">ロシア</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-12 10:04 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

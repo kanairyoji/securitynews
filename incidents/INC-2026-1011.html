@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Git に6脆弱性・再帰クローンでRCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1011</span>Git に6脆弱性・再帰クローンでRCE</h1>
+<header class="site-header">
+  <p class="subtitle">Git に6件の脆弱性が同時公表され、うち CVE-2026-111760 は 悪性リポジトリを再帰クローンするだけで攻撃者のコードが動く（CVSS 3.1 基本値 8.0）—— index 処理の整数切り詰めにより、極端に長いパスが検証を通ったあと短い名前で書き込まれ、 サブモジュールの `.git` ファイルを攻撃者の設定・フックを置いたディレクトリへの シンボリックリンクに置き換えられる。 修正は Git 2.56.1、および 2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2 へ バックポートされた。GitHub は github.com と GitHub Enterprise Cloud に修正を適用済みで、 GitHub Enterprise Server は 3.19.15 / 3.20.11 / 3.21.9 / 3.22.4 で修正された。 悪用の観測は公表に記載が無い。</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月10日</span>
+  <span>最終更新: 2026年11月12日</span>
+</div>
+
+<div class="lead"><p><strong>Git プロジェクトは2026年11月10日、6件の脆弱性を修正した版を同時に公開しました</strong>（出典1）。</p>
+<p><strong>最も重いのは、悪性リポジトリを再帰クローンするだけでコードが動くものです</strong>（出典1・2）〈重要〉。</p>
+<ul>
+<li><strong>CVE-2026-111760 — 再帰クローン中のコード実行</strong>（<strong>CVSS 3.1 基本値 8.0</strong>・GitHub の評価は high。出典2）。Git は作業ツリーへファイルを書く前にパスを検証し、自身のリポジトリメタデータを上書きするパスを拒否する。しかし<strong>index 処理の整数切り詰めにより、極端に長いパスが「ある名前」で検証を通ったあと「短い名前」で書き込まれる</strong>（出典1）。これを使うと<strong>サブモジュールの <code>.git</code> ファイルを、攻撃者の設定ファイルやフックを置いたディレクトリへのシンボリックリンクに置き換えられる</strong>（出典1）。Git が後でそのディレクトリを使った時点で、<strong>再帰クローンの最中に攻撃者のコードが実行される</strong>（出典1）。</li>
+<li><strong>CVE-2026-113408 — サーバが広告する HEAD を経由したパストラバーサル</strong>（出典1）。プロトコル v2 で空リポジトリをクローンするとき、サーバはまだコミットの無いブランチ（unborn branch）を指す HEAD symref を広告できる。<strong>Git はその参照先を検証せずに保存していた</strong>ため、悪性サーバがパストラバーサルを含む名前を返すと、files 参照バックエンドでは後続のブランチ更新が参照ディレクトリの外へ書き込みうる。</li>
+<li><strong>CVE-2026-114467 — 署名除去時のスタック破壊</strong>（出典1）。GPG 署名をメッセージから取り除くとき、Git は<strong>署名が最大2つまでしか無いと仮定していた</strong>。3つ以上の署名を含む細工されたメッセージで固定長スタック配列の外に書き込みが起きる。<strong>署名が3つ以上付いたタグをマージすると発火する</strong>ため、<strong>利用者の代わりにマージを行うホスティングサービスも影響を受ける</strong>（出典1）。</li>
+<li><strong>CVE-2026-114469 — バイナリパッチ適用時の境界外読み取り</strong>（出典1）。Git は約1GiB を超えるパッチを拒否するが、<strong>検査していたのは「渡された時点の大きさ」だけ</strong>で、バイナリパッチは圧縮・符号化されているため、小さなパッチが展開後に上限を超えられる。</li>
+<li><strong>CVE-2026-105437 — 大きなマージでのヒープ破壊</strong>（<strong>CVSS 3.1 基本値 7.5</strong>・high。出典3）。マージ結果の必要メモリ量の計算がオーバーフローしうる（<strong>大量の衝突と大きな <code>conflict-marker-size</code> 属性の組み合わせ</strong>など）。小さすぎるバッファを確保してその外へ書き込む。<strong>GitHub のアドバイザリはこれを「三方マージのコード（xdiff）のヒープバッファオーバーフロー」と説明している</strong>（出典3）。<strong>信頼できない内容をマージするアプリケーションとホスティングサービス、およびローカルのマージが対象である</strong>（出典1）。</li>
+<li><strong>CVE-2026-114466 — fast-import ストリーム経由のファイルシステムアクセス</strong>（出典1）。<code>git fast-import</code> の3つの機能に、信頼できない入力ストリームに対する保護が無かった。<strong><code>rewrite-submodules-from</code> と <code>rewrite-submodules-to</code> は任意のファイルを読み、その内容をエラーメッセージ経由で露出しうる。<code>export-pack-edges</code> はファイルを作成し、既存ファイルに追記しうる</strong>（出典1）。以後これらは <code>--allow-unsafe-features</code> を明示しない限り入力ストリームからは拒否される。</li>
+</ul>
+<p><strong>修正版は Git 2.56.1 で、2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2 へバックポートされました</strong>（出典1）。<strong>GitHub は github.com・GitHub Enterprise Cloud・データレジデンシー版のGitHub Enterprise Cloud に修正を適用済みで、GitHub Enterprise Server は 3.19.15 / 3.20.11 / 3.21.9 / 3.22.4 で修正されました</strong>（出典1）。</p>
+<p><strong>悪用の観測は、出典1・2・3のいずれにも記載がありません</strong>（本記録の確認）〈未確定1〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>悪用の観測があるか</span><span class="b rsn">公表されていない</span><div class=sm>**出典1・2・3・4のいずれにも、実際の悪用、攻撃の観測、 CISA KEV への収載についての記載が無い**（本記録の確認）—— **「観測されていない」と書かれているのでもなく、触れられていない。** **再帰クローンは CI でも日常的に走るため、 悪用の有無は読者の判断に直接影響する。**</div></li><li><span class=ui>6件それぞれの発見者・報告者</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は謝辞の節を持たず、 出典2のアドバイザリの credits からも報告者名が取得できなかった**（本記録の確認）。</div></li><li><span class=ui>4件の CVSS と CVE-2026-105437 のベクタ文字列</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は CVSS を一切載せていない**（本記録の確認）—— **CVE-2026-111760 の 8.0 とベクタ、CVE-2026-105437 の 7.5 は GitHub のアドバイザリ（出典2・3）から取れたが、 残る4件は CVE 番号での照会で該当が返らなかった**〈齟齬2〉。</div></li><li><span class=ui>各 CVE が影響する版の範囲</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は CVE ごとの「影響する版」を書いていない**（本記録の確認）〈重要〉—— **修正版の番号から下限を逆算するしかない。** **さらに出典2のアドバイザリのパッケージ情報は 影響範囲を `all`、修正版を `none` と記載しており、 機械的な突合には使えない**〈齟齬1〉。</div></li><li><span class=ui>Git を同梱する主要アプリケーションの修正時期</span><span class="b rsn">公表されていない</span><div class=sm>**出典1は GitHub Desktop と GitHub Copilot アプリについて 「修正版リリースを調整中」と書くだけで、 日付も版番号も示していない**（本記録の確認）—— **GitHub Codespaces と GitHub Actions についても「配られる」とあるだけである。** **GitHub 以外の同梱元（IDE・コンテナイメージ・各種 CI 基盤）については 言及が無い。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Git プロジェクト</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>GitHub, Inc.</span><span class="b role">プラットフォーム事業者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>発見・報告者</span><span class="b role">発見・通報した主体</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>同時に公表された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>6<span class=fu>件</span></div><div class=fn>**出典1が1本の記事で列挙した件数である**—— **別に「追加の堅牢化」として、チェックアウトとツリー処理における index エントリ確保へのオーバーフロー検査が加わったが、 これには CVE が振られていない**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-111760 の CVSS 3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.0<span class=fu>点</span></div><div class=fn>**ベクタは CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H**（出典2）〈重要〉—— **UI:R（利用者の操作が要る）と AC:H（攻撃条件が難しい）で減点されつつ、 S:C（スコープ変更あり）と C:H/I:H/A:H で 8.0 に達している。 「クローンという日常操作が引き金になる」ことが UI:R として軽く扱われている点は、読む側で補正が必要である**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-105437 の CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7.5<span class=fu>点</span></div><div class=fn>**GitHub の評価は high**（出典3）—— **ベクタ文字列は本記録では取得できていない**〈未確定3〉。</div></div><div class=fig><div class=fh><span class=fl>修正版が出された保守系列の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>系列</span></div><div class=fn>**2.56.1 と、バックポート先の 2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2**（出典1）—— **古い系列まで戻していることは、 長期サポート版を固定している組織が多いという前提を示す**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>修正された GitHub Enterprise Server の版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>版</span></div><div class=fn>**3.19.15 / 3.20.11 / 3.21.9 / 3.22.4**（出典1）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**攻撃者が用意するのはリポジトリかサーバで、引き金を引くのは被害者の側の日常操作である** （出典1。本記録の整理）〈重要〉—— **CVE-2026-111760 は「再帰クローン」、CVE-2026-113408 は「空リポジトリのクローン」、 CVE-2026-114467 と CVE-2026-105437 は「マージ」、 CVE-2026-114469 は「バイナリパッチの適用」、 CVE-2026-114466 は「fast-import ストリームの処理」で発火する。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**攻撃者が、極端に長いパスの index エントリと、 サブモジュールを含む構成を仕込んだリポジトリを用意する**（出典1）。 **被害者がそれを再帰クローンする。**</div><div class=fn>根拠: **出典1の CVE-2026-111760 の説明に基づく**（出典1）。</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**index 処理の整数切り詰めにより、 極端に長いパスが「ある名前」で検証を通ったあと「短い名前」で書き込まれる**（出典1）。 **この食い違いを使って、サブモジュールの `.git` ファイルを、 攻撃者の設定ファイルやフックを置いたディレクトリへの シンボリックリンクに置き換える。 Git が後でそのディレクトリを使った時点で、 再帰クローンの最中に攻撃者のコードが実行される**（出典1）。</div><div class=fn>根拠: **出典1の記述による**（出典1）—— **「Git checks paths before writing files into a working tree, including rejecting paths that would overwrite its own repository metadata. However, an integer truncation in Git&#x27;s index handling can cause an extremely long path to pass validation under one name and then be written using a shorter name.」（原文英語。 訳: Git は作業ツリーへファイルを書く前にパスを検証し、 自身のリポジトリメタデータを上書きするパスを拒否する。 しかし index 処理における整数の切り詰めにより、 極端に長いパスが、ある名前では検証を通り、 短い名前で書き込まれることが起こりうる）。**</div></li><li><div class=stg><span class="b stage">3. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**別経路——悪性サーバがプロトコル v2 で、 まだコミットの無いブランチを指す HEAD symref を広告する**（出典1）。 **Git はその参照先を検証せずに保存していたため、 パストラバーサルを含む名前を受け入れる。 files 参照バックエンドでは、 後続のブランチ更新が参照ディレクトリの外へ書き込みうる**（CVE-2026-113408。出典1）。</div><div class=fn>根拠: **出典1の記述による**（出典1）。</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**マージ経路の2件は、メモリ破壊に至る**（出典1）。 **CVE-2026-114467 は、署名が3つ以上付いたタグをマージすると 固定長スタック配列の外へ書き込む。 CVE-2026-105437 は、大量の衝突と大きな `conflict-marker-size` 属性の 組み合わせなどでマージ結果のサイズ計算がオーバーフローし、 小さすぎるバッファの外へ書き込んでヒープを壊す**（出典1）。 **出典1は、どちらについても 「利用者の代わりにマージを行うホスティングサービスも影響を受ける」と明記している。**</div><div class=fn>根拠: **出典1の記述、および出典3のアドバイザリ （「三方マージのコード（xdiff）のヒープバッファオーバーフロー」）による**（出典1・3）。</div></li><li><div class=stg><span class="b stage">5. 収集</span><span class="b conf">確認済</span><span class=srcs>[1]</span></div><div>**fast-import 経路では、ファイルの読み出しと書き込みが起きる**（CVE-2026-114466。出典1）。 **`rewrite-submodules-from` と `rewrite-submodules-to` は任意のファイルを読み、 その内容をエラーメッセージ経由で露出しうる。 `export-pack-edges` はファイルを作成し、既存ファイルに追記しうる**（出典1）。</div><div class=fn>根拠: **出典1の記述による**（出典1）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**6件を1本の記事でまとめて公表し、各件にアドバイザリへのリンクを付けた**（出典1）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **まとめ公表は「一度の更新で全部直る」ことを伝えやすい一方、 件ごとの重さの違いが埋もれる**（本記録の評価）—— **実際に出典1は CVSS を載せていないため、 記事だけでは6件の優劣が読めない。**</div></li><li><div class=ui>**修正版の公開と同じ日に公表した**（出典1）—— **出典1の冒頭は「Today, the Git project is releasing new versions to address six security vulnerabilities」（原文英語。 訳: 本日、Git プロジェクトは6件の脆弱性に対処する新しい版を公開する）。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **修正版と同時の公表は、読者が即座に行動できる一方、 同梱元（IDE・コンテナイメージ・各種サービス）が追随するまでの 時間差が露出として残る**（本記録の評価）—— **GitHub 自身も GitHub Desktop と Copilot アプリは「調整中」としている**（出典1）。</div></li></ul></div>
+<section id="s6"><h2>再帰クローンという日常操作が、コード実行の引き金になる<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>CVE-2026-111760 の仕組みは、検証と書き込みで「違う名前」が使われることにあります</strong>（出典1）〈重要〉。</p>
+<p>Git は作業ツリーへファイルを書く前にパスを検証し、<strong>自身のリポジトリメタデータ（<code>.git</code> 配下）を上書きするようなパスは拒否します</strong>（出典1）。この防御自体は以前から入っているものです。しかし <strong>index 処理に整数の切り詰めがあり、極端に長いパスが「ある名前」で検証を通ったあと、「短い名前」で書き込まれる</strong>（出典1）。検証した対象と書き込んだ対象がずれるので、防御をすり抜けます。</p>
+<p>このずれを使って攻撃者は、<strong>サブモジュールの <code>.git</code> ファイルを、攻撃者の設定ファイルやフックを置いたディレクトリへのシンボリックリンクに置き換えます</strong>（出典1）。Git が後でそのディレクトリを使った時点で、<strong>再帰クローンの最中に攻撃者が置いたコードが実行されます</strong>（出典1）。修正は、<strong>長さが切り詰められる前に、極端に長い index エントリのパスを拒否する</strong>ものです（出典1）。</p>
+<p><strong>引き金が「再帰クローン」であることが、この脆弱性の実務上の重さを決めています</strong>（本記録の評価）〈重要〉。<code>git clone --recursive</code> は、OSS を取り込むとき、フォークをビルドするとき、依存を更新して検証するとき、外部からのプルリクエストを CI で確かめるときに走ります。<strong>人が意識して「危険な操作」と認識する場面ではありません。</strong> CVSS 3.1 のベクタは <code>UI:R</code>（利用者の操作が要る）で減点されていますが（出典2）、ここで要求される「操作」はクローン1回です。</p>
+<p><strong>GitHub は同時に「追加の堅牢化」も入れました</strong>（出典1）。チェックアウトとツリー処理における index エントリの確保にオーバーフロー検査を加え、<strong>パスをメモリへ複写する前に確保サイズが切り詰められたりオーバーフローしたりしないようにした</strong>としています（出典1）。これには CVE が振られていません。</p></section>
+<section id="s7"><h2>残る5件は「どの操作をするか」で当たる相手が変わる<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>6件を1本の記事で読むと同じ重さに見えますが、刺さる相手が違います</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>クローンする側に当たるもの</strong>（出典1）。</p>
+<ul>
+<li><strong>CVE-2026-111760</strong> — 再帰クローンでコード実行。</li>
+<li><strong>CVE-2026-113408</strong> — 空リポジトリをプロトコル v2 でクローンするとき、悪性サーバが広告する HEAD symref の参照先が検証されておらず、files 参照バックエンドでは後続のブランチ更新が参照ディレクトリの外へ書き込みうる。<strong>「クローン先を選べない自動化」が最も危ない</strong>（本記録の評価）——依存解決やミラーリングで URL が外部由来になる構成です。</li>
+</ul>
+<p><strong>利用者の代わりにリポジトリを処理するサービス側に当たるもの</strong>（出典1）〈重要〉。</p>
+<ul>
+<li><strong>CVE-2026-114467</strong> — 署名が3つ以上付いたタグのマージでスタック破壊。出典1は「利用者の代わりにこれらのマージを行うホスティングサービスも影響を受けうる」と明記しています。</li>
+<li><strong>CVE-2026-105437</strong> — 大きなマージでヒープ破壊。出典1は「信頼できない内容をマージするアプリケーションとホスティングサービス、およびローカルのマージに影響する」としています。GitHub のアドバイザリ（出典3）はこれを<strong>「三方マージのコード（xdiff）のヒープバッファオーバーフロー」</strong>と説明し、<strong>CVSS 基本値 7.5・深刻度 high</strong> としています。</li>
+</ul>
+<p><strong>パッチやストリームを食わせる処理に当たるもの</strong>（出典1）。</p>
+<ul>
+<li><strong>CVE-2026-114469</strong> — バイナリパッチ適用時の境界外読み取り。Git は約1GiB を超えるパッチを拒否しますが、<strong>検査していたのは「渡された時点の大きさ」だけ</strong>でした。バイナリパッチは圧縮・符号化されているため、小さなパッチが展開後に上限を超えられます。修正は、処理前に<strong>宣言された非圧縮サイズ</strong>も検査します。</li>
+<li><strong>CVE-2026-114466</strong> — fast-import ストリーム経由のファイルシステムアクセス。<code>git fast-import</code> は、リポジトリ外のファイルに触れるコマンドを信頼できない入力ストリームでは既に制限していましたが、<strong>3つの機能にその保護が無かった</strong>。<code>rewrite-submodules-from</code> と <code>rewrite-submodules-to</code> は任意のファイルを読み、内容をエラーメッセージ経由で露出しうる。<code>export-pack-edges</code> はファイルを作成し既存ファイルに追記しうる。</li>
+</ul>
+<p><strong>自組織がどれに当たるかは、「Git を何に使っているか」で決まります</strong>（本記録の評価）。クローンだけなら前2件、コードレビュー基盤やマージの自動化を持つなら中2件、リポジトリの移行・変換の仕組みを持つなら後2件が効きます。</p></section>
+<section id="s8"><h2>OS の更新では直らない Git が、どれだけ残っているかが問題になる<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1]</span></h2><p><strong>出典1が繰り返しているのは「同梱版も更新せよ」です</strong>（出典1）〈重要〉。</p>
+<p>修正版は Git 2.56.1 で、<strong>2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2 の6系列にバックポート</strong>されました（出典1）。7系列に戻していること自体が、<strong>長期サポート版を固定している環境が多いという前提の表明</strong>です（本記録の評価）。</p>
+<p>出典1の更新の指示は3段です（出典1）。</p>
+<ol>
+<li><strong>OS または Git 配布元から修正版を入れる。</strong></li>
+<li><strong>自前の Git を同梱するアプリケーションを更新する。</strong></li>
+<li><strong>管理者は、利用者の代わりにリポジトリを処理する自動化やサービスで使われている Git も更新する。</strong></li>
+</ol>
+<p><strong>実務の難所は2と3です</strong>（本記録の評価）〈重要〉。IDE、コンテナイメージ、CI ランナーのベースイメージ、コードスキャンの実行環境、AI コーディング基盤のサンドボックス——これらは<strong>それぞれが自分の Git を抱えており、ホスト OS の <code>apt upgrade</code> では動きません</strong>。棚卸しの手がかりとしては、稼働中のイメージで <code>git --version</code> を取るのが確実です（本記録の判断）。</p>
+<p><strong>GitHub 自身の対応状況</strong>（出典1）。</p>
+<ul>
+<li><strong>github.com・GitHub Enterprise Cloud・データレジデンシー版のGitHub Enterprise Cloud</strong> — 修正を適用済み。</li>
+<li><strong>GitHub Enterprise Server</strong> — 3.19.15 / 3.20.11 / 3.21.9 / 3.22.4 で修正。「可能な限り速やかに更新すること」。</li>
+<li><strong>GitHub Desktop・GitHub Copilot アプリ</strong> — 修正版 Git を含むリリースを「調整中」。<strong>日付も版番号も示されていません</strong>〈未確定5〉。</li>
+<li><strong>GitHub Codespaces・GitHub Actions</strong> — 修正版 Git が「配られる」。<strong>こちらも時期が示されていません</strong>〈未確定5〉。</li>
+</ul>
+<p><strong>暫定措置には副作用があります</strong>（本記録の評価）。出典1は、すぐ更新できない場合に「信頼できるサーバからのみクローンする、信頼できないリポジトリの再帰クローンを避ける、信頼できない内容やタグをマージしない、信頼できない出所のバイナリパッチと fast-import ストリームを処理しない」を挙げ、<strong>同時に「これらの予防措置は修正の適用に代わるものではない」と明記しています</strong>（出典1）。外部貢献を受け入れているプロジェクトでは「信頼できない内容をマージしない」は成立しません。<strong>暫定措置は時間稼ぎであって、運用方針ではありません。</strong></p></section>
+<section id="s9"><h2>悪用の観測も、CVE ごとの影響版も公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>読者が判断に使いたい情報のうち、2つが欠けています</strong>（本記録の確認）〈重要〉。</p>
+<p><strong>ひとつは悪用の観測です</strong>〈未確定1〉。出典1・2・3・4のいずれも、実際の攻撃、観測、CISA KEV への収載、PoC の公開に触れていません。<strong>「観測されていない」と書かれているのでもなく、話題にされていない</strong>という状態です。再帰クローンは CI で日常的に走るため、<strong>悪用が始まっているかどうかは更新の優先度を直接左右します。</strong></p>
+<p><strong>もうひとつは CVE ごとの影響版の範囲です</strong>〈未確定4〉。出典1は CVE ごとに「どの版が影響を受けるか」を書いていません。修正版の番号から下限を逆算するしかありません。さらに<strong>GitHub のアドバイザリのパッケージ情報は、影響範囲を <code>all</code>、修正版を <code>none</code> と記載しており、機械的な突合には使えません</strong>（出典2）〈齟齬1〉。脆弱性管理のツールにこのアドバイザリを食わせている組織では、<strong>「全版が影響・修正版なし」と解釈されかねません。</strong></p>
+<p><strong>CVSS も揃っていません</strong>〈未確定3〉。出典1は CVSS を一切載せていません。本記録が GitHub のアドバイザリから取れたのは2件だけで、<strong>CVE-2026-113408・CVE-2026-114467・CVE-2026-114469・CVE-2026-114466 の4件はCVE 番号での照会で該当が返りませんでした</strong>（本記録の観測・2026年11月12日）〈齟齬2〉。公開直後で収載が追いついていない可能性と、別の採番経路に載っている可能性の両方があります。</p>
+<p><strong>発見者・報告者も公表されていません</strong>〈未確定2〉。出典1に謝辞の節が無く、出典2のアドバイザリの credits からも報告者名が取得できませんでした。<strong>6件が同時に出たことから、まとまった監査や fuzzing の成果である可能性はありますが、これは本記録の推測であって出典に根拠はありません。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_products</th><td>**Git 本体（CLI）と、Git を同梱するアプリケーション・サービスである**（出典1）〈重要〉—— **修正版は 2.56.1、および 2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2。** **GitHub 製品では GitHub Enterprise Server 3.19.15 / 3.20.11 / 3.21.9 / 3.22.4 が修正版で、 github.com と GitHub Enterprise Cloud（データレジデンシー版を含む）は適用済み。** **CVE ごとの影響版の範囲は公表されていない**〈未確定4〉。</td></tr><tr><th>severity</th><td>**公表された CVSS は2件のみである**（出典2・3）—— **CVE-2026-111760 が 8.0（high）、CVE-2026-105437 が 7.5（high）。** **残る4件の深刻度は公表されていない**〈未確定3〉。 **本記録の評価では、運用上の重さは CVSS の順とは一致しない**〈重要〉—— **CVE-2026-111760 は「再帰クローン」という日常操作が引き金で、 結果がコード実行である。 一方 CVE-2026-114467 と CVE-2026-105437 は 「利用者の代わりにマージを行うサービス」が自分の基盤で踏む形であり、 自社がホスティングやコードレビュー基盤を運用しているかで重さが変わる。**</td></tr><tr><th>exploitation_status</th><td>**悪用の観測は公表されていない**（本記録の確認）〈未確定1〉—— **出典1・2・3・4はいずれも、観測・KEV 収載・PoC の公開に触れていない。**</td></tr><tr><th>disclosure_path</th><td>**Git プロジェクトによる修正版の同時公開と、GitHub Security Blog での告知である**（出典1）—— **GitHub はアドバイザリ（出典2・3）も発行している。** **発見者・報告者と、報告から公開までの経過は公表されていない**〈未確定2〉。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **修正版の Git に更新する（最も効果が高い手段）**（出典1）—— **OS・ディストリビュータの配布物を入れ、 自前の Git を同梱するアプリケーションも更新する。**　<b>副作用:</b> **同梱版は OS の更新では直らないため、更新対象の洗い出しが必要になる**（本記録の評価）—— **IDE・コンテナイメージ・CI ランナー・自動化の数だけ作業が増える。** **古い系列に留まっている環境では、バックポート版の入手経路を確認する手間が生じる。**</div><div class=sub><b>手順:</b> **利用者の代わりにリポジトリを処理する自動化・サービスの Git を更新する**（出典1）—— **出典1は「管理者は、利用者の代わりにリポジトリを処理する 自動化やサービスで使われている Git も更新すべきである」と明記している。**　<b>副作用:</b> **ビルド基盤の Git を上げると、 既存のパイプラインの挙動（長いパスの扱い・fast-import の機能）が変わりうる**（本記録の評価）—— **CVE-2026-114466 の修正は `rewrite-submodules-from` / `rewrite-submodules-to` / `export-pack-edges` を `--allow-unsafe-features` 無しでは拒否するため、 これらを使っている移行スクリプトは止まる。**</div><div class=sub><b>手順:</b> **すぐ更新できない場合の暫定措置**（出典1）—— **信頼できるサーバからのみクローンする。 信頼できないリポジトリの再帰クローンを避ける。 信頼できない内容やタグをマージしない。 信頼できない出所のバイナリパッチと fast-import ストリームを処理しない。**　<b>副作用:</b> **出典1自身が「これらの予防措置は修正の適用に代わるものではない」と 明記している**（出典1）〈重要〉—— **また実務上は、OSS の取り込み・フォークのビルド・外部からの プルリクエストの検証が止まる。 「信頼できない内容をマージしない」は、 外部貢献を受け入れるプロジェクトでは成立しない**（本記録の評価）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**GitHub が CVE-2026-111760（再帰クローンでのリモートコード実行）の アドバイザリ GHSA-vp2w-7xxj-jvxr を公開した**（出典2）—— **深刻度 high・CVSS 3.1 基本値 8.0 （CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H）。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**GitHub Security Blog が「Git security vulnerabilities announced」を公開し、 6件の脆弱性と修正版（2.56.1 ほか7系列）をまとめて告知した**（出典1）—— **記事は同時に、github.com・GitHub Enterprise Cloud への修正適用と GitHub Enterprise Server の修正版番号を示した。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**GitHub が CVE-2026-105437（大きなマージでのヒープ破壊）の アドバイザリ GHSA-m7r7-8v36-j77r を公開した**（出典3）—— **深刻度 high・CVSS 基本値 7.5。 説明は「三方マージのコード（xdiff）のヒープバッファオーバーフロー」。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が CVE-2026-111760 を主題に報じた**（出典4）—— **「悪性リポジトリがサブモジュールごと再帰クローンされると 攻撃者のコードが走る」という切り口で、修正版の番号を列挙している。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が、GitHub のアドバイザリAPIで6件の収載状況を確認した**（本記録の観測）—— **CVE-2026-111760（CVSS 8.0）と CVE-2026-105437（CVSS 7.5）の2件は アドバイザリとして取得できたが、 残る4件（CVE-2026-113408・CVE-2026-114467・CVE-2026-114469・CVE-2026-114466）は CVE 番号での照会で該当が返らなかった**〈齟齬2〉。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>GitHub アドバイザリのパッケージ情報（影響範囲と修正版）</span><div class=sm>**出典2（GHSA-vp2w-7xxj-jvxr）のパッケージ情報は、 パッケージ `git` の影響範囲を `all`、修正版を `none` と記載している** （本記録の観測・2026年11月12日）〈重要〉—— **一方、出典1は修正版を 2.56.1 と6系列のバックポートとして明示している。** **アドバイザリの機械可読部分と記事本文が食い違っており、 脆弱性管理ツールにアドバイザリを食わせている組織では 「全版が影響・修正版なし」と解釈されかねない。** **どちらが正しいかは、記事本文（出典1）が修正版を具体的に列挙している点から 本記録は出典1を採る。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>6件のうち4件のアドバイザリの所在</span><div class=sm>**本記録の作成者は、CVE 番号での照会で CVE-2026-113408・CVE-2026-114467・CVE-2026-114469・CVE-2026-114466 の 4件のアドバイザリを取得できなかった**（本記録の観測・2026年11月12日）—— **出典1は各件に「[Advisory]」のリンクを付けているため、 アドバイザリ自体は存在するとみられる。 公開直後で収載が追いついていない可能性と、 照会した経路に載っていない可能性の両方がある。** **したがって、この4件の CVSS・影響版・報告者は本記録では裏取りできていない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の観測についての沈黙</span><div class=sm>**出典1・2・3・4のいずれも、 実際の悪用、攻撃の観測、CISA KEV への収載、PoC の公開に触れていない** （本記録の確認）〈重要〉—— **「観測されていない」という記述があるのではなく、論点として現れない。** **再帰クローンが CI で日常的に走ることを考えると、 読者が最も知りたい情報が欠けている。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>CVE-2026-111760 — 再帰クローンから任意コード実行まで</div><div class=svgwrap><svg viewBox="0 0 1406 208" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,104.0 C193.0,104.0 193.0,104.0 220,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,104.0 C397.0,104.0 397.0,104.0 424,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,104.0 C601.0,104.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,104.0 832,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,104.0 C1009.0,104.0 1009.0,104.0 1036,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,104.0 C1213.0,104.0 1213.0,104.0 1240,104.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,155.0 C703.0,155.0 703.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="74.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者</text><text x="91.0" y="109.0" text-anchor="middle" fill="#f48fb1" font-size="10">**極端に長いパスの i</text><text x="91.0" y="121.0" text-anchor="middle" fill="#f48fb1" font-size="10">ndex エントリと、 </text><rect x="220" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">悪性リポジトリ（サブモジ</text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ュール付き）</text><text x="295.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">**公開ホスティング上に</text><text x="295.0" y="128.0" text-anchor="middle" fill="#f48fb1" font-size="10">置かれ、 OSS として</text><rect x="424" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">再帰クローン（git c</text><text x="499.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">lone --recur</text><text x="499.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sive）</text><text x="499.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">**開発者の端末、CI </text><text x="499.0" y="135.0" text-anchor="middle" fill="#64b5f6" font-size="10">ランナー、 または利用者</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">index 処理の整数切</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">り詰め（CVE-2026</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-111760）</text><text x="703.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">**極端に長いパスが「あ</text><text x="703.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">る名前」で検証を通り、 </text><rect x="832" y="60.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サブモジュールの .gi</text><text x="907.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">t をシンボリックリンク</text><text x="907.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に置換</text><text x="907.0" y="123.0" text-anchor="middle" fill="#ffcc80" font-size="10">**リンク先は攻撃者の設</text><text x="907.0" y="135.0" text-anchor="middle" fill="#ffcc80" font-size="10">定ファイル・フックを置い</text><rect x="1036" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">再帰クローン中の任意コー</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド実行</text><text x="1111.0" y="116.0" text-anchor="middle" fill="#64b5f6" font-size="10">**Git がそのディレ</text><text x="1111.0" y="128.0" text-anchor="middle" fill="#64b5f6" font-size="10">クトリを使った時点で発火</text><rect x="1240" y="67.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CI ランナー・開発者端</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">末の権限</text><text x="1315.0" y="116.0" text-anchor="middle" fill="#64b5f6" font-size="10">**実行場所が持つ権限（</text><text x="1315.0" y="128.0" text-anchor="middle" fill="#64b5f6" font-size="10">署名鍵・クラウド資格情報</text><rect x="628" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 Git（2.56</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.1 ほか7系列）</text><text x="703.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">**長さが切り詰められる</text><text x="703.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">前に、 極端に長い in</text></svg></div><div class=fn>**出典1の説明を段階に並べたものであり、観測された攻撃の経路ではない** （本記録の明示）——**悪用の観測は公表されていない**〈未確定1〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**検知の機会については公表されていない**（本記録の確認）—— **出典1はログ・痕跡・ハンティングの手がかりを示していない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**信頼できないリポジトリの再帰クローンを行わない（暫定措置）**（出典1）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**修正版の Git に更新する。 修正は、長さが切り詰められる前に極端に長い index エントリのパスを拒否する**（出典1）。</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **ただし本記録の評価では、 クローン直後にフックが走るという事象自体は プロセス起動の監視で見える可能性がある**（本記録の判断。 **出典に根拠は無い**）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>**CI ランナーでのクローンを、フックが動かない設定・権限で行う**（本記録の判断。 **出典に根拠は無い**）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**修正版への更新**（出典1）。</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**信頼できるサーバからのみクローンする（暫定措置）**（出典1）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**修正版への更新。 修正は広告された参照先を受け入れる前に検証し、 プロトコル v2 で受け取る他の参照名と symref の参照先も検証する**（出典1）。</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **ただしメモリ破壊によるクラッシュは サービス側のプロセス異常終了として現れうる**（本記録の判断。 **出典に根拠は無い**）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**信頼できない内容やタグをマージしない（暫定措置）**（出典1）。</div><div class=ctl><span class="b eff">影響を限定できた</span>**信頼できない内容をマージする処理を、 使い捨ての隔離された実行環境で行う**（本記録の判断。**出典に根拠は無い**）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**修正版への更新**（出典1）。</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>**信頼できない出所の fast-import ストリームを処理しない（暫定措置）**（出典1）。</div><div class=ctl><span class="b eff">侵入を防げた</span>**修正版への更新。 以後これらの機能は `--allow-unsafe-features` を明示しない限り 入力ストリームからは拒否される**（出典1）—— **出典1は「そのオプションは、ストリームを生成するプログラムを 信頼できるときにのみ有効にすること」としている。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**6件を1本の記事でまとめて公表し、各件にアドバイザリへのリンクを付けた**（出典1）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**修正版・バックポート先・GitHub 製品の対応状況・暫定措置を 同じ記事に載せた点は、読者が1か所で行動を決められる形になっている** （本記録の評価）〈重要〉—— **一方、CVE ごとの影響版と CVSS が無いため、 脆弱性管理の工程（どの資産が対象かを機械的に突き合わせる作業）には そのまま渡せない。**</td></tr><tr><td>**修正版の公開と同じ日に公表した**（出典1）—— **出典1の冒頭は「Today, the Git project is releasing new versions to address six security vulnerabilities」（原文英語。 訳: 本日、Git プロジェクトは6件の脆弱性に対処する新しい版を公開する）。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**修正が入手できない状態で詳細が出るのが最悪であり、それは避けられている** （本記録の評価）。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**開発基盤の脆弱性は「本番サーバの脆弱性」とは別の棚で管理しないと見落とす** （本記録の評価）〈重要〉。</div><div class=lw>**本件の対象は Git であり、外部公開サーバではない**（出典1）—— **脆弱性管理が「インターネットに面した資産」中心に組まれていると、 開発者の端末・CI ランナー・コードレビュー基盤は棚に乗っていない。 しかし CVE-2026-111760 の結果はコード実行で、 その実行場所は署名鍵やクラウドの権限を持つ CI である。**</div><div class=la><b>取るべき行動</b> **資産台帳に「開発・ビルド基盤」の区分があるかを確認し、 無ければ作る。 最低限、CI ランナーのイメージ、開発者端末の標準構成、 コードレビュー・コードスキャンの実行環境を棚に乗せ、 それぞれの Git の版を取る責任者を決める。**</div></li><li><div class=lp>**「OS を更新しています」は、同梱ソフトウェアには答えになっていない** （本記録の評価）〈重要〉。</div><div class=lw>**出典1は、OS・配布元からの更新に加えて 「自前の Git を同梱するアプリケーションを更新する」ことを明記している**（出典1）—— **IDE・コンテナイメージ・CI ランナー・AI コーディング基盤は それぞれが自分の Git を持つ。 パッチ適用率の報告が OS のみを見ている組織では、 この層が恒久的に未修正のまま残る。**</div><div class=la><b>取るべき行動</b> **「パッチ適用率」の定義に同梱ソフトウェアが入っているかを確認する。 入っていなければ、まず本件を題材に 「稼働中のコンテナイメージで `git --version` を取る」ことを一度やらせ、 どれだけ古い版が残っているかを数字で出させる。**</div></li><li><div class=lp>**公表に CVSS と影響版が無いとき、脆弱性管理の工程は止まる** （本記録の評価）。</div><div class=lw>**出典1は CVSS を載せておらず、CVE ごとの影響版も示していない**〈未確定3〉〈未確定4〉—— **さらに GitHub のアドバイザリのパッケージ情報は 影響範囲 `all`・修正版 `none` である**（出典2）〈齟齬1〉。 **スコアと版範囲を前提にした自動化は、 この入力で「全版が影響・修正不能」または「該当なし」のどちらかに倒れる。**</div><div class=la><b>取るべき行動</b> **自社の脆弱性管理が、CVSS や影響版が欠けた入力を どう扱うかを確認する。 「スコア無しは後回し」という既定になっていないかを点検し、 欠損時は人が読んで判断する経路を用意する。**</div></li><li><div class=lp>**暫定措置を恒久策にしないための期限を、採用と同時に決める** （本記録の評価）。</div><div class=lw>**出典1の暫定措置は 「信頼できないリポジトリの再帰クローンを避ける」「信頼できない内容をマージしない」で、 外部貢献を受け入れる組織では事業の制約になる**（出典1）—— **出典1自身が「これらは修正の適用に代わるものではない」と明記している。** **制約が長引くと、現場は制約を回避する方向に動く。**</div><div class=la><b>取るべき行動</b> **暫定措置を入れるときは、解除条件（修正版の配布完了）と期限を同時に記録し、 期限を越えたら報告が上がる仕組みにする。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**`--recursive` を使うクローンの場所を全部挙げられるようにする** （本記録の評価）〈重要〉。</div><div class=lw>**CVE-2026-111760 の引き金は再帰クローンである**（出典1）—— **サブモジュールの `.git` ファイルがシンボリックリンクに置き換わり、 攻撃者の設定・フックが実行される。 `git clone --recursive`、`git submodule update --init --recursive`、 CI の checkout アクションの `submodules: recursive` 相当の設定が対象になる。**</div><div class=la><b>取るべき行動</b> **リポジトリと CI の定義を横断して `recursive`・`submodules` の指定を検索し、 そのうち「外部由来の URL をクローンするもの」を洗い出す。 外部由来のものは、修正版が行き渡るまで隔離された使い捨て環境で走らせる。**</div></li><li><div class=lp>**稼働中のイメージの `git --version` を取るのが、 台帳より確実である**（本記録の判断）。</div><div class=lw>**同梱版は OS のパッケージ更新で動かない**（出典1）—— **台帳には「Git 2.5x」と書いてあっても、 ベースイメージの固定・レイヤキャッシュ・ベンダー同梱で 実際に動いている版は違いうる。**</div><div class=la><b>取るべき行動</b> **CI の各ジョブの先頭に `git --version` を出す行を一時的に入れ、 ログから実測を集める。 2.56.1 / 2.55.1 / 2.54.1 / 2.53.1 / 2.52.1 / 2.51.3 / 2.50.2 の いずれにも達していないものを更新対象として並べる。**</div></li><li><div class=lp>**自社がマージを「代行」しているなら、 影響する CVE が変わる**（本記録の評価）〈重要〉。</div><div class=lw>**CVE-2026-114467（署名3つ以上のタグのマージでスタック破壊）と CVE-2026-105437（大きなマージでヒープ破壊・CVSS 7.5）について、 出典1は「利用者の代わりにマージを行うホスティングサービスも影響を受ける」と 明記している**（出典1・3）—— **自前のコードレビュー基盤、マージキュー、 プルリクエストの自動マージ、リリース自動化が該当する。**</div><div class=la><b>取るべき行動</b> **「外部から来た内容を自社の基盤でマージする処理」を列挙する。 該当する処理の Git を最優先で更新し、 更新までは隔離された実行環境で走らせる。 マージを行うプロセスの異常終了を監視対象に入れる。**</div></li><li><div class=lp>**CVE-2026-114466 の修正は、既存の移行スクリプトを止めうる** （本記録の評価）。</div><div class=lw>**`rewrite-submodules-from`・`rewrite-submodules-to`・`export-pack-edges` は 以後 `--allow-unsafe-features` 無しでは入力ストリームから拒否される**（出典1）—— **リポジトリの変換・移行でこれらを使っている自動化は、 更新した時点で失敗する。**</div><div class=la><b>取るべき行動</b> **`fast-import` を使っている処理を検索し、 上記3機能の使用を確認する。 使っている場合は、ストリームの生成元が自社管理であることを確かめた上で `--allow-unsafe-features` を明示する （出典1は「ストリームを生成するプログラムを信頼できるときにのみ 有効にすること」としている）。**</div></li><li><div class=lp>**バイナリパッチのサイズ上限は「渡された大きさ」では測れない** （本記録の評価）。</div><div class=lw>**CVE-2026-114469 は、約1GiB の上限検査が 「供給された時点のパッチの大きさ」しか見ていなかったことによる**（出典1）—— **バイナリパッチは圧縮・符号化されているため、 小さな入力が展開後に上限を超える。 修正は宣言された非圧縮サイズも検査する。**</div><div class=la><b>取るべき行動</b> **自社の処理系で「圧縮された入力のサイズで上限を判断している箇所」が 他にないかを点検する （アーカイブの展開、添付の検査、ログの取り込み）。 同じ型の誤りが入りやすい。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **外部由来のリポジトリを再帰クローンする自動化があるか** （`git clone --recursive`、`git submodule update --init --recursive`、 CI の submodules 設定）。</td><td class=sm>**CVE-2026-111760 の引き金はこれである**（出典1）—— **クローン先の URL が外部由来で、かつフックが動く権限で走っているなら、 1回のクローンでコード実行に至る。**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **利用者・外部から来た内容を、自社の基盤でマージする処理があるか** （コードレビュー基盤、マージキュー、自動マージ、リリース自動化）。</td><td class=sm>**CVE-2026-114467 と CVE-2026-105437 は、 出典1が「利用者の代わりにマージを行うホスティングサービスも影響を受ける」と 明記している型である**（出典1・3）—— **この処理を持たない組織には、この2件はローカルのマージとしてしか当たらない。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **Git を同梱するアプリケーション・イメージの版を把握できるか** （CI ランナーのベースイメージ、開発者端末の IDE、 コードスキャンやAIコーディング基盤のサンドボックス）。</td><td class=sm>**出典1は同梱版の更新を明記しており、 これは OS のパッケージ更新では動かない**（出典1）〈重要〉—— **版を取る手段が無い組織は、 修正したかどうかを答えられない状態が続く。**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **クローン先・マージ対象の出所を「信頼できる」と言い切れるか。 外部貢献やフォークのビルドを受け入れているか。**</td><td class=sm>**出典1の暫定措置は「信頼できるサーバからのみクローンする」 「信頼できない内容やタグをマージしない」である**（出典1）—— **外部貢献を受け入れる組織ではこの暫定措置が成立しないため、 修正版の適用が唯一の手段になる。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **リポジトリの変換・移行で `git fast-import` を使っているか。 `rewrite-submodules-from` / `rewrite-submodules-to` / `export-pack-edges` を使っているか。**</td><td class=sm>**修正後はこれらが `--allow-unsafe-features` 無しで拒否される**（出典1）—— **該当する自動化は、更新した時点で失敗する。 更新計画に「止まる処理」として織り込む必要がある。**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **脆弱性管理の工程が、CVSS や影響版が欠けた公表を扱えるか。**</td><td class=sm>**出典1は CVSS を載せず、CVE ごとの影響版も示していない**〈未確定3〉〈未確定4〉—— **さらに GitHub のアドバイザリは影響範囲 `all`・修正版 `none` と記載している** （出典2）〈齟齬1〉。 **スコアと版範囲を前提にした自動化しか持たない組織は、 本件を正しく扱えない。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月10日 GitHub Security Blog（GitHub, Inc.）</span> <a href="https://github.blog/open-source/git/git-security-vulnerabilities-announced-7/" target="_blank" rel="noreferrer noopener nofollow">Git security vulnerabilities announced</a> <span class="b kind">ブログ</span><span class=sm>（**一次公表。6件すべての説明・修正版・GitHub 製品の対応状況・暫定措置を含む** （本記録の確認）〈重要〉—— **本記録の作成者が2026年11月12日に取得し、全文を確認した。** **CVSS・発見者・CVE ごとの影響版は記載が無い。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月10日 19時09分（UTC） GitHub Advisory Database</span> <a href="https://github.com/advisories/GHSA-vp2w-7xxj-jvxr" target="_blank" rel="noreferrer noopener nofollow">GHSA-vp2w-7xxj-jvxr — Recursive clones are susceptible to Remote Code Execution（CVE-2026-111760）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**CVSS 3.1 基本値 8.0・深刻度 high・ ベクタ CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H** （本記録が GitHub のアドバイザリAPIから取得・2026年11月12日）〈重要〉—— **パッケージ情報は影響範囲 `all`・修正版 `none` と記載されており、 出典1と食い違う**〈齟齬1〉。 **credits からは報告者名が取得できなかった**〈未確定2〉。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月10日 21時32分（UTC） GitHub Advisory Database</span> <a href="https://github.com/advisories/GHSA-m7r7-8v36-j77r" target="_blank" rel="noreferrer noopener nofollow">GHSA-m7r7-8v36-j77r — 三方マージのコード（xdiff）のヒープバッファオーバーフロー（CVE-2026-105437）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**CVSS 基本値 7.5・深刻度 high** （本記録が GitHub のアドバイザリAPIから取得・2026年11月12日）—— **要約は「Affected versions of Git have a heap buffer overflow in the three-way merge code (xdiff)」（原文英語。 訳: 影響を受ける版の Git は、三方マージのコード（xdiff）に ヒープバッファオーバーフローを持つ）。** **ベクタ文字列は取得できていない**〈未確定3〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月10日 19時23分（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/11/git-patches-flaw-that-lets-malicious.html" target="_blank" rel="noreferrer noopener nofollow">Git Patches Flaw That Lets Malicious Repositories Execute Code During Recursive Clones</a> <span class="b kind">記事</span><span class=sm>（**二次報道。CVE-2026-111760 を主題に、修正版の番号を列挙している**—— **本記録の作成者が2026年11月12日に取得を試みたが、 HTTP 403 を返し本文を取得できなかった （ブラウザ相当の UA を付けた curl でも Cloudflare の検査ページが返る）**〈重要〉。 **本記録が参照しているのは収集済みの記事本文の冒頭部分のみで、 出典1の内容と矛盾する点は無い。** **availability は `paywalled`（有料会員限定）ではなく 「自動取得が拒否される」状態だが、 語彙に該当する値が無いためこれを当てている**（本記録の明示）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月12日</span> <span class="b rev">新規作成</span> **2026年11月11日収集の記事2本（GitHub Security Blog・The Hacker News）を起点に作成**—— **一次公表（出典1）を全文取得して裏を取り、 GitHub のアドバイザリAPIから CVE-2026-111760 と CVE-2026-105437 の CVSS を取得した。 残る4件のアドバイザリは CVE 番号での照会で該当が返らず、裏取りできていない**〈齟齬2〉。 **The Hacker News は HTTP 403 で本文を取得できなかった**（出典4の note）。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Git</span><span class="b tag">GitHub</span><span class="b tag">CVE-2026-111760</span><span class="b tag">CVE-2026-113408</span><span class="b tag">CVE-2026-114467</span><span class="b tag">CVE-2026-114469</span><span class="b tag">CVE-2026-105437</span><span class="b tag">CVE-2026-114466</span><span class="b tag">再帰クローン</span><span class="b tag">サブモジュール</span><span class="b tag">整数切り詰め</span><span class="b tag">シンボリックリンク</span><span class="b tag">任意コード実行</span><span class="b tag">ヒープバッファオーバーフロー</span><span class="b tag">fast-import</span><span class="b tag">開発基盤</span><span class="b tag">CI/CD</span><span class="b tag">同梱ソフトウェア</span><span class="b tag">ソフトウェアサプライチェーン</span><span class="b tag">脆弱性管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-12 10:04 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
