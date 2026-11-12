@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Apache mod_http2 に無認証RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1031</span>Apache mod_http2 に無認証RCE</h1>
+<header class="site-header">
+  <p class="subtitle">Apache HTTP Server の開発チームが2026年11月11日に 2.4.71 を公開し、 mod_http2 の `assign_headers()` におけるスレッド安全性の欠陥（CVE-2026-119618）に **自身の最上位ラベル「critical」**を付けた。 共有資源の同期不備（複数スレッドが同じメモリを書き換える）によりヒープが壊れ、 **無認証の遠隔攻撃者が任意コードを実行しうる**という評価で、 影響は 2.4.55〜2.4.70（GitHub 版 mod_h2 は 2.0.8〜2.0.42）。 Red Hat は CVSS 3.1 で 9.8（`AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`）を付け、 **`Protocols` ディレクティブで HTTP/2（h2 / h2c）を有効にしているサーバだけが対象**で 「HTTP/1.1 のみを提供する構成は脆弱ではない」と明記した。 同じ Red Hat の同じページが、全体としては Critical、 **RHEL 9 と RHEL 10 については「Critical ではなく Important」**という二重のラベルを示している</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月11日</span>
+  <span>最終更新: 2026年11月12日</span>
+</div>
+
+<div class="lead"><p><strong>2026年11月11日に公開された Apache HTTP Server 2.4.71 は、3件の CVE に対処した。</strong>内訳は critical 1件・important 1件・low 1件で、<strong>critical は mod_http2 の CVE-2026-119618</strong>である（出典1）。</p>
+<p><strong>欠陥は <code>assign_headers()</code> にある。</strong> Apache の記述は「共有資源を用いた並行実行の同期不備」であり、Red Hat はこれを「あるスレッドが別のスレッドの持つメモリを書き換え、サーバのメモリを壊す」と言い換えている（原文英語。出典1・2）。<strong>結果として、無認証の遠隔攻撃者が任意のコマンドを実行しうる</strong>という評価である（出典2）。Red Hat の CVSS 3.1 基本値は <strong>9.8</strong>、ベクタは<code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</code>—— <strong>権限も利用者の操作も要らない。</strong></p>
+<p><strong>ただし成立には構成の条件が付く。</strong> Red Hat は「<code>Protocols</code> ディレクティブを通じて HTTP/2（h2 または h2c）を有効にしているサーバだけが影響を受ける」「HTTP/1.1 のみを提供するよう構成されたサーバは脆弱ではない」と明記した（原文英語。出典2）。<strong>影響範囲は 2.4.55〜2.4.70</strong>で、2.4.54 以前と、RHEL 8 以前の Red Hat 製品は対象外とされている（出典1・2）。</p>
+<p><strong>本記録が注目するのは、ラベルの付き方が前回と逆転したことである。</strong> 2026年10月1日の 2.4.69 では、CVE レコードの CVSS が 9.8 に達していたのにApache 自身のラベルは「中（moderate）」止まりで、critical・important は1件も付いていなかった（本DB INC-2026-0320）。<strong>今回は Apache 自身が critical を付けている。</strong>一方で Red Hat は、全体としては Critical としながら<strong>RHEL 9・RHEL 10 については「Critical ではなく Important」</strong>と書いている（出典2）。<strong>「どのラベルを見るか」で対応期限が変わる構図は、前回と同じまま残っている。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s8" title="事案の詳細">事案の詳細</a></li><li><a href="#s9" title="経過">経過</a></li><li><a href="#s10" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s11" title="波及の構造">波及の構造</a></li><li><a href="#s12" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s13" title="対応の評価">対応の評価</a></li><li><a href="#s14" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s15" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s16" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s17" title="出典">出典</a></li><li><a href="#s18" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s19" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>悪用の有無と実証コード（PoC）の公開状況</span><span class="b rsn">公表されていない</span><div class=sm>**Apache の脆弱性一覧も Red Hat の CVE ページも、悪用について何も述べていない。** KEV への収載も本記録では確認していない。 **「悪用の報告が無い」は時点の情報である。** `PR:N/UI:N` で到達する欠陥は、報告が出てからでは遅い（本記録の評価）。 **なお、競合状態（race condition）を利用する欠陥は、 タイミングに依存するため安定した実証コードを作るのが難しい側面がある** （本記録の評価）——ただしそれは成立しないことの保証ではない。</div></li><li><span class=ui>更新以外の回避策（Apache・Red Hat による明示）</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した範囲では、どちらのページにも回避策（mitigation）の記述が無かった。** ただし Red Hat の「`Protocols` で HTTP/2 を有効にしたサーバのみが影響を受ける」 「HTTP/1.1 のみの構成は脆弱ではない」という記述からは、 **HTTP/2 を止めれば成立条件を外せると読める**（本記録の読み。出典2） ——**Red Hat がそれを回避策として提示しているわけではない。** **HTTP/2 の停止は性能と接続多重化を捨てることになる**ため、 更新までの一時措置として扱うのが筋である（本記録の評価）。</div></li><li><span class=ui>侵害を受けていたかを確認する手順（IoC・ログの見方）</span><span class="b rsn">公表されていない</span><div class=sm>**更新前に攻撃を受けていたかを確かめる手順は示されていない。** ヒープ破壊を伴う欠陥は、成功すればアクセスログに痕跡を残さないことがあり、 失敗すれば子プロセスのクラッシュ（セグメンテーション違反）として現れる可能性がある （本記録の評価）。 **したがって、確認の入口になりうるのは「HTTP/2 を有効にしたサーバで 説明のつかない子プロセスの異常終了が増えていないか」である**（本記録の評価） ——**これは Apache・Red Hat が示した手順ではない。**</div></li><li><span class=ui>CVSS 9.8 がどの製品・どの構成を前提に算定されたか</span><span class="b rsn">公表されていない</span><div class=sm>**Red Hat のページには 9.8 とベクタが載っているが、 それがどの製品に対するものかは書かれていない**（本記録が2026年11月12日に確認）。 **RHEL 9・RHEL 10 を Important としている以上、 9.8 は上流（Apache 本体）の構成を前提にした点数である可能性がある**（本記録の推測）。 **Apache 自身は CVSS を公表していない**ため、突き合わせられない。</div></li><li><span class=ui>報告者（credits）</span><span class="b rsn">検証できない</span><div class=sm>**本記録は Apache の脆弱性一覧の credits 欄を読み取っていない** （往復を増やさないための判断）。 **誰が報告したかは、同種の欠陥が他にも残っているかを推し量る材料になる** （本記録の評価）が、本記録では空欄のままにしてある。</div></li><li><span class=ui>主要ディストリビューション・アプライアンスのバックポート状況</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が確認したのは Red Hat の深刻度評価だけで、 RHEL 9・RHEL 10 の修正パッケージが出ているかは確認していない** （Red Hat のページの該当表を読み取れなかった）。 Debian・Ubuntu・SUSE・各種アプライアンス同梱版については何も確認していない。 **同梱版は自分で更新できないことがあり、提供元の対応待ちになる**（本記録の評価）。</div></li><li><span class=ui>mod_h2（GitHub 配布版）の修正リリース番号</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録は GitHub の mod_h2 リリース一覧を参照したが、 2.0.42 までしか掲載されておらず、CVE-2026-119618 を修正したリリースを 特定できなかった**（2026年11月12日時点）。 **httpd 本体ではなく mod_h2 を単体で導入している環境は、 プロジェクトのセキュリティ勧告を直接確認する必要がある**（本記録の評価）。</div></li><li><span class=ui>The Hacker News の記事本文の全体</span><span class="b rsn">検証できない</span><div class=sm>**本記録は当該記事の全文を取得できなかった** （収集時に本文取得が失敗し、再取得も HTTP 403 で拒否された）。 **本記録が記事から取れたのは、見出しと冒頭の数行だけである。** ただし**そこに書かれていた事実（影響バージョン・修正版・HTTP/2 の条件・Red Hat の関与）は すべて一次資料で裏が取れている**ため、記録の根拠は一次資料側に置いてある。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Apache Software Foundation（Apache HTTP Server プロジェクト）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Red Hat</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Apache HTTP Server 2.4.55〜2.4.70 を運用し HTTP/2 を有効にしている組織</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CVE-2026-119618 の報告者</span><span class="b role">発見・通報した主体</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>2.4.71 で対処された CVE の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>Apache の脆弱性一覧ページで「fixed in 2.4.71」として列挙されている件数。 **内訳は critical 1件（CVE-2026-119618）・important 1件（CVE-2026-106023）・ low 1件（CVE-2026-109163）。** **前回の 2.4.69 は20件で critical・important が0件だった**（本DB INC-2026-0320）。</div></div><div class=fig><div class=fh><span class=fl>Red Hat が公表した CVE-2026-119618 の CVSS 3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>ベクタは `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`。 **`PR:N`（権限不要）・`UI:N`（利用者操作不要）であり、 機密性・完全性・可用性のすべてに高い影響**という読みになる。 **これは Red Hat が算定した点数であり、Apache の一覧ページには CVSS が無い**（出典1・2） ——**Red Hat のページには、この点数がどの製品に対するものかは書かれていない**〈未確定3〉。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける Apache HTTP Server の下限バージョン</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2.4.55<span class=fu>バージョン</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>Apache の記載は「from 2.4.55 through 2.4.70」（原文英語）。 **2.4.54 以前は対象外**であり、Red Hat も「mod_http2 の 2.0.8 より前には 当該コードが無い」としている（出典1・2）。 **前回（2.4.69）の mod_http2 の欠陥は 2.4.0 からが対象**で、 今回より広かった（本DB INC-2026-0320）。</div></div><div class=fig><div class=fh><span class=fl>影響を受ける GitHub 配布版 mod_h2 の上限バージョン</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2.0.42<span class=fu>バージョン</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>Apache の記載は &quot;Affected releases of mod_h2 from GitHub: from 2.0.8 through 2.0.42.&quot; （「GitHub の mod_h2 の影響を受けるリリース: 2.0.8 から 2.0.42 まで」。原文英語。出典1）。 **httpd 本体とは別に mod_h2 を入れている環境は、本体のバージョンだけ見ても判定できない。** **2.0.42 を修正する mod_h2 のリリース番号は本記録では確認できなかった** （GitHub のリリース一覧には 2.0.42 までしか載っていなかった）〈未確定4〉。</div></div></div></div>
+<section id="s4"><h2>前回は「クリティカル無し」で済んだが、今回は Apache 自身が critical を付けた<span class="b slot">概観</span></h2><p><strong>2.4.71 が対処したのは3件。</strong> Apache 自身のラベルは critical 1件・important 1件・low 1件で、<strong>critical は mod_http2 の CVE-2026-119618</strong> である（出典1）。</p>
+<ul>
+<li><strong>CVE-2026-119618（critical / mod_http2）</strong> — <code>assign_headers()</code> におけるヒープ破壊と RCE</li>
+<li><strong>CVE-2026-106023（important / mod_md）</strong> — NULL ポインタ参照により子プロセスがクラッシュ</li>
+<li><strong>CVE-2026-109163（low / mod_vhost_alias）</strong> — 1バイトのスタック上書き（CVE-2026-63292 の後に判明）</li>
+</ul>
+<p><strong>これは前回と比べて意味のある変化である。</strong> 2026年10月1日の 2.4.69 では、CVE レコードの CVSS が 9.8（mod_http2 の CVE-2026-57941）に達していたのに、<strong>Apache 自身のラベルは「中（moderate）」が最高で、critical・important は1件も無かった</strong>（本DB INC-2026-0320）。<strong>ラベルだけを対応の起動条件にしている組織は、前回を見送って今回は動く</strong>ことになる。</p>
+<p><strong>ただし今回も、見るラベルによって答えが変わる構図は残っている。</strong> Red Hat Product Security の総合評価は Critical だが、<strong>同じページが「RHEL 9 と RHEL 10 については Critical ではなく Important」と書いている</strong>（出典2）。<strong>RHEL を使っている組織が自社のラベルだけを見ると、Important として扱うことになる。</strong></p></section>
+<section id="s5"><h2>成立条件は「HTTP/2 を有効にしているか」の一点に集約される<span class="b slot">原因・手口</span></h2><p><strong>欠陥の中身は、共有資源に対する同期の不備である。</strong> Apache の記述は "Concurrent Execution using Shared Resource with Improper Synchronization vulnerability in Apache HTTP Server's mod_http2 in assign_headers() can lead to RCE."（「Apache HTTP Server の mod_http2 の<code>assign_headers()</code> における、共有資源を用いた並行実行の同期不備の脆弱性がリモートコード実行に至りうる」。原文英語。出典1）。</p>
+<p><strong>Red Hat の言い換えのほうが、運用者には分かりやすい。</strong>「これはスレッド安全性のバグである。あるスレッドが別のスレッドの持つメモリを書き換えることができ、サーバのメモリを壊す。遠隔の、認証されていない攻撃者が任意のコマンドを実行しうる」（原文英語。出典2）。</p>
+<p><strong>判定の条件は2つだけである</strong>（出典1・2。事実）。</p>
+<ol>
+<li><strong>バージョンが 2.4.55〜2.4.70 であること。</strong> 2.4.54 以前は対象外。GitHub 配布版の mod_h2 を単体で入れている場合は 2.0.8〜2.0.42。</li>
+<li><strong><code>Protocols</code> ディレクティブで HTTP/2（<code>h2</code> または <code>h2c</code>）を有効にしていること。</strong> Red Hat は「HTTP/1.1 のみを提供するよう構成されたサーバは脆弱ではない」と明記した。</li>
+</ol>
+<p><strong>この2条件のどちらかが外れていれば該当しない。</strong>逆に、両方に当たる公開サーバは <code>PR:N/UI:N</code>——<strong>権限も利用者の操作も要らずにインターネット側から届く</strong>（出典2）。</p>
+<p><strong>実務上の難所は、2 の把握である</strong>（本記録の評価）。HTTP/2 は性能のために有効化されることが多く、<strong>リバースプロキシやロードバランサの前段で入れた担当者と、httpd のバージョンを管理している担当者が別</strong>になっている組織では、「自社は該当するのか」の即答ができない。</p></section>
+<section id="s6"><h2>競合状態であることは、安心の材料にはならない<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価である</strong>（公表資料は悪用について何も述べていない）。</p>
+<p><strong>競合状態（race condition）を突く欠陥は、タイミングに依存するため、安定して動く実証コードを作るのが難しい側面がある。</strong>単発のリクエストで確実に発火する種類の欠陥とは、悪用までの距離が違う。</p>
+<p><strong>しかしそれを根拠に優先度を下げるのは筋が悪い</strong>（本記録の評価）。理由は3つある。</p>
+<ul>
+<li><strong>HTTP/2 は多重化が前提のプロトコルである。</strong> 1本の接続で多数のストリームを並行に流せるため、<strong>攻撃者がタイミングを試す回数を稼ぎやすい。</strong>「競合状態だから起こりにくい」という直感は、HTTP/2 の文脈では弱まる。</li>
+<li><strong>成功しなくても害が出る。</strong> ヒープ破壊が失敗すれば子プロセスが落ちる。<strong>任意コード実行に至らないまま、可用性だけが削られる</strong>状態はありうる。</li>
+<li><strong>Apache 自身が critical を付けた。</strong> 前回 9.8 の CVSS に対して moderate で済ませたプロジェクトが、今回は最上位を付けている（出典1・本DB INC-2026-0320）。<strong>ラベルを保守的に運用してきた主体の判断が変わったことには、重みがある。</strong></li>
+</ul>
+<p><strong>「悪用の報告が無い」は、安全の証明ではなく情報の不在である</strong>〈未確定1〉。</p></section>
+<section id="s7"><h2>更新が止まる環境では、HTTP/2 の停止が一時措置になりうる<span class="b slot">対策・注意喚起</span></h2><p><strong>公表された対策は 2.4.71 への更新だけである</strong>（出典1。事実）。<strong>本記録が取得した範囲では、Apache も Red Hat も回避策を示していない</strong>〈未確定2〉。</p>
+<p><strong>ただし、成立条件の記述から一時措置は読み取れる</strong>（本記録の読み）。Red Hat が「HTTP/1.1 のみを提供するよう構成されたサーバは脆弱ではない」と書いている以上（出典2）、<strong><code>Protocols</code> から <code>h2</code> / <code>h2c</code> を外せば成立条件を外せる。</strong></p>
+<p><strong>代償は明示しておく必要がある</strong>（本記録の評価）。</p>
+<ul>
+<li><strong>性能が落ちる。</strong> 多重化・ヘッダ圧縮・サーバプッシュを捨てることになり、リソースの多いページでは体感に出る。</li>
+<li><strong>gRPC が止まる可能性がある。</strong> h2c を前提にした内部通信をhttpd で中継している構成では、<strong>止めた瞬間に業務が壊れる。</strong></li>
+<li><strong>恒久策ではない。</strong> 更新できるまでの時間を買う措置である。</li>
+</ul>
+<p><strong>順序は、①該当台の洗い出し → ②更新できる台は更新 → ③更新できない台（同梱版・アプライアンス）だけ HTTP/2 を落とす、になる</strong>（本記録の整理）。<strong>②と③を同時に判断しようとすると止まる。</strong></p></section>
+<div class="blk " id="s8"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>cves</th><td><div class=sub><b>id:</b> CVE-2026-119618　<b>cvss:</b> 9.8　<b>概要:</b> mod_http2 の `assign_headers()` における、共有資源を用いた並行実行の同期不備 （スレッド安全性の欠陥）。あるスレッドが別のスレッドの持つメモリを書き換えてヒープを壊し、 無認証の遠隔攻撃者が任意コードを実行しうる。 影響バージョンは Apache HTTP Server 2.4.55〜2.4.70、 GitHub 配布版 mod_h2 は 2.0.8〜2.0.42。修正版は 2.4.71。 **Apache の深刻度ラベルは critical**（一覧ページに CVSS は無い）、 **Red Hat の CVSS 3.1 は 9.8（`CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`）**で 総合評価 Critical、ただし **RHEL 9・RHEL 10 は Important**。 **成立には `Protocols` ディレクティブで HTTP/2（h2 / h2c）を有効にしていることが要る。**　<b>exploited:</b> 不明</div><div class=sub><b>id:</b> CVE-2026-106023　<b>概要:</b> mod_md における NULL ポインタ参照により、子プロセスがクラッシュする。 Apache の深刻度ラベルは important。 **CVSS・影響バージョン・成立条件は本記録では確認していない。**　<b>exploited:</b> 不明</div><div class=sub><b>id:</b> CVE-2026-109163　<b>概要:</b> mod_vhost_alias における1バイトのスタック上書き。 Apache の一覧では CVE-2026-63292（2.4.69 で修正されたスタックベースの バッファオーバーフロー）の後に判明したものとして記載されている。 Apache の深刻度ラベルは low。 **CVSS・影響バージョン・成立条件は本記録では確認していない。**　<b>exploited:</b> 不明</div></td></tr><tr><th>fix</th><td><b>バージョン:</b> 2.4.71　<b>released:</b> 2026年11月11日　<b>補足:</b> **3件すべてが 2.4.71 で解消する**（出典1）。 **httpd の更新には再起動（または graceful restart）が必要**であり、 停止時間の調整が要る（本記録の整理。Apache が述べているわけではない）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 2.4.71（または配布元のバックポート版）への更新　<b>副作用:</b> **再起動が必要になり、停止時間の調整が要る。** 同梱版・アプライアンスでは提供元の対応を待つことになり、 **自組織の判断だけでは完了できない**（本記録の評価）〈未確定6〉。　<b>補足:</b> **公表された唯一の対策**（出典1）。</div><div class=sub><b>数え方:</b> `Protocols` ディレクティブから `h2` / `h2c` を外し、HTTP/1.1 のみで提供する （更新までの一時措置）　<b>副作用:</b> **多重化・ヘッダ圧縮の利点を失い性能が落ちる。 h2c を前提にした gRPC 等の内部通信は停止する**（本記録の評価）。　<b>補足:</b> **Red Hat の「HTTP/1.1 のみを提供する構成は脆弱ではない」という記述から 本記録が導いた一時措置であり、Red Hat・Apache が回避策として 提示したものではない**（本記録の読み）〈未確定2〉。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s9"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**Apache HTTP Server 2.4.71 が公開され、脆弱性一覧ページに3件の CVE が掲載された。** critical が mod_http2 の CVE-2026-119618（`assign_headers()` における ヒープ破壊と RCE）、important が mod_md の CVE-2026-106023 （NULL ポインタ参照により子プロセスがクラッシュ）、 low が mod_vhost_alias の CVE-2026-109163（1バイトのスタック上書き。 CVE-2026-63292 の後に判明したもの）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**Apache は CVE-2026-119618 の影響範囲を 「Apache HTTP Server 2.4.55 から 2.4.70 まで」、 GitHub 配布版 mod_h2 については「2.0.8 から 2.0.42 まで」と記載した。** 修正版は 2.4.71。**一覧ページに CVSS は無い。**</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**Red Hat が CVE-2026-119618 のページを公開した。** CVSS 3.1 基本値 9.8（`CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`）、 「スレッド安全性のバグ」「遠隔の無認証攻撃者が任意のコマンドを実行しうる」 「`Protocols` ディレクティブで HTTP/2（h2 / h2c）を有効にしたサーバのみが影響を受ける」 「HTTP/1.1 のみを提供する構成は脆弱ではない」と記載（原文英語）。 **Product Security の総合評価は Critical、RHEL 9・RHEL 10 は Important。 RHEL 8 以前は影響なし。mod_http2 の 2.0.8 より前には当該コードが無い**とした。 **公開日が11月11日であることは本記録では確認しておらず、 11月12日時点で参照できたことのみ確認している**〈未確定6〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が「Critical Apache HTTP/2 Flaw Could Let Unauthenticated Attackers Execute Code Remotely」として報じた。** 本文は CVE-2026-119618 が 2.4.55〜2.4.70 に影響し 2.4.71 で修正された、 HTTP/2 を有効にしたサーバのみが影響を受ける（Red Hat による）、 と伝えている。 **本記録は当該記事の全文を取得できていない** （収集時に本文取得が失敗し、再取得も HTTP 403 で拒否された）〈未確定7〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が Apache の脆弱性一覧ページと Red Hat の CVE ページを取得して確認した。** 確認できたのは、①2.4.71 は2026年11月11日公開で3件（critical / important / low 各1件）、 ②critical は mod_http2 の CVE-2026-119618 で影響は 2.4.55〜2.4.70、 ③Red Hat の CVSS は 9.8 で成立条件は HTTP/2 の有効化、 ④同じ Red Hat が RHEL 9・10 を Important としている、の4点。 **悪用の有無・実証コードの公開状況・報告者・回避策は確認できなかった。**</td></tr></tbody></table></div></div>
+<div id="s10"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>深刻度のラベルが、Apache・Red Hat 総合・RHEL 9/10 で三通りに分かれている</span><div class=sm>**Apache の脆弱性一覧は critical を付け、CVSS は載せていない**（出典1）。 **Red Hat は CVSS 3.1 で 9.8 を示し、Product Security の総合評価を Critical とした**（出典2）。 **ところが同じ Red Hat のページが「RHEL 9 と RHEL 10 については Critical ではなく Important と評価される」と書いている**（出典2）。 **どれも誤りではない。** Apache と Red Hat 総合は上流のコードと 一般的な構成を見ており、RHEL 9/10 の評価は同製品での出荷構成や 緩和機構を織り込んだものと読める（本記録の推測）〈未確定3〉。 **運用上の結論は「自社が見ているラベルが、どの前提のものかを把握する」ことになる** （本記録の評価）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Apache の脆弱性一覧は CVSS に触れていない</span><div class=sm>**Apache は CNA（CVE 採番機関）でありながら、 脆弱性一覧ページに CVSS を掲載していない**（本記録が2026年11月12日に確認。前回の 2.4.69 も同じ）。 **9.8 という数字は Red Hat が出したものである**（出典2）。 **「Apache が 9.8 と評価した」と読むのは誤り**であり、 報道や社内の起票でこの取り違えが起きやすい（本記録の評価）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の記事本文を本記録は全文確認していない</span><div class=sm>**収集時（2026年11月12日 17:00 JST）に本文取得が失敗し（`content_source: fetch_failed`）、 本記録による再取得も HTTP 403 で拒否された**（Cloudflare の JavaScript 判定）。 **取れたのは見出しと冒頭の数行だけである。** **そこに書かれていた事実関係（影響バージョン 2.4.55〜2.4.70、修正版 2.4.71、 HTTP/2 を有効にしたサーバのみ、Red Hat が RHEL に同梱）は すべて一次資料で裏が取れている**ため、本記録は出典1・2 を根拠に置いている。 **記事が追加で述べている事柄（露出台数・PoC・悪用状況など）があっても、 本記録には反映されていない。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>mod_h2（GitHub 配布版）の修正リリースを特定できていない</span><div class=sm>**Apache は影響範囲を「mod_h2 2.0.8 から 2.0.42 まで」としている**（出典1）が、 **本記録が GitHub のリリース一覧（出典4）を参照した時点では 2.0.42 までしか掲載されておらず、当該 CVE を修正したリリースが見つからなかった。** **リリース一覧のページに当該 CVE への言及も無かった。** ページの反映遅れか、別の場所（セキュリティ勧告）に出ているのか、 **本記録では判別できない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s11"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>到達条件は「2.4.55〜2.4.70」と「Protocols に h2 / h2c」の AND だけで、どちらかが外れれば届かない</div><div class=svgwrap><svg viewBox="0 0 794 426" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,213.0 C193.0,213.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C295.0,111.0 295.0,206.0 220,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,206.0 C397.0,206.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C499.0,60.0 499.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C499.0,60.0 499.0,264.0 424,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,169.0 628,169.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,257.0 628,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,366.0 C499.0,366.0 499.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,308.0 C295.0,308.0 295.0,206.0 220,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">無認証の攻撃者（インター</text><text x="91.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ネット側）</text><text x="91.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS の PR:N/</text><text x="91.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">UI:N に相当</text><rect x="220" y="74.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTP/2 の多重化さ</text><text x="295.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">れた並行リクエスト</text><text x="295.0" y="123.0" text-anchor="middle" fill="#f48fb1" font-size="10">1接続で多数のストリーム</text><text x="295.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">を並行に流せる</text><rect x="220" y="162.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Protocols ディ</text><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レクティブ（h2 / h</text><text x="295.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2c の有効化）</text><text x="295.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">Red Hat は「HT</text><text x="295.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">TP/1.1 のみの構成</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">mod_http2 の </text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">assign_heade</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rs()（CVE-20…</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">共有資源の同期不備。スレ</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">ッド安全性の欠陥</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Apache HTTP </text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Server 2.4.5</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">5〜2.4.70</text><text x="499.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">2.4.54 以前は対象</text><text x="499.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">外</text><rect x="424" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GitHub 配布版 m</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">od_h2 2.0.8〜</text><text x="499.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2.0.42</text><text x="499.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">本体と別に導入している環</text><text x="499.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">境の判定対象</text><rect x="628" y="132.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ワーカープロセスのヒープ</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（任意コード実行）</text><text x="703.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">他スレッドのメモリを書き</text><text x="703.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">換える</text><rect x="628" y="220.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">子プロセスの異常終了（可</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">用性の低下）</text><text x="703.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">失敗時に現れうる。本記録</text><text x="703.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">の評価</text><rect x="424" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対策版 2.4.71（2</text><text x="499.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">026年11月11日公開</text><text x="499.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="499.0" y="385.0" text-anchor="middle" fill="#f48fb1" font-size="10">3件すべてを解消。再起動</text><text x="499.0" y="397.0" text-anchor="middle" fill="#f48fb1" font-size="10">が必要</text><rect x="220" y="264.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">一時措置: Protoc</text><text x="295.0" y="300.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ols から h2 / </text><text x="295.0" y="314.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">h2c を外す</text><text x="295.0" y="327.0" text-anchor="middle" fill="#f48fb1" font-size="10">性能低下と h2c 通信</text><text x="295.0" y="339.0" text-anchor="middle" fill="#f48fb1" font-size="10">の停止を伴う。本記録の読</text></svg></div><div class=fn>Apache の脆弱性一覧（2.4.71）と Red Hat の CVE-2026-119618 ページにもとづく （本記録が2026年11月12日に確認）。 **実線の経路は「公表された脆弱性の成立条件」であり、 実際の攻撃が観測されたことを示すものではない**（悪用の有無は公表されていない）。 **mod_md（CVE-2026-106023）・mod_vhost_alias（CVE-2026-109163）の成立条件は 本記録では確認していない。**</div></div></div>
+<div class="blk " id="s12"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s13"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s14"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>ベンダーのラベルは年単位で動く前提で、対応の起動条件をラベル単独に置かない</div><div class=lw>**同じプロジェクトが、10月には CVSS 9.8 の欠陥に moderate を付け、 11月には critical を付けている**（出典1・本DB INC-2026-0320）。 **さらに Red Hat は同じページで、総合 Critical と RHEL 9/10 の Important を併記している**（出典2）。 **ラベルを起動条件にしている組織の対応速度は、ベンダーの運用の揺れに従属する。**</div><div class=la><b>取るべき行動</b> 脆弱性管理の規程で、**期限の起動条件に「CVSS ベクタの `PR` と `UI` が ともに不要」という機械的な条件を1本入れる。** ラベルは補助に落とし、**ベンダーが複数のラベルを出した場合は厳しい側を採る**と明記する。</div></li><li><div class=lp>「どの製品のラベルを見るか」が決まっていない組織は、同じ脆弱性に二つの期限を持つ</div><div class=lw>**本件では、上流（Apache）が critical、Red Hat 総合が Critical、 RHEL 9/10 が Important である**（出典1・2）。 **自社が RHEL を使っていれば Important、ソースビルドなら critical** になり、 **同一組織内でサーバごとに期限が割れる。**</div><div class=la><b>取るべき行動</b> **「上流の評価と配布元の評価が食い違ったときにどちらを採るか」を規程に1行書く。** 併せて、**httpd がソースビルドか配布パッケージか同梱版かを、 台ごとに台帳に持たせる**（期限の根拠が台ごとに違うため）。</div></li><li><div class=lp>構成情報を持っていない組織では、公表から該当判定までの時間がそのまま露出時間になる</div><div class=lw>**本件の成立条件は「HTTP/2 を有効にしているか」の一点である**（出典2）。 **条件は単純なのに、即答できる組織は多くない**（本記録の評価）。 HTTP/2 は性能のために入れられ、入れた担当とバージョンを見る担当が分かれやすい。</div><div class=la><b>取るべき行動</b> **`httpd -M` の出力と `Protocols` の設定値を構成管理に取り込み、 脆弱性公表時に突き合わせられる状態にする。** **アプライアンス・業務パッケージ同梱の httpd を含めて棚卸しする** （自分で更新できない台こそ先に把握が要る）。</div></li><li><div class=lp>「悪用の報告が無い」「競合状態だから難しい」を優先度を下げる根拠に使わない</div><div class=lw>**Apache も Red Hat も悪用について沈黙している**（出典1・2）〈未確定1〉。 **沈黙は安全ではなく情報の不在である。** **HTTP/2 は多重化が前提のプロトコルであり、 タイミングを試す回数を稼ぎやすい**（本記録の評価）—— 競合状態であることは成立しないことの保証にならない。</div><div class=la><b>取るべき行動</b> **脆弱性台帳で「悪用情報なし」を理由に延期した案件を洗い出し、 ベクタが `PR:N/UI:N` のものを例外として前に出す。** **KEV 収載を待つ運用になっていないかを点検する。**</div></li></ul></div></div>
+<div id="s15"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>判定は「バージョン」と「Protocols の値」の2条件で機械的に切れる</div><div class=lw>**影響は 2.4.55〜2.4.70 で、かつ `Protocols` に `h2` / `h2c` がある構成に限られる** （出典1・2。事実）。**2.4.54 以前と HTTP/1.1 のみの構成は対象外である。** **GitHub 配布版の mod_h2 を単体で入れている環境は 2.0.8〜2.0.42 が対象**で、 本体バージョンだけでは判定できない。</div><div class=la><b>取るべき行動</b> **全台で `httpd -v` と、`Protocols` を書いている箇所の grep （`httpd -S` と設定ファイル全体）を取り、2条件の AND で該当表を作る。** **mod_h2 を単体導入している台は別建てで数える。**</div></li><li><div class=lp>更新できない台には、HTTP/2 の停止という一時措置がある（代償つき）</div><div class=lw>**Red Hat は「HTTP/1.1 のみを提供する構成は脆弱ではない」と明記している**（出典2）。 **更新と違って再起動の調整が軽く、即日打てる**（本記録の評価）—— **ただし h2c を前提にした gRPC 等の内部通信は止まる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **同梱版・アプライアンスなど更新を自組織で完結できない台を先に特定し、 その台だけ `Protocols` から `h2` / `h2c` を外す。** **外す前に、当該台を経由する gRPC・h2c の通信が無いかを アクセスログのプロトコル欄で確認する**（止めてから気づくと業務が壊れる）。</div></li><li><div class=lp>侵害確認の入口は、HTTP/2 を有効にした台の子プロセス異常終了である</div><div class=lw>**IoC もログの見方も公表されていない**（出典1・2）〈未確定3〉。 **ヒープ破壊は、成功時にアクセスログに痕跡を残さないことがあり、 失敗時には子プロセスのクラッシュとして現れる可能性がある**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **HTTP/2 を有効にしている台で、エラーログの `child pid ... exit signal Segmentation fault` 等の 異常終了の件数を更新前後で比べる。** **`CoreDumpDirectory` を設定していない台では証跡が残らない**ので、 重要な台だけでも有効化を検討する。</div></li><li><div class=lp>HTTP/2 を「性能のために入れたもの」として棚卸し対象から落としていないか見る</div><div class=lw>**本件の成立条件は、機能としての HTTP/2 の有効化そのものである**（出典2）。 **性能設定として入れられた項目は、セキュリティの構成管理の対象から 漏れやすい**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **構成管理の点検項目に `Protocols` を加える。** **使っていない台では平時から HTTP/2 を落としておく** （攻撃面を減らす。本件に限らず mod_http2 は過去にも繰り返し CVE が出ている。 本DB INC-2026-0320 の CVE-2026-57941 も mod_http2 である）。</div></li></ul></div></div>
+<div class="blk " id="s16"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Apache HTTP Server 2.4.55〜2.4.70 を運用しており、`Protocols` ディレクティブで HTTP/2（`h2` または `h2c`）を有効にしている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> GitHub 配布版の mod_h2 を 2.0.8〜2.0.42 の範囲で単体導入している</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> HTTP/1.1 のみで提供しており、`Protocols` に h2 / h2c を書いていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Web サーバの有効モジュールと `Protocols` の値を構成管理に持っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> アプライアンス・業務パッケージ・コンテナイメージに同梱された httpd がある （自組織でバージョンを選べない）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性対応の期限を、ベンダーの深刻度ラベル（critical / important 等）だけで決めている</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月11日 Apache Software Foundation（Apache HTTP Server プロジェクト）</span> <a href="https://httpd.apache.org/security/vulnerabilities_24.html" target="_blank" rel="noreferrer noopener nofollow">Apache HTTP Server 2.4 vulnerabilities（2.4.71 で修正された脆弱性の一覧）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料。** 「fixed in 2.4.71」として3件の CVE が掲載され、 CVE-2026-119618 には **critical** のラベルと 「mod_http2: heap corruption and RCE in assign_headers」という題、 影響範囲「from 2.4.55 through 2.4.70」「Affected releases of mod_h2 from GitHub: from 2.0.8 through 2.0.42」が記載されている。 **CVSS は掲載されていない。** 本記録はこのページで件数（3件・critical 1件 / important 1件 / low 1件）、 ラベル、影響範囲、2.4.71 の公開日（2026-11-11）を確認した。 **報告者（credits）欄は読み取っていない**〈未確定5〉。）</span></li><li><span class=rid>[2]</span> <span class=sm>Red Hat</span> <a href="https://access.redhat.com/security/cve/CVE-2026-119618" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-119618（Red Hat Customer Portal の CVE ページ）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料（配布元側）。** CVSS 3.1 基本値 **9.8**、ベクタ `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`。 「スレッド安全性のバグ」「あるスレッドが別のスレッドの持つメモリを書き換え、 サーバのメモリを壊す」「遠隔の無認証攻撃者が任意のコマンドを実行しうる」 「`Protocols` ディレクティブを通じて HTTP/2（h2 / h2c）を有効にしているサーバのみが 影響を受ける」「HTTP/1.1 のみを提供するよう構成されたサーバは脆弱ではない」 （いずれも原文英語）。 **Product Security の総合評価は Critical、RHEL 9・RHEL 10 は Important、 RHEL 8 以前は影響なし、mod_http2 の 2.0.8 より前には当該コードが無い**と記載。 **回避策（mitigation）の記述は無い。影響パッケージの表は読み取れていない**〈未確定6〉。 **公開日は本記録では確認していない**。）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[4]</span> <span class=sm>icing/mod_h2（GitHub）</span> <a href="https://github.com/icing/mod_h2/releases" target="_blank" rel="noreferrer noopener nofollow">mod_h2 のリリース一覧</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**影響範囲とされた GitHub 配布版 mod_h2 の確認先。** **本記録が2026年11月12日に参照した時点では v2.0.33〜v2.0.42 が掲載されており、 CVE-2026-119618 を修正したリリースは見つからなかった**〈齟齬4〉。 単体導入している環境の判定には、プロジェクト側の勧告を別途確認する必要がある。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月12日 05:12 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/11/critical-apache-http2-flaw-could-let.html" target="_blank" rel="noreferrer noopener nofollow">Critical Apache HTTP/2 Flaw Could Let Unauthenticated Attackers Execute Code Remotely</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点になった報道。** 冒頭で CVE-2026-119618 が 2.4.55〜2.4.70 に影響し 2.4.71（前日公開）で修正されたこと、 HTTP/2 を有効にしたサーバのみが影響を受けると Red Hat が述べていること、 Red Hat が RHEL に httpd を同梱していることを伝えている。 **本記録は全文を取得できていない**（収集時に本文取得が失敗し、 再取得も HTTP 403 で拒否された）〈齟齬3〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s18"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月12日</span> <span class="b rev">新規作成</span> 2026年11月12日収集分の The Hacker News の記事を起点に作成。 **一次資料として Apache の脆弱性一覧ページと Red Hat の CVE ページを取得して裏を取った。** 確認できたのは、①2.4.71 は2026年11月11日公開で3件（critical / important / low 各1件）、 ②critical は mod_http2 の CVE-2026-119618 で、影響は 2.4.55〜2.4.70 （GitHub 版 mod_h2 は 2.0.8〜2.0.42）、 ③Red Hat の CVSS は 9.8（`PR:N/UI:N`）で、成立条件は `Protocols` による HTTP/2 の有効化、 ④同じ Red Hat が総合 Critical・RHEL 9/10 Important という二重のラベルを示している、の4点。 **悪用の有無・PoC・報告者・回避策・ディストリビューションのバックポート状況・ mod_h2 の修正リリース番号は確認できず**、unknowns / discrepancies に残した。 **起点の報道（The Hacker News）は 403 で全文を取得できなかった**ため、 記録の根拠は一次資料側に置き、その旨を discrepancies に記録した。</li></ul></div></div>
+<div class="blk " id="s19"><h3>タグ</h3><span class="b tag">Apache HTTP Server</span><span class="b tag">httpd 2.4.71</span><span class="b tag">Apache mod_http2</span><span class="b tag">mod_h2</span><span class="b tag">HTTP/2</span><span class="b tag">CVE-2026-119618</span><span class="b tag">無認証RCE</span><span class="b tag">競合状態</span><span class="b tag">Red Hat Enterprise Linux</span><span class="b tag">脆弱性管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-12 18:03 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
