@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>MongoDB Server に認証前UAF — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1045</span>MongoDB Server に認証前UAF</h1>
+<header class="site-header">
+  <p class="subtitle">**MongoDB は2026年11月10日、MongoDB Server のレプリケーション処理に 認証前に到達できる Use After Free（CVE-2026-118383）を公表し、修正版を提供した** （ベンダーの表題は「Pre-authentication use-after-free in MongoDB Server replica set primary catch-up」）。 **レプリカセットで新たに選出されたプライマリが最新状態へ追い付く キャッチアップ処理の完了時に不具合が生じる**（Security NEXT）。 **CVSS は 9.5（ベンダーの掲載値）で、重要度は最上位のクリティカル。 修正は 9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32。** **公表時点で悪用は確認されていない**（Security NEXT）。 **ただし任意コード実行まで至るかは資料で評価が分かれている。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月10日（MongoDB のセキュリティアドバイザリの公表・現地時間）</span>
+  <span>最終更新: 2026年11月13日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>MongoDB は現地時間2026年11月10日、MongoDB Server の脆弱性 CVE-2026-118383 を公表した</strong>（出典1）。 <strong>ベンダーの表題は「Pre-authentication use-after-free in MongoDB Server replica set primary catch-up」（MongoDB Server のレプリカセットのプライマリ 追い付き処理における認証前の Use After Free）である</strong>（出典1。原文英語を訳出）。 <strong>本記録が取得した時点で、ベンダーの一覧ページに掲載されている CVSS は 9.5 で、 評点の版とベクター文字列は掲載されていない</strong>（出典1。本記録の確認）〈齟齬1〉。 <strong>影響する版は 9.0.0〜9.0.7 未満・8.3.0〜8.3.16 未満・8.0.0〜8.0.37 未満・ 7.0.0〜7.0.48 未満・6.0.0〜6.0.30 未満・5.0.0〜5.0.35 未満・4.4.0〜4.4.32 未満で、 修正版は各系列の上限値（9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32）である</strong>（出典1）。 <strong>リリースノートは 9.0.7 と 8.0.37 をいずれも2026年11月10日付とし、 「CVE-2026-118383 の修正を含む」と記した上で、 同じリリースの項目として 「SERVER-138175 Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」 を挙げている</strong>（出典2。原文英語。本記録が確認）〈重要〉。 <strong>Security NEXT は、レプリカセットにおいて新たに選出されたプライマリが 最新の状態へ追い付くキャッチアップ処理の完了時に不具合が生じるおそれがあり、 認証を必要とすることなく悪用され、細工されたリクエストによってサーバが 予期せず終了したり、条件次第ではサーバプロセスの権限で任意のコードを 実行される可能性があると報じている</strong>（出典3。原文日本語）。 <strong>同記事は CVSSv4.0 の基本値を 9.5、CVSSv3.1 を 9.0 とし、 重要度は4段階中もっとも高いクリティカルであるとしている</strong>（出典3）—— <strong>9.5 はベンダー掲載値と一致する</strong>（本記録の確認）。 <strong>また追加リリースとして 9.0.8・8.3.17・8.0.38 が提供されているとする</strong>（出典3）—— <strong>ただしリリースノート上の 9.0.8・8.0.38 は クロスコンパイル成果物のディレクトリ名に関する項目（SERVER-138547）のみを含み、 本 CVE への言及は無い</strong>（出典2。本記録の確認）〈重要〉。 <strong>アドバイザリの公表時点で脆弱性の悪用は確認されていない</strong>（出典3）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>本脆弱性の影響を受けた組織・件数・地域（日本国内の該当有無）</span><span class="b rsn">探索したが未発見</span><div class=sm>**本件は悪用の報告を伴わない脆弱性の公表であり、被害事例は存在しない** （出典3。整理は本記録）〈重要〉—— **Security NEXT は「アドバイザリの公表時点で脆弱性の悪用は確認されていない」と 記している**（出典3）。 **本記録は一次公表・報道の双方を探索したが、影響を受けた組織の報告を 発見できなかった**（本記録の明示）——**「非開示」ではなく、 報告される被害がまだ無い段階である**（本記録の評価）。 **影響する版を運用している組織の数は、ベンダーも示していない。**</div></li><li><span class=ui>攻撃の具体的な手順と、成立に要する前提条件の詳細</span><span class="b rsn">公表されていない</span><div class=sm>**公表されているのは「認証前に到達できる」「新たに選出されたプライマリの 追い付き処理の完了時」という段階の記述までである**（出典1・3）〈重要〉—— **どのようなリクエストを、どのタイミングで送る必要があるかは示されていない。** **The Hacker News が示した「2つのリクエスト」「最近の変更を欠いたまま昇格」も 条件の記述であり、手順ではない**（出典4）。 **攻撃と通常の障害を区別する手がかりも示されていない**（本記録の確認）。</div></li><li><span class=ui>更新以外の緩和策（構成変更による回避手段）</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した資料（出典1・2・3・4）に、 構成変更による回避策の記述は無い**（本記録の確認）〈重要〉—— **ベンダーの説明文の全文を取得できていないため、 そこに緩和策が書かれている可能性は排除できない**〈齟齬2〉。 **本記録が整理できる手は、修正版への更新と到達経路の制限の2つである** （本記録の整理）。</div></li><li><span class=ui>発見者・報告経路</span><span class="b rsn">公表されていない</span><div class=sm>**ベンダーの一覧ページに謝辞の記載は無く、 本記録は説明文の全文を取得できていない**（出典1。本記録の確認）〈齟齬2〉—— **報道（出典3・4）にも発見者の記載は無い。** **社内で発見されたのか外部からの報告かも不明である。**</div></li><li><span class=ui>マネージドサービス（MongoDB Atlas 等）における適用状況</span><span class="b rsn">公表されていない</span><div class=sm>**本記録はマネージドサービス側の対応について資料を確認していない** （本記録の明示）〈重要〉—— **自前運用の版の更新とは作業が分かれるため、 利用組織はサービス提供者の告知を別に確認する必要がある**（本記録の推奨）。 **8.3.17 のリリースノートも本記録は確認していない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>MongoDB, Inc.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>ベンダー一覧ページに掲載された CVSS 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.5<span class=fu>点</span></div><div class=fn>**MongoDB の脆弱性一覧ページに 9.5 として掲載されている**（出典1。本記録が確認）〈重要〉—— **評点の版（CVSS v3.1 か v4.0 か）とベクター文字列はページに記載が無い** （本記録の確認）〈齟齬1〉。 **Security NEXT は CVSSv4.0 の基本値を 9.5 としており、この値と一致する**（出典3）—— **したがって 9.5 は v4.0 の値とみられる**（本記録の推定）。</div></div><div class=fig><div class=fh><span class=fl>報道が示した CVSSv3.1 基本値</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>9.0<span class=fu>点</span></div><div class=fn>**Security NEXT が CVSSv3.1 を 9.0 としている**（出典3）〈齟齬1〉—— **ベンダーの一覧ページにはこの値の記載が無く、本記録は裏を取れていない** （本記録の明示）。 **重要度は4段階中もっとも高いクリティカルであるとしている**（出典3）。</div></div><div class=fig><div class=fh><span class=fl>修正版が提供された系列の数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>7<span class=fu>系列</span></div><div class=fn>**9.0／8.3／8.0／7.0／6.0／5.0／4.4 の7系列に修正版が出ている** （出典1。計数は本記録）〈重要〉—— **4.4 系まで遡って修正が出ていることは、 長期に稼働している旧版の環境が対象に含まれることを意味する**（本記録の評価）。 **「系列」であって版の数ではない**（本記録の注記）。</div></div><div class=fig><div class=fh><span class=fl>報道が示したクラッシュ誘発に要するリクエスト数</span><span class="b conf">確定</span><span class="b org">報道値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fn>**The Hacker News が「2つのリクエストを送ることでクラッシュを引き起こせる」と 報じた値である**（出典4。原文英語を訳出）〈齟齬3〉—— **ベンダーの公表資料にこの記述は確認できていない**（本記録の明示）。 **「件」はリクエストの数であり、攻撃の試行回数ではない**（本記録の注記）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**公表されている範囲は次のとおりである**（出典1・2・3・4）。 MongoDB Server のレプリケーション処理に Use After Free があり、 認証を経ずに到達できる。 成立の場面は、レプリカセットで新たに選出されたプライマリが 最新状態へ追い付く（キャッチアップ）処理である。 細工されたリクエストによってサーバプロセスが予期せず終了する。 **任意コード実行まで至るかは資料で評価が分かれている**〈齟齬3〉—— **Security NEXT は「条件次第でサーバプロセスの権限で任意のコードを実行される 可能性がある」とし、The Hacker News は「クラッシュを引き起こす」としている** （出典3・4）。 **実環境での悪用は公表時点で確認されていない**（出典3）。 **攻撃の具体的な手順・前提となるネットワーク到達性の条件は公表されていない** 〈未確定2〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [3] [4]</span></div><div>攻撃者が、影響する版の MongoDB Server へ認証を経ずにリクエストを送る。 ベンダーの表題は &quot;Pre-authentication&quot;（認証前）であり、 Security NEXT も「認証を必要とすることなく悪用されるおそれがある」と記す （出典1・3）。 The Hacker News は要するリクエストを2つとしている（出典4）</div><div class=fn>根拠: MongoDB の脆弱性一覧ページの表題（出典1）、 Security NEXT の記述（出典3）、The Hacker News の記述（出典4）</div></li><li><div class=stg><span class="b stage">2. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[2] [3] [4]</span></div><div>レプリカセットで新たに選出されたプライマリが最新の状態へ追い付く キャッチアップ処理の完了時に不具合が生じ、 解放済みメモリの参照によってサーバプロセスが予期せず終了する（出典3）。 MongoDB 自身の修正項目は 「Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」 である（出典2。原文英語）。 The Hacker News は、クラッシュが起きるのは当該サーバが 最近の変更の一部を欠いたまま後にプライマリへ選出された場合のみであるとしている （出典4。原文英語を訳出）</div><div class=fn>根拠: MongoDB のリリースノートの修正項目（出典2）、 Security NEXT の記述（出典3）、The Hacker News の記述（出典4）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">推定</span><span class=srcs>[3]</span></div><div>Security NEXT は「条件次第ではサーバプロセスの権限で任意のコードを 実行される可能性がある」と報じている（出典3。原文日本語）。 **本段の成立については資料で評価が分かれており、 The Hacker News はクラッシュまでを記述し任意コード実行に触れていない** （出典4）〈齟齬3〉。 **ベンダー自身がこの点をどう記述しているかは、 本記録の取得では確認できていない**〈齟齬2〉</div><div class=fn>根拠: Security NEXT の記述（出典3）。 **ベンダーの一次資料による裏付けは本記録では取れていない**（本記録の明示）</div></li></ol></div>
+<section id="s5"><h2>可用性のために組んだレプリカセットが、そのまま攻撃面になっている<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>成立の場面は、レプリカセットのフェイルオーバーである（出典1・2・3）。</p>
+<p>ベンダーが付けた表題は次のとおりである（出典1。原文英語を訳出）。</p>
+<blockquote>
+<p>「MongoDB Server のレプリカセットのプライマリ追い付き処理における認証前の Use After Free」</p>
+</blockquote>
+<p>MongoDB 自身の修正項目は次である（出典2。原文英語）。</p>
+<blockquote>
+<p>「SERVER-138175 Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」</p>
+</blockquote>
+<p><code>CatchupState</code> は、ノードがプライマリになる前の「追い付き」処理を担うレプリケーションの構成要素である。Security NEXT の説明は「新たに選出されたプライマリが最新の状態へ追い付くキャッチアップ処理の完了時に不具合が生じるおそれがある」である（出典3）。</p>
+<p><strong>ここが本件の読みどころである</strong>（本記録の評価）〈重要〉。レプリカセットは MongoDB の標準的な冗長構成であり、単一障害点を避けるために組むものである。<strong>その冗長化のための処理に、認証を経ずに到達できる不備があった</strong>——つまり可用性のための仕組みが可用性を損なう経路になっている。</p>
+<p>The Hacker News の説明はこの条件性をより具体に述べている（出典4。原文英語を訳出）。</p>
+<blockquote>
+<p>「クラッシュが起きるのは、そのサーバが最近の変更の一部を欠いたまま、後にメインのサーバを引き継ぐよう選出された場合のみである」</p>
+</blockquote>
+<p><strong>つまり「遅れているメンバーが昇格する」という、障害時にまさに起こる状況が条件になっている</strong>（本記録の整理）。平常時に試しても再現しない種類の不備である。</p></section>
+<section id="s6"><h2>4.4 系まで修正が出ている——対象は「いま運用している旧版」である<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p>ベンダーが示した影響範囲と修正版は次のとおりである（出典1。本記録が確認）。</p>
+<table>
+<thead>
+<tr>
+<th>系列</th>
+<th>影響する版</th>
+<th>修正版</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>9.0</td>
+<td>9.0.0 以上 9.0.7 未満</td>
+<td>9.0.7</td>
+</tr>
+<tr>
+<td>8.3</td>
+<td>8.3.0 以上 8.3.16 未満</td>
+<td>8.3.16</td>
+</tr>
+<tr>
+<td>8.0</td>
+<td>8.0.0 以上 8.0.37 未満</td>
+<td>8.0.37</td>
+</tr>
+<tr>
+<td>7.0</td>
+<td>7.0.0 以上 7.0.48 未満</td>
+<td>7.0.48</td>
+</tr>
+<tr>
+<td>6.0</td>
+<td>6.0.0 以上 6.0.30 未満</td>
+<td>6.0.30</td>
+</tr>
+<tr>
+<td>5.0</td>
+<td>5.0.0 以上 5.0.35 未満</td>
+<td>5.0.35</td>
+</tr>
+<tr>
+<td>4.4</td>
+<td>4.4.0 以上 4.4.32 未満</td>
+<td>4.4.32</td>
+</tr>
+</tbody>
+</table>
+<p><strong>7系列すべてに修正が出ている</strong>（出典1。計数は本記録）。<strong>4.4 系まで遡っている点は実務的な意味を持つ</strong>（本記録の評価）〈重要〉——修正が出るということは、その系列を運用している環境が存在するとベンダーが見ているということである。</p>
+<p>確認すべきは「いま何を動かしているか」である（本記録の推奨）。マネージドサービス（MongoDB Atlas 等）か自前運用かで作業が分かれ、自前運用の場合はレプリカセットのメンバーごとに版が異なることもある。<strong>メンバー単位で版を集計する必要がある</strong>（本記録の整理）—— 1台でも古ければ、その1台が昇格したときに条件が揃う。</p>
+<p><strong>なお、マネージドサービス側の適用状況について本記録は資料を確認していない</strong>〈未確定4〉。</p></section>
+<section id="s7"><h2>追加リリース 9.0.8・8.0.38 は本脆弱性の修正ではない<span class="b slot">再発防止</span><span class=srcs>出典 [2] [3]</span></h2><p>Security NEXT は「また追加リリースとして『同9.0.8』『同8.3.17』『同8.0.38』が提供されている」と記している（出典3）。</p>
+<p><strong>本記録がリリースノートを確認したところ、9.0.8 および 8.0.38 に記載されている項目は「SERVER-138547 Use target architecture in cross-compiled archive directory names」のみで、CVE-2026-118383 への言及は無い</strong>（出典2。原文英語。本記録の確認）〈重要〉。</p>
+<p>一方、9.0.7 のリリースノートには次の注記がある（出典2）。</p>
+<blockquote>
+<p>RedHat/CentOS 8.3 の s390x および RedHat/CentOS 9 の s390x 向けのバイナリは 9.0.7 では提供されない。これらの利用者は 8.0.38 のバイナリを使うこと（原文英語を訳出）</p>
+</blockquote>
+<p><strong>つまり 9.0.8・8.0.38 は、本脆弱性の追加修正ではなくビルド成果物に関するリリースとみられる</strong>（本記録の推定）。<strong>実務上の意味は「9.0.8 へ上げれば本件が直る」のではなく「9.0.7 以上であれば直っている」である</strong>（本記録の整理）。</p>
+<p><strong>8.3.17 のリリースノートは本記録が確認していない</strong>〈未確定5〉—— 8.3 系の確認は 8.3.16 以上であることを基準にすればよい（本記録の推奨）。</p></section>
+<section id="s8"><h2>「クラッシュ」か「任意コード実行」か——資料で評価が分かれている<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>影響の上限について、2つの資料が異なる書き方をしている。</p>
+<ul>
+<li><strong>Security NEXT</strong>（出典3。原文日本語）——「細工されたリクエストによってサーバが予期せず終了したり、条件次第ではサーバプロセスの権限で任意のコードを実行される可能性がある」</li>
+<li><strong>The Hacker News</strong>（出典4。原文英語を訳出）——「認証されていない攻撃者が2つのリクエストを送ることでデータベースサーバのクラッシュを引き起こせる」。任意コード実行に触れていない</li>
+</ul>
+<p><strong>本記録はベンダー自身の説明文の全文を取得できていない</strong>（本記録の明示）〈齟齬2〉—— MongoDB の一覧ページに掲載されている説明は「A use-after-free in the replication component of MongoDB Server can occur when a newly ele…」で途切れており、続きは別ページにある。参照先として示されている課題（SERVER-138119）は認証を要するため参照できなかった。</p>
+<p><strong>判断に使える材料として確実なのは次である</strong>（本記録の整理）〈重要〉。</p>
+<ul>
+<li>不備の種別は Use After Free（出典1・2）</li>
+<li>認証前に到達できる（出典1「Pre-authentication」・出典3）</li>
+<li>ベンダー掲載の CVSS は 9.5（出典1）—— <strong>サービス拒否だけでこの評点にはなりにくい</strong>（本記録の評価）</li>
+<li>公表時点で悪用は確認されていない（出典3）</li>
+</ul>
+<p><strong>運用の判断としては、任意コード実行の可否を待つ意味はない</strong>（本記録の推奨）。どちらであっても対処は同じ（修正版への更新と到達経路の制限）であり、評点 9.5 と「認証不要」の2点で優先度は決まる。</p></section>
+<section id="s9"><h2>緩和策は示されていない——更新以外の手は「到達させない」だけである<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [2] [3] [4]</span></h2><p>本記録が取得した資料に、構成変更による回避策（ワークアラウンド）の記述は無い（出典1・2・3・4。本記録の確認）〈未確定3〉。</p>
+<p>したがって取れる手は2つである（本記録の整理）。</p>
+<ol>
+<li><strong>修正版へ更新する</strong> — 各系列の 9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32 以上。<strong>レプリカセットのローリング更新は、更新中に意図的なフェイルオーバーを起こす作業である</strong>（本記録の注記）〈重要〉——本脆弱性の成立条件がフェイルオーバーであることを踏まえ、外部からの到達を止めた状態で行うのが安全である（本記録の推奨）。</li>
+<li><strong>到達経路を制限する</strong> — データベースをインターネットから到達不能にし、接続元を承認済みのシステムに限る。レプリカセットのメンバー間通信を専用のネットワークに分ける。</li>
+</ol>
+<p><strong>2は本脆弱性に限らず効く</strong>（本記録の評価）。認証前に到達できる不備は、認証の強度では防げない——防げるのはネットワーク層の到達性だけである。</p>
+<p><strong>国内の注意喚起（JPCERT/CC 等）が出ているかは本記録では確認していない</strong>（本記録の明示）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>vulnerability</th><td><b>CVE番号:</b> CVE-2026-118383　<b>product:</b> MongoDB Server　<b>ベンダー:</b> MongoDB, Inc.　<b>weakness:</b> Use After Free（解放済みメモリの参照）—— **ベンダーの修正項目は「Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」である**（出典2。原文英語）。 **CWE 番号は本記録が取得した資料に記載が無い**（本記録の確認）。　<b>authentication_required:</b> いいえ　<b>authentication（補足）:</b> **ベンダーの表題が &quot;Pre-authentication&quot;（認証前）であり、 Security NEXT も「認証を必要とすることなく悪用されるおそれがある」と記す** （出典1・3）〈重要〉。　<b>affected_versions:</b> 9.0.0 以上 9.0.7 未満、8.3.0 以上 8.3.16 未満、8.0.0 以上 8.0.37 未満、7.0.0 以上 7.0.48 未満、6.0.0 以上 6.0.30 未満、5.0.0 以上 5.0.35 未満、4.4.0 以上 4.4.32 未満　<b>fixed_versions:</b> 9.0.7、8.3.16、8.0.37、7.0.48、6.0.30、5.0.35、4.4.32　<b>exploited_in_the_wild:</b> いいえ　<b>exploited（補足）:</b> **Security NEXT は「アドバイザリの公表時点で脆弱性の悪用は確認されていない」と 記している**（出典3）—— **本記録の作成時点で、悪用やKEV収載に関する情報は確認していない**（本記録の明示）。　<b>vendor_tracking_id:</b> SERVER-138119　<b>fix_tracking_id:</b> SERVER-138175　<b>vendor_tracking（補足）:</b> **一覧ページが参照先として示す課題は SERVER-138119、 リリースノートに修正として挙がる課題は SERVER-138175 である** （出典1・2。本記録の確認）—— **いずれの課題画面も認証を要するため本記録は参照していない。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年11月10日（現地時間）</td><td class=nowrap><span class="b kind">公表</span></td><td>**MongoDB がセキュリティアドバイザリを公表し、CVE-2026-118383 を掲載した** （出典1）—— **掲載された表題は「Pre-authentication use-after-free in MongoDB Server replica set primary catch-up」、CVSS は 9.5、 参照先は MongoDB の課題管理番号 SERVER-138119 である**（出典1。本記録が確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**MongoDB が修正版 9.0.7・8.3.16・8.0.37・7.0.48・6.0.30・5.0.35・4.4.32 を提供した** （出典1・2）—— **9.0.7 と 8.0.37 のリリースノートには「CVE-2026-118383 の修正を含む」と 明記され、同じリリースの項目として 「SERVER-138175 Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」が挙げられている**（出典2。原文英語。本記録が確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月10日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**同日付で追加リリース 9.0.8・8.0.38 が提供された**（出典2・3）—— **リリースノート上の項目は「SERVER-138547 Use target architecture in cross-compiled archive directory names」のみで、本 CVE への言及は無い** （出典2。本記録が確認）。 **9.0.7 のリリースノートには、RedHat/CentOS 8.3 および 9 の s390x 向けバイナリが 9.0.7 では提供されないため 8.0.38 のバイナリを使うべき旨の注記がある**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年11月12日 09:25（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が本脆弱性を報じた**（出典4）—— **「認証されていない攻撃者が2つのリクエストを送ることで データベースサーバのクラッシュを引き起こせる。 クラッシュが起きるのは、そのサーバが最近の変更の一部を欠いたまま、 後にメインのサーバを引き継ぐよう選出された場合のみである」と記している** （出典4。原文英語を訳出）〈齟齬3〉。</td></tr><tr><td class="sm nowrap tw">2026年11月12日 02:25（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Security NEXT が「『MongoDB Server』にRCE脆弱性 - 修正版を公開」として報じた** （出典3）—— **CVSSv4.0 9.5／CVSSv3.1 9.0、重要度クリティカル、 認証不要で悪用され条件次第で任意コード実行に至る可能性、 公表時点で悪用は未確認、という内容である**（出典3。原文日本語）。</td></tr><tr><td class="sm nowrap tw">2026年11月13日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が MongoDB の一覧ページ（出典1）とリリースノート（出典2）を取得し、 CVE 番号・表題・CVSS 9.5・影響版と修正版・公表日（11/10）・ 修正項目（SERVER-138175）を確認した**（本記録の観測）〈重要〉—— **一方、説明文の全文・CVSS の版とベクター・発見者・ 任意コード実行の可否についてのベンダー自身の記述は取得できなかった** （本記録の明示）〈齟齬1・2〉。 **NVD および CVE.org の当該 CVE 詳細は、本記録の取得では内容が得られなかった。**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>CVSS の版とベクター文字列がベンダーの掲載から確認できない</span><div class=sm>**MongoDB の脆弱性一覧ページに掲載されている CVSS は 9.5 で、 評点の版（v3.1 か v4.0 か）とベクター文字列の記載が無い** （出典1。本記録の確認）〈重要〉。 **Security NEXT は CVSSv4.0 を 9.5、CVSSv3.1 を 9.0 としている**（出典3）—— **9.5 が一致するため、ベンダー掲載値は v4.0 とみられる**（本記録の推定）。 **CVSSv3.1 の 9.0 については、本記録は裏を取れていない**（本記録の明示）。 **NVD および CVE.org の当該 CVE 詳細は、本記録の取得では内容が得られなかった。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>ベンダーの脆弱性説明文の全文を取得できていない</span><div class=sm>**一覧ページの説明は「A use-after-free in the replication component of MongoDB Server can occur when a newly ele…」で途切れており、 「View more…」の先にある全文を本記録は取得していない** （出典1。本記録の明示）〈重要〉。 **参照先として示されている課題管理番号 SERVER-138119 の画面は認証を要するため 参照できなかった**（本記録の確認。同じ課題管理システムの別番号で ログイン画面が返ることを確認した）。 **このため、任意コード実行の可否・発見者・緩和策についての ベンダー自身の記述を本記録は引用できていない**〈齟齬3・未確定3〉。 **本記録が確認できたのは、表題・CVSS 9.5・影響版と修正版・公表日・ リリースノートの修正項目（SERVER-138175）である**（出典1・2）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>影響の上限についての記述が報道間で異なる（任意コード実行の有無）</span><div class=sm>**Security NEXT は「細工されたリクエストによってサーバが予期せず終了したり、 条件次第ではサーバプロセスの権限で任意のコードを実行される可能性がある」と 記している**（出典3。原文日本語）。 **The Hacker News は「認証されていない攻撃者が2つのリクエストを送ることで データベースサーバのクラッシュを引き起こせる」とし、 任意コード実行に触れていない**（出典4。原文英語を訳出）〈重要〉。 **本記録はベンダーの説明文の全文を取得できていないため、 どちらが原文に沿うかを判定できない**（本記録の明示）〈齟齬2〉—— **ただし Use After Free という種別と、 ベンダー掲載の CVSS 9.5 という評点は、 サービス拒否のみでは説明しにくい**（本記録の評価）。 **本記録は重い側（任意コード実行の可能性を含む）を前提に整理した。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>追加リリース 9.0.8・8.0.38 が本脆弱性の修正であるかのように併記されている</span><div class=sm>**Security NEXT は「また追加リリースとして『同9.0.8』『同8.3.17』『同8.0.38』が 提供されている」と記している**（出典3）。 **本記録がリリースノートを確認したところ、9.0.8・8.0.38 の記載項目は 「SERVER-138547 Use target architecture in cross-compiled archive directory names」のみで、CVE-2026-118383 への言及は無い** （出典2。本記録の確認）〈重要〉。 **9.0.7 のリリースノートには、RedHat/CentOS 8.3 および 9 の s390x 向け バイナリが 9.0.7 では提供されないため 8.0.38 のバイナリを使うべき旨の 注記がある**（出典2）—— **9.0.8・8.0.38 はビルド成果物に関するリリースとみられる**（本記録の推定）。 **8.3.17 のリリースノートは本記録が確認していない**〈未確定5〉。 **記述自体は誤りではないが、本脆弱性の追加修正と読まれる余地がある**（本記録の評価）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証を経ずに届いたリクエストが、プライマリ昇格時の追い付き処理で解放済みメモリを踏む</div><div class=svgwrap><svg viewBox="0 0 1610 174" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,87.0 C193.0,87.0 193.0,87.0 220,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,87.0 C397.0,87.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,87.0 C805.0,87.0 805.0,87.0 832,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C601.0,48.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,87.0 C1009.0,87.0 1009.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,48.0 C1213.0,48.0 1213.0,87.0 1240,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,87.0 C1417.0,87.0 1417.0,87.0 1444,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,126.0 C1111.0,126.0 1111.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C499.0,126.0 499.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（認証不要・Pre</text><text x="91.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-authenticat</text><text x="91.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ion）</text><rect x="220" y="62.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工されたリクエスト（報</text><text x="295.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">道では2件）</text><rect x="424" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レプリカセットのメンバー</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（影響する版の Mong</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">oDB Server）</text><rect x="628" y="62.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プライマリの選出（フェイ</text><text x="703.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ルオーバー）</text><rect x="832" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">新プライマリの追い付き処</text><text x="907.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理（CatchupSta</text><text x="907.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">te）</text><rect x="1036" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">解放済みメモリの参照（U</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">se After Fre</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e・CVE-2026-…</text><rect x="1240" y="62.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サーバプロセスの予期せぬ</text><text x="1315.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">終了</text><rect x="1444" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">プロセス権限での任意コー</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド実行（条件次第・評価が</text><text x="1519.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">分かれる）</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 9.0.7／8.</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3.16／8.0.37／</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">7.0.48／6.0.…</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達経路の制限（接続元の</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">限定・メンバー間通信の分</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">離）</text></svg></div><div class=fn>ベンダーの公表（出典1・2）と報道（出典3・4）から、本脆弱性の成立経路を 整理した図である（整理は本記録）。 **点線は、資料で評価が分かれている部分、 および本記録が一次資料で裏を取れていない部分である**〈齟齬2・3〉—— **任意コード実行まで至るかは Security NEXT が「条件次第」とし、 The Hacker News はクラッシュまでを記している。** **攻撃の具体的な手順は公表されていない**〈未確定2〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**ベンダーは検知方法を示していない**（出典1・2。本記録の確認）—— **認証前に処理される経路であるため、 認証ログには現れない可能性がある**（本記録の評価。 ベンダーの記述による裏付けは無い）〈未確定2〉。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版（9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32）へ更新する</div><div class=ctl><span class="b eff">侵入を防げた</span>データベースをインターネットから到達不能にし、接続元を限定する</div><div class=ctl><span class="b eff">影響を限定できた</span>レプリカセットのメンバー間通信を専用のネットワークに分離する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**プロセスの異常終了そのものは、可用性監視に必ず現れる** （本記録の整理）〈重要〉—— **ただし「レプリカセットのフェイルオーバー中にプライマリが落ちる」という 事象は、ハードウェア障害・資源枯渇でも起こるため、 攻撃と区別できるとは限らない**（本記録の評価）。 **ベンダーは区別の手がかりを示していない**〈未確定2〉。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>レプリカセットのメンバー数を確保し、冗長性で可用性を保つ</div><div class=ctl><span class="b eff">検知できた</span>フェイルオーバー時のプロセス異常終了を警報化し、更新状況と突き合わせる</div><div class=ctl><span class="b eff">復旧を早められた</span>クラッシュダンプとログを外部に保全し、事後に原因を切り分けられる状態にする</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**任意コード実行が成立した場合の挙動は公表されていない**〈未確定2〉—— **Use After Free から任意コード実行に至るには メモリ配置の制御等の追加条件を要することが一般的であり、 「条件次第」という留保はこれを指すとみられる**（本記録の推定。 ベンダーの記述による裏付けは無い）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>データベースプロセスを最小権限の専用アカウントで動かす</div><div class=ctl><span class="b eff">影響を限定できた</span>データベースサーバからの外向き通信を既定拒否にする</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「認証前」の脆弱性は、認証の強化では防げない。 到達性の管理を別の統制として持つ。</div><div class=lw>**ベンダーの表題が &quot;Pre-authentication&quot;（認証前）であり、 Security NEXT も「認証を必要とすることなく悪用されるおそれがある」としている** （出典1・3）〈重要〉—— **多要素認証・強固なパスワード・権限設計はいずれもこの経路に効かない** （本記録の評価）。 **効くのはネットワーク層の到達性だけである。**</div><div class=la><b>取るべき行動</b> **データベース・メッセージキュー等のミドルウェアについて、 「インターネットから到達可能か」を資産台帳の必須項目にし、四半期ごとに外部から実測する。** **「認証前（pre-auth）」の表記がある勧告を、適用判断の最優先区分として運用規程に書く。**</div></li><li><div class=lp>冗長構成そのものが攻撃面になりうる。 可用性設計のレビューにセキュリティの観点を入れる。</div><div class=lw>**本脆弱性が成立するのは、レプリカセットで新たに選出されたプライマリが 追い付く処理の完了時である**（出典1・2・3）〈重要〉—— **The Hacker News は「最近の変更の一部を欠いたまま後に昇格した場合のみ」と 条件を記している**（出典4。原文英語を訳出）。 **障害時にまさに起こる状況が条件であり、 平常時の試験では現れない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **可用性設計のレビュー項目に「冗長化のための制御経路が外部から到達可能か」を加える。** **フェイルオーバー試験の手順に、外部到達性を遮断した状態での実施を含める。**</div></li><li><div class=lp>影響の上限（クラッシュか任意コード実行か）の確定を待たずに動かす判断基準を持つ。</div><div class=lw>**Security NEXT は条件次第で任意コード実行の可能性があるとし、 The Hacker News はクラッシュまでを記している**（出典3・4）〈齟齬3〉—— **本記録もベンダーの説明文の全文を取得できていない**〈齟齬2〉。 **一方、ベンダー掲載の CVSS は 9.5、認証不要、修正版は提供済みという 3点は確定している**（出典1）。</div><div class=la><b>取るべき行動</b> **「評点が9以上」かつ「認証不要」の2条件で着手を決める規程にし、 影響の詳細が出るまで判断を保留しない。** **影響の記述が資料間で食い違う場合は、重い側を前提に計画する。**</div></li><li><div class=lp>4.4 系まで修正が出た事実を、旧版の棚卸しの機会として使う。</div><div class=lw>**修正は 9.0／8.3／8.0／7.0／6.0／5.0／4.4 の7系列に出ている** （出典1。計数は本記録）〈重要〉—— **ベンダーが4.4系まで修正を出すのは、 その系列の稼働環境が存在すると見ているからである**（本記録の推定）。 **長期に動いている旧版は、更新の手順自体が失われていることがある** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **MongoDB の稼働版をレプリカセットのメンバー単位で集計し、 サポート期限と併せて一覧にする。** **5.0 以前の系列が残っている場合は、本件の更新と合わせて 移行計画の対象として起案する。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>確認の単位はインスタンスではなくレプリカセットのメンバーである。 1台でも古ければ条件が揃う。</div><div class=lw>**成立するのは「新たに選出されたプライマリ」の追い付き処理である** （出典1・2・3）〈重要〉—— **現在のプライマリが更新済みでも、 未更新のセカンダリが昇格すればそのノードで成立する**（本記録の整理）。 **The Hacker News の条件（最近の変更を欠いたまま昇格）は、 遅れているメンバーがまさに該当する**（出典4）。</div><div class=la><b>取るべき行動</b> **`db.version()` をレプリカセットの全メンバーに対して実行し、 メンバー単位で版を集計する（セット単位の代表値で判断しない）。** **アービタ・隠しメンバー・遅延メンバーを集計から落とさない。**</div></li><li><div class=lp>ローリング更新そのものがフェイルオーバーを起こす。 外部到達を止めてから作業する。</div><div class=lw>**本脆弱性の成立条件はプライマリの選出と追い付き処理である**（出典1・3）〈重要〉—— **ローリング更新は、意図的にこの状況を作り出す作業である**（本記録の整理）。 **未更新のメンバーが残っている最中に外部から到達可能であれば、 作業中が最も条件の揃った時間帯になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **更新作業の前に、アプリケーション以外からの接続を境界で遮断する。** **更新順はセカンダリから行い、プライマリの切り替えは最後にまとめる。**</div></li><li><div class=lp>9.0.8・8.0.38 を「より新しい修正版」と読まない。基準は 9.0.7／8.0.37 以上である。</div><div class=lw>**9.0.8・8.0.38 のリリースノートに記載されているのは クロスコンパイル成果物のディレクトリ名に関する項目のみで、 本 CVE への言及は無い**（出典2。本記録の確認）〈重要〉—— **Security NEXT が「追加リリース」として併記しているため、 本脆弱性の追加修正と誤読されやすい**（出典3。評価は本記録）。 **9.0.7 には s390x 向けバイナリが無いという注記があり、 その環境では 8.0.38 を使う指示になっている**（出典2）。</div><div class=la><b>取るべき行動</b> **更新の合否判定を「9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32 以上」で 記述し、特定の版番号への一致で判定しない。** **s390x 環境は、リリースノートの注記に従って対象バイナリを確認する。**</div></li><li><div class=lp>フェイルオーバー中のプロセス異常終了を、障害としてだけ処理しない。</div><div class=lw>**本脆弱性の症状はサーバプロセスの予期せぬ終了である**（出典3・4）—— **これは資源枯渇やハードウェア障害でも起こるため、 通常の障害対応で閉じられやすい**（本記録の評価）〈重要〉。 **ベンダーは攻撃と障害を区別する手がかりを示していない**〈未確定2〉。</div><div class=la><b>取るべき行動</b> **フェイルオーバー時のプロセス異常終了を、更新の適用状況と突き合わせる手順にする （未更新のメンバーで起きた場合は調査に回す）。** **クラッシュダンプとログを外部に保全し、事後に切り分けられる状態にする。**</div></li><li><div class=lp>データベースプロセスの権限と外向き通信を、いまのうちに絞る。</div><div class=lw>**Security NEXT は「条件次第ではサーバプロセスの権限で任意のコードを 実行される可能性がある」としている**（出典3）〈重要〉—— **成立した場合の影響の上限は、プロセスの権限で決まる**（本記録の整理）。 **本脆弱性に限らず、次の同種の不備にも効く**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **MongoDB を専用の非特権アカウントで動かし、 データディレクトリ以外への書き込みを制限する。** **データベースサーバからの外向き通信を既定拒否にする。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> MongoDB Server をレプリカセット構成で運用しており、 いずれかのメンバーの版が 9.0.7／8.3.16／8.0.37／7.0.48／6.0.30／5.0.35／4.4.32 のいずれにも達していない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> MongoDB のポートが、アプリケーション以外（インターネットを含む）から 到達できる状態にある。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> レプリカセットのメンバー間通信が業務ネットワークと分離されておらず、 専用のネットワーク・セキュリティグループになっていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ミドルウェアの稼働版を、冗長構成のノード単位で集計する仕組みがない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> フェイルオーバー時のプロセス異常終了を、障害対応だけで処理しており、 更新の適用状況と突き合わせる手順がない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 5.0 以前の MongoDB 系列が稼働しており、 サポート期限と移行計画が整理されていない。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月10日 MongoDB, Inc.</span> <a href="https://www.mongodb.com/alerts" target="_blank" rel="noreferrer noopener nofollow">Pre-authentication use-after-free in MongoDB Server replica set primary catch-up（CVE-2026-118383／MongoDB Alerts 一覧）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**ベンダーの一次公表（原文英語）。本記録が2026年11月13日に取得して確認した内容**—— CVE 番号、表題、掲載 CVSS 9.5（版とベクターの記載は無い）〈齟齬1〉、 公表日 11/10/2026、影響する版（9.0.0〜9.0.7 未満／8.3.0〜8.3.16 未満／ 8.0.0〜8.0.37 未満／7.0.0〜7.0.48 未満／6.0.0〜6.0.30 未満／ 5.0.0〜5.0.35 未満／4.4.0〜4.4.32 未満）、参照先 SERVER-138119。 **説明文は「A use-after-free in the replication component of MongoDB Server can occur when a newly ele…」で途切れており、全文は取得できていない**〈齟齬2〉。）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月10日（9.0.7・9.0.8・8.0.37・8.0.38 のリリース） MongoDB, Inc.（MongoDB Manual / Release Notes）</span> <a href="https://www.mongodb.com/docs/manual/release-notes/9.0/" target="_blank" rel="noreferrer noopener nofollow">Release Notes for MongoDB 9.0 および Release Notes for MongoDB 8.0</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**ベンダーの一次資料（リリースノート・原文英語）。本記録が2026年11月13日に確認した内容**—— **9.0.7（2026-11-10）および 8.0.37（2026-11-10）に 「contains fixes for: CVE-2026-118383」の記載があり、 同じリリースの項目として「SERVER-138175 Fix use-after-free in CatchupState::abort() reentrancy via _catchupState」が挙げられている**〈重要〉。 **9.0.8・8.0.38（いずれも 2026-11-10）の記載項目は 「SERVER-138547 Use target architecture in cross-compiled archive directory names」のみで、本 CVE への言及は無い**〈齟齬4〉。 **9.0.7 には RedHat/CentOS 8.3・9 の s390x 向けバイナリが提供されないため 8.0.38 のバイナリを使う旨の注記がある。** **8.0 系のリリースノートは https://www.mongodb.com/docs/manual/release-notes/8.0/ にある。** **8.3 系（8.3.16・8.3.17）は本記録が確認していない**〈未確定5〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月12日 02:25（UTC） Security NEXT</span> <a href="https://www.security-next.com/192699" target="_blank" rel="noreferrer noopener nofollow">「MongoDB Server」にRCE脆弱性 - 修正版を公開</a> <span class="b kind">記事</span><span class=sm>（**国内報道（原文日本語）。一次公表に無い、または本記録が裏を取れていない情報**—— レプリケーション処理の Use After Free であること、 新たに選出されたプライマリのキャッチアップ処理の完了時に不具合が生じること、 **CVSSv4.0 9.5／CVSSv3.1 9.0・重要度クリティカル**〈齟齬1〉、 **認証不要で悪用され条件次第でサーバプロセスの権限で任意コード実行に至る可能性** 〈齟齬3〉、公表日が現地時間2026年11月10日であること、 公表時点で悪用は確認されていないこと、 **追加リリースとして 9.0.8・8.3.17・8.0.38 が提供されているとの記述**〈齟齬4〉。）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月12日 09:25（UTC） The Hacker News</span> <a href="https://thehackernews.com/2026/11/critical-pre-auth-mongodb-flaw-cve-2026.html" target="_blank" rel="noreferrer noopener nofollow">Critical Pre-Auth MongoDB Flaw (CVE-2026-118383) Can Crash Lagging Servers on Failover</a> <span class="b kind">記事</span><span class=sm>（**海外報道（原文英語）。本記録が参照したのは収集時に保存された冒頭部分のみで、 2026年11月13日の再取得は HTTP 403 で拒否された**（本記録の明示）〈重要〉。 **確認できた記述**—— 「認証されていない攻撃者が2つのリクエストを送ることでデータベースサーバの クラッシュを引き起こせる。クラッシュが起きるのは、そのサーバが最近の変更の 一部を欠いたまま、後にメインのサーバを引き継ぐよう選出された場合のみである」 「MongoDB は今週初めに修正版を公表した」 「影響を受けるサーバはレプリカセットのメンバーである」（いずれも原文英語を訳出）。 **任意コード実行には触れていない**〈齟齬3〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月13日</span> <span class="b rev">新規作成</span> **2026年11月12日の The Hacker News（出典4）と Security NEXT（出典3）の報道を起点に、 MongoDB の脆弱性一覧（出典1）とリリースノート（出典2）を 本記録が2026年11月13日に取得して作成した。** **一次資料で裏を取れたのは、CVE 番号・表題（Pre-authentication use-after-free in MongoDB Server replica set primary catch-up）・CVSS 9.5・ 影響する版と修正版（7系列）・公表日（2026年11月10日）・ 修正項目（SERVER-138175）である**〈重要〉。 **裏を取れなかったのは、説明文の全文・CVSS の版とベクター・CWE 番号・ 発見者・緩和策・任意コード実行の可否である**—— **一覧ページの説明文が途切れており、参照先の課題（SERVER-138119）は 認証を要するため参照できなかった**〈齟齬2〉。 **影響の上限について報道間で記述が食い違う点（任意コード実行の有無）を discrepancies に記録し、本記録は重い側を前提に整理した**〈齟齬3〉。 **Security NEXT が併記する追加リリース 9.0.8・8.0.38 が 本 CVE の修正ではないことをリリースノートで確認し、記録した**〈齟齬4〉。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">MongoDB</span><span class="b tag">MongoDB Server</span><span class="b tag">CVE-2026-118383</span><span class="b tag">Use After Free</span><span class="b tag">認証前の脆弱性</span><span class="b tag">レプリカセット</span><span class="b tag">フェイルオーバー</span><span class="b tag">データベース</span><span class="b tag">脆弱性管理</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-13 10:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

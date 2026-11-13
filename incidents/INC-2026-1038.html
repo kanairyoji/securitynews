@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>KUSANAGI にヘッダ挿入の脆弱性 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1038</span>KUSANAGI にヘッダ挿入の脆弱性</h1>
+<header class="site-header">
+  <p class="subtitle">GMOプライム・ストラテジーが2026年11月9日、WordPress 向け高速化基盤 KUSANAGI に HTTP ヘッダーインジェクションの脆弱性（CVE-2026-117477・CWE-113）が あると自社から JPCERT/CC へ報告し、JVNVU#92635551 として公表された—— **原因は製品が同梱する「WordPress 向け Nginx の設定ファイルに含まれる リダイレクトルール」で、細工された URL にアクセスさせることで HTTP レスポンスに任意のヘッダーを挿入できる**（CVSS 4.0 基本値 5.1・ CVSS 3.1 基本値 6.1。**Apache httpd を使っている場合は対象外**）〈重要〉。 **2026年11月12日に JVN が［影響を受けるシステム］を更新し、 KUSANAGI 7 は「すべてのバージョン」、KUSANAGI 8 は 「Free / Business / Premium Edition のすべてのバージョン」に変わった**—— **サポートが終了した2つのメジャー版には修正版が出ず、 提供されるのは緩和策だけである**（当事者の公表）〈重要〉。 **悪用の有無についての記述は、どの資料にも無い**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本の組織が当事者</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月9日（GMOプライム・ストラテジーの公表および JVNVU#92635551 の公開日）</span>
+  <span>最終更新: 2026年11月12日（JVN が［影響を受けるシステム］を更新）</span>
+</div>
+
+<div class="lead"><p><strong>問題があったのは WordPress でもなく利用者の設定でもなく、製品が同梱していたNginx の設定ファイルである。</strong></p>
+<p><strong>GMOプライム・ストラテジー株式会社は2026年11月9日、自社製品 KUSANAGI の脆弱性（CVE-2026-117477）への対応を公表した</strong>（出典1）。<strong>同日、JPCERT/CC と IPA が JVNVU#92635551 として公表している</strong>（出典2）—— <strong>「この脆弱性情報は、製品利用者への周知を目的に、GMOプライム・ストラテジー株式会社がJPCERT/CC に報告し、JPCERT/CC が GMOプライム・ストラテジー株式会社との調整を行いました」</strong>（出典2）。</p>
+<p><strong>脆弱性の内容は次のとおりである</strong>（出典2）。<strong>KUSANAGI が同梱する「WordPress 向け Nginx の設定ファイルに含まれるリダイレクトルール」に、HTTP ヘッダにおける CRLF 文字の不適切な無害化（CWE-113）がある。</strong> <strong>攻撃者が細工した URL に利用者をアクセスさせることで、HTTP レスポンスに任意のヘッダーを挿入できる。</strong> <strong>CVSS 4.0 基本値 5.1（AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N）、CVSS 3.1 基本値 6.1（AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N）</strong>（出典2）。<strong>Web サーバに Apache httpd を使っている場合は対象外である</strong>（出典3）〈重要〉。</p>
+<p><strong>本記録が重く見るのは、影響範囲が「メジャー版3つにまたがる」ことである</strong>（本記録の評価）〈重要〉。<strong>2026年11月12日に JVN が［影響を受けるシステム］を更新した結果、対象は次のようになった</strong>（出典2）。</p>
+<ul>
+<li><strong>KUSANAGI 7 — すべてのバージョン</strong></li>
+<li><strong>KUSANAGI 8 — Free / Business / Premium Edition のすべてのバージョン</strong></li>
+<li><strong>KUSANAGI 9 — Security / Enterprise Edition 10.7.2-1 およびそれ以前／Free / Business / Premium Edition 9.12.2-1 およびそれ以前</strong></li>
+</ul>
+<p><strong>当事者の公表は「KUSANAGI 9 には修正版がある。KUSANAGI 7・8 はサポートが終了しているが緩和策を公開した」という形を取っている</strong>（出典1）—— <strong>つまり古い2版の利用者にとって、この脆弱性は更新で消えない。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>修正版の具体的なバージョン番号</span><span class="b rsn">公表されていない</span><div class=sm>**当事者の「お知らせ」は「KUSANAGI 9 には修正版がある」と述べるだけで、 版数を書いていない**（出典1）。 **JVN も「開発者が提供する情報をもとに、最新版へアップデートしてください」と するにとどまる**（出典2）。 **版数はセキュリティアドバイザリ本体に書かれているとみられるが、 本記録はそのページを取得できていない**〈差異1〉。 **影響を受ける版が「Security/Enterprise Edition 10.7.2-1 およびそれ以前」 「Free/Business/Premium Edition 9.12.2-1 およびそれ以前」であることから、 修正版はそれぞれの次版と推測できるが、本記録は推測を記載しない。**</div></li><li><span class=ui>KUSANAGI 7・8 向けに公開された緩和策の内容</span><span class="b rsn">公表されていない</span><div class=sm>**当事者は「サポートが終了しているが緩和策を公開した」と述べている**（出典1）—— **その中身は「お知らせ」には書かれていない。** **JVN も「アップデートできない場合は、開発者が提供する情報をもとに 緩和策を実施してください」とするだけである**（出典2）。 **本記録はアドバイザリ本体を取得できていないため、内容を記載しない**〈差異1〉〈重要〉—— **原因箇所が Nginx の設定ファイル内のリダイレクトルールであることから、 該当ルールの修正が中心になると考えられるが、本記録は推測を記載しない。**</div></li><li><span class=ui>2026年11月12日に JVN が［影響を受けるシステム］を更新した理由</span><span class="b rsn">公表されていない</span><div class=sm>**JVN の更新履歴は「［影響を受けるシステム］を更新しました」とのみ記す**（出典2）。 **本記録が確認できたのは、2026年11月12日の記事（出典3）が引く影響範囲と 更新後の JVN の記載の形が違うことである**〈差異2〉—— **更新後は KUSANAGI 7 が「すべてのバージョン」、 KUSANAGI 8 が「Free / Business / Premium Edition すべてのバージョン」と なっており、サポート終了済みの2版について 「修正版が無い＝全版が影響下にある」ことが明確になった形である**（本記録の解釈）。 **ただし更新前の JVN の文面を本記録は保存していない**〈差異3〉。</div></li><li><span class=ui>影響を受けるサイト数・利用組織数</span><span class="b rsn">公表されていない</span><div class=sm>**KUSANAGI の導入実績・稼働サイト数は本件の資料に書かれていない** （出典1・2・3）。 **各クラウドのマシンイメージとしても配布されているため、 開発元が全数を把握しているとは限らない**（本記録の評価）—— **ただしその旨も公表されていない。**</div></li><li><span class=ui>KUSANAGI 8 の Security / Enterprise Edition が影響範囲に挙がっていない理由</span><span class="b rsn">公表されていない</span><div class=sm>**2026年11月12日更新後の JVN の記載は、 KUSANAGI 8 について「Free / Business / Premium Edition すべてのバージョン」と エディションを限っている**（出典2）〈重要〉。 **KUSANAGI 7 は「すべてのバージョン」とエディションを区別せず、 KUSANAGI 9 は両系統を挙げている。** **KUSANAGI 8 の Security / Enterprise Edition が そもそも存在しないのか、存在するが影響を受けないのかは書かれていない** （本記録の確認）。</div></li><li><span class=ui>本脆弱性が実際に悪用された事実があるか</span><span class="b rsn">公表されていない</span><div class=sm>**悪用についての記述は、当事者の公表・JVN・報道のいずれにも無い** （出典1・2・3。本記録の確認）。 **本記録は「悪用は確認されていない」とは書かない**—— **書けるのは「公表されていない」までである。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>GMOプライム・ストラテジー株式会社（KUSANAGI の開発・提供元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>KUSANAGI を使って WordPress サイトを運用している組織（サイト数は非公表）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC・IPA（JVN の調整・公表主体）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>影響を受けるメジャー版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>版（メジャーバージョン）</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>**KUSANAGI 7・KUSANAGI 8・KUSANAGI 9 の3つ**（出典2）。 **メジャー版の数であり、影響を受けるサイト数ではない**〈重要〉—— **サイト数はいずれの資料にも書かれていない**〈未確定4〉。</div></div><div class=fig><div class=fh><span class=fl>サポート終了済みで修正版が提供されないメジャー版の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>版（メジャーバージョン）</span></div><div class=fa>2026年11月9日 時点</div><div class=fn>**KUSANAGI 7 と KUSANAGI 8 の2つ**（出典1）〈重要〉—— **当事者の公表に「KUSANAGI 7 と 8 はサポートが終了しているが、 緩和策を公開した」とある。** **本記録が重く見るのはこの数である**（本記録の評価）—— **影響を受ける3つのメジャー版のうち2つでは、更新による解消ができない。** **緩和策の具体的な手順は本記録が未確認である**〈未確定2〉〈差異1〉。</div></div><div class=fig><div class=fh><span class=fl>JVN の公開から［影響を受けるシステム］の更新までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fa>2026年11月12日 時点</div><div class=fn>**2026年11月9日（出典2の公開日）から 2026年11月12日（出典2の更新履歴）までの日数。** **本記録の算出であり、いずれの資料もこの日数を出していない。** **公表の3日後に影響範囲の記載が変わったということである**〈重要〉—— **初報の時点で自組織を対象外と判断した利用者は、 その判断をやり直す必要がありうる**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>CVSS 4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5.1<span class=fu>点（CVSS 4.0 基本値）</span></div><div class=fa>2026年11月9日 時点</div><div class=fn>**CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N 基本値 5.1** （出典2）。 **CVSS 3.1 では基本値 6.1（AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N）である**（出典2）〈重要〉—— **どちらも「利用者の操作が要る」（UI:A／UI:R）点が共通している。** **3.1 で S:C（スコープ変更あり）と評価されているのは、 挿入されたヘッダーの影響が Web サーバの外（ブラウザ側の処理）へ及ぶためである** （本記録の解釈）。 **数値の性質を表す区分に点数という選択肢が無いため、 規模の分母の区分を便宜的に当てている**（本記録の注記）—— **被害件数ではない。集計に混ぜないこと。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本記録の attack.chain は、公表された脆弱性の内容を段階に並べ替えたものである** （本記録の整理）〈重要〉—— **実際の攻撃の観測ではない**〈未確定6〉。 **公表されている成立条件は2つである**（出典2・3）—— **①対象の構成であること（KUSANAGI の該当版・Nginx 構成）、 ②細工された URL へ利用者がアクセスすること（UI:A／UI:R）。** **本記録は、挿入されたヘッダーで何ができるかを列挙しない**—— **当事者も JVN も「任意のヘッダーが挿入される可能性があります」までしか 書いておらず、書き足せば推測になる**（本記録の判断）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">推定</span><span class=srcs>[2] [3]</span></div><div>**対象サイトが KUSANAGI の該当版・Nginx 構成で動いていることを見つける段階**
+（本記録の整理。出典2・3の記載から導いた）。
+**この段階について公表された情報は無い**〈未確定7〉——
+**外部から版やエディションを判定できるのかどうかは、
+いずれの資料にも書かれていない。**
+</div><div class=fn>根拠: JVN の影響を受けるシステムの記載（出典2）／Apache httpd 構成は対象外という条件（出典3）。</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[2] [3]</span></div><div>**攻撃者が、CRLF を含むよう細工した URL を用意し、
+被害サイトの利用者にアクセスさせる**（出典2・3）〈重要〉——
+**「攻撃者によって細工された URL にアクセスすることで」**（出典2）。
+**権限は要らない（PR:N）が、利用者の操作が要る（UI:A／UI:R）**（出典2）。
+**踏ませる手段（メール・SNS・広告・他サイトからの誘導）は
+いずれの資料にも書かれていない。**
+</div><div class=fn>根拠: JVN の想定される影響（出典2）／CVSS ベクターの PR:N と UI:A／UI:R（出典2）。</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">確認済</span><span class=srcs>[2]</span></div><div>**KUSANAGI が同梱する WordPress 向け Nginx 設定ファイルの
+リダイレクトルールが、URL 中の CRLF 文字を適切に無害化しないまま
+レスポンスヘッダーへ反映する（CWE-113）**（出典2）〈重要〉。
+**結果として HTTP レスポンスに任意のヘッダーが挿入される**（出典2）。
+**挿入されたヘッダーを解釈するのはブラウザ側であり、
+CVSS 3.1 ではスコープ変更あり（S:C）と評価されている**（出典2）。
+</div><div class=fn>根拠: JVN の脆弱性の概要と想定される影響（出典2）——「WordPress 向け Nginx の設定ファイルに含まれるリダイレクトルール」「HTTP レスポンスに任意のヘッダーが挿入される可能性があります」。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**サポートが終了している KUSANAGI 7・8 についても緩和策を公開した**（出典1）—— **「サポート終了のため対象外」として切り離さなかった。**</div><div class=fn><b>トレードオフ:</b> **捨てたのは「サポート境界の明確さ」である**（本記録の整理）。 **サポート終了済みの版に手当てを出すと、 利用者側に「7・8 を使い続けても面倒を見てもらえる」という 読み方が生まれうる**（本記録の評価）〈重要〉—— **当事者が同じ告知で「サポートが終了している」と明記しているのは その読み方を防ぐためとみられるが、 移行の期限や次回以降の方針は示されていない。** **結果として、移行を計画に載せるかどうかの判断は利用者側に残る。**</div></li><li><div class=ui>**自社から JPCERT/CC へ報告し、JVN と自社告知を同日（2026年11月9日）に 出した**（出典1・2）。</div><div class=fn><b>トレードオフ:</b> **捨てたのは「影響範囲を確定させてから出す」ことである**（本記録の整理）。 **範囲の精査を待てば公表は遅れ、その間利用者は何も知らされない。** **早く出す代わりに、3日後の訂正を利用者が追う必要が生じた**（本記録の評価）〈重要〉—— **本記録はこの取引自体は妥当だと見るが、 更新の際に「何がどう変わったか」が書かれていれば 読み直しの負担はほとんど無くなったはずである。**</div></li></ul></div>
+<section id="s6"><h2>不備があったのは利用者の設定ではなく、製品が同梱していた Nginx の設定ファイルである<span class="b slot">概観</span></h2><p><strong>JVN が示す原因箇所は具体的である</strong>（出典2）。</p>
+<blockquote>
+<p><strong>「GMOプライム・ストラテジー株式会社が提供する KUSANAGI には、WordPress 向け Nginx の設定ファイルに含まれるリダイレクトルールに次の脆弱性が存在します——HTTP ヘッダにおける CRLF 文字の不適切な無害化（CWE-113）」</strong>（出典2）</p>
+</blockquote>
+<p><strong>ここが本件を読むうえでの要点である</strong>（本記録の評価）〈重要〉。</p>
+<ul>
+<li><strong>壊れていたのは WordPress 本体でもプラグインでもない。</strong></li>
+<li><strong>利用者が書いた設定でもない。</strong></li>
+<li><strong>製品が「WordPress を速く動かすための既定の構成」として配っていた設定ファイルの中のリダイレクトルールである。</strong></li>
+</ul>
+<p><strong>したがって「自社では特別な設定をしていない」ことは安全の根拠にならない</strong>（本記録の評価）—— <strong>既定のまま使っていた組織がそのまま該当する。</strong></p>
+<p><strong>判定条件は3つに整理できる</strong>（出典2・3。本記録の整理）。</p>
+<ol>
+<li><strong>KUSANAGI のメジャー版と版数</strong>（7／8／9 と、9 なら 10.7.2-1 もしくは 9.12.2-1 以前か）</li>
+<li><strong>エディション</strong>（Security/Enterprise か Free/Business/Premium か）</li>
+<li><strong>Web サーバが Nginx か Apache httpd か</strong>——<strong>Apache httpd なら対象外</strong>（出典3）〈重要〉</li>
+</ol>
+<p><strong>3 が効く理由は、不備があったのが Nginx 向けの設定ファイルだからである</strong>（本記録の解釈）。<strong>KUSANAGI は Web サーバを切り替えて使える製品であり、同じ製品・同じ版でも構成によって該当が変わる。</strong></p></section>
+<section id="s7"><h2>細工された URL にアクセスさせるとレスポンスに任意のヘッダーが入る。利用者の操作が要る<span class="b slot">原因・手口</span></h2><p><strong>成立の流れは次のとおりである</strong>（出典2・3）。</p>
+<ol>
+<li><strong>攻撃者が、CRLF（改行）を含むよう細工した URL を用意する。</strong></li>
+<li><strong>その URL へ利用者（被害サイトの訪問者）がアクセスする。</strong></li>
+<li><strong>KUSANAGI 同梱の Nginx 設定のリダイレクトルールがURL 中の値を無害化せずにレスポンスヘッダーへ反映する。</strong></li>
+<li><strong>HTTP レスポンスに任意のヘッダーが挿入される。</strong></li>
+</ol>
+<p><strong>CVSS のベクターがこの構造をよく表している</strong>（出典2）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>版</th>
+<th>ベクター</th>
+<th>基本値</th>
+<th>読み方</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVSS 4.0</td>
+<td>AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N</td>
+<td>5.1</td>
+<td>ネットワークから・容易・権限不要だが<strong>利用者の操作が要る</strong>。影響は後続システムの完全性（SI:L）のみ</td>
+</tr>
+<tr>
+<td>CVSS 3.1</td>
+<td>AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N</td>
+<td>6.1</td>
+<td>同じく<strong>利用者の操作が要る</strong>（UI:R）。<strong>スコープ変更あり</strong>（S:C）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>重要なのは2点である</strong>（本記録の評価）。</p>
+<p><strong>①「利用者の操作が要る」ため、サーバを直接奪われる類の脆弱性ではない。</strong> <strong>攻撃者は、細工した URL を踏ませる手段（フィッシングのメール・SNS の投稿・広告・他サイトからの誘導）を別に用意する必要がある。</strong> <strong>それでも標的型の攻撃では十分に成立する</strong>〈重要〉—— <strong>リンク先のドメインは正規のサイトのものになるため、URL の見た目で見分ける防御が効きにくい。</strong></p>
+<p><strong>②影響が「スコープの外」へ出る（S:C／SI:L）。</strong> <strong>挿入されたヘッダーを解釈するのはブラウザ側である。</strong> <strong>CVSS の評価が可用性（A:N／VA:N）をゼロとし、機密性・完全性を「低」に置いているのは、サーバ上のデータが直接漏れたり壊れたりする経路ではないためである</strong>（本記録の解釈）。</p>
+<p><strong>本記録は、この脆弱性で何ができるかを具体的に列挙しない</strong>（本記録の判断）〈重要〉—— <strong>当事者も JVN も「HTTP レスポンスに任意のヘッダーが挿入される可能性があります」までしか書いていない。</strong> <strong>想定される悪用の形を本記録が書き足せば、公表の範囲を超えた推測になる。</strong></p></section>
+<section id="s8"><h2>影響を受ける3つのメジャー版のうち2つはサポート終了で、更新による解消ができない<span class="b slot">被害規模・影響範囲</span></h2><p><strong>2026年11月12日の更新後の影響範囲はこうである</strong>（出典2）。</p>
+<table>
+<thead>
+<tr>
+<th>メジャー版</th>
+<th>エディション</th>
+<th>影響を受ける版</th>
+<th>修正版</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>KUSANAGI 7</td>
+<td>（区別なし）</td>
+<td><strong>すべてのバージョン</strong></td>
+<td><strong>なし（サポート終了）</strong></td>
+</tr>
+<tr>
+<td>KUSANAGI 8</td>
+<td>Free / Business / Premium</td>
+<td><strong>すべてのバージョン</strong></td>
+<td><strong>なし（サポート終了）</strong></td>
+</tr>
+<tr>
+<td>KUSANAGI 9</td>
+<td>Security / Enterprise</td>
+<td>10.7.2-1 およびそれ以前</td>
+<td>あり（版数は非公表）〈未確定1〉</td>
+</tr>
+<tr>
+<td>KUSANAGI 9</td>
+<td>Free / Business / Premium</td>
+<td>9.12.2-1 およびそれ以前</td>
+<td>あり（版数は非公表）〈未確定1〉</td>
+</tr>
+</tbody>
+</table>
+<p><strong>当事者の公表はこう整理している</strong>（出典1）—— <strong>「KUSANAGI 9 には修正版がある。KUSANAGI 7 と 8 はサポートが終了しているが、緩和策を公開した」。</strong></p>
+<p><strong>これが本件のいちばん重い部分である</strong>（本記録の評価）〈重要〉。<strong>古い2版を使っている組織にとって、この脆弱性は「直せば終わる」案件ではない。</strong> <strong>取れる道は2つしかない。</strong></p>
+<ul>
+<li><strong>緩和策を適用して、脆弱性を抱えたまま運用を続ける</strong>（緩和策の内容は本記録が未確認である〈未確定2〉）</li>
+<li><strong>KUSANAGI 9 へ移行する</strong></li>
+</ul>
+<p><strong>後者は、WordPress の動作検証・PHP の版の差異・プラグインの互換性・移行中の停止時間を伴う作業である</strong>（本記録の評価）—— <strong>「脆弱性1件への対応」として扱える規模ではない。</strong></p>
+<p><strong>KUSANAGI 8 についてエディションが「Free / Business / Premium」に限られている点は、本記録では説明がつかなかった</strong>〈未確定5〉—— <strong>Security / Enterprise Edition が存在しないのか、存在するが影響を受けないのかは公表されていない。</strong></p></section>
+<section id="s9"><h2>公表の3日後に影響範囲の記載が変わった。初報で「対象外」と判断した組織は読み直しが要る<span class="b slot">未確定事項</span></h2><p><strong>JVN は2026年11月9日に公開され、11月12日に［影響を受けるシステム］を更新している</strong>（出典2）——<strong>3日である</strong>（本記録の算出）。</p>
+<p><strong>本記録が確認できた変化は、記載の「形」である</strong>〈差異2〉。</p>
+<ul>
+<li><strong>2026年11月12日の記事（出典3）が引く影響範囲</strong>——「KUSANAGI 7、KUSANAGI 8、KUSANAGI 9 の以下のエディションおよびバージョン／Security / Enterprise Edition 10.7.2-1 およびそれ以前／Free / Business / Premium Edition 9.12.2-1 およびそれ以前」</li>
+<li><strong>更新後の JVN（出典2）</strong>——「KUSANAGI 7 すべてのバージョン」「KUSANAGI 8 Free / Business / Premium Edition すべてのバージョン」「KUSANAGI 9 Security / Enterprise Edition 10.7.2-1 およびそれ以前／Free / Business / Premium Edition 9.12.2-1 およびそれ以前」</li>
+</ul>
+<p><strong>前者の書き方だと、KUSANAGI 7 と 8 についても「10.7.2-1 以前／9.12.2-1 以前」という版の上限が掛かるように読める</strong>（本記録の整理）〈重要〉。<strong>後者では7と8は「すべてのバージョン」であり、上限が無い。</strong></p>
+<p><strong>実務上の帰結は1つである</strong>（本記録の評価）。<strong>KUSANAGI 7・8 を使っていて、初報の版数の記載を見て「自社の版は該当しない」と判断した組織は、その判断が誤りになっている。</strong></p>
+<p><strong>更新の理由は公表されていない</strong>〈未確定3〉。<strong>本記録は更新前の JVN の文面を保存していないため、変化の全体を逐語では確かめられていない</strong>〈差異3〉—— <strong>確認できたのは「報道が引いた一覧」と「更新後の一覧」の違いだけである。</strong></p></section>
+<section id="s10"><h2>当事者のアドバイザリ本体を本記録は取得できていない。修正版の版数と緩和策は未確認である<span class="b slot">対策・注意喚起</span></h2><p><strong>本記録が取得できた当事者の資料は、自社サイトの「お知らせ」1ページだけである</strong>（出典1）〈差異1〉〈重要〉。</p>
+<p><strong>そこに書かれていたのは次の3点である</strong>（出典1）。</p>
+<ol>
+<li><strong>CVE-2026-117477 への対応についての告知であること</strong></li>
+<li><strong>KUSANAGI 9 には修正版があること（版数は書かれていない）</strong></li>
+<li><strong>KUSANAGI 7・8 はサポートが終了しているが、緩和策を公開したこと</strong></li>
+</ol>
+<p><strong>影響範囲・緩和策の手順・修正版の版数は、この「お知らせ」から辿るセキュリティアドバイザリ本体（kusanagi.tokyo の releases ページ）に書かれているとみられる</strong>（本記録の整理）—— <strong>そのページは JavaScript の検査を伴う防御によって本記録では取得できなかった</strong>（HTTP 403 と「Just a moment...」の応答）〈差異1〉。</p>
+<p><strong>したがって本記録は、修正版の版数〈未確定1〉と緩和策の内容〈未確定2〉を記載しない。</strong> <strong>推測で埋めれば、読者が間違った手順を実施しうる</strong>（本記録の判断）〈重要〉。</p>
+<p><strong>読者が取るべき手順は次のとおりである</strong>（本記録の整理。出典1・2にもとづく）。</p>
+<ol>
+<li><strong>運用中の KUSANAGI のメジャー版・版数・エディションを確認する</strong></li>
+<li><strong>Web サーバが Nginx か Apache httpd かを確認する</strong>（Apache httpd なら対象外・出典3）</li>
+<li><strong>KUSANAGI 9 なら、開発元の情報をもとに最新版へ更新する</strong>（出典2）</li>
+<li><strong>KUSANAGI 7・8 なら、開発元が公開した緩和策をアドバイザリ本体で確認して適用し、あわせて 9 への移行を計画に載せる</strong>（出典1）</li>
+</ol>
+<p><strong>本記録としての評価を1つ添える</strong>（本記録の判断）。<strong>サポート終了済みの版に対して「緩和策を公開した」という対応は、突き放さない姿勢として評価できる</strong>〈重要〉—— <strong>一方で、緩和策はヘッダー挿入の経路を塞ぐだけでサポート終了という状態は変わらない。</strong> <strong>移行を計画に載せないかぎり、次の脆弱性では同じ位置に立つことになる。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>affected_product</th><td>**GMOプライム・ストラテジー株式会社が提供する KUSANAGI** （WordPress 向けの高速化・運用基盤。各クラウドのマシンイメージ等として配布される）。 **影響を受ける版は次のとおり（2026年11月12日更新後の JVN の記載・出典2）。** **KUSANAGI 7 — すべてのバージョン。** **KUSANAGI 8 — Free / Business / Premium Edition のすべてのバージョン。** **KUSANAGI 9 — Security / Enterprise Edition 10.7.2-1 およびそれ以前、 Free / Business / Premium Edition 9.12.2-1 およびそれ以前。** **原因箇所は「WordPress 向け Nginx の設定ファイルに含まれるリダイレクトルール」**（出典2）〈重要〉—— **Web サーバに Apache httpd を使用している場合は対象外である**（出典3）。</td></tr><tr><th>cves</th><td><ul class=cl><li>CVE-2026-117477</li></ul><span class="b rsn">stated</span><div class=fn>**CVE-2026-117477（CWE-113・HTTP ヘッダにおける CRLF 文字の不適切な無害化）**（出典2）。 **CVSS 4.0 基本値 5.1 （CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N）**（出典2）。 **CVSS 3.1 基本値 6.1（CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N）**（出典2）。 **両版に共通して「利用者の操作が要る」（UI:A／UI:R）**〈重要〉—— **攻撃者は細工した URL を踏ませる手段を別に用意する必要がある。** **JVN の参考情報欄で CVE へのリンクは示されているが、 JVN iPedia のエントリは空欄である**（出典2。本記録の確認）。</div></td></tr><tr><th>exploitation_status</th><td>**悪用についての記述は、当事者の公表・JVN・報道のいずれにも無い** （出典1・2・3。本記録の確認・2026年11月13日時点）〈未確定6〉。 **本記録は「悪用は確認されていない」とは書かず、「公表されていない」と記す。** **本脆弱性は利用者の操作を要する（UI:R）ため、 無差別の自動攻撃よりも、標的を定めて URL を踏ませる形に向く**（本記録の評価）—— **その種の悪用は、被害サイト側のログには「正規の URL へのアクセス」として しか残らない可能性がある。**</td></tr><tr><th>discovery_method</th><td>**開発元（GMOプライム・ストラテジー株式会社）自身が JPCERT/CC へ報告した**（出典2）—— **「この脆弱性情報は、製品利用者への周知を目的に、 GMOプライム・ストラテジー株式会社が JPCERT/CC に報告し、 JPCERT/CC が GMOプライム・ストラテジー株式会社との調整を行いました」。** **誰が最初に見つけたのか（社内か外部の研究者か）は公表されていない** （本記録の確認）—— **報告者としてクレジットされた外部の個人・組織の名前は挙がっていない。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>item:</b> KUSANAGI 9 を使っている場合、開発者が提供する情報をもとに最新版へ アップデートする（出典2）。修正版の具体的な版数は本記録が未確認である〈未確定1〉　<b>副作用:</b> **WordPress の運用基盤そのものの更新であるため、 稼働中サイトの動作確認が要る**（本記録の評価）。 **更新に伴う停止時間・プラグインやテーマへの影響の有無は公表されていない。**</div><div class=sub><b>item:</b> アップデートできない場合、開発者が提供する情報をもとに緩和策を実施する（出典2）。 KUSANAGI 7・8 についても緩和策が公開されている（出典1）。 内容は本記録が未確認である〈未確定2〉　<b>副作用:</b> **原因箇所が Nginx のリダイレクトルールであるため、 緩和策がリダイレクトの挙動に影響する可能性がある**（本記録の評価）〈重要〉—— **既存の URL 正規化・リダイレクト設定に依存しているサイトでは 適用前に動作確認が要る。** **ただし緩和策の内容を本記録は確認していないため、 影響の有無は断定できない。**</div><div class=sub><b>item:</b> Web サーバの構成（Nginx か Apache httpd か）を確認し、 該当の有無を判定する（出典3）　<b>副作用:</b> **これは判定であって対策ではない**（本記録の注記）〈重要〉—— **「Apache httpd だから対象外」と判定した場合でも、 将来 Nginx 構成へ切り替えると該当する。** **構成の記録を台帳に残さないと、切り替え時に判定が引き継がれない。**</div><div class=sub><b>item:</b> サポート終了済みの KUSANAGI 7・8 を使っている場合、 緩和策の適用とあわせて KUSANAGI 9 への移行を計画に載せる（本記録の評価）　<b>副作用:</b> **移行は WordPress の動作検証・PHP の版の差異・プラグインの互換性確認・ 停止時間を伴う**（本記録の評価）。 **「脆弱性1件への対応」として処理できる規模ではなく、 予算と停止調整が要る。** **移行しない判断を取る場合は、その判断を誰がいつ見直すかを決める必要がある。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">公表</span></td><td>**GMOプライム・ストラテジーが 「当社製品「KUSANAGI」における脆弱性への対応について（CVE-2026-117477）」を 自社サイトに掲載した**（出典1）〈重要〉—— **KUSANAGI 9 には修正版があり、 サポートが終了している KUSANAGI 7・8 については緩和策を公開したとしている。** **JVN のベンダーステータスの最終更新日も同日である**（出典2）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**JPCERT/CC と IPA が JVNVU#92635551 を公開した**（出典2）—— **CVE-2026-117477・CWE-113・CVSS 4.0 基本値 5.1・CVSS 3.1 基本値 6.1。** **「開発者が JPCERT/CC に報告し、JPCERT/CC が開発者との調整を行いました」 という自社申告の経路である**（出典2）。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">訂正</span></td><td>**JVN が［影響を受けるシステム］を更新した**（出典2）〈重要〉—— **更新後の記載は「KUSANAGI 7 すべてのバージョン」 「KUSANAGI 8 Free / Business / Premium Edition すべてのバージョン」 「KUSANAGI 9 Security / Enterprise Edition 10.7.2-1 およびそれ以前／ Free / Business / Premium Edition 9.12.2-1 およびそれ以前」である。** **更新の理由は書かれていない**〈未確定3〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**ScanNetSecurity が本件を報じた**（出典3）—— **ここで「Apache httpd を使用している場合は対象外である」という 判定条件が確認できる**〈重要〉。 **同記事が引く影響範囲は「KUSANAGI 7、KUSANAGI 8、KUSANAGI 9 の Security / Enterprise Edition 10.7.2-1 およびそれ以前／ Free / Business / Premium Edition 9.12.2-1 およびそれ以前」であり、 JVN の11月12日の更新後の記載とは形が違う**〈差異2〉。</td></tr><tr><td class="sm nowrap tw"></td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が当事者の公表（出典1）と JVN（出典2）を取得して突き合わせた** （本記録の確認）—— **当事者の「お知らせ」から辿れるセキュリティアドバイザリ本体 （kusanagi.tokyo の releases ページ）は、 JavaScript の検査を伴う防御により本記録では取得できなかった**〈差異1〉〈重要〉—— **したがって修正版の具体的な版数と緩和策の手順は未確認である**〈未確定1〉〈未確定2〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>当事者のセキュリティアドバイザリ本体を本記録は取得できなかった</span><div class=sm>**当事者の「お知らせ」（出典1）から辿るアドバイザリ本体 （kusanagi.tokyo の releases ページ）へ、本記録は到達できなかった** （HTTP 403 と「Just a moment... Enable JavaScript and cookies to continue」の応答。 ブラウザの UA を付けた取得でも同じ）〈重要〉。 **このため次の2点は未確認である。** **①KUSANAGI 9 の修正版の具体的な版数**〈未確定1〉、 **②KUSANAGI 7・8 向けに公開された緩和策の内容**〈未確定2〉。 **本記録はこれらを推測で埋めない**（本記録の判断）—— **誤った手順を読者が実施しうるためである。** **影響範囲・CVSS・原因箇所・想定される影響は JVN（出典2）から一次相当の記述として取れている。**</div></li><li><span class="b dk">一次資料が改訂された</span><span class=ui>2026年11月12日の記事が引く影響範囲と、更新後の JVN の記載の形が違う</span><div class=sm>**JVN（出典2）は同一 URL のまま2026年11月12日に ［影響を受けるシステム］を更新している**〈重要〉。 **2026年11月12日の記事（出典3）が引く記載**—— 「KUSANAGI 7、KUSANAGI 8、KUSANAGI 9 の以下のエディションおよびバージョン／ Security / Enterprise Edition 10.7.2-1 およびそれ以前／ Free / Business / Premium Edition 9.12.2-1 およびそれ以前」。 **更新後の JVN の記載**—— 「KUSANAGI 7 すべてのバージョン」 「KUSANAGI 8 Free / Business / Premium Edition すべてのバージョン」 「KUSANAGI 9 Security / Enterprise Edition 10.7.2-1 およびそれ以前／ Free / Business / Premium Edition 9.12.2-1 およびそれ以前」。 **前者は KUSANAGI 7・8 にも版の上限が掛かるように読めるが、 後者では上限が無い**（本記録の整理）。 **実務上の帰結**——**初報を見て「自社の版は該当しない」と判断した KUSANAGI 7・8 の利用者は、その判断が誤りになっている。** **更新の理由は公表されていない**〈未確定3〉。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>更新前の JVN の文面を本記録は保存していない</span><div class=sm>**本記録が取得したのは2026年11月13日時点の JVN（11月12日更新後）だけである** （本記録の確認）。 **したがって「11月9日から11月11日までの ［影響を受けるシステム］の記載」は逐語では確かめられていない。** **本記録が差異2として記した比較は、 2026年11月12日の記事（出典3）が引用した記載との比較であり、 JVN の更新前の原文そのものではない**〈重要〉—— **記事側の要約・整形が入っている可能性を排除できない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>本脆弱性で何ができるのかについて、どの資料も踏み込んでいない</span><div class=sm>**当事者・JVN・報道のいずれも 「HTTP レスポンスに任意のヘッダーが挿入される可能性があります」までで止まっている** （出典1・2・3。本記録の確認）。 **実際にどのような影響（セッションの扱い・キャッシュの扱い・ ブラウザ側の挙動）に至るのかは書かれていない。** **本記録はこれを書き足さない**（本記録の判断）〈重要〉—— **CWE-113 の一般的な説明から推論して書くことはできるが、 本件で成立するとは限らず、読者の優先順位付けを誤らせる。** **CVSS の評価（機密性・完全性が「低」、可用性は無し。 3.1 でスコープ変更あり）が、公表された唯一の影響の目安である**（出典2）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>細工された URL を利用者が踏むと、KUSANAGI 同梱の Nginx リダイレクトルールが CRLF を無害化せずレスポンスへ任意のヘッダーを挿入する （公表内容を段階に並べたもので、実際の攻撃の観測ではない）</div><div class=svgwrap><svg viewBox="0 0 998 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,118.0 220,118.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,118.0 C295.0,118.0 295.0,213.0 220,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,213.0 C397.0,213.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C499.0,60.0 499.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,117.0 628,117.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,117.0 C703.0,117.0 703.0,206.0 628,206.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,264.0 C601.0,264.0 601.0,117.0 628,117.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C703.0,162.0 703.0,111.0 832,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C703.0,162.0 703.0,213.0 832,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（権限不要・ただし</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者に踏ませる手段が別</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に要る）</text><text x="91.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVSS PR:N だが</text><text x="91.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10"> UI:A／UI:R。踏</text><rect x="220" y="74.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CRLF を含むよう細工</text><text x="295.0" y="110.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">された URL（リンク先</text><text x="295.0" y="124.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は正規サイトのドメイン）</text><text x="295.0" y="137.0" text-anchor="middle" fill="#ffcc80" font-size="10">URL の見た目で見分け</text><text x="295.0" y="149.0" text-anchor="middle" fill="#ffcc80" font-size="10">る防御が効きにくい</text><rect x="220" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">被害サイトの訪問者（この</text><text x="295.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">操作が成立の条件）</text><text x="295.0" y="225.0" text-anchor="middle" fill="#8892b0" font-size="10">利用者の操作が無ければ成</text><text x="295.0" y="237.0" text-anchor="middle" fill="#8892b0" font-size="10">立しない</text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KUSANAGI 同梱の</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> WordPress 向</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">け Nginx 設定フ…</text><text x="499.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">不備があったのはここ。利</text><text x="499.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">用者が書いた設定ではない</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リダイレクトルール（CR</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LF の無害化が不適切・</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CWE-113）</text><text x="499.0" y="181.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE-2026-117</text><text x="499.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">477 の原因箇所</text><rect x="424" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Apache httpd</text><text x="499.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 構成（この経路では成立</text><text x="499.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">しない）</text><text x="499.0" y="283.0" text-anchor="middle" fill="#f48fb1" font-size="10">対象外の判定条件。構成を</text><text x="499.0" y="295.0" text-anchor="middle" fill="#f48fb1" font-size="10">切り替えると該当しうる</text><rect x="628" y="80.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">HTTP レスポンスへの</text><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">任意のヘッダー挿入</text><text x="703.0" y="129.0" text-anchor="middle" fill="#ffcc80" font-size="10">公表はここまで。何ができ</text><text x="703.0" y="141.0" text-anchor="middle" fill="#ffcc80" font-size="10">るかは書かれていない</text><rect x="628" y="168.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="190.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ブラウザ側での解釈（CV</text><text x="703.0" y="204.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SS 3.1 で S:C</text><text x="703.0" y="218.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> と評価）</text><text x="703.0" y="231.0" text-anchor="middle" fill="#64b5f6" font-size="10">影響がサーバの外へ出る</text><rect x="832" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KUSANAGI 9 の</text><text x="907.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サイト（修正版あり・版数</text><text x="907.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は非公表）</text><text x="907.0" y="130.0" text-anchor="middle" fill="#80cbc4" font-size="10">10.7.2-1 以前／</text><text x="907.0" y="142.0" text-anchor="middle" fill="#80cbc4" font-size="10">9.12.2-1 以前が</text><rect x="832" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KUSANAGI 7・8</text><text x="907.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> のサイト（サポート終了</text><text x="907.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・緩和策のみ）</text><text x="907.0" y="232.0" text-anchor="middle" fill="#80cbc4" font-size="10">全バージョンが対象。更新</text><text x="907.0" y="244.0" text-anchor="middle" fill="#80cbc4" font-size="10">では解消しない</text></svg></div><div class=fn>JVNVU#92635551（2026年11月9日公開・11月12日更新・出典2）、 GMOプライム・ストラテジーの告知（出典1）、 ScanNetSecurity の報道（出典3）にもとづき本記録が2026年11月13日に作図した。 **実際の攻撃が起きたことを示す図ではない**—— **悪用についての記述はいずれの資料にも無い**〈未確定6〉。 **Apache httpd 構成では成立しない**（出典3）。 **KUSANAGI 7・8 には修正版が無く、緩和策のみが提供される**（出典1）〈重要〉。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）。 **本記録の評価としては、該当するリダイレクトルールを たたく形の異常な URL が短期間に試されることがあれば アクセスログに残るはずである**—— **ただし「どの URL の形がそれに当たるか」は公表されていないため、 防御側は何を探せばよいか分からない**〈未確定7〉。</div></td><td><div class=ctl><span class="b eff">検知できた</span>Web アクセスログに CRLF のエンコード表現（%0d／%0a 等）を含む URL が現れていないかを過去分まで検索する</div><div class=ctl><span class="b eff">影響を限定できた</span>運用中の KUSANAGI の版・エディション・Web サーバ構成を台帳に記録し、該当判定を即座にできる状態にする</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）〈重要〉—— **本記録の評価として、この段階の検知は被害サイト側では難しい。** **リンクのドメインは正規のサイトのものであり、 アクセスは正常な訪問者の操作として届く。** **URL の文字列だけが手掛かりになる。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>WAF でリクエスト URL 中の CRLF のエンコード表現を遮断する（ただし正規のリダイレクト動作への影響を事前に確認する）</div><div class=ctl><span class="b eff">侵入を防げた</span>開発元が公開した緩和策を適用する（KUSANAGI 7・8。内容は本記録が未確認）</div><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ更新する（KUSANAGI 9）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）。 **本記録の評価としては、サーバ側のアクセスログに 「返したレスポンスヘッダー」まで記録している組織は少ない**〈重要〉—— **要求は記録されるが、応答に何が入ったかは残らないことが多い。** **つまり成立したかどうかを後から確かめる材料が手元に無い構成がありうる。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正版へ更新する、または開発元の緩和策を適用してリダイレクトルールの無害化を直す</div><div class=ctl><span class="b eff">検知できた</span>レスポンスヘッダーを含む形でアクセスログを取得する構成を検討する（容量と個人情報の扱いに注意する）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**サポートが終了している KUSANAGI 7・8 についても緩和策を公開した**（出典1）—— **「サポート終了のため対象外」として切り離さなかった。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価として、これは評価できる判断である**〈重要〉—— **サポート終了済みの版は「告知の対象外」として扱われることが多く、 利用者は自力で危険の有無を判断するしかなくなる。** **本件では影響を受ける3つのメジャー版のうち2つが サポート終了済みであり**（本記録の算出）、 **ここを切り離せば、実際の利用者の相当部分に手当てが届かなかった。** **留保**——**緩和策の内容を本記録は確認できていないため、 その実効性は評価できない**〈未確定2〉〈差異1〉。</td></tr><tr><td>**自社から JPCERT/CC へ報告し、JVN と自社告知を同日（2026年11月9日）に 出した**（出典1・2）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価では、公表のやり方自体は妥当である**—— **当事者の告知と JVN が同日に出ており、 利用者はどちらの経路でも気づける。** **足りなかった点が1つある**〈重要〉—— **影響範囲の記載が3日後（11月12日）に更新された**（出典2。本記録の算出）。 **更新後は KUSANAGI 7・8 が「すべてのバージョン」となっており、 初報の版数の記載を見て対象外と判断した利用者には読み直しが要る**〈差異2〉。 **更新の理由は公表されていない**〈未確定3〉。</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「既定の構成のまま使っている」ことは安全の根拠にならない</div><div class=lw>**本件で不備があったのは、製品が同梱する 「WordPress 向け Nginx の設定ファイルに含まれるリダイレクトルール」である** （出典2）〈重要〉—— **利用者が触った設定ではない。** **「標準構成で使っているので問題ない」という報告は、 この種の事案では意味を持たない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自社サイトの構成要素の棚卸しに「基盤製品が同梱する設定ファイル」を 項目として立てる。** **WordPress 本体・プラグイン・テーマの版だけを管理している台帳は、 基盤側の脆弱性を受け取れない。**</div></li><li><div class=lp>サポート終了済みの版を使っている資産は「直せない脆弱性を抱える資産」として別枠で管理する</div><div class=lw>**本件では影響を受ける3つのメジャー版のうち2つ（KUSANAGI 7・8）が サポート終了済みで、修正版が出ない**（出典1。本記録の算出）〈重要〉。 **開発元は緩和策を公開したが、それは経路を塞ぐだけで サポート終了という状態は変わらない**（本記録の評価）—— **次の脆弱性でも同じ位置に立つ。**</div><div class=la><b>取るべき行動</b> **資産台帳に「サポート終了済み」の旗を立て、 その資産に対する脆弱性は「緩和策で対応」ではなく 「移行計画の有無」で判定する運用にする。** **移行しない判断を取る場合は、判断者と次回見直し日を記録する。**</div></li><li><div class=lp>脆弱性情報の到達性そのものをリスクとして見る</div><div class=lw>**本件の詳細（影響範囲・修正版の版数・緩和策の手順）は、 当事者告知ではなくアドバイザリ本体にあり、 そのページは JavaScript の検査を伴う防御の背後にあった** （本記録の確認）〈差異1〉〈重要〉—— **自動収集・社内の脆弱性管理ツール・外部のフィード経由では 本文が取れない可能性がある。**</div><div class=la><b>取るべき行動</b> **自社が使う基盤製品について、脆弱性情報の入手経路を1つに依存させない。** **JVN・開発元の告知ページ・アドバイザリ本体の3つを購読先として登録し、 自動収集できないものは人が見る運用にする。**</div></li><li><div class=lp>公表直後の影響範囲は変わりうる。初報での「対象外」判定を確定扱いにしない</div><div class=lw>**JVN は公開の3日後に［影響を受けるシステム］を更新し、 KUSANAGI 7・8 が「すべてのバージョン」になった**（出典2。本記録の算出）〈差異2〉。 **初報の版数の記載を見て対象外と判断していた組織は、判断が誤りになっている。**</div><div class=la><b>取るべき行動</b> **脆弱性台帳に「対象外と判定した案件」も残し、 判定日と判定の根拠（どの記載を見たか）を書く。** **公表から2週間はアドバイザリの更新を確認する運用にする。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>該当判定に Web サーバの種類を入れる。同じ製品・同じ版でも構成で結論が変わる</div><div class=lw>**本件は Nginx 向けの設定ファイルの問題であり、 Apache httpd を使っている場合は対象外である**（出典3）〈重要〉。 **KUSANAGI は Web サーバを切り替えて使える製品のため、 版数だけでは該当の有無が決まらない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **サイトごとに「KUSANAGI のメジャー版・版数・エディション・Web サーバの種類」の 4点を記録する。** **構成を切り替えたときに記録を更新する手順も決める （切り替えで該当が発生しうるため）。**</div></li><li><div class=lp>CRLF のエンコード表現を含む URL を、過去のアクセスログまでさかのぼって探す</div><div class=lw>**IoC は公表されていない**（出典1・2・3）。 **本脆弱性で攻撃者が送るのは CRLF を含むよう細工した URL である**（出典2）—— **当たりを付けられるのはここだけである**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **アクセスログを `%0d`／`%0a`（および大文字・二重エンコードの形）で検索する。** **見つかった場合は、その時点の構成が該当版だったかを台帳と突き合わせる。** **誤検知が出る前提で、遮断ではなく調査の起点として使う。**</div></li><li><div class=lp>レスポンスヘッダーが記録されていないと、成立したかどうかを後から言えない</div><div class=lw>**本脆弱性の結果は「HTTP レスポンスに任意のヘッダーが挿入される」ことである** （出典2）。 **一般的なアクセスログは要求を記録するが、返した応答ヘッダーは残さない** （本記録の評価）〈重要〉—— **要求の URL が残っていても、挿入が成立したかは分からない。**</div><div class=la><b>取るべき行動</b> **重要な公開サイトについて、応答ヘッダーを含む記録を取る構成が可能かを確認する。** **容量と個人情報の扱いが問題になるため、 対象サイトと保存期間を限って設計する。** **取らない判断をする場合は「成立の有無を後から判定できない」ことを インシデント対応の前提として明記しておく。**</div></li><li><div class=lp>緩和策を当てる前に、既存のリダイレクト動作への影響を確認する</div><div class=lw>**原因箇所は WordPress 向け Nginx 設定ファイルのリダイレクトルールである** （出典2）〈重要〉—— **その無害化を直す緩和策は、既存の URL 正規化・リダイレクトの挙動に 影響しうる**（本記録の評価）。 **緩和策の具体的な内容は本記録が未確認である**〈未確定2〉。</div><div class=la><b>取るべき行動</b> **緩和策は検証環境で先に適用し、 正規の URL のリダイレクト（末尾スラッシュ・HTTPS 強制・ 旧 URL からの転送など）が壊れていないかを確認してから本番へ入れる。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> KUSANAGI（7／8／9）で WordPress サイトを運用しており、 Web サーバが Nginx である</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> KUSANAGI 7 または KUSANAGI 8（Free / Business / Premium Edition）を 使い続けている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 自社サイトの構成管理台帳が WordPress 本体・プラグイン・テーマの版だけで、 基盤製品（KUSANAGI 等）の版・エディション・Web サーバ構成を持っていない</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 公開サイトのアクセスログを保持しておらず、保存期間が公表からの経過日数より短い</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 基盤製品の脆弱性情報を、自動収集のフィードだけで受け取っている</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> サイトのリダイレクト設定（末尾スラッシュの正規化・HTTPS 強制・旧 URL の転送）に 依存した運用をしており、設定変更時の回帰確認の手順が無い</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月9日 GMOプライム・ストラテジー株式会社</span> <a href="https://www.prime-strategy.co.jp/information/kusanagi-cve-2026-117477/" target="_blank" rel="noreferrer noopener nofollow">当社製品「KUSANAGI」における脆弱性への対応について（CVE-2026-117477）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本記録が取得して裏を取った当事者の公表**〈重要〉。 **確認したのは次の3点である。** **①公表日が2026年11月9日であること、** **②KUSANAGI 9 には修正版が提供されていること（版数は書かれていない）**〈未確定1〉、 **③KUSANAGI 7 と 8 はサポートが終了しているが、 緩和策が公開されていること**〈重要〉。 **影響を受ける版・緩和策の手順・CVSS・悪用の有無・報告者の記載は無く、 詳細はセキュリティアドバイザリ本体（kusanagi.tokyo の releases ページ）へ 誘導されている。** **そのアドバイザリ本体は JavaScript の検査を伴う防御により 本記録では取得できなかった**〈差異1〉。）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月9日公開・2026年11月12日最終更新 JPCERT/CC・IPA（JVN）</span> <a href="https://jvn.jp/vu/JVNVU92635551/" target="_blank" rel="noreferrer noopener nofollow">KUSANAGIにおけるHTTPヘッダーインジェクションの脆弱性（JVNVU#92635551）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録が取得して裏を取った公表**。 **確認したのは次の6点である。** **①CVE-2026-117477・CWE-113（HTTP ヘッダにおける CRLF 文字の不適切な無害化）、** **②原因箇所が「WordPress 向け Nginx の設定ファイルに含まれる リダイレクトルール」であること**〈重要〉、 **③CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:A/VC:N/VI:N/VA:N/SC:N/SI:L/SA:N 基本値 5.1 と CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N 基本値 6.1、** **④想定される影響「攻撃者によって細工された URL にアクセスすることで、 HTTP レスポンスに任意のヘッダーが挿入される可能性があります」、** **⑤影響を受けるシステム（KUSANAGI 7 すべてのバージョン／ KUSANAGI 8 Free / Business / Premium Edition すべてのバージョン／ KUSANAGI 9 Security / Enterprise Edition 10.7.2-1 およびそれ以前・ Free / Business / Premium Edition 9.12.2-1 およびそれ以前）、** **⑥「この脆弱性情報は、製品利用者への周知を目的に、 GMOプライム・ストラテジー株式会社が JPCERT/CC に報告し、 JPCERT/CC が GMOプライム・ストラテジー株式会社との調整を行いました」。** **更新履歴は「2026/11/12 ［影響を受けるシステム］を更新しました」の1件のみで、 変更内容は書かれていない**〈未確定3〉。 **ベンダーステータスは「該当製品あり」（最終更新 2026/11/09）。** **JVN iPedia のエントリは空欄である。**）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月12日 JPCERT/CC（JVN の配信記事として収集）</span> <a href="https://jvn.jp/vu/JVNVU92635551/" target="_blank" rel="noreferrer noopener nofollow">JVN: KUSANAGIにおけるHTTPヘッダーインジェクションの脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**2026年11月12日収集分のスナップショット** （output/articles/20261112/0351_jpcertcc_jvn-kusanagihttp.md）。 **内容は出典2と同一のページだが、 2026年11月12日の更新直後の記載を保持している点に価値がある**—— **ここから更新後の影響範囲の記載（KUSANAGI 7「すべてのバージョン」・ KUSANAGI 8「Free / Business / Premium Edition すべてのバージョン」）を確認した。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月12日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/11/12/56753.html" target="_blank" rel="noreferrer noopener nofollow">KUSANAGI に HTTP ヘッダーインジェクションの脆弱性</a> <span class="b kind">記事</span><span class=sm>（**本記録がこの事案を把握した入口** （2026年11月12日収集分・output/articles/20261112/0049_scannetsecurity_kusanagi-http.md）。 **JVN の内容を伝えるものだが、JVN 本文には無い判定条件が1点ある**〈重要〉—— **「※Apache httpd を使用している場合は対象外である」。** **本記録はこの条件を、該当判定の3つめの軸として採った。** **また本記事が引く影響範囲の記載は、 JVN の2026年11月12日の更新後の記載とは形が違う**〈差異2〉—— **更新前の状態を伝えるスナップショットとして価値がある。** **記事は公表日を「11 月 9 日 (月)」としている。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月13日</span> <span class="b rev">新規作成</span> **2026年11月12日収集の2本の記事 〈output/articles/20261112/0049_scannetsecurity_kusanagi-http.md（出典3）、 output/articles/20261112/0351_jpcertcc_jvn-kusanagihttp.md（出典4）〉を起点に 新規作成した。**
+**一次公表の裏取りを行った**〈重要〉。 **①GMOプライム・ストラテジーの告知ページ（出典1）を取得し、 公表日が2026年11月9日であること、 KUSANAGI 9 には修正版があること、 KUSANAGI 7・8 はサポート終了だが緩和策が公開されていることを確認した**—— **この3点目は記事2本のいずれにも無い**〈重要〉。 **②JVN（出典2）を取得し、原因箇所・CVSS 2版・影響範囲・ 自社申告の経路・更新履歴を確認した。** **③当事者のアドバイザリ本体（kusanagi.tokyo の releases ページ）は 取得できなかった**〈差異1〉—— **HTTP 403 と「Just a moment...」の応答で、 ブラウザの UA を付けた取得でも同じだった。** **このため修正版の版数〈未確定1〉と緩和策の内容〈未確定2〉は記載しない。**
+**本記録が公表に無い要素として加えたのは次の5点である。**
+**①「影響を受ける3つのメジャー版のうち2つはサポート終了で修正版が出ない」ことを sections の scope 節の中心に置いた**〈重要〉—— **当事者の告知と JVN の影響範囲を突き合わせて初めて見える構造で、 どちらか一方だけを読んでも出てこない。** **figures に eol_major_versions（2版）を立てた。**
+**②「初報と更新後で影響範囲の記載の形が違う」ことを独立の節に立てた**〈差異2〉—— **更新後は KUSANAGI 7・8 が「すべてのバージョン」であり、 初報の版数の記載を見て対象外と判断した利用者には読み直しが要る。** **JVN の公開から更新までの日数（3日）を算出した （figures の derived・derived_from: [T2, T3]）。**
+**③該当判定の軸を3つに整理した**（本記録の整理）—— **メジャー版と版数／エディション／Web サーバの種類。** **3つめは JVN 本文には無く、ScanNetSecurity の記事（出典3）にある 「Apache httpd を使用している場合は対象外である」から取った**〈重要〉。
+**④「脆弱性情報の到達性」をリスクとして記録した**〈差異1〉—— **詳細がアドバイザリ本体にあり、そのページが JavaScript の検査を伴う防御の背後にある。** **lessons の ciso 向け第3項にこれを置いた。**
+**⑤「レスポンスヘッダーが記録されていないと成立を後から判定できない」ことを engineer 向けの学びに置いた**（本記録の評価）—— **一般的なアクセスログは要求を残すが応答ヘッダーを残さない。**
+**本記録が意図的に書かなかったことが1つある**〈重要〉。 **「挿入されたヘッダーで何ができるか」を列挙しなかった**—— **当事者・JVN・報道のいずれも「任意のヘッダーが挿入される可能性があります」 までで止まっており、CWE-113 の一般論から推論して書けば 本件で成立するとは限らない話を読者に渡すことになる**〈差異4〉。 **公表された影響の目安は CVSS の評価だけである（出典2）。**
+**type は vulnerability、status は updating とした。** **updating の根拠は、公表の3日後に影響範囲が更新されており、 アドバイザリ本体を本記録が未取得であるためである**（本記録の判断）。 **japan_relevance は domestic**——**開発元が日本の組織で、 影響先は国内の WordPress サイトである。**
+**root_causes は design-flaw のみ。** **misconfiguration は置かない**—— **利用者の設定ではなく製品同梱の設定ファイルの不備である（出典2）。** **patch-management も置かない**—— **公表時点で KUSANAGI 9 には修正版がある（出典1）。** **ただしサポート終了済みの2版では更新による解消ができないことを root_causes_note と sections に明記した。**
+**attack.chain は3段階（reconnaissance・initial-access・execution）とし、 冒頭に「公表内容を段階に並べ替えたもので実際の攻撃の観測ではない」と明記した。** **iocs は空とした**——**実際の攻撃が観測されていないため指標が存在しない。** **iocs_note には、自組織で探せる唯一の手掛かり （CRLF のエンコード表現を含むリクエスト URL）と、 それが検知規則としては使えないという留保を書いた。**
+**response は被害組織が存在しないため「開発元の対応」として記述し、 metrics は置かない**（vulnerability は検査上も免除されており、 検知から封じ込めまでを測る主体が存在しない）。 **decisions には、サポート終了済みの2版にも緩和策を出した判断と、 影響範囲の確定を待たずに公表した判断の2つを置いた。**
+**本記録は「悪用は確認されていない」とは書かない**—— **書けるのは「公表されていない」までである**〈未確定6〉。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">KUSANAGI</span><span class="b tag">GMOプライム・ストラテジー</span><span class="b tag">WordPress</span><span class="b tag">Nginx</span><span class="b tag">HTTPヘッダーインジェクション</span><span class="b tag">CRLF</span><span class="b tag">CVE-2026-117477</span><span class="b tag">CWE-113</span><span class="b tag">JVN</span><span class="b tag">サポート終了</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-13 10:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
