@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Telegram ウィジェット隔離の破れ — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1081</span>Telegram ウィジェット隔離の破れ</h1>
+<header class="site-header">
+  <p class="subtitle">**Telegram が2026年11月9日に Bot API 10.4 で「対話の中で動く HTML ウィジェット」を 全ボットへ開放した直後、その隔離の内側で動く JavaScript エンジンの メモリ安全性の不備が相次いで修正された。Telegram 自身のウィジェットサンドボックスの 変更履歴（GitHub）は、v0.6.1（11月6日）の RegExp 削除の不備について 「これが報告された RCE である」と明記し、v0.6.4（11月10日）の `await using` の不備を 「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」と記述している。 後者は、11月9日に公開された QuickJS-ng の第三者セキュリティ監査（27件の指摘・ issue #1902）の指摘3（深刻度 High）に対応する。問題のコードは2026年5月16日に 上流の QuickJS-ng の main へ入っており、修正までの期間は178日である。 11月11日、研究者グループ V12 が Android 上で電卓アプリが自動的に開く実演動画 「Telegram Widgets RCE」を公開した——ただし `await using` の修正は その前日（11月10日）に Android 版 13.2.2（ビルド7303）で出ており、 同じ版でウィジェットの実行は Telegram のファイルにもネットワークにも 触れない独立プロセスへ移された。デスクトップ版は11月11日の 7.4.2 に 当該修正が入っておらず、入ったのは11月13日深夜（モスクワ時間）の 7.4.3 である。 その11月13日、Pavel Durov 氏は「問題は存在しない」と投稿した—— **自社の技術変更履歴が「報告された RCE」と書いているものを、 経営トップが存在しないと述べる形になっている。** CVE 番号は割り当てられていない。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span><span class="b cause">脆弱性の放置</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月6日（Telegram のウィジェットサンドボックス変更履歴 v0.6.1。「報告された RCE」の修正）</span>
+  <span>最終更新: 2026年11月15日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>2026年11月9日、Telegram は Bot API 10.4 を公開し、ボットがメッセージの中に 対話型の HTML ウィジェットを埋め込めるようにした</strong>（出典1）。 Mini Apps と違い、<strong>別アプリを開かずに対話の中でそのまま動く</strong>（出典1）。 <strong>デスクトップ版では一足早く、11月5日の 7.4.0 で 「HTML widgets in bots」として入っていた</strong>（出典7）。 <strong>公式ドキュメントは隔離の仕組みを具体的に書いている</strong>（出典2）—— 「ウィジェットの JavaScript は QuickJS という小さな JavaScript エンジンで動き、 WebView やブラウザのコンテキストでは決して動かない」（訳。原文英語）、 HTML は32KB（圧縮4KB）まで、<strong>ネットワークは設計上無効</strong>で <code>fetch</code> や <code>WebSocket</code> は <code>NetworkDisabledError</code> を投げ、 外部のスクリプト・スタイルシート・フォント・画像は一切読み込まれない。 <strong>外へ出られる経路はボットへの最大64バイトの要求だけ</strong>で、 <strong>本番環境ではボットとの1対1の対話でしか動かず、転送もできない</strong>（出典1・2）。<strong>その隔離の内側で、エンジンのメモリ安全性の不備が相次いで修正された。</strong> <strong>Telegram 自身が公開しているウィジェットサンドボックスの変更履歴（GitHub）が 一次資料である</strong>（出典3）〈重要〉—— <strong>v0.6.1（2026年11月6日）</strong>は RegExp 削除の高速経路 （<code>replace(re, "")</code> / <code>replaceAll(re, "")</code> が <code>lastIndex</code> の変換前に コンパイル済みバイトコードを読む）の修正について <strong>「これが報告された RCE である」</strong>（訳。原文英語）と明記し、 <strong>v0.6.4（2026年11月10日）</strong>は <code>await using</code> の不備を <strong>「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」</strong>（いずれも訳。原文英語）と 記述している。 <strong>v0.6.4 はこのほかに5件の use-after-free / 領域外アクセスの修正を含み、 いずれも「サンドボックスより下、素のウィジェット JS から到達可能」とされる</strong>（出典3）。<strong><code>await using</code> の不備は、2026年11月9日に公開された QuickJS-ng の 第三者セキュリティ監査（GitHub issue #1902・指摘27件）の指摘3に対応する</strong>（出典4）—— <strong>深刻度 High、「<code>for (await using ...)</code> が非 async 関数でも受け入れられ、 その結果 <code>OP_await</code> が通常のフレームで走り、死んだ C スタックへの <code>var_refs</code> がぶら下がったまま残る」</strong>（訳。原文英語）。 <strong>問題のコードは2026年5月16日に上流の QuickJS-ng の main へ入っており、 修正までは178日である</strong>（出典8。本記録の算出）。<strong>2026年11月11日、研究者グループ V12 が実演動画「Telegram Widgets RCE」を公開した</strong> （出典6・7）——<strong>Android の利用者がボットを起動すると、 カウントダウンのメッセージのあとに端末の電卓アプリが自動的に開く</strong>（出典6）。 <strong>ただし <code>await using</code> の修正は前日（11月10日）に Android 版 13.2.2（ビルド7303）で出ており、 同じ版でウィジェットの実行は「Telegram のファイルにもネットワークにも 触れない独立した隔離プロセス」へ移され、 ウィジェットのプロセスからの新規プログラム起動も封じられた</strong>（出典7）。<strong>2026年11月13日、Pavel Durov 氏は自身のチャンネルで 「問題は存在しない」（原文英語: "The issue doesn't exist."）と投稿し、 「メッセージを受け取っただけでハックされうる者はいなかった」 「まず利用者が自分で第三者のサービスを起動する必要があった」 「それも含めてサーバ側で完全に修正済みである」と述べ、 「そう思わないなら私のアカウントをハックしてみろ」と書いた</strong>（出典5）。 <strong>CVE 番号は割り当てられていない</strong>〈未確定1〉。 <strong>実際に悪用された事例は報告されていない</strong>〈未確定2〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>10</span></div><ul><li><span class=ui>CVE 番号（本件には割り当てられていない）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>実際に悪用された事例の有無</span><span class="b rsn">探索したが未発見</span></li><li><span class=ui>「報告された RCE」の報告者・報告日と、V12 が報告者であったか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>影響を受けた利用者数・端末数</span><span class="b rsn">公表されていない</span></li><li><span class=ui>2026年11月13日に対話内のウィジェットが動かなくなった件の原因・範囲・復帰時期</span><span class="b rsn">公表されていない</span></li><li><span class=ui>V12 が実演で用いた不備がどれであったか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>サーバ側の修正（Durov 氏「完全に修正済み」）の具体的な内容</span><span class="b rsn">公表されていない</span></li><li><span class=ui>影響を受けた各プラットフォームの版の下限</span><span class="b rsn">公表されていない</span></li><li><span class=ui>電卓アプリの起動以上の操作（データの読み出し・永続化）が可能だったか</span><span class="b rsn">公表されていない</span></li><li><span class=ui>Telegram の fork が上流の問題のコードを取り込んだ日付</span><span class="b rsn">公表されていない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Telegram Messenger（Telegram FZ-LLC）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>V12（セキュリティ研究者グループ）</span><span class="b role">発見・通報した主体</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>QuickJS-ng（Telegram がウィジェット実行に fork して用いる JavaScript エンジン）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Andreas Rösdahl（QuickJS-ng のセキュリティ監査を公開した研究者）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>QuickJS-ng のセキュリティ監査が挙げた指摘の件数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>27<span class=fu>件</span></div><div class=fa>2026年11月9日 時点</div><div class=fn>**GitHub issue #1902 の一覧表の行数である**（出典4）—— **深刻度は Critical から Info まで分かれており、 27件すべてが到達可能な脆弱性という意味ではない**（本記録の明示）〈重要〉。 **本件に対応するのは指摘3（深刻度 High）である**（出典3・4。本記録の照合）。 **監査は手動のソースレビューであり、 「検証コードや発火コードは一切書かず、実行もしていない」とされる**（出典4。訳） ——**したがって27件は「コードを読んで確認した」件数であって、 再現が確認された件数ではない。**</div></div><div class=fig><div class=fh><span class=fl>問題のコードが上流へ入ってから修正されるまでの日数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>178<span class=fu>日</span></div><div class=fn>**2026年5月16日（出典8）から2026年11月10日（出典3・7）までを本記録が算出した。** **上流の QuickJS-ng に明示的資源管理の対応として入ったコードが、 Telegram の fork で修正されるまでの期間である**（本記録の整理）〈重要〉—— **この間、不備を到達可能にする機能（ウィジェット）は 11月5日まで存在しなかった**（出典7）。 **したがって「178日間危険だった」ではなく、 『不備は半年前からあり、それを届く場所に置いた機能が後から来た』という形である** （本記録の明示）。 **approx としたのは、上流へ入った正確な時刻と、 fork が当該コードを取り込んだ日付が公表されていないためである。**</div></div><div class=fig><div class=fh><span class=fl>Android 版の修正からデスクトップ版の修正までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**Android 版 13.2.2 の公開（2026年11月10日）から デスクトップ版 7.4.3 の公開（2026年11月13日深夜・モスクワ時間）までを 本記録が算出した**（出典7）〈重要〉。 **間の 7.4.2（11月11日）には `await using` の修正が入っていない**（出典7）。 **Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」と しているため**（出典8）、**デスクトップ版の利用者は この3日間、修正を受けないまま同じ不備を抱えていたことになる** （本記録の評価）—— **しかも 7.4.2・7.4.3 の説明文はいずれも 「バグ修正とその他の小さな改善」であり、判断の材料にならない**（出典7）。</div></div><div class=fig><div class=fh><span class=fl>「報告された RCE」の修正から全ボットへの開放までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**v0.6.1 の公開（2026年11月6日・「これが報告された RCE である」）から Bot API 10.4 による全ボットへの開放（2026年11月9日）までを本記録が算出した** （出典1・3）〈重要〉。 **到達可能な RCE は、機能が全面開放される3日前に報告され修正されていた** （本記録の整理）—— **「公開してから破られた」という順序ではない。** **ただし開放の当日（11月9日）に27件の監査指摘が公開され、 翌日（11月10日）には別の到達可能な不備6件が修正されている**（出典3・4） ——**機能の開放時点で、エンジンの点検は終わっていなかった**（本記録の評価）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本記録が公表資料（出典1〜8）から整理した経路である。** **Telegram のウィジェットサンドボックス変更履歴（出典3）と QuickJS-ng の監査（出典4）が技術的な所在を記述しており、 実演動画（出典6）が外から見える結果を示している。** 経路は「**ボットの起動 → ウィジェットを含むメッセージの受信 → サンドボックス検査を通過した素のウィジェット JS → エンジン（QuickJS-ng の fork）のメモリ安全性の不備 → サンドボックスより下での動作 → 端末でのプログラム起動**」である。 **データの持ち出し・永続化・C2 は確認されていない**〈未確定9〉。 **本記録は、再現につながる技術的な詳細を採録しない**（本記録の判断）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class=srcs>[1] [2] [5] [6]</span></div><div>**利用者が当該ボットを自分で起動する**（出典5。Durov 氏が 「まず利用者が自分で第三者のサービスを起動する必要があった」と明記）。 **実演では利用者がボットを起動している**（出典6）。 **本番環境ではウィジェットはボットとの1対1の対話でしか動かず、 転送もできない**（出典1・2）ため、 **ボットの起動が唯一の入口である**（本記録の整理）。 **どのように当該ボットへ誘導するかは公表資料の対象外である。**</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class=srcs>[2] [3] [6] [7]</span></div><div>**ボットが HTML ウィジェットを含むメッセージを送り、 クライアントがそれを処理する**（出典1・2）。 **実演ではカウントダウンのメッセージとして現れる**（出典6）。 **仕様上、ウィジェットの JavaScript は QuickJS（QuickJS-ng の fork）で動き、 WebView やブラウザのコンテキストでは動かない**（出典2）。 **この段階で動くのは「素のウィジェット JavaScript」であり、 特別な権限は要らない**（出典3。本記録の整理）。</div></li><li><div class=stg><span class="b stage">3. 検知回避</span><span class=srcs>[3] [4]</span></div><div>**サンドボックスの検査を迂回するのではなく、その下で成立する**（出典3）〈重要〉—— **Telegram は「パーサのメモリ安全性の不備は、 あらゆるサンドボックスの検査より下にあるエンジンの射程に入る」と書いている** （出典3。訳）。 **到達可能とされた不備は、RegExp 削除の高速経路（v0.6.1・ 「これが報告された RCE である」）と、 `await using` の use-after-return（v0.6.4・ 「ウィジェットのスクリプトからのネイティブコード実行として報告された」）、 および v0.6.4 の5件の use-after-free / 領域外アクセスである**（出典3。訳）。 **`await using` の技術的な所在は監査の指摘3（深刻度 High）に記述がある**（出典4）。</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class=srcs>[3] [6] [7]</span></div><div>**Android 上で電卓アプリが自動的に開いた**（出典6）—— **これが公開実演で外から確認できる影響の全部である**（本記録の明示）。 **Telegram の変更履歴は不備の到達性を書くが、 到達後に何ができたかは書いていない**（出典3。本記録の確認）。 **データの読み出し・持ち出し・永続化・C2 通信はいずれも 確認されていない**〈未確定9〉。 **なお、修正版では「ウィジェットのプロセスからの新規プログラム起動」が 封じられている**（出典7）—— **実演で起きたのはまさにこの動作である**（本記録の照合）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**技術変更履歴（GitHub）では到達可能な RCE と hardening を区別して詳細に書く一方、 経営トップは公式チャンネルで「問題は存在しない」と述べた**（出典3・5）。 **利用者向けのリリース説明は「バグ修正とその他の小さな改善」であった**（出典7）。</div><div class=fn><b>トレードオフ:</b> **過大な報道を否定すれば利用者の不安を抑えられるが、 同時に修正版の存在と更新の必要性も伝わらなくなる**（本記録の整理）。 **「問題は存在しない」が広まれば、更新していない利用者が残る** ——**とくにデスクトップ版は11月13日まで修正が無かった**（出典7）。</div></li><li><div class=ui>**到達可能な不備を把握してから数日で修正を出した** （v0.6.1 は11月6日、v0.6.4 は11月10日。出典3）—— **ただしプラットフォーム間で到達が3日ずれ**（出典7）、 **セキュリティ修正であることを示す告知は行っていない**（本記録の確認）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **黙って直せば悪用の手がかりを与えずに済むが、 利用者は更新の理由を知らないため更新が遅れる**（本記録の整理）。 **とくにデスクトップ版は配布経路が複数あり、 告知が無いと古い版が残りやすい**（本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>到達可能な RCE は機能の全面開放より3日前に報告され、修正されていた<span class="b slot">概観</span></h2><p>日付を順に並べると、よく語られた「公開してすぐ破られた」とは別の形が出てくる（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>日付</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026年5月16日</td>
+<td>問題のコードが上流 QuickJS-ng の main へ入る（出典8）</td>
+</tr>
+<tr>
+<td>11月5日</td>
+<td>Telegram Desktop 7.4.0 で「HTML widgets in bots」（出典7）</td>
+</tr>
+<tr>
+<td><strong>11月6日</strong></td>
+<td><strong>サンドボックス v0.6.1。RegExp 削除の修正に「これが報告された RCE である」</strong>（出典3）</td>
+</tr>
+<tr>
+<td>11月9日</td>
+<td>Bot API 10.4 で全ボットへ開放（出典1）／QuickJS-ng の監査27件が公開（出典4）／v0.6.2・v0.6.3（出典3）</td>
+</tr>
+<tr>
+<td>11月10日</td>
+<td>v0.6.4（<code>await using</code> ほか到達可能な不備6件）／Android 13.2.2・ビルド7303（出典3・7）</td>
+</tr>
+<tr>
+<td>11月11日</td>
+<td>V12 の実演動画／Desktop 7.4.2（当該修正なし）（出典6・7）</td>
+</tr>
+<tr>
+<td>11月12日</td>
+<td>v0.6.5（出典3）</td>
+</tr>
+<tr>
+<td>11月13日</td>
+<td>Desktop 7.4.3（当該修正あり）／Durov 氏「問題は存在しない」（出典5・7）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>「報告された RCE」の修正は、機能が全ボットへ開放される3日前に出ている</strong>（本記録の算出。figures 参照）。<strong>V12 の実演（11月11日）も、<code>await using</code> の修正（11月10日）の翌日である</strong>（出典3・7）。</p>
+<p><strong>本記録の評価として、ここから2つのことが言える。</strong></p>
+<p><strong>①Telegram の対応そのものは速い。</strong> 到達可能な不備を把握してから数日で塞ぎ、<strong>到達可能な RCE と単なる hardening を変更履歴で区別して書いている</strong>（出典3）。<strong>公開実演の時点では、該当する不備はすでに修正済みであった可能性が高い。</strong></p>
+<p><strong>②しかし、機能の全面開放の時点でエンジンの点検は終わっていなかった。</strong>開放の当日（11月9日）に27件の監査指摘が公開され（出典4）、<strong>その翌日に「サンドボックスより下、素のウィジェット JS から到達可能」な不備が6件まとめて修正されている</strong>（出典3）。<strong>順序が逆である</strong>（本記録の評価）〈重要〉—— <strong>届く場所に置いてから、届く範囲を点検している。</strong></p></section>
+<section id="s7"><h2>サンドボックスの検査は、その下で動くエンジンが壊れる場合には効かない<span class="b slot">原因・手口</span></h2><p>Telegram のウィジェットの隔離は薄くない。公式ドキュメント（出典2）が書く仕様は次のとおりである。</p>
+<ul>
+<li><strong>実行エンジン</strong>: 「ウィジェットの JavaScript は QuickJS という小さなJavaScript エンジンで動き、WebView やブラウザのコンテキストでは決して動かない」（訳。原文英語）</li>
+<li><strong>大きさ</strong>: HTML は32KB まで、圧縮後4KB まで</li>
+<li><strong>描画</strong>: クライアントはウィジェットがページに加える変更を1つずつ「ウィジェットプロファイル」に照合し、通ったものだけを描く</li>
+<li><strong>ネットワーク</strong>: 設計上オフライン。<code>fetch</code> や <code>WebSocket</code> は<code>NetworkDisabledError</code> を投げ、外部のスクリプト・スタイルシート・フォント・画像は一切読み込まれない</li>
+<li><strong>外向きの経路</strong>: ボットへの最大64バイトの要求だけ（5秒に5回まで）</li>
+<li><strong>移動と対話</strong>: 画面遷移できない。<code>alert</code> / <code>confirm</code> / <code>prompt</code> はダイアログを出さない</li>
+<li><strong>資源</strong>: CPU・メモリ・DOM ノード数・タイマーに上限があり、超えたウィジェットは停止される</li>
+<li><strong>範囲</strong>: 「現在、本番環境ではウィジェットはボットとの1対1の対話でのみ動く」（訳。原文英語）</li>
+</ul>
+<p><strong>それでも破れた理由を、Telegram 自身が一文で書いている</strong>（出典3）〈重要〉。</p>
+<blockquote>
+<p>「パーサのメモリ安全性の不備は、あらゆるサンドボックスの検査より下にあるエンジンの射程に入る」（訳。原文英語。v0.6.2 の記述）</p>
+</blockquote>
+<p><strong>これが本件の構造上の要点である</strong>（本記録の整理）。上に並んだ制約はすべて<strong>エンジンが正しく動いている前提で効く</strong>。<strong>エンジンのメモリが壊れれば、その制約を課している側のコードが壊れる。</strong> v0.6.1 も v0.6.4 も、不備を「素のウィジェット JavaScript から到達可能」（訳。原文英語）と記述している（出典3）—— <strong>特殊な権限も、仕様の穴も要らない。</strong></p>
+<p>不備の中身は2系統である（出典3）。</p>
+<ul>
+<li><strong>RegExp 削除（v0.6.1・11月6日）</strong>: <code>replace(re, "")</code> / <code>replaceAll(re, "")</code> の高速経路が、<code>lastIndex</code> の変換前にコンパイル済みバイトコードを読む。<strong>「これが報告された RCE である」</strong>（訳。原文英語）。なお Telegram は「fork の RegExp パターンキャッシュが最近コンパイルしたバイトコードを生かし続けるため、素朴な発火方法では解放されない」とも書いている（出典3。訳）。</li>
+<li><strong><code>await using</code>（v0.6.4・11月10日）</strong>: <strong>「ウィジェットのスクリプトからのネイティブコード実行として報告された」「素のウィジェット JS から到達可能な use-after-return」</strong>（訳。原文英語）。</li>
+</ul>
+<p>後者は上流に由来する。<strong>第三者監査の指摘3（深刻度 High）が同じ不備を記述している</strong>（出典4）——「<code>for (await using ...)</code> が非 async 関数でも受け入れられ、その結果 <code>OP_await</code> が通常のフレームで走り、死んだ C スタックへの <code>var_refs</code> がぶら下がったまま残る」（訳。原文英語）。<strong>問題のコードは2026年5月16日に、明示的資源管理の対応と一緒に上流 QuickJS-ng の main へ入っている</strong>（出典8）。</p>
+<p><strong>不備は半年前からあり、それを届く場所に置いた機能が後から来た</strong>（本記録の整理）〈重要〉—— <strong>部品を選んだ時点で、その部品の未発見の不備も一緒に引き受けている。</strong></p></section>
+<section id="s8"><h2>AI を使った第三者のコード監査が、機能の全面開放と同じ日に27件を公開した<span class="b slot">発覚の端緒</span></h2><p>本件の発覚の経路には、記録しておく価値のある形がある（本記録の整理）。</p>
+<p><strong>2026年11月9日、Andreas Rösdahl 氏が GitHub issue #1902「Security audit of QuickJS-ng」を公開した</strong>（出典4）。コミット <code>d4187c7</code> を対象に、本体エンジン・libc・libregexp を読み、<strong>27件の指摘を深刻度別（Critical〜Info）に並べている。</strong></p>
+<p><strong>手法が明記されている点が重要である</strong>（本記録の評価）〈重要〉。</p>
+<blockquote>
+<p>「依頼により、検証コードや発火コードは一切書かず、実行もしていない」「指摘は『再現した』のではなく『コードを読んで確認した』ものである」（いずれも訳。原文英語）</p>
+</blockquote>
+<p>さらに<strong>「Claude Fable 5.1 モデルを用いた」と述べている</strong>（出典4）。</p>
+<p><strong>本記録は、この事実を評価の対象ではなく条件として扱う</strong>（本記録の明示）。読むべきは次の3点である。</p>
+<p><strong>①再現していない指摘が、実在する到達可能な不備を含んでいた。</strong>指摘3（深刻度 High）は、翌日 Telegram の v0.6.4 で<strong>「ウィジェットのスクリプトからのネイティブコード実行として報告された」</strong>不備として修正されている（出典3・4。本記録の照合）。<strong>PoC を書かない監査でも、当たりは出る。</strong></p>
+<p><strong>②同時に、誤検知の可能性も議論されている。</strong> 11月11日、connorshea 氏が issue 上で相互参照を書き込み、指摘1 は #1900、指摘4 は #1865、指摘9 は閉じた PR #1482 と重なると指摘し、<strong>指摘6 が誤検知ではないかと問うている</strong>（出典4）。<strong>27件という数字を「27個の脆弱性」と読んではいけない</strong>（本記録の明示）。</p>
+<p><strong>③上流の保守者からの応答は、2026年11月15日時点で無い</strong>（出典4。本記録の観測）〈重要〉。応答したのは<strong>利用者側</strong>である—— <strong>Telegram の開発者 John Preston 氏が11月10日、<code>Fix UAF in FinalizationRegistry.prototype.unregister()</code> のコミットをissue にひもづけた</strong>（出典4）。<strong>ただしそれは TelegramMessenger の fork 側のコミットであり、上流 quickjs-ng のものではない</strong>（出典4）。</p>
+<p><strong>本記録の評価として、ここに供給網の非対称がある。</strong> <strong>指摘は上流に出され、修正は下流の fork で先に動いた。</strong>同じエンジンを使う他の製品は、issue を自分で読んでいなければ気づけない。<strong>小規模なオープンソース部品に、修正を配る仕組みが備わっていない場合、「修正されたかどうか」は組み込んだ側ごとにばらばらになる</strong>（本記録の評価）。</p></section>
+<section id="s9"><h2>同じ不備でプラットフォーム間に3日のずれがあり、リリース説明は「小さな改善」だった<span class="b slot">再発防止</span></h2><p><strong>Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」としている</strong>（出典8）。ところが修正の到達は揃っていない（出典7）。</p>
+<ul>
+<li><strong>Android</strong>: 13.2.2（ビルド7303）に <code>await using</code> の修正が入る。<strong>11月10日。</strong>同じ版で、ウィジェットの実行が<strong>「Telegram のファイルにもネットワークにも触れない独立した隔離プロセス」</strong>へ移され、<strong>ウィジェットのプロセスからの新規プログラム起動も封じられた</strong>（出典7。訳）。</li>
+<li><strong>Desktop 7.4.2</strong>: <strong>11月11日。<code>await using</code> の修正は入っていない。</strong>別のメモリ修正5件のみ。</li>
+<li><strong>Desktop 7.4.3</strong>: <strong>11月13日深夜（モスクワ時間）。当該修正が入る。</strong></li>
+</ul>
+<p><strong>差は3日である</strong>（本記録の算出。figures 参照）〈重要〉。デスクトップ版のウィジェットは11月5日の 7.4.0 から入っていた（出典7）ため、<strong>デスクトップの利用者は、Android が直った後も3日間、同じ不備を抱えていた。</strong></p>
+<p><strong>そして、それを知る手段が無かった</strong>（本記録の評価）。<strong>7.4.2 と 7.4.3 のリリース説明はいずれも「バグ修正とその他の小さな改善」である</strong>（出典7。訳）。<strong>どちらにセキュリティ修正が入っているかは、説明文からは判別できない。</strong></p>
+<p><strong>判別できる場所は1つだけ存在した</strong>—— <strong>ウィジェットサンドボックスの変更履歴（GitHub）である</strong>（出典3）。ここには到達可能な RCE と hardening の区別まで書かれている。<strong>つまり情報は公開されていたが、利用者が見る場所には無かった</strong>（本記録の評価）〈重要〉—— <strong>アプリの更新画面に出るのは「小さな改善」の側である。</strong></p>
+<p><strong>実務上の含意はこうなる</strong>（本記録の評価）。<strong>マルチプラットフォームの製品では、「修正済み」は製品単位ではなくプラットフォーム単位・版単位で確認する必要がある。</strong>本件で「Telegram は直した」は正しいが、<strong>「自分の Telegram は直った」は、11月11日のデスクトップ利用者には当てはまらなかった。</strong></p></section>
+<section id="s10"><h2>自社の技術変更履歴が「報告された RCE」と書くものを、経営トップが存在しないと述べた<span class="b slot">組織の対応</span></h2><p>2026年11月13日、Pavel Durov 氏は自身のチャンネルに次のように書いた（出典5。本記録の作成者が直接取得。訳。原文英語）。</p>
+<blockquote>
+<p>「問題は存在しない。」「メッセージを受け取っただけでハックされうる者はいなかった。」「まず利用者が自分で第三者のサービスを起動する必要があった。」「それも含めてサーバ側で完全に修正済みである。」「そう思わないなら私のアカウントをハックしてみろ: t.me/monk」</p>
+</blockquote>
+<p><strong>正しい部分を先に置く</strong>（本記録の整理）。</p>
+<p><strong>前提条件の指摘は、公表仕様と整合する。</strong>本番環境でウィジェットはボットとの1対1の対話でしか動かず、送信されたウィジェットは自動的に protected content となり転送できない（出典1・2）。<strong>「メッセージを受け取っただけで」無関係な利用者が巻き込まれる経路は、公表仕様の上では存在しない。</strong> この点について Durov 氏の記述は正しい。<strong>報道の見出しが「どんなメッセージも RCE になる」に寄っていたのに対し、訂正としては妥当な中身である</strong>（本記録の評価）。</p>
+<p><strong>しかし「問題は存在しない」は、自社の技術変更履歴と矛盾する</strong>（本記録の評価）〈重要〉。</p>
+<p>Telegram のウィジェットサンドボックスの変更履歴（出典3）は、同じ週に次のように書いている。</p>
+<ul>
+<li>v0.6.1（11月6日）: RegExp 削除の修正について<strong>「これが報告された RCE である」</strong></li>
+<li>v0.6.4（11月10日）: <code>await using</code> について<strong>「ウィジェットのスクリプトからのネイティブコード実行として報告された」</strong>、<strong>「素のウィジェット JS から到達可能な use-after-return」</strong></li>
+<li>v0.6.4: 他の5件について<strong>「5件の use-after-free と領域外アクセスの修正。いずれもサンドボックスより下、素のウィジェット JS から到達可能」</strong></li>
+</ul>
+<p><strong>（いずれも訳。原文英語。）</strong></p>
+<p><strong>同じ組織が、エンジニアの文書では「到達可能な RCE」と書き、経営トップの発信では「存在しない」と書いている。</strong>しかも同じ投稿で「サーバ側で完全に修正済み」とも述べている—— <strong>存在しないものは修正できない</strong>（本記録の明示）。</p>
+<p><strong>言いたかったのが「報じられたような形では存在しない」であるなら、その区別は投稿には書かれていない</strong>（本記録の確認）。</p>
+<p><strong>「私のアカウントをハックしてみろ」についても一言置く</strong>（本記録の評価）。これは脆弱性の有無を決める材料にならない。<strong>特定のアカウントを落とせないことは、実装の不備が存在しないことの証明ではない。</strong>報奨金の額も条件も示されていない（本記録の確認）。</p>
+<p><strong>実務上の帰結はひとつである</strong>〈重要〉。<strong>利用者と組織は、更新すべきかどうかを提供元の広報からは判断できない。</strong>判断に使える一次情報は、<strong>GitHub のサンドボックス変更履歴</strong>（出典3）だけであった。<strong>本記録が2026年11月15日に確認した時点で、Bot API の変更履歴にウィジェットのセキュリティ修正に触れた記載は無く（出典1）、ウィジェットのドキュメントに「セキュリティ」の節は無い</strong>（出典2）。</p></section>
+<section id="s11"><h2>対話の中にコード実行の面が増えたこと自体が、組織の判断材料になる<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価である。</strong></p>
+<p>本件で塞がれた不備は複数だが、変わったのは不備ではなく<strong>構成</strong>である。</p>
+<p>これまでメッセージングアプリで任意のコードが動く場所は、概ね「別アプリ」「別画面」として分離されていた（Mini Apps 等）。<strong>Bot API 10.4 以降、Telegram ではそれが対話の中に入った</strong>（出典1）。利用者の視点では、画面の中にあるのは<strong>メッセージ</strong>である。<strong>「怪しいリンクを開かない」「アプリを入れない」という従来の指導は、この面に対しては空振りする</strong>——開くリンクもインストールもない。</p>
+<p>残る前提条件は1つだけである。<strong>利用者がそのボットを起動すること</strong>（出典5）。<strong>これはアプリのインストールよりはるかに軽い動作である</strong>（本記録の評価）〈重要〉——検索して <code>/start</code> を押すだけで終わる。<strong>軽い動作の先にネイティブコード実行の面があるという非対称が、本件の構成上の要点である。</strong></p>
+<p><strong>組織にとっての問いは「今回の不備は直ったか」ではない。</strong>前者は版を上げれば終わる。問うべきは<strong>「対話の中でコードが動く面を、自組織の端末で許すか」</strong>である。</p>
+<p><strong>同じ問いは Telegram に限らない。</strong>メッセージングやコラボレーションの製品が、対話の内側にスクリプトの実行面（カード・ウィジェット・埋め込みアプリ・AI の道具呼び出し）を増やす流れは続いている。<strong>判断の材料は「隔離が堅いか」ではなく「その面を無効化できるか」「無効化したとき業務が止まるか」である</strong>（本記録の評価）——本件のウィジェットについて、利用者側で切る設定は公表されていない〈未確定9〉。</p>
+<p><strong>なお、2026年11月13日に対話内のウィジェットが動かなくなったとの報告がある</strong>（出典7）。<strong>Telegram は停止の有無・範囲・復帰時期を公表していない</strong>〈未確定5〉—— <strong>機能そのものが一時的に引っ込められた可能性があるが、確認できない。</strong> <strong>これも組織の側から見れば「頼れない」という同じ判断材料になる</strong>（本記録の評価）。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Telegram のウィジェットサンドボックス（QuickJS-ng の fork・全プラットフォーム共通）　<b>ベンダー:</b> Telegram Messenger（Telegram FZ-LLC）／上流は QuickJS-ng　<b>CVE番号の公表状況:</b> 該当なし　<b>バージョン:</b> **影響: ウィジェットサンドボックス v0.6.4 より前／ 修正: v0.6.1（RegExp 削除の RCE）・v0.6.4（`await using` ほか6件）**（出典3）。 **Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」と している**（出典8）〈重要〉。 **各プラットフォームの版の下限は公表されていない**〈未確定8〉。　<b>概要:</b> **隔離の内側でスクリプトを実行するエンジンのメモリ安全性の不備であり、 サンドボックスの検査を迂回するのではなく、その下で成立する**（出典3）〈重要〉 ——**Telegram 自身が「パーサのメモリ安全性の不備は、 あらゆるサンドボックスの検査より下にあるエンジンの射程に入る」と書いている** （出典3。訳）。　<b>症状:</b> **到達可能な不備として Telegram が明示したのは2系統である**（出典3）。 **①RegExp 削除（v0.6.1・2026年11月6日）**—— **「これが報告された RCE である」**（訳。原文英語）。 `replace(re, &quot;&quot;)` / `replaceAll(re, &quot;&quot;)` の高速経路が、 `lastIndex` の変換前にコンパイル済みバイトコードを読む。 **②`await using`（v0.6.4・2026年11月10日）**—— **「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」**（いずれも訳。原文英語）。 **実演で外から見えたのは、Android で電卓アプリが自動的に開くところまでである** （出典6）〈未確定9〉。　<b>手法:</b> **`await using` の不備については、第三者監査が技術的な所在を記述している** （出典4）—— **指摘3（深刻度 High）「`for (await using ...)` が非 async 関数でも 受け入れられ、その結果 `OP_await` が通常のフレームで走り、 死んだ C スタックへの `var_refs` がぶら下がったまま残る」**（訳。原文英語）。 **監査は、for-in/of の先頭が `using` の前のトークンが TOK_AWAIT かどうかだけを 見ている点を挙げ、修正案として「関数が async でない限り当該構文を拒否する」ことを 示している**（出典4）。 **上流の修正は、パーサが当該構文に構文エラーを出す形である**（出典8）。 **本記録は、再現につながる以上の技術的な詳細を採録しない**（本記録の判断）。　<b>内容:</b> **実演で示されたのは、端末上のアプリ（電卓）が起動したことである**（出典6）。 **Telegram のファイル・ネットワーク・対話の内容が読み出されたという記述は無い** （本記録の確認）〈未確定9〉。 **Telegram の変更履歴は不備の到達性（「素のウィジェット JS から到達可能」）を 書くが、到達後に何ができたかは書いていない**（出典3。本記録の確認）。　<b>preconditions:</b> **①利用者が当該ボットを自分で起動していること**（出典5。Durov 氏が明記）。 **②本番環境ではウィジェットはボットとの1対1の対話でしか動かない**（出典1・2）。 **③送信されたウィジェットは自動的に protected content となり転送できない** （出典1）〈重要〉—— **無関係な第三者へ広がる経路は、公表仕様の上では存在しない**（本記録の整理）。 **④グループ・インラインモード・転送はテストサーバでのみ有効とされている**（出典2）。</div><div class=sub><b>名称:</b> Telegram for Android　<b>ベンダー:</b> Telegram Messenger（Telegram FZ-LLC）　<b>CVE番号の公表状況:</b> 該当なし　<b>バージョン:</b> **影響: 13.2.1／修正: 13.2.2（ビルド7303・2026年11月10日）**（出典7・8）。　<b>概要:</b> **修正版では `await using` の不備が塞がれたほか、 ウィジェットの実行が「Telegram のファイルにもネットワークにも触れない 独立した隔離プロセス」へ移された**（出典7。訳）〈重要〉—— **さらにウィジェットのプロセスからの新規プログラム起動が封じられた**（出典7）。 **一部のシステムコール制限は、現時点では監査モードで呼び出しを記録するだけ とされる**（出典7）。　<b>症状:</b> **V12 の実演で、ボットの起動後に電卓アプリが自動的に開いた**（出典6）。　<b>手法:</b> **V12 は技術詳細も検証コードも公開していない**（出典7）—— **用いた不備がどれであったかも不明である**〈未確定6〉。　<b>内容:</b> **公表されていない**〈未確定9〉。　<b>preconditions:</b> **利用者が当該ボットを起動していること**（出典5）。</div><div class=sub><b>名称:</b> Telegram Desktop　<b>ベンダー:</b> Telegram Messenger（Telegram FZ-LLC）　<b>CVE番号の公表状況:</b> 該当なし　<b>バージョン:</b> **影響: 7.4.0（2026年11月5日・ウィジェット導入）〜7.4.2（11月11日）／ 修正: 7.4.3（2026年11月13日深夜・モスクワ時間）**（出典7）〈重要〉。　<b>概要:</b> **7.4.2 には `await using` の修正が入っておらず、 別のメモリ修正5件だけが入っていた**（出典7）—— **修正が入ったのは 7.4.3 である**（出典7）。 **Android 版の修正から3日遅れである**（本記録の算出。figures 参照）。　<b>症状:</b> **デスクトップ版での実演・悪用は報告されていない**（本記録の確認）〈未確定2〉 ——**ただし Telegram は「この fork をビルドしている全プラットフォームが 影響を受けた」としている**（出典8）。　<b>手法:</b> **同じエンジンの不備である**（出典3・8）。　<b>内容:</b> **公表されていない**〈未確定9〉。　<b>preconditions:</b> **利用者が当該ボットを起動していること**（出典5）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **Telegram for Android を 13.2.2（ビルド7303）以降へ、 Telegram Desktop を 7.4.3 以降へ更新する**（出典7）。　<b>副作用:</b> **実質的な副作用は無い**（本記録の評価）—— **ただし、更新を促す公式の注意喚起が見当たらない**（本記録の確認）〈重要〉。 **リリース説明は「バグ修正とその他の小さな改善」であり**（出典7）、 **経営トップは「問題は存在しない」と述べている**（出典5）。 **利用者は、更新の必要性を提供元の発信からは判断できない**（本記録の評価）。</div><div class=sub><b>手順:</b> **業務端末で Telegram の利用を認めている場合、 インストールされている版を把握し、 Android 13.2.2 以降／Desktop 7.4.3 以降を強制する**（本記録の推奨）。　<b>副作用:</b> **MDM で版を強制すると、更新が行き渡るまで利用者が Telegram を使えない期間が生じる**（本記録の評価）—— **連絡手段として Telegram に依存している業務があると、その間止まる。** **デスクトップ版は配布経路が複数あり（ストア版・直配布版）、 版の把握がより難しい**（本記録の評価）。</div><div class=sub><b>手順:</b> **業務で使う端末では、見知らぬボットを起動しない運用を明示する**（本記録の推奨） ——**本件の前提条件は「利用者がボットを起動すること」である**（出典5）。　<b>副作用:</b> **ボットを使った業務の自動化（通知の受信・問い合わせ対応）が制約される** （本記録の評価）〈重要〉—— **一律の禁止は既存の運用を壊す。** 許可するボットを列挙する形が現実的である。</div><div class=sub><b>手順:</b> **自社製品に組み込みスクリプトエンジンを同梱している場合、 上流（QuickJS-ng 等）の監査・修正を追跡する経路を確保する**（本記録の推奨）。　<b>副作用:</b> **追跡の工数が常時かかる**（本記録の評価）—— **一方、本件では上流の監査が公開された当日に機能が全面開放されており** （出典1・4）、 **追跡していなければ気づけない時間差が実際に生じている。**</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年5月16日</td><td class=nowrap><span class="b kind">発生</span></td><td>**`await using` の不備のもとになったコードが、上流の QuickJS-ng の main へ入った** （出典8）——**明示的資源管理（explicit resource management）の対応と 一緒に入っている**（出典8）。 **この時点では Telegram のウィジェット機能は存在しない**（本記録の整理）〈重要〉 ——**不備は、それを到達可能にする機能より半年早く置かれていた。**</td></tr><tr><td class="sm nowrap tw">2026年11月5日（木）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Telegram Desktop 7.4.0 が公開され、リリースノートに 「HTML widgets in bots」が記された**（出典7）—— **デスクトップ版ではこの時点でウィジェットが入っている**（本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年11月6日（金）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**ウィジェットサンドボックス v0.6.1 が公開され、7件の修正が入った**（出典3・7）。 **うち RegExp 削除の不備（コミット `3d5cb14`）について Telegram は「これが報告された RCE である」と明記している**（出典3）〈重要〉—— **`replace(re, &quot;&quot;)` / `replaceAll(re, &quot;&quot;)` の高速経路が、 `lastIndex` の変換前にコンパイル済みバイトコードを読む不備である**（出典3）。 **リリースの前書きは「エンジンのメモリ安全性の不備が、 通常のウィジェット JavaScript から到達可能である」としている**（出典3。訳）。 **ほかに WeakMap の値がシンボルの場合の use-after-free、 `unicode_script()` の無限ループと二重解放、 BJSON の RegExp 参照登録（#1809）の修正を含む**（出典3）。 **報告者は示されていない**〈未確定3〉。</td></tr><tr><td class="sm nowrap tw">2026年11月9日（月）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**3つの出来事が同日に重なった**（本記録の整理）〈重要〉。 **①Telegram が Bot API 10.4 を公開し、ウィジェットを全ボットへ開放した** （出典1・7）—— 「本番環境ではウィジェットは1対1の対話にのみ送れる」 「送信されたウィジェットは自動的に protected content となり転送できない」 （いずれも訳。原文英語）と明記されている（出典1）。 **②Andreas Rösdahl 氏が QuickJS-ng のセキュリティ監査 （GitHub issue #1902・27件の指摘）を公開した**（出典4・8）。 **③Telegram がウィジェットサンドボックス v0.6.2 と v0.6.3 を公開した**（出典3）—— **いずれもパーサのメモリ安全性に関する修正で、 「v0.6.1 の RegExp 削除の不備と違い、これは到達可能な RCE ではなく hardening である」 と区別して書かれている**（出典3。訳）。</td></tr><tr><td class="sm nowrap tw">2026年11月10日（火）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**ウィジェットサンドボックス v0.6.4 が公開された**（出典3）—— **fork の `tdesktop-fixes` ブランチから5件のメモリ安全性の修正を取り込み、 「5件の use-after-free と領域外アクセスの修正。 いずれもサンドボックスより下、素のウィジェット JS から到達可能」とした** （出典3。訳）。 **6件目の変更が `await using` であり、 「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」と記述されている** （出典3。訳）〈重要〉。 **同日、Telegram for Android 13.2.2（ビルド7303）が公開され、 当該修正が入るとともに、ウィジェットの実行が 「Telegram のファイルにもネットワークにも触れない独立した隔離プロセス」へ移され、 ウィジェットのプロセスからの新規プログラム起動も封じられた**（出典7）。 **影響を受けていた Android 版は 13.2.1 である**（出典8）。 **また Telegram の開発者 John Preston 氏が、監査 issue #1902 に `Fix UAF in FinalizationRegistry.prototype.unregister()` のコミットをリンクした** （出典4）——**TelegramMessenger の fork 側のコミットである**（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年11月11日（水）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**V12 が実演動画「Telegram Widgets RCE」を公開した**（出典6・7）—— **Android の利用者がボットを起動し、カウントダウンのメッセージを受け取ると 端末の電卓アプリが自動的に開く**内容である（出典6）。 **`await using` の修正はその前日に出ている**（出典3・7）〈重要〉—— **V12 が実演で用いた不備がどれであったかは不明である**（出典7）。 **同日、Telegram Desktop 7.4.2 が公開されたが、`await using` の修正は入っていない** （出典7）——**5件の別のメモリ修正は入っている**（出典7）。 **また Connor Shi 氏が別のメモリ関連の不備を報告した**（出典7）。 **監査 issue #1902 には connorshea 氏が相互参照の指摘を書き込み、 指摘6 が誤検知ではないかと問うている**（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年11月12日（木）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**ウィジェットサンドボックス v0.6.5 が公開され、 Web ウィジェットが「自身のレンダラプロセスを持たない」とされた**（出典3。訳）。</td></tr><tr><td class="sm nowrap tw">2026年11月13日（金）</td><td class=nowrap><span class="b kind">公表</span></td><td>**Telegram Desktop 7.4.3 が深夜（モスクワ時間）に公開され、 `await using` の修正が入った**（出典7）〈重要〉—— **Android 版（11月10日）から3日遅れである**（本記録の算出）。 **7.4.2 と 7.4.3 のリリース説明はいずれも 「バグ修正とその他の小さな改善」であった**（出典7。訳）。 **同日、Pavel Durov 氏が自身のチャンネルで「問題は存在しない」と投稿した** （出典5）—— **「メッセージを受け取っただけでハックされうる者はいなかった」 「まず利用者が自分で第三者のサービスを起動する必要があった」 「それも含めてサーバ側で完全に修正済みである」 「そう思わないなら私のアカウントをハックしてみろ」**（いずれも訳。原文英語）。 **投稿の本文は本記録の作成者が直接取得したが、暦日の表示が無く、 11月13日という日付は出典7 に拠る**〈齟齬4〉。 **また同日、対話内のウィジェットが動かなくなったとの報告がある**（出典7）—— **Telegram は停止の有無・範囲・復帰時期を公表していない**〈未確定5〉。 **ロシア語メディア2本が本件を報じた**（出典6・8）。</td></tr><tr><td class="sm nowrap tw">2026年11月15日（土）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が一次資料4点 （Bot API 変更履歴・ウィジェットのドキュメント・ ウィジェットサンドボックスの変更履歴・QuickJS-ng の監査 issue）と Durov 氏の投稿を取得して現況を確認した**（出典1・2・3・4・5）。 **Bot API 変更履歴に 10.5 以降の項目は無く、 ウィジェットの撤回・停止・セキュリティ修正に触れた記載も無い**（本記録の観測） 〈重要〉。 **ウィジェットのドキュメントには「セキュリティ」の節が無く、 最も近いのは「プライバシー」の節である**（本記録の観測）。 **監査 issue #1902 は open のままで、保守者からの応答は無い**（本記録の観測）。</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>10</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>自社の技術変更履歴が「報告された RCE」と書くものを、経営トップが「存在しない」と述べている</span><div class=sm>**同一組織の内部で記述が食い違っている**（本記録の整理）〈重要〉。 **Telegram のウィジェットサンドボックス変更履歴（出典3）は、 v0.6.1 の RegExp 削除の修正について「これが報告された RCE である」とし、 v0.6.4 の `await using` を「ウィジェットのスクリプトからのネイティブコード実行として 報告された」「素のウィジェット JS から到達可能な use-after-return」と記述し、 さらに5件を「サンドボックスより下、素のウィジェット JS から到達可能」と 記述している**（いずれも訳。原文英語）。 **一方 Durov 氏の投稿（出典5）は「問題は存在しない」とする。** **同じ投稿に「それも含めてサーバ側で完全に修正済みである」ともあり、 存在しないものを修正済みとする形になっている**（本記録の明示）。 **本記録は技術変更履歴（出典3）の側を採る**（本記録の判断）—— **一次資料としての性格が強く、記述が具体的で、 到達可能な RCE と hardening を区別しているためである。** **なお Durov 氏の「メッセージを受け取っただけでは成立しない」という 前提条件の指摘自体は、公表仕様（出典1・2）と整合しており正しい。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>同一の不備に対する修正の到達がプラットフォーム間で揃っていない</span><div class=sm>**Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」と している**（出典8）〈重要〉—— **一方、出典6 は「影響を受けたのは Telegram for Android」としている。** **実際の修正の到達は、Android 13.2.2 が2026年11月10日、 Desktop 7.4.3 が11月13日深夜（モスクワ時間）で、 間の Desktop 7.4.2（11月11日）には `await using` の修正が入っていない**（出典7）。 **本記録は、影響範囲は全プラットフォーム（出典8）、 修正の到達時期はプラットフォームごとに異なる（出典7）という立場を採る** （本記録の判断）。 **iOS 版の版番号と修正日は、いずれの出典にも記載が無い**〈未確定8〉。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Durov 氏の投稿の暦日を本記録は一次資料で確認できていない</span><div class=sm>**本記録の作成者は t.me/s/durov/560 を直接取得し、投稿の本文を確認した** （出典5）。 **ただし当該ページには時刻（16:02）のみが表示され暦日が無く、 2026年11月13日という日付は出典7 に拠る**（本記録の明示）〈重要〉—— **本記録は投稿の内容を一次で確認し、日付を二次で補っている。** **出典7 も「2つの投稿のいずれについても正確な日付は示されていない」と 述べており、「2つ目の投稿は電卓の実演より後、すなわち11月11日より後」 としている**（出典7）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>V12 の実演内容と、V12 が用いた不備を本記録は確認していない</span><div class=sm>**本記録が確認したのは、実演を報じた記事の記述である**（出典6・7）—— **動画そのものは取得していない**（本記録の明示）〈重要〉。 **さらに、V12 が実演で用いた不備がどれであったかは どの出典にも示されていない**〈未確定6〉—— **出典7 は「V12 が RegExp の不備を使ったかは不明である」と明記している。** **`await using` の修正は実演の前日（11月10日）に出ているため**（出典3・7）、 **実演が修正済みの不備によるものだった可能性も、 別の未修正の不備によるものだった可能性も残る**（本記録の整理）。 **V12 は技術詳細も検証コードも公開していない**（出典7）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>「報告された RCE」の報告者と報告日が公表されておらず、発見から修正までを測れない</span><div class=sm>**Telegram の変更履歴は「報告された RCE」「〜として報告された」と書くが、 報告者名も報告日も示していない**（出典3。本記録の確認）〈重要〉。 **V12 が報告者であったことを示す一次資料は無い**〈未確定3〉—— **本記録は V12 の関与の確度を「推定」にとどめた。** **その結果、本記録が測れるのは公開された日付の差 （修正から全面開放まで3日・Android からデスクトップまで3日・ 上流への混入から修正まで178日）だけであり、 発見から修正までの期間は測れない**（本記録の明示）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>提供元の利用者向け資料が、修正もその性格も伝えていない</span><div class=sm>**本記録の作成者が2026年11月15日に確認した時点で、 Bot API の変更履歴（出典1）に Bot API 10.5 以降の項目は無く、 ウィジェットの撤回・停止・セキュリティ修正に触れた記載も無い**（本記録の観測） 〈重要〉。 **ウィジェットのドキュメント（出典2）には「セキュリティ」の節が無い。** **アプリのリリース説明は Desktop 7.4.2・7.4.3 のいずれも 「バグ修正とその他の小さな改善」である**（出典7。訳）—— **どちらにセキュリティ修正が入っているかを説明文から判別できない。** **判断に使える一次情報は GitHub のサンドボックス変更履歴（出典3）だけであった** （本記録の評価）。</div></li><li><span class="b dk">当事者の公表なし</span><span class=ui>CVE 番号が割り当てられておらず、脆弱性管理の仕組みに乗らない</span><div class=sm>**本件に CVE 番号は割り当てられていない**〈未確定1〉〈重要〉—— **出典7・8 のいずれも CVE に言及していない**（本記録の確認）。 **CVSS も存在しない**（識別子が無いため指標値も付与されない）。 **CWE については、監査（出典4）と上流の記述（出典8）から use-after-return / use-after-free の型であることは読めるが、 公式に割り当てられた CWE 番号は示されていない**（本記録の確認）。 **脆弱性スキャン・パッチ台帳・SBOM による照合は識別子を鍵に動く仕組みであるため、 本件は「対応済み／未対応」の集計に現れない**（本記録の評価）—— **判定は版番号で行う必要がある。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>監査の27件という数字を脆弱性の件数として読むと過大になる</span><div class=sm>**GitHub issue #1902 の「27件」は一覧表の行数であり、 深刻度は Critical から Info まで分かれている**（出典4）〈重要〉—— **27件すべてが到達可能な脆弱性という意味ではない**（本記録の明示）。 **監査は手動のソースレビューで、 「検証コードや発火コードは一切書かず、実行もしていない」 「指摘は『再現した』のではなく『コードを読んで確認した』ものである」とされる** （出典4。訳）—— **したがって27件は「コードを読んで確認した」件数であって、 再現が確認された件数ではない。** **実際に issue 上では、指摘1・4・9 が既存の報告と重なるとの指摘があり、 指摘6 については誤検知ではないかと問われている**（出典4）。 **本記録は、27件を数値として置く際に出所を第三者の調査によるものとして記録し、 注記に以上の留保を明記した。**</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>2026年11月13日に対話内のウィジェットが動かなくなった件の扱い</span><div class=sm>**出典7 は、2026年11月13日に対話内のウィジェットが動かなくなったとの 報告（Telegram Info）を伝えている**〈未確定5〉。 **Telegram は停止の有無・範囲・復帰時期を公表していない**（本記録の確認） 〈重要〉—— **出典7 自身も「ウィジェットが完全に無効化されたのか一部なのか、 いつ戻るのかは述べられていない」としている。** **Durov 氏は「サーバ側で完全に修正済み」と述べるが**（出典5）、 **それが機能の無効化を含むのかは示されていない**〈未確定7〉。 **本記録はこれを確定した事実として扱わず、報告として記録する** （本記録の判断）。</div></li><li><span class="b dk">本記録による推定</span><span class=ui>監査に AI モデルが用いられた点の扱い</span><div class=sm>**監査の著者は「Claude Fable 5.1 モデルを用いた」と明記している**（出典4。訳） ——**出典8 は「Anthropic の Claude を用いた」と記述している**（本記録の確認）。 **本記録はこの事実を、指摘の正しさを上げる根拠にも下げる根拠にも用いない** （本記録の明示）〈重要〉。 **評価に用いたのは次の2点だけである。** **①指摘3 は、翌日 Telegram の v0.6.4 で到達可能な不備として 実際に修正された**（出典3・4 の照合。本記録）—— **PoC を書かない監査でも実在する不備を含みうる、という事実。** **②同じ監査には、既存報告との重複や誤検知の疑いを指摘されたものも含まれる** （出典4）——**件数を脆弱性数として読めない、という事実。** **本記録はこの照合（指摘3 ↔ v0.6.4 の `await using`）を 自ら行ったものであり、出典3・4 のいずれも相互に明示していない** （本記録の明示）——**出典8 が両者を結びつけている。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>上流の部品に半年前からあった不備が、対話の中へ置かれて素のウィジェットJSから届くようになった</div><div class=svgwrap><svg viewBox="0 0 1610 252" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,126.0 C193.0,126.0 193.0,96.0 220,96.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,165.0 C295.0,165.0 295.0,96.0 220,96.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,94.0 C499.0,94.0 499.0,158.0 424,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,158.0 C601.0,158.0 601.0,126.0 628,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C805.0,126.0 805.0,126.0 832,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,126.0 C1009.0,126.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,96.0 C703.0,96.0 703.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,126.0 C1213.0,126.0 1213.0,48.0 1240,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,48.0 C1417.0,48.0 1417.0,87.0 1444,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,48.0 C1417.0,48.0 1417.0,165.0 1444,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,126.0 C1315.0,126.0 1315.0,48.0 1240,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,204.0 C1315.0,204.0 1315.0,48.0 1240,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">QuickJS-ng（上</text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">流・2026年5月16日</text><text x="91.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">に問題のコードが ma…</text><rect x="220" y="64.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="86.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Telegram の f</text><text x="295.0" y="100.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ork（ウィジェットサン</text><text x="295.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ドボックスのエンジン）</text><rect x="220" y="142.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="295.0" y="164.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第三者監査 issue</text><rect x="424" y="69.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ボット（第三者が用意した</text><text x="499.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">もの）</text><rect x="424" y="133.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">利用者（自分でボットを起</text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">動する／唯一の前提条件）</text><rect x="628" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウィジェットを含むメッセ</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ージ（1対1の対話のみ・</text><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">転送不可）</text><rect x="832" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">サンドボックスの検査（ネ</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ットワーク無効・描画のプ</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ロファイル照合・資源上…</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">エンジンのメモリ安全性の</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不備（RegExp 削除</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／await usin…</text><rect x="1240" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ネイティブコード実行（「</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">素のウィジェット JS </text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">から到達可能」）</text><rect x="1444" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">端末の電卓アプリ（実演で</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自動的に開いた／Andr</text><text x="1519.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">oid）</text><rect x="1444" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">それ以上の到達範囲（未公</text><text x="1519.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表・データの読み出しや永</text><text x="1519.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">続化は未確認）</text><rect x="1240" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Android 13.2</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.2・ビルド7303（1</text><text x="1315.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1月10日／実行を独立…</text><rect x="1240" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Desktop 7.4.</text><text x="1315.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">3（11月13日深夜／7</text><text x="1315.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.4.2 には未収録・…</text></svg></div><div class=fn>Telegram の公表仕様（出典1・2）・ウィジェットサンドボックスの変更履歴（出典3）・ QuickJS-ng の監査（出典4）・実演の報道（出典6・7）・上流の経緯（出典8）から、 経路を整理した図である（整理は本記録）。 **左端は部品の供給元、中央が隔離の層、右が到達した結果である。** **点線は、公表資料に手順が示されていない部分、 または本記録が確定と扱わない部分である**〈未確定6・9〉—— **V12 が用いた不備がどれであったかは不明であり、 電卓アプリの起動以上の到達範囲も公表されていない。** **下段は修正の層で、プラットフォーム間に3日のずれがある**（出典7）。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価である。** ボットの起動は正規の操作であり、 端末側・ネットワーク側のどちらにも異常として映らない。 **Telegram の通信は暗号化されており、 組織のネットワーク監視からウィジェットの送受信は見えない。** **見えるのは「Telegram を使っている」ところまでである。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>業務端末で利用を許可するボットを列挙し、それ以外の起動を運用で禁じる<span class=sm>　**本記録の評価による。** 本件の前提条件は利用者のボット起動である（出典5）。 **技術的に強制する手段は公表されていないため運用と教育に頼る** ——**その分、確実性は低い**（本記録の明示）。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>業務連絡に使うメッセージングを、管理と監査ができる経路に限る<span class=sm>　**本記録の評価による。** 対話の内側の実行面は組織から観測できない。 **業務の連絡をログ取得可能な基盤へ寄せることで、 影響を受ける範囲を業務外に限定できる**</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価である。** 利用者から見えるのはメッセージである。 **ウィジェットの内容は32KB 以内の HTML で、 外部リソースを一切読み込まない設計のため**（出典2）、 **外向き通信としても観測できない。** **端末に EDR を入れていても、アプリ内のスクリプト実行は 通常の検知対象にならない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>組み込みスクリプトエンジンの実行を、別プロセス＋権限分離の内側に置く<span class=sm>　**本記録の評価による。** Telegram は修正でまさにこれを行っている—— **Android 13.2.2 でウィジェットの実行を 「Telegram のファイルにもネットワークにも触れない独立した隔離プロセス」へ移し、 新規プログラム起動を封じた**（出典7）〈重要〉。 **これは提供元側の対策であり、利用組織が取れる策ではない**（本記録の明示） ——**製品を選ぶときの確認項目として持つ意味がある。**</span></div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない。** Telegram は検知の経緯を述べていない。 **変更履歴は「報告された」と書くが報告者名も報告日も示していない** （出典3）〈未確定3〉—— **誰がいつ見つけたのかが分からないため、 発見から修正までの期間も測れない**（本記録の確認）。</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>隔離は破られる前提で、破られた後の到達範囲を設計で絞る<span class=sm>　**本記録の評価による。** ネットワークを切り DOM を代理 API に置き 描画をプロファイルで濾しても、**エンジンが壊れればその制約も壊れる** （出典3 の記述）。 **プロセスの権限・ファイルへの到達・OS の API 呼び出しを 個別に落としておくことが、実効のある層になる**</span></div><div class=ctl><span class="b eff">検知できた</span>同梱した上流部品の監査・issue を追跡する経路を持つ<span class=sm>　**本記録の評価による。** `await using` の不備は **上流 QuickJS-ng の公開 issue として2026年11月9日に出ていた**（出典4）。 **上流に修正を配る仕組みが無い部品では、 追跡していない組み込み側は気づけない**（本記録の評価）</span></div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">検知した</span><div class=sm>**本件では利用者の目に見える形で起きた**（本記録の評価）—— **電卓アプリが自分で開けば利用者は気づく。** **ただしこれは実演の演出である**（本記録の明示）〈重要〉—— **実際の攻撃者が、利用者に見える動作を選ぶ理由は無い。** **見えない動作（データの読み出し・待機）を選べば、 検知の機会は「現実的に無い」側へ戻る。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>業務領域と私用領域を端末上で分離する（作業プロファイル・管理対象アプリ）<span class=sm>　**本記録の評価による。** Android の作業プロファイルで分ければ、 私用側の Telegram から業務側のアプリ・データへ到達できない。 **本件が私用の Telegram で起きても業務データに届かない構成になる**</span></div><div class=ctl><span class="b eff">復旧を早められた</span>アプリの版を資産台帳に持ち、プラットフォームごとに修正の到達を確認する<span class=sm>　**本記録の評価による。** 本件の対策は更新のみで、 **CVE 番号が無いため脆弱性スキャンには載らない**〈未確定1〉〈重要〉。 **判定は版番号（Android 13.2.2 以降／Desktop 7.4.3 以降）で行う必要があり、 しかもリリース説明は「小さな改善」としか書かれていない**（出典7）</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**技術変更履歴（GitHub）では到達可能な RCE と hardening を区別して詳細に書く一方、 経営トップは公式チャンネルで「問題は存在しない」と述べた**（出典3・5）。 **利用者向けのリリース説明は「バグ修正とその他の小さな改善」であった**（出典7）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** **技術水準の開示は、同種の事案の中ではむしろ厚い**（本記録の評価）〈重要〉—— **自社のサンドボックス変更履歴で「これが報告された RCE である」と 書く提供元は多くない**（出典3）。 **問題は、その内容と広報が噛み合っていないことである。** **「問題は存在しない」と「サーバ側で完全に修正済み」が同じ投稿に並び**（出典5）、 **変更履歴は「到達可能な RCE」と書いている**（出典3）。 **前提条件の指摘自体は公表仕様と整合しており正しい**（出典1・2）が、 **「報じられたような形では存在しない」という区別が書かれていないため、 利用者は更新すべきかを判断できない**（本記録の評価）。</td></tr><tr><td>**到達可能な不備を把握してから数日で修正を出した** （v0.6.1 は11月6日、v0.6.4 は11月10日。出典3）—— **ただしプラットフォーム間で到達が3日ずれ**（出典7）、 **セキュリティ修正であることを示す告知は行っていない**（本記録の確認）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の作成者の評価である。** **修正の速さは評価できる**—— **「報告された RCE」は機能の全面開放より3日前に塞がれており**（出典1・3）、 **V12 の公開実演の前日には `await using` も修正されている**（出典3・7）。 **評価を partial にとどめた理由は2つである**〈重要〉。 **①プラットフォーム間の3日のずれ**（出典7）—— **「全プラットフォームが影響を受けた」としながら**（出典8）、 **デスクトップ版の修正は Android の3日後である。** **②機能の全面開放（11月9日）の当日に27件の監査指摘が公開され、 翌日に到達可能な不備6件が修正されている**（出典3・4）—— **点検が終わる前に届く場所へ置いた順序は、修正の速さでは埋められない。**</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>業務連絡に使うメッセージングが「対話の中でコードが動く面」を持ったとき、 問うべきは不備が直ったかではなく、その面を自組織で許すかである。</div><div class=lw>**Bot API 10.4 以降、Telegram ではネイティブコード実行に至りうる面が 対話の内側に入った**（出典1・3）〈重要〉—— **利用者から見えるのは「ただのメッセージ」である。** **「怪しいリンクを開かない」「アプリを入れない」という従来の指導は、 この面に対しては空振りする**——開くリンクもインストールも無い。 **残る前提条件は利用者がボットを起動することだけで**（出典5）、 **これはアプリのインストールよりはるかに軽い動作である。**</div><div class=la><b>取るべき行動</b> 業務で使用を認めているメッセージング・コラボレーション製品について、 **①対話の内側でスクリプトが動く機能があるか、 ②管理者が無効化できるか、 ③無効化したとき止まる業務があるか**の3点を棚卸しする。 **無効化できない製品は、業務データに到達できない領域 （作業プロファイル・管理対象アプリ）へ隔離する前提で方針を決める。**</div></li><li><div class=lp>提供元の広報と技術変更履歴が食い違う場合、更新判断は技術変更履歴の側に合わせる。</div><div class=lw>**本件では経営トップが「問題は存在しない」と述べた一方**（出典5）、 **自社のウィジェットサンドボックス変更履歴は 「これが報告された RCE である」（v0.6.1）、 「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」（v0.6.4）と 書いている**（出典3。訳）〈重要〉。 **利用者向けのリリース説明は「バグ修正とその他の小さな改善」であった**（出典7）。</div><div class=la><b>取るべき行動</b> **重要な業務に使う製品については、広報チャネルだけでなく 変更履歴・コミット・公開 issue を見る経路を1本持つ。** **広報と技術文書が食い違ったときは、修正が出ている側に合わせて更新する** ——説明は後から変わるが、出た修正は撤回されない。</div></li><li><div class=lp>マルチプラットフォーム製品では「修正済み」を製品単位で受け取らない。 プラットフォーム単位・版単位で確認する。</div><div class=lw>**Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」と している**（出典8）が、**修正の到達は Android が11月10日、 デスクトップが11月13日で3日ずれている**（出典7）〈重要〉—— **間の 7.4.2（11月11日）には当該修正が入っていない。** **本件で「Telegram は直した」は正しいが、 「自分の Telegram は直った」は11月11日のデスクトップ利用者には 当てはまらなかった**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **資産台帳をアプリ単位ではなく「アプリ×プラットフォーム×版」で持つ。** **脆弱性対応の完了判定を、ベンダーの「修正済み」告知ではなく 自組織の版の分布で行う。** **配布経路が複数ある製品（ストア版・直配布版）は、経路ごとに把握する。**</div></li><li><div class=lp>CVE 番号が割り当てられない不備は、既存の脆弱性管理の仕組みに乗らない。</div><div class=lw>**本件には CVE 番号も CVSS も無い**〈未確定1〉—— **脆弱性スキャン・パッチ台帳・SBOM による照合は、 いずれも識別子を鍵に動く仕組みである**（本記録の評価）。 **番号が無い不備は「対応済み／未対応」の集計に現れない。** **本件で判断に使える一次情報は GitHub の変更履歴だけであった**（出典3）。</div><div class=la><b>取るべき行動</b> **CVE の有無に関わらず「最新版かどうか」で判定できる経路を1本用意する。** スマートフォンのアプリは特に抜けやすい—— **MDM で版を取得できる範囲と、私用端末で取得できない範囲を把握しておく。** **重要部品については、上流リポジトリの変更履歴・issue を 人が読む運用を割り当てる。**</div></li><li><div class=lp>オープンソース部品の監査結果は、上流が応答しなくても下流に影響する。 自社が「下流」である自覚を持つ。</div><div class=lw>**QuickJS-ng の監査 issue #1902 には、2026年11月15日時点で 保守者からの応答が無い**（出典4。本記録の観測）〈重要〉—— **応答したのは利用者側（Telegram の開発者）であり、 修正コミットも fork 側のものである**（出典4）。 **小規模なオープンソース部品には、修正を配る仕組みが備わっていないことがある** （本記録の評価）—— **その場合「修正されたか」は組み込んだ製品ごとにばらばらになる。**</div><div class=la><b>取るべき行動</b> **自社製品・自社が使う製品の重要部品について、 上流に「修正を配る仕組み」があるかを確認する** （セキュリティ連絡先・勧告の発行・リリース方針）。 **無い部品については、自社が上流の issue を追う責任を負うと決めて 担当を割り当てる。** 「上流が直してくれる」を前提に置かない。</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>サンドボックスの検査は、その下で動くエンジンのメモリ安全性が前提である。 エンジンが壊れれば検査も壊れる。</div><div class=lw>**Telegram 自身がこう書いている**（出典3。訳）〈重要〉—— **「パーサのメモリ安全性の不備は、あらゆるサンドボックスの検査より下にある エンジンの射程に入る」。** **到達可能とされた不備は、いずれも「素のウィジェット JavaScript から到達可能」 とされており**（出典3）、**特別な権限も仕様の穴も要らない。** **ネットワーク無効・画面遷移不可・描画のプロファイル照合・資源上限という 多層の制約があっても**（出典2）、**それらを課す側のコードが壊れる。**</div><div class=la><b>取るべき行動</b> **自社製品に組み込みスクリプトの実行面を持つなら、 「エンジンが破られた場合、そのプロセスから何に到達できるか」を数える。** ファイル・ネットワーク・OS の API・親プロセスのメモリを個別に列挙する。 **言語水準の制約を、OS 水準の隔離（別プロセス・権限分離・syscall 制限）で 裏打ちする**——**Telegram の修正はまさにこれである**（出典7）。</div></li><li><div class=lp>組み込みの JavaScript / スクリプトエンジンは依存部品として版管理する。 同梱すると SBOM に載らず、上流の修正が自動で届かない。</div><div class=lw>**`await using` の不備のもとになったコードは2026年5月16日に 上流 QuickJS-ng の main へ、明示的資源管理の対応と一緒に入った**（出典8） 〈重要〉——**修正までは178日である**（本記録の算出）。 **不備は、それを到達可能にする機能（ウィジェット・11月5日）より 半年早く置かれていた。** **QuickJS のような小規模エンジンは、パッケージマネージャ経由ではなく ソースを同梱・fork する形で取り込まれることが多く、 依存関係の一覧に現れにくい**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自社製品に同梱しているスクリプトエンジン・パーサ・正規表現エンジン・ 画像/フォントのデコーダを列挙し、上流の版と取り込んだ版を記録する。** **fork した時点で版が凍結されるため、追随の責任がどこにあるかを決める。** **新機能で既存の同梱部品を「外部入力に触れる位置」へ動かすときは、 その部品の点検を機能の前提条件に入れる。**</div></li><li><div class=lp>新しい実行面を公開する前に、その面の下にある部品の点検を終える。 修正の速さでは順序の誤りを埋められない。</div><div class=lw>**本件の順序はこうである**（出典1・3・4）〈重要〉。 **11月6日に「報告された RCE」を修正 → 11月9日に全ボットへ開放 → 同日に27件の監査指摘が公開 → 11月10日に 「サンドボックスより下、素のウィジェット JS から到達可能」な不備6件を修正。** **対応は速いが、点検が終わる前に届く場所へ置いている**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **新しい入力経路・実行面を開く前に、その経路が触る部品の ①公開 issue、②既知の監査、③上流の最近の変更を確認する。** **段階的な開放（テスト環境 → 限定公開 → 全面開放）を使い、 全面開放の判断条件に「部品の点検完了」を明文で入れる。** **緊急停止（フィーチャーフラグ・サーバ側での無効化）を機能と同じ回で用意する** ——**本件でも Durov 氏は「サーバ側で完全に修正済み」としている**（出典5）。</div></li><li><div class=lp>対話の内側で動く実行面は、ネットワーク監視からも EDR からも見えない。 検知に期待せず、到達範囲の設計で抑える。</div><div class=lw>**ウィジェットは外部リソースを一切読み込まない設計であり、 外向き通信としても観測できない**（出典2）〈重要〉。 **Telegram の通信は暗号化されており、 組織のネットワーク監視から見えるのは「Telegram を使っている」ところまでである** （本記録の評価）。 **アプリ内のスクリプト実行は、端末側 EDR の通常の検知対象でもない。**</div><div class=la><b>取るべき行動</b> **検知ではなく分離で対処する。** Android の作業プロファイルや iOS の管理対象アプリで業務領域と私用領域を分け、 **私用側のメッセージングから業務側のアプリ・データへ到達できない構成にする。** **「本件が私用の Telegram で起きても業務データに届かない」状態を作る。**</div></li><li><div class=lp>実演や PoC の派手さで深刻度を判断せず、到達できた範囲で評価する。</div><div class=lw>**実演では電卓アプリが自動的に開く**（出典6）——**利用者が気づく形である。** **しかし実際の攻撃者が、利用者に見える動作を選ぶ理由は無い** （本記録の評価）〈重要〉—— **見えない動作（データの読み出し・待機・後続の取得）を選べば、 利用者も監視も気づかない。** **修正版で封じられたのが「ウィジェットのプロセスからの新規プログラム起動」 である点にも注意が要る**（出典7）—— **実演で起きたのはまさにその動作であり、 それ以外の到達範囲は公表されていない**〈未確定9〉。</div><div class=la><b>取るべき行動</b> **評価の軸を「到達できた範囲」（プロセスの権限・触れるファイル・使える API）に置く。** **到達範囲が公表されていない場合は、最大だった前提で分離を設計する。** **PoC が無い監査指摘（本件の指摘3 がそれである）も、 実在する到達可能な不備を含みうるため、PoC の有無で優先度を決めない**（出典4）。</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社の製品・サービスが、外部から受け取ったコンテンツを 組み込みのスクリプトエンジン（QuickJS・QuickJS-ng・Duktape・JerryScript・Lua 等） や独自のパーサで処理している。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自社製品に、パッケージマネージャを経ずソースを同梱または fork する形で スクリプトエンジン・パーサ・デコーダを取り込んでいる。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 業務で使うメッセージング・コラボレーション製品が、 対話やチャネルの内側でスクリプトを実行する機能 （ウィジェット・カード・埋め込みアプリ・AI の道具呼び出し）を持っている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 業務端末のアプリについて「アプリ名」までは把握しているが、 プラットフォーム別・版別の分布を集計できない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 従業員の私用端末・私用アカウントでのメッセージング利用を業務に使っており、 業務領域と私用領域が端末上で分離されていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 利用している製品の脆弱性情報を、提供元の公式告知・広報のみを経路として 受け取っている。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月9日（Bot API 10.4 の項目） Telegram Messenger</span> <a href="https://core.telegram.org/bots/api-changelog" target="_blank" rel="noreferrer noopener nofollow">Telegram Bot API Changelog（Bot API 10.4）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**提供元の一次資料（API 変更履歴）。** `Widget` クラス・`sendWidget`・`sendSharedWidget`・`answerWidgetQuery`・ `editMessageWidgetData` 等の追加と、 「本番環境ではウィジェットは1対1の対話にのみ送れる」 「送信されたウィジェットは自動的に protected content となり転送できない」 「本番環境ではインラインクエリへの応答として送れない」 （いずれも訳。原文英語）を記載している。 **本記録の作成者が2026年11月15日に取得して確認した**—— **Bot API 10.5 以降の項目は無く、ウィジェットの撤回・停止・ セキュリティ修正に触れた記載も無い**（本記録の観測）〈重要〉。 **ページ全体が約177,000字あり、本記録が読んだのは前半である**（本記録の明示）。）</span></li><li><span class=rid>[2]</span> <span class=sm>Telegram Messenger</span> <a href="https://core.telegram.org/bots/widgets" target="_blank" rel="noreferrer noopener nofollow">HTML Widgets（Telegram Bots ドキュメント）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**提供元の一次資料（ウィジェットの仕様書）。** 「ウィジェットの JavaScript は QuickJS という小さな JavaScript エンジンで動き、 WebView やブラウザのコンテキストでは決して動かない」 「現在、本番環境ではウィジェットはボットとの1対1の対話でのみ動く」 「ウィジェットに秘密を置いてはならない」（いずれも訳。原文英語）等。 HTML 32KB（圧縮4KB）・ネットワーク無効（`NetworkDisabledError`）・ ボットへの要求は64バイト／5秒に5回・ストレージ4KB・ CPU/メモリ/DOM/タイマーの上限・ウィジェットプロファイルによる描画の照合を記載。 **本記録の作成者が2026年11月15日に取得して確認した**—— **「セキュリティ」の節は無く、最も近いのは「プライバシー」の節である** （本記録の観測）。 **ページ全体が約108,000字あり、本記録が読んだのは前半である**（本記録の明示）。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月6日〜11月12日（v0.6.1〜v0.6.5） Telegram Messenger（TelegramMessenger/widget-sandbox）</span> <a href="https://github.com/TelegramMessenger/widget-sandbox/blob/master/docs/changes.md" target="_blank" rel="noreferrer noopener nofollow">widget-sandbox 変更履歴（docs/changes.md）</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本件で最も重要な一次資料である**〈重要〉—— **提供元自身が、どの不備が「到達可能な RCE」でどれが「hardening」かを 区別して記述している。** v0.6.1（2026-11-06）: RegExp 削除の修正（コミット `3d5cb14`）に **「これが報告された RCE である」**、前書きに 「エンジンのメモリ安全性の不備が、通常のウィジェット JavaScript から到達可能である」。 v0.6.2・v0.6.3（2026-11-09）: 「パーサのメモリ安全性の不備は、あらゆるサンドボックスの検査より下にある エンジンの射程に入る」「v0.6.1 の RegExp 削除の不備と違い、 これは到達可能な RCE ではなく hardening である」。 v0.6.4（2026-11-10）: fork の `tdesktop-fixes` から 「5件の use-after-free と領域外アクセスの修正。いずれもサンドボックスより下、 素のウィジェット JS から到達可能」、および `await using` について 「ウィジェットのスクリプトからのネイティブコード実行として報告された」 「素のウィジェット JS から到達可能な use-after-return」。 v0.6.5（2026-11-12）: Web ウィジェットは「自身のレンダラプロセスを持たない」。 **いずれも訳。原文英語。** **本記録の作成者が2026年11月15日に取得して確認した。** **ファイル全体が約157,000字あり、本記録が読んだのは v0.2.0 までの範囲である** （本記録の明示）。）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年11月13日（暦日は出典7 に拠る） Pavel Durov（Telegram 創業者・t.me/durov）</span> <a href="https://t.me/s/durov/560" target="_blank" rel="noreferrer noopener nofollow">ウィジェットの RCE 報道に対する投稿（t.me/durov/560）</a> <span class="b kind">SNS投稿</span><span class=sm>（**提供元トップの一次発信。** 「問題は存在しない」「メッセージを受け取っただけでハックされうる者はいなかった」 「まず利用者が自分で第三者のサービスを起動する必要があった」 「それも含めてサーバ側で完全に修正済みである」 「そう思わないなら私のアカウントをハックしてみろ: t.me/monk」 （いずれも訳。原文英語）。 **本記録の作成者が2026年11月15日に取得して本文を確認した**—— **ただし当該ページには時刻（16:02）のみが表示され暦日が無い**〈齟齬4〉。 **2026年11月13日という日付は出典7 に拠る**（本記録の明示）。 **報奨金の額・条件は示されていない**（本記録の確認）。）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月9日 Andreas Rösdahl（andreasrosdal／GitHub issue）</span> <a href="https://github.com/quickjs-ng/quickjs/issues/1902" target="_blank" rel="noreferrer noopener nofollow">Security audit of QuickJS-ng（quickjs-ng/quickjs issue</a> <span class="b kind">調査レポート</span><span class=sm>（**第三者によるソースコード監査。** コミット `d4187c7` を対象に 本体エンジン・libc・libregexp を読み、**27件の指摘**を深刻度別 （Critical〜Info）に並べる。 **指摘3（深刻度 High）が本件に対応する**—— 「`for (await using ...)` が非 async 関数でも受け入れられ、 その結果 `OP_await` が通常のフレームで走り、 死んだ C スタックへの `var_refs` がぶら下がったまま残る」（訳。原文英語）。 **手法を明記している**〈重要〉—— 「依頼により、検証コードや発火コードは一切書かず、実行もしていない」 「指摘は『再現した』のではなく『コードを読んで確認した』ものである」 「Claude Fable 5.1 モデルを用いた」（いずれも訳。原文英語）。 **2026年11月15日時点で open、保守者からの応答は無い**（本記録の観測）。 **活動欄に、Telegram の開発者 John Preston 氏が2026年11月10日に `Fix UAF in FinalizationRegistry.prototype.unregister()`（TelegramMessenger の fork 側のコミット）をリンクした記録がある。** **connorshea 氏が2026年11月11日に相互参照 （指摘1↔#1900・指摘4↔#1865・指摘9↔PR #1482）を書き込み、 指摘6 が誤検知ではないかと問うている。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年11月13日 13:39 UTC Habr（情報セキュリティHUB）</span> <a href="https://habr.com/ru/articles/1107586/" target="_blank" rel="noreferrer noopener nofollow">В новых HTML‑виджетах Telegram обнаружили RCE‑уязвимость</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった記事（2026年11月13日収集分）。** V12 による実演（Android でボットを起動すると、カウントダウンのメッセージのあとに 電卓アプリが自動的に開く）、Bot API 10.4 の公開日（11月9日）、 実演の公開日（11月11日）、QuickJS による隔離、 「影響を受けたのは Telegram for Android。開発者はすでに修正を出した」 （訳。原文ロシア語）を記載している。 **修正の版番号・プラットフォーム間のずれ・エンジンの不備の内訳は この記事には無い**（本記録の確認）——**出典3・7・8 で補った。**）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年11月14日（Habr の日次ダイジェスト掲載日。記事自体は相対表記） Habr（Илья Тузов／ituzov）</span> <a href="https://habr.com/ru/articles/1107658/" target="_blank" rel="noreferrer noopener nofollow">«Уязвимости нет, и мы её исправили»: первая неделя HTML-виджетов в Telegram</a> <span class="b kind">記事</span><span class=sm>（**ウィジェット公開1週間の経緯をまとめた記事。** 本記録が依拠した主な記述は次のとおり。 Desktop 7.4.0（11月5日・「HTML widgets in bots」）／ エンジン v0.6.1（11月6日・7件の修正。うち1件を Telegram は 「報告された RCE」と呼ぶ）／11月9日に Bot API 10.4 と QuickJS-ng の監査27件／v0.6.4（11月10日・5件のメモリ修正と Android 13.2.1 で見つかった2件目のコード実行の不備。`await using` の修正）／ **Android 13.2.2（ビルド7303）が `await using` を修正し、 ウィジェットエンジンを「独立した隔離プロセス」へ移し、 ウィジェットプロセスからの新規プログラム起動を封じた （一部のシステムコール制限は現時点では監査モードで記録するのみ）**／ V12 の実演（11月11日。技術詳細・検証コードは無く、 **V12 が RegExp の不備を使ったかは不明**）／ **Desktop 7.4.2（11月11日）には `await using` の修正が入っておらず、 入ったのは 7.4.3（11月13日深夜・モスクワ時間）。 両リリースの説明はいずれも「バグ修正とその他の小さな改善」**／ Durov 氏の2つの投稿（1つ目は「どんな Telegram のメッセージもアプリになりうる」、 2つ目が実演後の「問題は存在しない」）／ 11月13日に対話内のウィジェットが動かなくなったとの報告／ 不備の内訳（RegExp の `replace` における use-after-free、 `await using` の use-after-return、Connor Shi 氏が11月11日に報告した別の不備）。 **CVE への言及は無い**（本記録の確認）。）</span></li><li><span class=rid>[8]</span> <span class=sm>2026年11月13日 15:01 Anti-Malware.ru（Ekaterina Bystrova）</span> <a href="https://www.anti-malware.ru/news/2026-11-13-111332/52049" target="_blank" rel="noreferrer noopener nofollow">Обновите Telegram для Android: версия 13.2.2 закрыла опасную уязвимость</a> <span class="b kind">記事</span><span class=sm>（**修正版と上流の経緯を扱った記事。** 本記録が依拠した主な記述は次のとおり。 **影響を受けた Android 版は 13.2.1、修正は 13.2.2（11月10日）**／ 不備は Telegram が fork して使う QuickJS-ng にあり、 **パーサが `await using` をループの先頭で、通常の（非 async）関数の中でも 受け入れてしまう**こと／関数がローカル変数への参照を閉じずに戻るため、 入れ子の関数が解放済みのスタックメモリへ到達しうる（use-after-return）／ **Telegram は「この fork をビルドしている全プラットフォームが影響を受けた」と している**〈重要〉／ **問題のコードは2026年5月16日に上流 QuickJS-ng の main へ、 明示的資源管理の対応と一緒に入った**／ 修正はパーサが当該構文に構文エラーを出す形／ Telegram は修正を GitHub の widget-sandbox 変更履歴に記載／ **Andreas Rösdal 氏が Anthropic の Claude を用いたエンジン全体の セキュリティ監査で発見し、2026年11月9日に公開。報告は27件の指摘を挙げ、 本件はその3番目で深刻度 High。** **V12・Durov 氏の発言・CVE・別プロセス化への言及は無い**（本記録の確認）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月15日</span> <span class="b rev">新規作成</span> **2026年11月13日の Habr の記事（出典6・2026年11月13日収集分）を起点に作成した。**
+**一次資料を4点取得して裏を取った**〈重要〉—— **①Telegram の Bot API 変更履歴（出典1）、 ②ウィジェットのドキュメント（出典2）、 ③Telegram のウィジェットサンドボックス変更履歴（GitHub・出典3）、 ④QuickJS-ng のセキュリティ監査 issue #1902（出典4）、 および⑤Pavel Durov 氏の投稿（出典5）。**
+**起点の記事から記述が大きく変わった点を明記する。** **起点の記事は「公開2日で隔離突破」という枠組みで、 Bot API 10.4 の公開（11月9日）から V12 の実演（11月11日）までの2日を 中心に据えていた。** **しかし出典3（提供元自身の変更履歴）を読むと、 到達可能な RCE は11月6日（v0.6.1）に報告・修正済みであり、 全ボットへの開放はその3日後である**〈重要〉—— **「公開してから破られた」という順序ではない。** **本記録は時系列をこの形に改め、figures に rce_fix_before_ga_days（3日）を置いた。**
+**本記録が最も重いと見たのは次の3点である。** **①提供元自身の技術変更履歴が「これが報告された RCE である」 「素のウィジェット JS から到達可能な use-after-return」と書いているものを、 経営トップが「問題は存在しない」と述べていること**（出典3・5。齟齬1） ——**技術水準の開示は厚いのに、広報と噛み合っていない。** **②同一の不備で、Android（11月10日）とデスクトップ（11月13日）の間に 3日のずれがあり、リリース説明はいずれも 「バグ修正とその他の小さな改善」であったこと**（出典7。齟齬2）。 **③不備のもとになったコードは2026年5月16日に上流 QuickJS-ng へ入っており、 それを到達可能にする機能が半年後に来たこと**（出典8。178日）。
+**事実と評価の分け方。** **変更履歴の引用・監査の指摘3 の文言・版番号・日付・上流への混入日は すべて出典の記述として置いた**——**英語の原文には日本語訳と「原文英語」、 ロシア語の出典には「原文ロシア語」を添えた。** **本記録の評価として置いたのは、 ①サンドボックスの検査はその下のエンジンが壊れる場合に効かないという読み、 ②点検が終わる前に機能を全面開放した順序の問題、 ③「修正済み」をプラットフォーム単位で確認する必要、 ④対話の内側の実行面は検知ではなく分離で抑えるべきという判断、の4点である。**
+**指摘3 と v0.6.4 の `await using` の照合は本記録が行ったものであり、 出典3・4 は相互に明示していない**（齟齬10。出典8 が両者を結びつけている）。
+**監査に AI モデルが用いられた点は、 指摘の正しさを上げる根拠にも下げる根拠にも用いていない**（齟齬10）。
+**CVE 番号が無く**〈未確定1〉**、実際の悪用も確認されていない**〈未確定2〉**ため、 深刻度の公式な指標は存在しない。** **報告者・報告日・V12 が用いた不備・到達範囲・ 11月13日にウィジェットが動かなくなった件はいずれも公表されていないため unknowns と discrepancies に残した。** **再現につながる技術的な詳細は採録しない方針を採った。**</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">Telegram</span><span class="b tag">Telegram for Android</span><span class="b tag">Telegram Desktop</span><span class="b tag">Bot API 10.4</span><span class="b tag">HTML ウィジェット</span><span class="b tag">QuickJS</span><span class="b tag">QuickJS-ng</span><span class="b tag">サンドボックス脱出</span><span class="b tag">use-after-return</span><span class="b tag">await using</span><span class="b tag">V12</span><span class="b tag">Pavel Durov</span><span class="b tag">CVE未割当</span><span class="b tag">オープンソース供給網</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-15 06:35 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

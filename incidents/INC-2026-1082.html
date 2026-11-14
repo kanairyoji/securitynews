@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Synology DSM 認証APIにSQLi — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1082</span>Synology DSM 認証APIにSQLi</h1>
+<header class="site-header">
+  <p class="subtitle">**Synology は2026年11月10日、NAS 向け OS「DiskStation Manager（DSM）」の アドバイザリを2本、同日の17時06分33秒と17時06分42秒（UTC+8）——**9秒差**——で 公開した。Synology-SA-26:18 は25件（重要8・中17）で全体の重要度は「Important」、 Synology-SA-26:19 は2件（クリティカル1・重要1）で全体の重要度は「Critical」である。 国内報道（Security NEXT・11月13日）は両者を合算した「27件（クリティカル1・重要9・中17）」を 1本のアドバイザリとして報じた——内訳は合算と完全に一致するが、 **27件を1本で探すと見つからず、SA-26:18 だけを見るとクリティカルが無いと読める。** クリティカルの CVE-2026-76954 は DSM の **Auth API（認証API）における SQL インジェクション**（CWE-89）で、CVSS v3.1 基本値 **9.8**、 ベクタは **AV:N/AC:L/PR:N/UI:N**——**認証不要・利用者の操作不要でネットワークから到達する。** 影響は「リモートの攻撃者が任意のファイルを読み書きし、DoS を行える」（原文英語）。 もう1件の CVE-2026-85101 は **rsync における認証回避**（CWE-288）で CVSS 8.6、 こちらも **PR:N（認証不要）**である。 **緩和策（mitigation）は「なし」と明記されており、修正版への更新が唯一の対策である。** 修正版は DSM 7.4 系が 7.4.1-90080-1 以降、7.3 系が 7.3.2-86009-5 以降、 7.2 系が 7.2.2-72806-10 以降または 7.2.1-69057-13 以降。 **SA-26:18 が 7.4 系・7.3 系のみを挙げる一方、SA-26:19 は 7.2 系も対象に含む。** 悪用の有無はいずれのアドバイザリにも記載がない。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月10日（Synology のアドバイザリ2本の公開）</span>
+  <span>最終更新: 2026年11月15日（本記録の作成時点。SA-26:19 の最終更新は2026年11月13日）</span>
+</div>
+
+<div class="lead"><p><strong>2026年11月10日、Synology は NAS 向け OS「DiskStation Manager（DSM）」について セキュリティアドバイザリを2本公開した</strong>（出典1・2）。 <strong>公開時刻は Synology-SA-26:18 が17時06分33秒、 Synology-SA-26:19 が17時06分42秒（いずれも UTC+8）で、差は9秒である</strong> （出典1・2。本記録の算出）〈重要〉。<strong>Synology-SA-26:19（出典1）は全体の重要度が「Critical」で、CVE は2件である。</strong> <strong>①CVE-2026-76954</strong> —— <strong>DSM の Auth API（認証API）における SQL インジェクション</strong> （CWE-89）。<strong>CVSS v3.1 基本値 9.8（Critical）、 ベクタは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H。</strong> 影響は「リモートの攻撃者が任意のファイルを読み書きし、 サービス拒否攻撃を行うことを許す」（訳。原文英語）。 <strong>②CVE-2026-85101</strong> —— <strong>DSM の rsync における認証回避</strong> （CWE-288・代替経路または代替チャネルによる認証回避）。 <strong>CVSS v3.1 基本値 8.6、ベクタは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L</strong> （Synology の評定は「Important」）。 影響は「リモートの攻撃者が特定のファイルを読み、任意のファイルを書き込み、 限定的なサービス拒否攻撃を行うことを許す」（訳。原文英語）。 <strong>両件とも PR:N（認証不要）・UI:N（利用者の操作不要）である</strong>〈重要〉。<strong>Synology-SA-26:18（出典2）は全体の重要度が「Important」で、CVE は25件 （Important 8件・Moderate 17件）である。</strong> 最高値は CVSS 8.8 の3件で、 <strong>いずれも認証済みの利用者を前提とする</strong>（出典2）。<strong>国内報道（Security NEXT・2026年11月13日。出典5）は、 「あわせて27件の脆弱性を明らかにした」「クリティカル1件・重要9件・中17件」として これを1本のアドバイザリの内容として報じた。</strong> <strong>内訳は2本の合算と完全に一致する</strong>（クリティカル1＋重要1＋8＝9・中17。 本記録の照合）〈重要〉—— <strong>つまり件数は正しいが、1本のアドバイザリとして探すと見つからない</strong>（齟齬1）。<strong>緩和策は両アドバイザリとも「None」（なし）と明記されており、 修正版への更新が唯一の対策である</strong>（出典1・2）。 <strong>修正版は DSM 7.4 系が 7.4.1-90080-1 以降、7.3 系が 7.3.2-86009-5 以降、 7.2 系が 7.2.2-72806-10 以降または 7.2.1-69057-13 以降</strong>（出典1）。 <strong>SA-26:18 が 7.4 系・7.3 系のみを挙げる一方、SA-26:19 は 7.2 系も対象に含む</strong> （出典1・2。本記録の照合）〈重要〉。<strong>悪用の有無は、いずれのアドバイザリにも記載がない</strong>〈未確定1〉。 <strong>CVE レコードは2026年11月12日に公開され、採番の予約は CVE-2026-76954 が2026年8月20日、CVE-2026-85101 が9月3日である</strong>（出典3・4）。 <strong>CVE-2026-85101 の発見者は Warisse Valentin 氏（Aytio）とされる</strong>（出典4）—— <strong>CVE-2026-76954 の発見者は示されていない</strong>〈未確定2〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>9</span></div><ul><li><span class=ui>脆弱性が実際に悪用された事例の有無</span><span class="b rsn">公表されていない</span></li><li><span class=ui>CVE-2026-76954 の発見者・報告の経路・報告日</span><span class="b rsn">公表されていない</span></li><li><span class=ui>影響を受ける機器の台数・国内の設置数</span><span class="b rsn">公表されていない</span></li><li><span class=ui>Synology-SA-26:19 が2026年11月13日に更新された内容と理由</span><span class="b rsn">公表されていない</span></li><li><span class=ui>脆弱性が存在した版の下限（DSM 7.2.1 未満の状態は「unknown」とされている）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>Auth API の SQL インジェクションが到達する具体的な経路・パラメータ</span><span class="b rsn">公表されていない</span></li><li><span class=ui>rsync の認証回避が成立する前提（rsync サービスの有効化が必要か）</span><span class="b rsn">公表されていない</span></li><li><span class=ui>DSM 6.x 系および DSM 以外の製品（SRM・BeeStation 等）への影響</span><span class="b rsn">公表されていない</span></li><li><span class=ui>アドバイザリを2本に分けた理由</span><span class="b rsn">公表されていない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Synology Inc.（群暉科技）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Warisse Valentin 氏（Aytio）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Security NEXT</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>Synology-SA-26:19 に掲載された CVE の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2<span class=fu>件</span></div><div class=fa>2026年11月15日 時点</div><div class=fn>**クリティカル1件（CVE-2026-76954・CVSS 9.8）＋ 重要1件（CVE-2026-85101・CVSS 8.6）である**（出典1）。 **このアドバイザリ全体の重要度が「Critical」である。**</div></div><div class=fig><div class=fh><span class=fl>Synology-SA-26:18 に掲載された CVE の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>25<span class=fu>件</span></div><div class=fa>2026年11月15日 時点</div><div class=fn>**Important 8件・Moderate 17件である**（出典2）。 **クリティカルは含まれない**〈重要〉—— **最高値は CVSS 8.8 の3件で、いずれも認証済み利用者を前提とする。** **このアドバイザリだけを見ると「クリティカルは無い」と読める**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>2026年11月10日に公開された DSM のアドバイザリ2本の CVE 合計件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>27<span class=fu>件</span></div><div class=fn>**25件（SA-26:18）＋2件（SA-26:19）＝27件である**（本記録の算出）〈重要〉。 **重要度の内訳はクリティカル1・重要9（1＋8）・中17 となり、 国内報道が示した内訳と完全に一致する**（出典5。本記録の照合）。 **ただしこれは本記録が2本を足した値であり、 Synology がこの数字を公表しているわけではない**（本記録の明示）—— **「27件のアドバイザリ」は存在しない**（齟齬1）。</div></div><div class=fig><div class=fh><span class=fl>アドバイザリ2本の公開時刻の差</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>9<span class=fu>秒</span></div><div class=fn>**17時06分33秒（SA-26:18）と17時06分42秒（SA-26:19）の差である** （出典1・2。いずれも UTC+8。本記録の算出）〈重要〉。 **同一の公開作業で連続して出されたとみられる**（本記録の推定）—— **修正版の版番号も共通である**（7.4.1-90080-1・7.3.2-86009-5）。 **実務上の意味は、2本を別々の案件として扱う必要がないこと** （更新は1回で済む）**と、 片方だけを見ると重要度を読み違えることの両方である**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-76954 の採番予約からアドバイザリ公開までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>82<span class=fu>日</span></div><div class=fn>**2026年8月20日（出典3）から2026年11月10日（出典1）までを本記録が算出した。** **採番の予約は、一般に脆弱性を把握した後に行われる**（本記録の整理）〈重要〉—— **したがって、この82日はおおむね「把握から公表まで」の下限とみなせる。** **ただし報告日・修正の完成日はいずれも公表されていないため、 修正に要した期間そのものではない**（本記録の明示）〈未確定2〉。 **CVE-2026-85101 は9月3日の予約で、同じ算出では68日である。**</div></div></div></div>
+<section id="s4"><h2>報道の「27件」は実在せず、同日9秒差で出た2本の合算だった<span class="b slot">概観</span></h2><p>一次資料を突き合わせると、国内報道の数字の出どころが分かる（本記録の照合）。</p>
+<table>
+<thead>
+<tr>
+<th>アドバイザリ</th>
+<th>公開時刻（UTC+8）</th>
+<th>全体の重要度</th>
+<th>CVE 件数</th>
+<th>内訳</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Synology-SA-26:18</td>
+<td>2026-11-10 <strong>17:06:33</strong></td>
+<td>Important</td>
+<td><strong>25</strong></td>
+<td>Important 8・Moderate 17</td>
+</tr>
+<tr>
+<td>Synology-SA-26:19</td>
+<td>2026-11-10 <strong>17:06:42</strong></td>
+<td><strong>Critical</strong></td>
+<td><strong>2</strong></td>
+<td>Critical 1・Important 1</td>
+</tr>
+<tr>
+<td><strong>合計</strong></td>
+<td>—</td>
+<td>—</td>
+<td><strong>27</strong></td>
+<td><strong>Critical 1・Important 9・Moderate 17</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Security NEXT（出典5）の「あわせて27件」「クリティカル1件・重要9件・中17件」は、この合計と完全に一致する</strong>（本記録の照合）〈重要〉。<strong>件数も内訳も正確である。</strong> <strong>CVE-2026-76954 を「認証APIにおけるSQLインジェクション」、CVE-2026-85101 を「rsync における認証回避」と書いている点も一次資料と一致している。</strong></p>
+<p><strong>食い違っているのは「1本か2本か」だけである</strong>（本記録の明示）。報道は「同社は現地時間2026年11月10日、セキュリティアドバイザリを公開。あわせて27件の脆弱性を明らかにした」と書いており、<strong>2本に分かれていることは示していない</strong>（出典5）。</p>
+<p><strong>これが実務上どう効くかを書いておく</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>①27件のアドバイザリを探すと見つからない。</strong>社内の脆弱性管理で「報道された27件のアドバイザリを確認する」と動くと、該当する文書が存在しない。</p>
+<p><strong>②SA-26:18 だけを見ると「クリティカルは無い」と読める。</strong>一覧で「DSM」を探して最初に当たるのは SA-26:18 であり、<strong>その全体の重要度は「Important」で、CVSS の最高値は 8.8、しかも25件すべてが認証を前提とする</strong>（出典2）。<strong>未認証で CVSS 9.8 の本体は、9秒後に出たもう1本の側にある。</strong></p>
+<p><strong>③実際には、本記録が最初に取得したアドバイザリ一覧にはSA-26:19 が現れなかった</strong>（齟齬3）——一覧には SA-26:18・26:17・26:16・26:15 が並び、26:19 は無かった。個別ページでは確認できた。<strong>取得の時点か描画の都合とみられるが、本記録は原因を確認できていない。</strong> <strong>いずれにせよ、一覧を1回見ただけでは重い方を取り落としうる</strong>（本記録の評価）。</p>
+<p><strong>なお、実務上の救いが1つある。</strong> <strong>修正版の版番号は2本で共通である</strong>（7.4.1-90080-1・7.3.2-86009-5。出典1・2）——<strong>更新は1回で27件すべてに対応する。</strong> <strong>2本を別々の案件として管理する必要はない。</strong></p></section>
+<section id="s5"><h2>認証APIのSQLインジェクションが未認証で任意のファイルの読み書きに届く<span class="b slot">原因・手口</span></h2><p>クリティカルの中身を、公表されている範囲で正確に置く（出典1・3）。</p>
+<p><strong>CVE-2026-76954</strong><br />
+- <strong>コンポーネント</strong>: DSM の <strong>Auth API</strong>（認証API）<br />
+- <strong>CWE</strong>: CWE-89（SQL コマンドで使われる特殊要素の不適切な無効化）<br />
+- <strong>CVSS v3.1</strong>: <strong>9.8（Critical）</strong><br />
+- <strong>ベクタ</strong>: <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</code><br />
+- <strong>影響</strong>（訳。原文英語を引用）: <strong>「リモートの攻撃者が任意のファイルを読み書きし、サービス拒否攻撃を行うことを許す」</strong></p>
+<p><strong>ベクタから読めることを分解する</strong>（本記録の整理）。</p>
+<ul>
+<li><strong>AV:N</strong> —— ネットワークから到達する</li>
+<li><strong>AC:L</strong> —— 攻撃条件の複雑さが低い（特別な条件を揃える必要がない）</li>
+<li><strong>PR:N</strong> —— <strong>権限不要。認証を通す必要がない</strong></li>
+<li><strong>UI:N</strong> —— <strong>利用者の操作不要。誰かが何かを押す必要がない</strong></li>
+<li><strong>C:H / I:H / A:H</strong> —— 機密性・完全性・可用性のすべてに高い影響</li>
+</ul>
+<p><strong>要点は、不備がある場所が「認証を行う API」であることである</strong>（本記録の評価）〈重要〉。<strong>認証の前段で成立するため、認証を固めても効かない。</strong>パスワードを長くしても、二要素認証を入れても、<strong>認証処理に到達した時点で成立する不備は防げない。</strong></p>
+<p><strong>そしてこれは NAS である</strong>（本記録の評価）。「任意のファイルの読み書き」が意味するのは、<strong>そこに置いてある業務データ・バックアップ・共有ファイルそのものに届く</strong>ことである。一般的なサーバの脆弱性と違い、<strong>NAS の場合は「侵入の足場」と「目的の資産」が同じ箱にある。</strong></p>
+<p><strong>緩和策は「None」と明記されている</strong>（出典1）〈重要〉。<strong>設定変更で回避する手段は提供されておらず、更新が唯一の対策である。</strong></p>
+<p><strong>もう1件、CVE-2026-85101 も未認証である。</strong><br />
+- <strong>コンポーネント</strong>: DSM の <strong>rsync</strong><br />
+- <strong>CWE</strong>: CWE-288（代替経路または代替チャネルを用いた認証回避）<br />
+- <strong>CVSS v3.1</strong>: <strong>8.6</strong>（Synology の評定は「Important」）<br />
+- <strong>ベクタ</strong>: <code>CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L</code><br />
+- <strong>影響</strong>（訳。原文英語を引用）: <strong>「リモートの攻撃者が特定のファイルを読み、任意のファイルを書き込み、限定的なサービス拒否攻撃を行うことを許す」</strong></p>
+<p><strong>読める範囲は限定的（C:L）だが、書き込みは「任意のファイル」で完全性への影響は High（I:H）である</strong>（出典1）〈重要〉。<strong>CWE-288 は「本来の認証を通らずに同じ機能へ到達できる別の入口があった」型である</strong>（本記録の整理。CWE の定義による）。<strong>rsync は Hyper Backup・Snapshot Replication などで使われるため、業務で有効にしている組織は少なくないとみられる</strong>（本記録の推定）—— <strong>ただし rsync の有効化が前提となるかは公表されていない</strong>〈未確定7〉。</p></section>
+<section id="s6"><h2>同じ日の2本で、認証の要否がきれいに分かれている<span class="b slot">被害規模・影響範囲</span></h2><p>2本を並べると、分け方に規則性がある（本記録の照合）〈重要〉。</p>
+<p><strong>Synology-SA-26:19（2件）</strong>: <strong>両件とも PR:N（認証不要）。</strong></p>
+<p><strong>Synology-SA-26:18（25件）</strong>: <strong>大半が認証を前提とする</strong>（出典2）。アドバイザリ自身が、必要な到達条件で項目をまとめている——「リモートの未認証の攻撃者」「リモートの認証済み利用者」「リモートの認証済み管理者」。最高値の3件（CVSS 8.8）はいずれも<strong>認証済み利用者</strong>が前提である（CVE-2026-13672 / SSOAuth、CVE-2026-18792 / Sharing API、CVE-2026-74857 / Auth API）。<strong>未認証で到達するものは、本記録が数えた限り4件にとどまり、いずれも CVSS 7.5 以下である</strong>（CVE-2026-15198 / Webdav API 6.5、CVE-2026-18633 / nfsd 7.5、CVE-2026-124993 / Security Advisor 5.3、CVE-2026-85098 / synoscgi 5.3）。</p>
+<p><strong>この分け方には実務上の意味がある</strong>（本記録の評価）。<strong>「認証不要」と「認証必要」は、対応の緊急度が別物である。</strong><br />
+- <strong>認証不要</strong>: 機器がネットワークから到達できる限り、攻撃者は何も持たずに試せる。<strong>到達性がそのままリスクになる。</strong><br />
+- <strong>認証必要</strong>: 攻撃者はまず資格情報を得る必要がある。<strong>侵害の2段目として効くが、1段目の入口ではない。</strong></p>
+<p><strong>本件で急ぐべきは SA-26:19 の2件である。</strong> <strong>ところが件数では25対2で SA-26:18 が圧倒的に多い</strong>（本記録の明示）〈重要〉—— <strong>件数の多い側が重要とは限らない。</strong> <strong>27件という合計値は、この区別を消してしまう。</strong></p>
+<p><strong>紛らわしい点を1つ明示する</strong>（本記録の注意）。<strong>SA-26:18 にも SQL インジェクション（CWE-89）が1件ある</strong> ——CVE-2026-81584、User API、CVSS 8.1。<strong>ただしこちらは「侵害された LDAP または Active Directory サーバの制御」が必要とされており</strong>（出典2）、<strong>クリティカルの CVE-2026-76954 とは別物である。</strong> <strong>「DSM の SQL インジェクション」で検索すると2件出てくるため、対応の際は CVE 番号で突き合わせる必要がある</strong>（本記録の推奨）。</p>
+<p><strong>対象の版にも差がある</strong>〈重要〉。<strong>SA-26:19 は DSM 7.2 系（7.2.2-72806-10 / 7.2.1-69057-13）を対象に含むが、SA-26:18 は 7.4 系・7.3 系のみを挙げている</strong>（出典1・2）。<strong>古い版を使い続けている機器は、クリティカル側だけが該当する形になる。</strong> <strong>CVE レコードは 7.2.1 未満の状態を「unknown」としており</strong>（出典3・4）、<strong>それより古い版が安全という意味ではない</strong>〈未確定5〉。</p></section>
+<section id="s7"><h2>悪用の有無が書かれておらず、侵害の痕跡を確認する手段も示されていない<span class="b slot">未確定事項</span></h2><p><strong>アドバイザリ2本のいずれにも、実際に悪用されたかどうかの記載が無い</strong>（出典1・2。本記録の確認）〈未確定1〉〈重要〉。</p>
+<p><strong>これは「悪用されていない」という意味ではない</strong>（本記録の明示）—— <strong>書かれていないだけである。</strong> Synology のアドバイザリの書式には、悪用状況を記す欄そのものが見当たらない（本記録の確認）。</p>
+<p><strong>併せて示されていないものを挙げる。</strong><br />
+- <strong>侵害の痕跡（IoC）・確認手順</strong> —— 示されていない。<strong>更新した利用者が「すでに入られていたか」を確かめる手段が無い</strong>（本記録の評価）。<br />
+- <strong>影響を受ける機器の台数・国内の設置数</strong>〈未確定3〉<br />
+- <strong>CVE-2026-76954 の発見者・報告の経路</strong>〈未確定2〉—— <strong>CVE-2026-85101 には Warisse Valentin 氏（Aytio）の記載があるのに対し、クリティカル側には無い</strong>（出典3・4）。<strong>自社発見か外部報告かも分からない。</strong><br />
+- <strong>SA-26:19 が2026年11月13日に更新された内容と理由</strong>〈未確定4〉—— <strong>公開から3日後に最終更新時刻が動いているが、改訂の説明が無い</strong>（出典1）。</p>
+<p><strong>本記録が測れたのは、日付の差だけである</strong>（本記録の明示）。<strong>CVE-2026-76954 の採番予約（2026年8月20日）からアドバイザリ公開（11月10日）までは82日</strong>（出典1・3。figures 参照）。<strong>CVE-2026-85101 は68日である</strong>（出典4）。<strong>採番の予約は一般に脆弱性を把握した後に行われるため、この日数はおおむね「把握から公表まで」の下限とみなせる</strong>（本記録の整理）—— <strong>ただし報告日も修正の完成日も公表されていないため、修正に要した期間そのものではない</strong>〈未確定2〉。</p>
+<p><strong>実務上の帰結</strong>（本記録の評価）〈重要〉。<strong>悪用の有無が分からず、痕跡の確認手段も無い状況では、判断の材料は「その機器がどれだけの期間、どこから到達できたか」だけになる。</strong>インターネットに公開していた機器は、<strong>更新に加えて認証情報の変更まで行うのが妥当である</strong>（本記録の推奨）—— <strong>本件は認証前に任意のファイルの読み書きが可能とされているため、認証情報が読まれていた可能性を否定できない。</strong></p></section>
+<section id="s8"><h2>2週間前に、同じ製品の未認証RCEがランサムウェアに使われていた<span class="b slot">背景・過去事例</span></h2><p><strong>本件の緊急度を判断する材料として、直前の事例を置く</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>2026年10月29日、Synology は同社 NAS の DSM の旧版を狙うランサムウェア攻撃を公表し、全利用者に即時の更新を求めた</strong>（本DBの先行事例 INC-2026-0808）。<strong>同社が指した勧告は Synology-SA-24:20 で、CVE-2024-10441（CVSS 9.8 の未認証の任意コード実行）を含む。</strong> <strong>ランサムウェアは C3RB3R（Cerber の変種）と同定されている。</strong></p>
+<p><strong>本件（Synology-SA-26:19）との共通点は3つある</strong>（本記録の整理）。</p>
+<p><strong>①同じ製品（DSM）である。</strong> <strong>②同じ深刻度の階級である</strong>—— <strong>CVE-2024-10441 が CVSS 9.8 の未認証の任意コード実行、本件の CVE-2026-76954 が CVSS 9.8 の未認証の SQL インジェクションで、いずれも PR:N（認証不要）である。</strong> <strong>③いずれも緩和策がなく、更新が対策である。</strong></p>
+<p><strong>違いは、悪用の確認の有無だけである</strong>（本記録の評価）〈重要〉。<strong>先行事例では、修正から約2年が経った旧版が実際に暗号化被害に遭った。</strong> <strong>本件については、悪用の有無がアドバイザリに記載されていない</strong>〈未確定1〉。</p>
+<p><strong>本記録の評価として、ここから言えることは1つである。</strong> <strong>DSM の未認証の重大な脆弱性は、実際にランサムウェアの入口として使われた実績がある。</strong> <strong>したがって本件を「悪用の報告がないから様子を見る」と扱う根拠は無い</strong>（本記録の評価）。<strong>先行事例で被害に遭ったのは、2024年12月に修正が出ていた版を使い続けていた機器である</strong>—— <strong>更新しなかったことが被害の条件になっている。</strong></p>
+<p><strong>なお、先行事例では侵入口の説明が食い違っていた</strong>（Synology は Synology-SA-24:20 を指し、中国のベンダー 360 は2026年9月18日修正の CVE-2026-13639 / CVE-2026-13684 を挙げた）。<strong>本件についても、悪用が起きた場合にどの CVE が使われたかの説明が揃うとは限らない</strong>（本記録の評価）—— <strong>組織の側は、該当する CVE を個別に追うのではなく「修正版まで上げたか」で判定するのが確実である。</strong></p></section>
+<section id="s9"><h2>日本の中小企業にとっては「社内のファイルサーバ」の問題として届く<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価である。</strong></p>
+<p>Synology は台湾の企業であり、本件は海外ベンダーの製品脆弱性である。<strong>それでも本記録が本件を「日本に波及した海外事案」として扱うのは、この製品の国内での使われ方による</strong>（本記録の判断）。</p>
+<p>DSM を載せた Synology 製 NAS は、日本では<strong>中小企業・個人事業主・大企業の部門単位のファイルサーバ</strong>として広く使われている。国内の専門メディアが翌日に報じていること（出典5）も、読者層が国内に実在することを示す。</p>
+<p><strong>この使われ方が、本件の性格を決める</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>①管理者が専任でないことが多い。</strong>情報システム専任者がいない組織では、NAS は「置いたら動き続けるもの」として運用される。<strong>DSM の更新は再起動を伴うため、業務時間中には実施できず、結果として後回しになりやすい。</strong></p>
+<p><strong>②バックアップ先になっていることが多い。</strong> NAS がバックアップの保存先であるとき、<strong>CVE-2026-85101（rsync・任意のファイルの書き込み・I:H）の影響は「バックアップが信用できなくなる」という形で出る</strong>（本記録の評価）。ランサムウェア対策としてバックアップを置いた箱が、書き込み可能な状態で外から届くなら、その対策は成立しない。</p>
+<p><strong>③外から使えるようにしてあることが多い。</strong> QuickConnect やポート転送で外出先から使える設定は、利便性のために入れられる。<strong>本件は PR:N・UI:N であるため、到達できること自体がリスクになる</strong>（出典1）。</p>
+<p><strong>組織が取るべき確認は3つに絞れる</strong>（本記録の推奨）。<strong>①DSM の版を確認し、7.4.1-90080-1 / 7.3.2-86009-5 / 7.2.2-72806-10 / 7.2.1-69057-13 以降であるかを見る</strong>（出典1）。<strong>更新は1回で2本のアドバイザリ27件すべてに対応する。</strong> <strong>②その機器がインターネットから到達できる状態だったかを確認する。</strong>到達できていた期間が長いなら、認証情報の変更まで行う。<strong>③rsync を使っているかを確認する。</strong>使っていないなら止める。使っているなら到達元を限定する—— <strong>ただし rsync の有効化が前提かは公表されていない</strong>〈未確定7〉ため、<strong>無効化を確実な回避策として扱わない。</strong></p>
+<p><strong>最後に、本件から得られる一般的な教訓を1つ置く</strong>（本記録の評価）。<strong>「報じられた件数」で優先度を決めてはいけない。</strong>本件では27件のうち急ぐべきは2件であり、<strong>その2件は件数の少ない方のアドバイザリに入っていた。</strong> <strong>見るべきは件数ではなく、認証の要否（PR）と到達経路（AV）である。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> DiskStation Manager（DSM）の Auth API　<b>ベンダー:</b> Synology Inc.　<b>CVE番号:</b> CVE-2026-76954　<b>バージョン:</b> **影響: 7.4.1-90080-1・7.3.2-86009-5・7.2.2-72806-10・7.2.1-69057-13 より前／ 修正: DSM 7.4 は 7.4.1-90080-1 以降、7.3 は 7.3.2-86009-5 以降、 7.2 は 7.2.2-72806-10 以降または 7.2.1-69057-13 以降**（出典1・3）。 **CVE レコードは 7.2.1 未満について状態を「unknown」としている**（出典3） 〈未確定5〉——**どの版から存在したかは公表されていない。**　<b>概要:</b> **DSM の Auth API における SQL インジェクション（CWE-89・ SQL コマンドで使われる特殊要素の不適切な無効化）**（出典1・3）〈重要〉。 **CVSS v3.1 基本値 9.8（Critical）、 ベクタ CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H**（出典1・3）。　<b>症状:</b> **「リモートの攻撃者が任意のファイルを読み書きし、 サービス拒否攻撃を行うことを許す」**（出典1。訳。原文英語を引用）〈重要〉—— **機密性・完全性・可用性のすべてが「High」である**（出典1）。 **NAS における「任意のファイルの読み書き」は、 保管しているデータそのものに届くことを意味する**（本記録の評価）。　<b>手法:</b> **公表されているのは CWE-89 と該当コンポーネント（Auth API）までである** （出典1・3）。 **具体的な到達経路・パラメータ・注入の形はいずれも示されていない**〈未確定6〉。 **ベクタから読めるのは次の点である**（本記録の整理）—— **AV:N（ネットワークから到達）・AC:L（攻撃条件の複雑さが低い）・ PR:N（権限不要）・UI:N（利用者の操作不要）・S:U（影響範囲は当該コンポーネント内）。** **認証を行う API に認証前に到達できる不備であり、 認証の前段で成立する**（本記録の読み取り）〈重要〉。　<b>内容:</b> **影響の記述は「任意のファイル（arbitrary files）」であり、 対象を限定していない**（出典1）。 **SA-26:18 側の多くの項目が「特定のファイル（specific files）」と 書き分けられているのに対し**（出典2）、 **本件は「任意」である**（本記録の照合）〈重要〉。 **どのデータが読めるか、設定・認証情報・利用者データのいずれが含まれるかは 示されていない**〈未確定6〉。　<b>preconditions:</b> **認証は不要（PR:N）、利用者の操作も不要（UI:N）、 ネットワーク経由で到達する（AV:N）**（出典1）〈重要〉。 **つまり、当該 API に到達できるネットワーク位置にあることが唯一の前提である** （本記録の整理）。 **緩和策は「None」と明記されており、設定変更による回避策は提供されていない** （出典1）。</div><div class=sub><b>名称:</b> DiskStation Manager（DSM）の rsync　<b>ベンダー:</b> Synology Inc.　<b>CVE番号:</b> CVE-2026-85101　<b>バージョン:</b> **影響・修正は CVE-2026-76954 と同一の版である**（出典1・4）。　<b>概要:</b> **DSM の rsync における認証回避（CWE-288・ 代替経路または代替チャネルを用いた認証回避）**（出典1・4）。 **CVSS v3.1 基本値 8.6、 ベクタ CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L**（出典1）—— **Synology の重要度評定は「Important」である**（出典1）〈齟齬2〉。 **発見者は Warisse Valentin 氏（Aytio）とされる**（出典4）。　<b>症状:</b> **「リモートの攻撃者が特定のファイルを読み、任意のファイルを書き込み、 限定的なサービス拒否攻撃を行うことを許す」**（出典1。訳。原文英語を引用）。 **完全性への影響が High（I:H）である一方、 機密性は Low（C:L）・可用性は Low（A:L）である**（出典1）〈重要〉—— **読める範囲は限定的だが、書き込みは「任意のファイル」である** （本記録の整理）。　<b>手法:</b> **公表されているのは CWE-288 と該当コンポーネント（rsync）までである** （出典1・4）。 **「代替経路または代替チャネル」とは、 本来の認証を通らずに同じ機能へ到達できる別の入口が存在した型である** （本記録の整理。CWE の定義による）〈重要〉。 **具体的な経路は示されていない**〈未確定7〉。　<b>内容:</b> **読み取りは「特定のファイル」、書き込みは「任意のファイル」である**（出典1）。 **どのファイルが対象かは示されていない**〈未確定7〉。　<b>preconditions:</b> **認証は不要（PR:N）、利用者の操作も不要（UI:N）、 ネットワーク経由で到達する（AV:N）**（出典1）。 **rsync サービスの有効化が前提となるかは示されていない**〈未確定7〉〈重要〉 ——**本記録はこれを前提条件として書けない**（本記録の明示）。 **rsync は Hyper Backup・Snapshot Replication などの バックアップ・複製機能で使われるため、 業務で有効にしている組織は少なくないとみられる**（本記録の推定）。</div><div class=sub><b>名称:</b> DiskStation Manager（DSM）— Synology-SA-26:18 の25件　<b>ベンダー:</b> Synology Inc.　<b>CVE番号:</b> CVE-2026-13672、CVE-2026-18792、CVE-2026-74857、CVE-2026-18596、CVE-2026-19048、CVE-2026-81584、CVE-2026-18633、CVE-2026-75785　<b>CVE番号の公表状況:</b> stated　<b>バージョン:</b> **影響: DSM 7.4 系・7.3 系／ 修正: 7.4.1-90080-1 以降・7.3.2-86009-5 以降**（出典2）〈重要〉—— **SA-26:19 と修正版の版番号は共通だが、 SA-26:18 は DSM 7.2 系を対象に挙げていない**（本記録の照合）。　<b>概要:</b> **Important 8件・Moderate 17件で、クリティカルは無い**（出典2）。 **cve 欄には Important の8件のみを挙げた**（本記録の明示）—— **Moderate 17件は本記録では個別に追跡しない。** **最高値は CVSS 8.8 の3件**—— CVE-2026-13672（SSOAuth・CWE-639）、 CVE-2026-18792（Sharing API・CWE-22）、 CVE-2026-74857（Auth API・CWE-304）。 **いずれも「認証済みの利用者が任意のファイルを読み書きし、 DoS を行える」である**（出典2。訳）。　<b>症状:</b> **25件すべてが認証を前提とする**（出典2）〈重要〉—— **「認証済み利用者」「有効な資格情報を持つ攻撃者」 「認証済み管理者」「中間者」のいずれかであり、 未認証でネットワークから到達するものは CVE-2026-15198（Webdav API・ CWE-306・CVSS 6.5）・CVE-2026-18633（nfsd・CWE-824・7.5）・ CVE-2026-124993（Security Advisor・CWE-863・5.3）・ CVE-2026-85098（synoscgi・CWE-617・5.3）に限られる**（出典2。本記録の整理）。 **これが SA-26:19 側の2件（PR:N）との決定的な違いである**（本記録の評価）。　<b>手法:</b> **CWE は CWE-639・CWE-22・CWE-304・CWE-288・CWE-59・CWE-89・CWE-824・ CWE-78 ほかに分散している**（出典2）。 **なお CVE-2026-81584 も SQL インジェクション（CWE-89・CVSS 8.1）だが、 対象は User API であり、 攻撃には侵害された LDAP または Active Directory サーバの制御が必要とされる** （出典2）〈重要〉—— **クリティカルの CVE-2026-76954（Auth API・未認証）とは別物である** （本記録の明示）。　<b>内容:</b> **「任意のファイル」と「特定のファイル」が項目ごとに書き分けられている** （出典2）。　<b>preconditions:</b> **大半が認証を要する**（出典2）。 **緩和策は「None」である**（出典2）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **DSM を修正版へ更新する。DSM 7.4 系は 7.4.1-90080-1 以降、 7.3 系は 7.3.2-86009-5 以降、7.2 系は 7.2.2-72806-10 以降 または 7.2.1-69057-13 以降**（出典1）。　<b>副作用:</b> **DSM の更新には再起動を伴い、その間 NAS 上のサービス （ファイル共有・バックアップ先・仮想マシンのデータストア等）が停止する** （本記録の評価）〈重要〉—— **業務時間中に実施できないことが多く、これが更新の遅れの主因になる。** **一方、緩和策は「None」と明記されており**（出典1・2）、 **更新以外の対策は提供されていない。** **更新は1回で2本のアドバイザリ27件すべてに対応する** （修正版の版番号が共通であるため。本記録の照合）—— **停止の回数を増やす必要はない。**</div><div class=sub><b>手順:</b> **NAS の管理画面・API をインターネットから直接到達できない位置に置く** （本記録の推奨）。　<b>副作用:</b> **外出先からのアクセスや、外部との共有リンクが使えなくなる** （本記録の評価）〈重要〉—— **QuickConnect やポート転送を使って業務を回している場合、運用が変わる。** **なお、これは本件の回避策ではない**（本記録の明示）—— **到達経路を狭めるだけであり、社内からの到達は残る。** **本件は PR:N・UI:N であるため、社内に足場を得た攻撃者には依然として有効である。**</div><div class=sub><b>手順:</b> **rsync サービスを使っていない場合は無効化し、 使っている場合は到達元を限定する**（本記録の推奨）。　<b>副作用:</b> **Hyper Backup・Snapshot Replication などバックアップ・複製機能が rsync に依存している場合、無効化すると保護が止まる**（本記録の評価）〈重要〉 ——**バックアップを止める判断は、本件より大きなリスクを生みうる。** **また、rsync の有効化が CVE-2026-85101 の前提かは公表されていない** 〈未確定7〉ため、 **無効化が確実な回避策であるとは本記録は書けない。**</div><div class=sub><b>手順:</b> **更新後、認証情報を変更する**（本記録の推奨）—— **本件は認証前に任意のファイルの読み書きが可能とされているため**（出典1）。　<b>副作用:</b> **全利用者のパスワード変更・連携アプリの再設定が必要になり、運用負荷が大きい** （本記録の評価）。 **ただし悪用の有無は公表されておらず**〈未確定1〉、 **侵害の痕跡を確認する手段も示されていない**（本記録の確認）〈重要〉—— **「念のため」の判断になる。** **実施するかは、当該機器がインターネットから到達可能だった期間で判断する** （本記録の推奨）。</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年8月20日</td><td class=nowrap><span class="b kind">発生</span></td><td>**CVE-2026-76954 の採番が予約された**（出典3）—— **採番機関は Synology である**（出典3）。 **この時点で Synology が当該脆弱性を把握していたとみられる**（本記録の推定） 〈未確定2〉——**報告の経路・報告者は公表されていない。**</td></tr><tr><td class="sm nowrap tw">2026年9月3日</td><td class=nowrap><span class="b kind">発生</span></td><td>**CVE-2026-85101 の採番が予約された**（出典4）—— **発見者は Warisse Valentin 氏（Aytio）とされる**（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年11月10日 17時06分33秒（UTC+8）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Synology-SA-26:18（DSM）が公開された**（出典2）—— **全体の重要度は「Important」、状態は「Resolved」、緩和策は「None」。** **CVE は25件（Important 8件・Moderate 17件）で、 最高値は CVSS 8.8 の3件（SSOAuth・Sharing API・Auth API／ いずれも認証済み利用者を前提とする）。** **修正版は DSM 7.4 が 7.4.1-90080-1 以降、7.3 が 7.3.2-86009-5 以降。**</td></tr><tr><td class="sm nowrap tw">2026年11月10日 17時06分42秒（UTC+8）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Synology-SA-26:19（DSM）が公開された**（出典1）—— **9秒後である**（本記録の算出）〈重要〉。 **全体の重要度は「Critical」、状態は「Resolved」、緩和策は「None」。** **CVE は2件。CVE-2026-76954（Auth API の SQL インジェクション・CWE-89・ CVSS 9.8・AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H）と、 CVE-2026-85101（rsync の認証回避・CWE-288・CVSS 8.6・ AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L）。** **修正版は DSM 7.4 が 7.4.1-90080-1 以降、7.3 が 7.3.2-86009-5 以降、 7.2 が 7.2.2-72806-10 以降または 7.2.1-69057-13 以降。** **抜粋は「Synology は DSM について複数の脆弱性に対処する セキュリティ更新を公開した」**（訳。原文英語）。</td></tr><tr><td class="sm nowrap tw">2026年11月12日</td><td class=nowrap><span class="b kind">公表</span></td><td>**CVE-2026-76954 と CVE-2026-85101 の CVE レコードが公開された**（出典3・4）—— **アドバイザリの2日後である**（本記録の算出）。 **両レコードは影響を受ける版として 7.4.1-90080-1・7.3.2-86009-5・7.2.2-72806-10・7.2.1-69057-13 より前を挙げ、 7.2.1 未満については状態を「unknown」としている**（出典3・4）〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年11月13日 10時41分26秒（UTC+8）</td><td class=nowrap><span class="b kind">訂正</span></td><td>**Synology-SA-26:19 が更新された（最終更新時刻）**（出典1）—— **公開（11月10日）から3日後である。** **改訂の内容・理由は示されていない**〈未確定4〉。 **一方 SA-26:18 の最終更新は公開時刻と同一（2026年11月10日 17時06分33秒）で、 初版のまま（Revision 1）である**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年11月13日（金）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Security NEXT が「Synology製NAS向けOS『DSM』に脆弱性 - 『クリティカル』も」を 公開した**（出典5）—— **「同社は現地時間2026年11月10日、セキュリティアドバイザリを公開。 あわせて27件の脆弱性を明らかにした」「クリティカル1件・重要9件・中17件」と 報じた**（出典5。原文日本語を引用）。 **件数・内訳・2件の CVE の記述はいずれも一次資料と一致するが、 アドバイザリが2本であることは示されていない**（齟齬1）。</td></tr><tr><td class="sm nowrap tw">2026年11月15日（土）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が一次資料4点 （Synology-SA-26:19・Synology-SA-26:18・CVE-2026-76954・CVE-2026-85101 の 各レコード）を取得して照合した**（出典1・2・3・4）。 **確認できたのは、①報道の27件が2本の合算であること、 ②クリティカルは SA-26:19 側の1件であること、 ③修正版の版番号が2本で共通であること（7.4.1-90080-1・7.3.2-86009-5）、 ④SA-26:19 だけが DSM 7.2 系を対象に含むこと、である**（本記録の観測）〈重要〉。 **また、本記録が最初に取得したアドバイザリ一覧には SA-26:19 が現れず SA-26:18 までであった**（齟齬3）—— **個別ページでは確認できた。**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>8</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>報道が「1本のアドバイザリで27件」としているが、実際は同日9秒差の2本の合算である</span><div class=sm>**Security NEXT（出典5）は「同社は現地時間2026年11月10日、 セキュリティアドバイザリを公開。あわせて27件の脆弱性を明らかにした」とし、 内訳を「クリティカル1件・重要9件・中17件」としている**（原文日本語を引用）。 **一次資料では、同日に DSM のアドバイザリが2本公開されている**〈重要〉—— **Synology-SA-26:18（17時06分33秒 UTC+8・25件・Important 8／Moderate 17・ 全体の重要度 Important）と、 Synology-SA-26:19（17時06分42秒 UTC+8・2件・Critical 1／Important 1・ 全体の重要度 Critical）である**（出典1・2）。 **合算は25＋2＝27件、内訳はクリティカル1・重要1＋8＝9・中17 で、 報道の数字と完全に一致する**（本記録の照合）—— **つまり件数は正確であり、食い違っているのは「1本か2本か」だけである。** **本記録は、27件のアドバイザリは存在しないという立場を採る**（本記録の判断）。 **実務上の影響は2つある**—— **①27件のアドバイザリを探すと見つからない、 ②SA-26:18 だけを見るとクリティカルが無いと読める。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CVE-2026-85101 の重要度が、ベンダー評定と CVSS の定性区分で異なる</span><div class=sm>**Synology のアドバイザリは CVE-2026-85101 を「Important」と評定している** （出典1）。 **一方 CVSS v3.1 基本値は 8.6 であり、CVSS の定性区分では「High」に当たる** （出典1・4）〈重要〉。 **同じ脆弱性に対する2つの尺度であり、深刻度が改定されたわけではない** （本記録の明示）—— **ベンダー独自の評定（Critical / Important / Moderate）と CVSS の定性区分（Critical / High / Medium / Low）は別の体系である。** **社内の優先度判定に使うときは、どちらの体系の値かを明記する必要がある** （本記録の評価）。 **なお国内報道は「重要度は『重要』、CVSSベーススコアは『8.6』」と 両方を併記しており、この点は正確である**（出典5）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録が最初に取得したアドバイザリ一覧に SA-26:19 が現れなかった</span><div class=sm>**本記録の作成者が2026年11月15日に Synology のアドバイザリ一覧 （`/en-global/security/advisory`）を取得したとき、 一覧には Synology_SA_26_18（2026-11-10 17:06:33）・26_17・26_16・26_15 が 並んでいたが、Synology_SA_26_19 は現れなかった**（本記録の観測）〈重要〉。 **個別ページ（出典1）では確認できた。** **取得の時点か描画の都合とみられるが、本記録は原因を確認できていない** （本記録の明示）—— **一覧の仕様・並び順・反映の遅れのいずれであるかを特定していない。** **記録する理由は、一覧を1回見ただけでは重い方（クリティカル側）を 取り落としうるという実務上の含意があるためである**（本記録の評価）。 **なお、このとき一覧が示した SA-26:18 の重要度は「Important」であり、 一覧だけを見れば「DSM にクリティカルは無い」と読める状態だった。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>CVE レコードを NVD では確認できず、CVE Program の API から取得した</span><div class=sm>**本記録の作成者は、まず NVD のページ （`nvd.nist.gov/vuln/detail/CVE-2026-76954` および `...85101`）を取得したが、 いずれもトップページ（NVD - Home）へ転送され、 CVE の内容を確認できなかった**（本記録の明示）〈重要〉—— **NVD は JavaScript による描画のため、自動取得に向かない**（本記録の整理）。 **そのため CVE Program の API（`cveawg.mitre.org/api/cve/&lt;ID&gt;`）から CVE JSON 5.2 のレコードを取得した**（出典3・4）。 **したがって本記録は、NVD 側の評価（NVD が独自に付与する CVSS や CPE の範囲）を確認していない**—— **記載している CVSS・CWE・影響範囲は、 採番機関である Synology が CVE レコードに登録した値と アドバイザリの記載に拠る**（出典1・3・4）。 **KEV（CISA の悪用確認済み脆弱性カタログ）への収載状況も確認していない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の有無と侵害の痕跡が、いずれのアドバイザリにも記載されていない</span><div class=sm>**Synology-SA-26:19・SA-26:18 のいずれにも、 実際に悪用されたかどうかの記載が無い**（出典1・2。本記録の確認） 〈未確定1〉〈重要〉—— **「悪用されていない」という意味ではなく、書かれていないだけである** （本記録の明示）。 **アドバイザリの書式に悪用状況を記す欄そのものが見当たらない** （本記録の確認）。 **併せて、侵害の痕跡（IoC）・確認手順・影響を受ける機器の台数も 示されていない**〈未確定3〉。 **その結果、更新した利用者が「すでに入られていたか」を確かめる手段が無い** （本記録の評価）—— **本件は認証前に任意のファイルの読み書きが可能とされているため、 認証情報が読まれていた可能性を否定できない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>クリティカルの発見者と報告経路が示されておらず、修正に要した期間を測れない</span><div class=sm>**CVE-2026-85101 には発見者の記載がある（Warisse Valentin 氏・Aytio）が、 クリティカルの CVE-2026-76954 には無い**（出典3・4）〈未確定2〉〈重要〉。 **自社発見か外部報告かも示されていない。** **報告日も修正の完成日も公表されていない**（本記録の確認）。 **そのため本記録が測れるのは採番の予約日からの差だけである**—— **CVE-2026-76954 は2026年8月20日の予約から11月10日の公開まで82日、 CVE-2026-85101 は9月3日の予約から68日である**（出典1・3・4。本記録の算出）。 **採番の予約は一般に脆弱性を把握した後に行われるため、 この日数はおおむね「把握から公表まで」の下限とみなせるが、 修正に要した期間そのものではない**（本記録の明示）。</div></li><li><span class="b dk">一次資料が改訂された</span><span class=ui>Synology-SA-26:19 が公開3日後に更新されているが、改訂内容が示されていない</span><div class=sm>**Synology-SA-26:19 の公開は2026年11月10日 17時06分42秒（UTC+8）、 最終更新は2026年11月13日 10時41分26秒（UTC+8）である**（出典1） 〈未確定4〉〈重要〉。 **改訂の内容・理由は示されていない**（本記録の確認）—— **改訂番号（Revision）の表示も、本記録が取得した範囲では確認できなかった。** **一方 SA-26:18 の最終更新は公開時刻と同一（2026年11月10日 17時06分33秒）で、 初版のまま（Revision 1）である**（出典2）。 **国内報道（出典5）は11月13日 03:27 UTC の公開であり、 SA-26:19 の更新（11月13日 10時41分 UTC+8 ＝ 02時41分 UTC）の約46分後である** （本記録の算出）—— **報道が更新前後のどちらの内容に拠るかは判別できない。** **本記録が記載している内容は、2026年11月15日時点の最新版である。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>影響を受けた版の下限と、DSM 以外の製品への影響が不明である</span><div class=sm>**CVE レコードは、影響を受ける版として 7.4.1-90080-1・7.3.2-86009-5・7.2.2-72806-10・7.2.1-69057-13 より前を挙げる一方、 7.2.1 未満については状態を「unknown」としている**（出典3・4） 〈未確定5〉〈重要〉—— **「7.2.1 未満は影響を受けない」という意味ではない**（本記録の明示）。 **どの版から不備が存在したかは公表されていない。** **また、DSM 6.x 系および DSM 以外の Synology 製品 （SRM・BeeStation 等）への影響についても記載が無い**〈未確定8〉。 **サポートが終了した版を使い続けている機器について、 利用者が自分が対象かを判断する材料が無い**（本記録の評価）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証不要の2件は認証の前段で成立し、認証を固めても効かない</div><div class=svgwrap><svg viewBox="0 0 1202 316" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,158.0 C193.0,158.0 193.0,158.0 220,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,158.0 C397.0,158.0 397.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,158.0 C397.0,158.0 397.0,190.0 424,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C601.0,126.0 601.0,112.0 628,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,190.0 C601.0,190.0 601.0,190.0 628,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,112.0 C907.0,112.0 907.0,158.0 1036,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,190.0 C907.0,190.0 907.0,158.0 1036,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C601.0,126.0 601.0,41.0 628,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,41.0 C805.0,41.0 805.0,158.0 832,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,158.0 C1009.0,158.0 1009.0,158.0 1036,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,268.0 C703.0,268.0 703.0,112.0 628,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,268.0 C703.0,268.0 703.0,190.0 628,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="133.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リモートの攻撃者（認証情</text><text x="91.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">報を持たない）</text><rect x="220" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ネットワークからの到達（</text><text x="295.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AV:N／QuickCo</text><text x="295.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">nnect・ポート転送…</text><rect x="424" y="101.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="123.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Auth API（認証A</text><text x="499.0" y="137.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">PI）</text><rect x="424" y="165.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="187.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rsync（バックアップ</text><text x="499.0" y="201.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・複製に使われる）</text><rect x="628" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証の通過（本来ここで止</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">まる想定）</text><rect x="628" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-769</text><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">54 SQLインジェクシ</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ョン（CWE-89・C…</text><rect x="628" y="158.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CVE-2026-851</text><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">01 認証回避（CWE-</text><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">288・CVSS 8.…</text><rect x="832" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SA-26:18 の25</text><text x="907.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">件（大半が認証済み利用者</text><text x="907.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・管理者を前提／最高 …</text><rect x="1036" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NAS 上のデータ（業務</text><text x="1111.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ファイル・共有・バックア</text><text x="1111.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ップ）</text><rect x="628" y="236.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="258.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版（7.4.1-90</text><text x="703.0" y="272.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">080-1 / 7.3.</text><text x="703.0" y="286.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2-86009-5 /…</text></svg></div><div class=fn>Synology のアドバイザリ2本（出典1・2）と CVE レコード（出典3・4）から、 到達条件の違いを整理した図である（整理は本記録）。 **上段が SA-26:19 の2件（認証不要・CVSS 9.8 と 8.6）、 下段が SA-26:18 の25件（大半が認証を前提とする）である。** **太い経路（実線）が認証を通らずに成立するもの、 点線が認証または特別な前提を要するものである。** **右端は NAS 上のデータで、本件では「侵入の足場」と「守るべき資産」が 同じ箱にある**（本記録の評価）。 **具体的な注入経路・パラメータは公表されていない**〈未確定6・7〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>報じられた「脆弱性○件」で対応の優先度を決めない。 見るべきは件数ではなく、認証の要否と到達経路である。</div><div class=lw>**本件では27件のうち急ぐべきは2件であり、 その2件は件数の少ない方のアドバイザリに入っていた**（出典1・2）〈重要〉。 **SA-26:19 の2件は PR:N（認証不要）・UI:N（利用者の操作不要）で、 最高値は CVSS 9.8。** **一方 SA-26:18 の25件は大半が認証を前提とし、最高値は 8.8 である。** **「27件」という合計値は、この区別を消してしまう**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性の受け入れ基準に「未認証で到達するか（PR:N）」 「ネットワークから到達するか（AV:N）」の2項目を明文で置く。** **件数ではなくこの2項目で緊急対応の線を引く。** **報道で件数を知ったときは、必ずベンダーのアドバイザリ番号まで辿り、 CVE 単位で突き合わせる。**</div></li><li><div class=lp>NAS・アプライアンスは「侵入の足場」と「守るべき資産」が同じ箱にある。 一般のサーバと同じ優先度で扱わない。</div><div class=lw>**CVE-2026-76954 の影響は「任意のファイルを読み書きできる」である** （出典1。訳）〈重要〉—— **NAS においてこれは、保管している業務データそのものに届くことを意味する** （本記録の評価）。 **さらに NAS はバックアップの保存先になっていることが多く、 CVE-2026-85101（rsync・任意のファイルの書き込み・完全性への影響 High）は 「バックアップが信用できなくなる」形で効く。** **ランサムウェア対策としてバックアップを置いた箱が、 書き込み可能な状態で外から届くなら、その対策は成立しない。**</div><div class=la><b>取るべき行動</b> **バックアップの保存先になっている機器を一覧にし、 脆弱性対応の優先度を業務サーバと同等以上に上げる。** **「バックアップがあるから大丈夫」の前提が、 バックアップ先の脆弱性で崩れないかを確認する** ——保存先が書き込み可能な経路で外部から到達できるかを見る。</div></li><li><div class=lp>緩和策が「なし」と明記された脆弱性は、更新の計画を立てる以外に選択肢がない。 再起動の段取りを先に決めておく。</div><div class=lw>**本件のアドバイザリ2本はいずれも緩和策を「None」と明記している** （出典1・2）〈重要〉—— **設定変更による回避策は提供されていない。** **一方 DSM の更新は再起動を伴い、その間ファイル共有・バックアップ先・ 仮想マシンのデータストアなどが停止する**（本記録の評価）—— **業務時間中に実施できないことが多く、これが遅れの主因になる。**</div><div class=la><b>取るべき行動</b> **NAS・アプライアンスについて、 「再起動を伴う緊急更新をいつ・誰が・どの業務を止めて実施するか」を 平時に決めておく。** 事後に調整すると数日から数週間かかる。 **本件では修正版の版番号が2本のアドバイザリで共通であり、 更新1回で27件すべてに対応する**（出典1・2。本記録の照合）—— **停止の回数を増やす必要はない。**</div></li><li><div class=lp>悪用の有無と侵害の痕跡が示されない脆弱性では、 「到達できていた期間」が唯一の判断材料になる。</div><div class=lw>**アドバイザリ2本のいずれにも悪用の有無の記載が無く**〈未確定1〉、 **侵害の痕跡（IoC）や確認手順も示されていない**（出典1・2。本記録の確認） 〈重要〉—— **更新した利用者が「すでに入られていたか」を確かめる手段が無い。** **本件は認証前に任意のファイルの読み書きが可能とされているため、 認証情報が読まれていた可能性を否定できない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **当該機器がインターネットから到達可能だった期間を確認する。** **到達できていたなら、更新に加えて認証情報の変更まで実施する。** **判断を記録に残す**——後から「なぜ変更しなかったか」を問われる。 **併せて、アプライアンスのアクセスログの保存期間を確認しておく** ——痕跡を探す段になってログが無いことに気づくのが通例である。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>認証処理そのものに不備があると、認証の強化はすべて無効になる。 認証前に到達できるコードを別枠で点検する。</div><div class=lw>**CVE-2026-76954 は DSM の Auth API（認証API）における SQL インジェクションである**（出典1・3）〈重要〉—— **ベクタは PR:N（権限不要）・UI:N（利用者の操作不要）であり、 認証の前段で成立する**（本記録の整理）。 **パスワードを長くしても、二要素認証を入れても、 認証処理に到達した時点で成立する不備は防げない。**</div><div class=la><b>取るべき行動</b> **自社システムで「認証前に到達できるコード」を列挙する** ——ログイン・パスワード再発行・トークン検証・OTP の検証・ エラー応答の生成。 **この範囲を、認証後のコードとは別枠で、入力検証の観点から点検する。** **とくに認証処理が DB を参照する箇所では、 プレースホルダを使っているかを個別に確認する。**</div></li><li><div class=lp>「代替経路による認証回避」（CWE-288）は、認証処理ではなく 同じ機能への別の入口を数えることで見つかる。</div><div class=lw>**CVE-2026-85101 は rsync における CWE-288 （代替経路または代替チャネルを用いた認証回避）である**（出典1・4）。 **これは認証処理が壊れている型ではなく、 本来の認証を通らずに同じ機能へ到達できる別の入口が残っていた型である** （本記録の整理。CWE の定義による）〈重要〉。</div><div class=la><b>取るべき行動</b> **機能ごとに「その機能へ到達できる経路」を全部数える** ——Web UI・REST API・CLI・SSH・専用プロトコル・レガシー互換の入口。 **経路ごとに認証がかかっているかを個別に確認する。** **1つの機能に複数の入口があるとき、新しい入口に認証を実装して 古い入口を忘れるのが典型的な形である。**</div></li><li><div class=lp>ベンダーのアドバイザリは「件数」ではなく「到達条件」でまとめられていることがある。 その構造に合わせて読む。</div><div class=lw>**Synology のアドバイザリは、必要な到達条件で項目をまとめている**（出典2） ——「リモートの未認証の攻撃者」「リモートの認証済み利用者」 「リモートの認証済み管理者」。 **この構造を読めば、25件のうち急ぐものがどれかが分かる**（本記録の評価） 〈重要〉—— **本記録が数えた限り、SA-26:18 で未認証で到達するのは4件、 いずれも CVSS 7.5 以下である。**</div><div class=la><b>取るべき行動</b> **アドバイザリを読むときは、CVSS 値の降順ではなく 到達条件（未認証 → 認証済み利用者 → 管理者）の順に読む。** **自組織の機器がどの到達条件を満たす位置にあるかを先に決めておけば、 読む範囲が絞れる。**</div></li><li><div class=lp>同じ CWE の脆弱性が同じ日に複数出ることがある。 対応は CVE 番号で突き合わせる。</div><div class=lw>**本件では SQL インジェクション（CWE-89）が2件ある**〈重要〉—— **CVE-2026-76954（Auth API・未認証・CVSS 9.8・SA-26:19）と、 CVE-2026-81584（User API・侵害された LDAP / AD サーバの制御が必要・ CVSS 8.1・SA-26:18）である**（出典1・2）。 **「DSM の SQL インジェクション」という言葉では区別できず、 緊急度は大きく違う**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性管理の台帳を、製品名＋CWE ではなく CVE 番号で引く。** **報道や社内連絡で「○○の SQL インジェクション」と来たときは、 必ず CVE 番号まで確認してから対応の緊急度を決める。**</div></li><li><div class=lp>アドバイザリ一覧を1回見ただけで確認を終えない。 個別ページと CVE レコードで突き合わせる。</div><div class=lw>**本記録が最初に取得したアドバイザリ一覧には SA-26:19 が現れず、 SA-26:18 までであった**（齟齬3）〈重要〉—— **個別ページでは確認できた。原因は確認できていない。** **一覧で最初に当たる SA-26:18 は全体の重要度が「Important」であり、 それだけを見ると「クリティカルは無い」と読める**（出典2）。 **未認証で CVSS 9.8 の本体は、9秒後に出たもう1本の側にある。**</div><div class=la><b>取るべき行動</b> **ベンダーのアドバイザリ確認は、一覧 → 個別ページ → CVE レコードの3段で行う。** **本記録は CVE レコードを CVE Program の API （`cveawg.mitre.org/api/cve/&lt;ID&gt;`）から取得した**—— **NVD のページは JavaScript 描画のため自動取得に向かない**（齟齬4）。 **同日に同一製品のアドバイザリが複数出ていないかを、番号の連続で確認する。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Synology 製 NAS を業務で使用しており、DSM の版が 7.4.1-90080-1 / 7.3.2-86009-5 / 7.2.2-72806-10 / 7.2.1-69057-13 より前である。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 当該 NAS の管理画面・API がインターネットから到達できる状態にある （QuickConnect・ポート転送・DDNS 等）。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 当該 NAS をバックアップ・スナップショットの保存先として使っている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> NAS・アプライアンスについて、再起動を伴う緊急更新を 「いつ・誰が・どの業務を止めて実施するか」が平時に決まっていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 自社で開発・運用しているシステムにおいて、 認証処理（ログイン・パスワード再発行・トークン検証・OTP 検証）が データベースを参照している。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社製品・自社システムで、1つの機能に複数の到達経路 （Web UI・REST API・CLI・SSH・レガシー互換の入口）を持たせている。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月10日 17時06分42秒（UTC+8）。最終更新 2026年11月13日 10時41分26秒（UTC+8） Synology Inc.</span> <a href="https://www.synology.com/en-global/security/advisory/Synology_SA_26_19" target="_blank" rel="noreferrer noopener nofollow">Synology-SA-26:19 DSM</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**本件の一次資料（クリティカル側）。** 全体の重要度 Critical、状態 Resolved、緩和策 None。 抜粋は「Synology は DSM について複数の脆弱性に対処する セキュリティ更新を公開した」（訳。原文英語）。 **CVE は2件。** **CVE-2026-76954**（Auth API・CWE-89・CVSS 9.8・ `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`・ 「リモートの攻撃者が任意のファイルを読み書きし、 サービス拒否攻撃を行うことを許す」）。 **CVE-2026-85101**（rsync・CWE-288・CVSS 8.6・重要度 Important・ `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L`・ 「リモートの攻撃者が特定のファイルを読み、任意のファイルを書き込み、 限定的なサービス拒否攻撃を行うことを許す」）。 **影響と修正**: DSM 7.4 → 7.4.1-90080-1 以降、7.3 → 7.3.2-86009-5 以降、 7.2 → 7.2.2-72806-10 以降または 7.2.1-69057-13 以降。 **悪用の有無についての記載は無い**〈未確定1〉。 **2026年11月13日に最終更新されているが、改訂内容の説明は無い**〈未確定4〉。 **本記録の作成者が2026年11月15日に取得して確認した。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月10日 17時06分33秒（UTC+8）。最終更新は公開時刻と同一（Revision 1） Synology Inc.</span> <a href="https://www.synology.com/en-global/security/advisory/Synology_SA_26_18" target="_blank" rel="noreferrer noopener nofollow">Synology-SA-26:18 DSM</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**同日9秒前に公開されたもう1本の一次資料。** 全体の重要度 Important、状態 Resolved、緩和策 None。 抜粋は「Synology は DSM について複数の脆弱性に対処する セキュリティ更新を公開した」（訳。原文英語）——**SA-26:19 と同文である。** **CVE は25件（Important 8件・Moderate 17件）。クリティカルは無い**〈重要〉。 最高値は CVSS 8.8 の3件——CVE-2026-13672（SSOAuth・CWE-639）、 CVE-2026-18792（Sharing API・CWE-22）、CVE-2026-74857（Auth API・CWE-304）。 **いずれも認証済み利用者を前提とする。** ほかに CVE-2026-18596（OTP・CWE-288・8.1）、CVE-2026-19048（thumb・CWE-59・8.1）、 **CVE-2026-81584（User API・CWE-89 の SQL インジェクション・8.1。 侵害された LDAP / Active Directory サーバの制御が必要)**、 CVE-2026-18633（nfsd・CWE-824・7.5・未認証）、 CVE-2026-75785（VPN API・CWE-78・7.2）。 **影響と修正**: DSM 7.4 → 7.4.1-90080-1 以降、7.3 → 7.3.2-86009-5 以降。 **DSM 7.2 系は挙げられていない**〈重要〉。 **本記録の作成者が2026年11月15日に取得して確認した。**）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月12日（採番予約は2026年8月20日） CVE Program（採番機関: Synology Inc.）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-76954" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-76954（CVE レコード・JSON 5.2）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**CVE レコードの一次取得。** 状態 PUBLISHED、 採番機関 Synology（`db201096-a0cc-46c7-9a55-61d9e221bf01`）。 **採番予約 2026年8月20日、公開・最終更新 2026年11月12日**〈重要〉。 対象は Synology DiskStation Manager（DSM）。 影響を受ける版は 7.4.1-90080-1・7.3.2-86009-5・7.2.2-72806-10・ 7.2.1-69057-13 より前で、**7.2.1 未満は状態「unknown」**〈未確定5〉。 説明は「SQL コマンドで使われる特殊要素の不適切な無効化の脆弱性」で始まり、 Auth API における CWE-89、 リモートの攻撃者による任意のファイルの読み書きと DoS を記述する。 **CVSS v3.1: 9.8（Critical）／ `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`。** 参照は Synology-SA-26:19。 **発見者の記載は無い**〈未確定2〉。 **本記録の作成者が2026年11月15日に CVE Program の API から取得した**—— **NVD のページ（nvd.nist.gov）は取得時にトップページへ転送され、 内容を確認できなかった**（齟齬4）。）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月12日（採番予約は2026年9月3日） CVE Program（採番機関: Synology Inc.）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-85101" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-85101（CVE レコード・JSON 5.2）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**CVE レコードの一次取得。** 状態 PUBLISHED、採番機関 Synology。 **採番予約 2026年9月3日、公開・最終更新 2026年11月12日。** 対象は Synology DiskStation Manager（DSM）。 影響を受ける版は CVE-2026-76954 と同一で、7.2.1 未満は状態「unknown」。 説明は「rsync における代替経路または代替チャネルを用いた認証回避の脆弱性」で始まり、 CWE-288、リモートの攻撃者による特定のファイルの読み取り・ 任意のファイルの書き込み・限定的な DoS を記述する。 **CVSS v3.1: 8.6（High）／ `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:H/A:L`**〈齟齬2〉—— **Synology のアドバイザリ上の評定は「Important」である**（出典1）。 **発見者は Warisse Valentin 氏（Aytio）**。 参照は Synology-SA-26:19。 **本記録の作成者が2026年11月15日に CVE Program の API から取得した。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年11月13日 03:27 UTC Security NEXT</span> <a href="https://www.security-next.com/192808" target="_blank" rel="noreferrer noopener nofollow">Synology製NAS向けOS「DSM」に脆弱性 - 「クリティカル」も</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった記事（2026年11月13日収集分）。** 「同社は現地時間2026年11月10日、セキュリティアドバイザリを公開。 あわせて27件の脆弱性を明らかにした。重要度を見ると 『クリティカル（Critical）』が1件、『重要（Important）』が9件、 『中（Moderate）』が17件」（原文日本語を引用）。 CVE-2026-76954 を「認証APIにおけるSQLインジェクションの脆弱性」 「リモートから任意のファイルを読み書きできるほか、DoS攻撃が可能」 「CVSSv3.1 のベーススコアは 9.8」とし、 CVE-2026-85101 を「ファイル同期機能『rsync』における認証回避の脆弱性」 「重要度は『重要』、CVSSベーススコアは 8.6」とする。 **件数・内訳・2件の CVE の記述はいずれも一次資料と一致する** （本記録の照合）〈重要〉—— **一致しないのは「1本のアドバイザリ」という前提だけである**（齟齬1）。 **修正版の版番号は記事には無い**（本記録の確認）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月15日</span> <span class="b rev">新規作成</span> **2026年11月13日の Security NEXT の記事（出典5・2026年11月13日収集分）を 起点に作成した。**
+**一次資料を4点取得して裏を取った**〈重要〉—— **①Synology-SA-26:19（出典1）、②Synology-SA-26:18（出典2）、 ③CVE-2026-76954 の CVE レコード（出典3）、 ④CVE-2026-85101 の CVE レコード（出典4）。**
+**照合の過程で、起点の記事と一次資料の関係が明らかになった**〈重要〉。 **本記録は当初、報道の「27件のアドバイザリ」を探して Synology-SA-26:18 に当たったが、そこには25件しか無く、 クリティカルも CVE-2026-76954 も CVE-2026-85101 も見当たらなかった。** **CVE レコードの参照欄が Synology-SA-26:19 を指していたことで、 同日に2本のアドバイザリが出ていることが判明した**（出典3・4）。 **2本の公開時刻は9秒差（17時06分33秒と17時06分42秒・UTC+8）であり、 件数も内訳も合算が報道の数字と完全に一致する**（齟齬1）—— **報道の数字は正確で、食い違っていたのは「1本か2本か」だけであった。**
+**本記録が最も重いと見たのは次の3点である。** **①件数の多い側（25件）にクリティカルは無く、 急ぐべき2件は件数の少ない側（SA-26:19）に入っていたこと** ——**SA-26:18 の25件は大半が認証を前提とし最高値 8.8、 SA-26:19 の2件は両方とも PR:N（認証不要）で最高値 9.8 である**（出典1・2）。 **②クリティカルが「認証API の SQL インジェクション」であること**（出典1・3） ——**認証の前段で成立するため、認証の強化では防げない。** **③緩和策が「None」と明記され、更新が唯一の対策であること**（出典1・2） ——**ただし修正版の版番号は2本で共通であり、更新1回で27件すべてに対応する。**
+**事実と評価の分け方。** **CVE 番号・CVSS 値とベクタ・CWE・影響の文・版番号・公開時刻・ 採番予約日はすべて出典1〜4 の記述として置いた**—— **英語の原文には日本語訳と「原文英語」を添え、 国内報道の引用には「原文日本語」を添えた。** **本記録の評価として置いたのは、 ①件数ではなく認証の要否（PR）と到達経路（AV）で優先度を決めるべきこと、 ②NAS では「侵入の足場」と「守るべき資産」が同じ箱にあること、 ③バックアップ先の脆弱性はバックアップ戦略そのものを崩すこと、 ④悪用の有無と痕跡が不明な場合は「到達できていた期間」で判断すること、の4点である。**
+**日本との関係について。** **Synology は台湾の企業であり本件は海外ベンダーの 製品脆弱性だが、DSM を載せた NAS は日本の中小企業・部門単位の ファイルサーバとして広く使われており、国内の専門メディアが翌日に報じている** （出典5）。**このため本記録は本件を「日本に波及した海外事案」として扱う。**
+**取得の限界を2点明記した。** **①本記録が最初に取得したアドバイザリ一覧に SA-26:19 が現れなかった** （齟齬3）——**原因は確認できていない。** **②NVD のページは取得時にトップページへ転送されたため、 CVE Program の API から CVE レコードを取得した**（齟齬4）—— **NVD 独自の評価と KEV への収載状況は確認していない。**
+**悪用の有無**〈未確定1〉**・発見者**〈未確定2〉**・機器の台数**〈未確定3〉**・ 11月13日の改訂内容**〈未確定4〉**・影響を受けた版の下限**〈未確定5〉**は いずれも公表されていないため unknowns と discrepancies に残した。** **具体的な注入経路・パラメータは公表されておらず、 本記録も推測で補わない方針を採った。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Synology</span><span class="b tag">DiskStation Manager（DSM）</span><span class="b tag">NAS</span><span class="b tag">Synology-SA-26:19</span><span class="b tag">Synology-SA-26:18</span><span class="b tag">CVE-2026-76954</span><span class="b tag">CVE-2026-85101</span><span class="b tag">CWE-89</span><span class="b tag">CWE-288</span><span class="b tag">SQLインジェクション</span><span class="b tag">認証回避</span><span class="b tag">rsync</span><span class="b tag">CVSS9.8</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-15 07:20 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
