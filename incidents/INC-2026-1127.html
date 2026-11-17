@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>モニタスQzooにSQLiで約40万件 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1127</span>モニタスQzooにSQLiで約40万件</h1>
+<header class="site-header">
+  <p class="subtitle">株式会社モニタスは2026年10月21日、同社が運営するアンケートサイト「Qzoo」に 2026年10月17日（土）8時30分から第三者の不正アクセスが行われ、 同日12時22分に SQL インジェクションによってデータベースの閲覧および更新が行われたと公表した—— 漏えいの可能性があるのは同日時点で Qzoo が保有していた約40万件の個人情報の全件で、 氏名・住所等の基本情報、会員IDとパスワード、口座番号・支店名・口座名義等の金融関連情報、 年収・職業等のアンケート回答情報が対象。 検知は同日18時44分、19時02分に緊急メンテナンスへ移行してサービスを停止したが、 公表から約1か月を経た2026年11月17日時点で調査結果も再開の見通しも公表されていない</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b st">続報が続いている</span><span class="b jr">日本の組織が当事者</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月21日</span>
+  <span>最終更新: 2026年11月17日</span>
+</div>
+
+<div class="lead"><p><strong>2026年10月21日、株式会社モニタスは「当社が運営するアンケートサイト『Qzoo』への不正アクセスによる個人情報漏えいの可能性に関するお詫びとお知らせ」を公表した</strong>（出典1。本記録の作成者が取得して内容を確認した）。</p>
+<p><strong>公表された経緯は分単位である</strong>（出典1）〈重要〉—— <strong>2026年10月17日（土）8時30分に第三者による不正アクセスが開始され、同日12時22分に SQL インジェクションによるデータベースの閲覧・更新が行われた。同社が事象を検知して第三者からのアクセスを遮断したのは同日18時44分、Qzoo を緊急メンテナンス状態へ移行したのは同日19時02分である。個人情報保護委員会への速報は10月20日（火）18時07分。</strong></p>
+<p><strong>漏えいの可能性があるのは、2026年10月17日時点で Qzoo システムが保有していた約40万件の個人情報の全件である</strong>（出典1）。<strong>対象項目は4区分で示されている</strong>（出典1）—— <strong>①基本情報（氏名、生年月日、住所、電話番号、メールアドレス等）、②会員認証情報（会員ID、パスワード等）、③金融関連情報（口座番号、支店名、口座名義等）、④アンケート回答情報（年収、職業、その他モニタスが取得した属性データ等）。</strong> <strong>クレジットカード情報とマイナンバーは保有していないとされている</strong>（出典1）。</p>
+<p><strong>本記録が本事案で重く見る点は2つある</strong>（本記録の評価）。</p>
+<p><strong>ひとつは、公表が「閲覧」だけでなく「更新」と書いていることである</strong>〈重要〉—— <strong>SQL インジェクションによって行われたのは「データベース閲覧・更新」とされている</strong>（出典1）。<strong>読み出しに加えて書き込みが行われたのであれば、失われたのは秘密性だけでなくデータの完全性でもある</strong>（本記録の整理）—— <strong>何が更新されたのか、復元したのかは公表されていない</strong>〈未確定3〉。</p>
+<p><strong>もうひとつは、1つのデータベースに集まっていた情報の組み合わせである</strong>（本記録の読み）—— <strong>氏名・住所・電話番号・生年月日に、謝礼の振込先である口座番号・支店名・口座名義、さらに年収・職業といった属性データが同じ場所にあった</strong>（出典1）。<strong>クレジットカードを保有していないことは、この組み合わせが安全であることを意味しない。</strong></p>
+<p><strong>公表から約1か月が経った2026年11月17日時点で、本記録の作成者は同社サイトに本件の第2報を確認できていない</strong>（本記録の確認）〈齟齬2〉—— <strong>調査結果、影響範囲の確定、Qzoo の再開の見通しはいずれも公表されていない</strong>〈未確定5〉〈未確定6〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>8</span></div><ul><li><span class=ui>悪用された脆弱性の具体（箇所・製品・既知か未知か）と SQL インジェクションの発生箇所</span><span class="b rsn">調査中</span><div class=sm>出典1 は「第三者が同社システム内の脆弱性を悪用して侵入したことを確認」したとし、 手口を「SQL インジェクションによるデータベース閲覧・更新」と述べるが、 どの画面・どの機能に起因するかは示されていない</div></li><li><span class=ui>8時30分の不正アクセス開始と12時22分の SQL インジェクション実行の関係</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は2つの時刻を並べて示すが、その間（約4時間）に何が行われたのか、 同一の侵入経路によるものかを説明していない</div></li><li><span class=ui>SQL インジェクションによって「更新」された内容と、その復元</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は「SQL インジェクションによるデータベース閲覧・更新が行われた」と明記するが、 どのテーブル・どのレコードが更新されたのか、改変が復元されたのかは示されていない。 データの完全性に関する言及は公表文に無い</div></li><li><span class=ui>会員パスワードの保存形式（ハッシュ化されていたか・方式）</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は漏えいの可能性がある項目に「会員認証情報（会員ID、パスワード等）」を挙げ、 使い回しの変更を会員に求めているが、保存形式には触れていない。 平文かハッシュ化かによって、会員が急ぐべき度合いは変わる</div></li><li><span class=ui>影響範囲の確定（実際に閲覧・取得されたレコードの範囲と人数）</span><span class="b rsn">調査中</span><div class=sm>出典1 は約40万件を「10月17日時点で Qzoo が保有する全件」として示し、 影響範囲は調査中としている。確定値・人数は公表から約1か月を経ても示されていない</div></li><li><span class=ui>Qzoo の再開の見通しと、再開までに会員が自分のパスワードを変える手段</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は「安全性が確実に確認された段階でサービスを再開する」としつつ時期を示さず、 Qzoo のパスワードは再開時に再設定が必要としている。 停止中に会員が自分のアカウントの認証情報を変える手段は示されていない</div></li><li><span class=ui>検知の端緒（何を見て18時44分に気づいたか）</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は「同日午後6時44分に事象を検知し」と述べるが、 監視の警報か、外部からの指摘か、利用者からの申告かの記載が無い</div></li><li><span class=ui>漏えいした口座情報による不正な出金・振込の有無</span><span class="b rsn">公表されていない</span><div class=sm>出典1 は金融関連情報（口座番号、支店名、口座名義等）が対象に含まれるとしつつ、 不正利用や二次被害の有無には触れていない。金融機関との連携についての記述も無い</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社モニタス</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Qzoo の会員（アンケートモニター）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>外部の専門機関（名称は公表されていない）</span><span class="b role">フォレンジック調査の実施者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>個人情報保護委員会</span><span class="b role">監督官庁</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>漏えいの可能性がある個人情報の件数</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>400,000<span class=fu>件</span></div><div class=fn>**出典1 の表記は「約400,000件」で、
+2026年10月17日時点で Qzoo システムが保有していた個人情報の全件である**（出典1）〈重要〉——
+**「一部」ではなく「全件」が対象として示されている。**
+**単位は「件」であり「名」ではない**（本記録の明示）——
+**同社は人数を公表していない。**
+**同社は影響範囲を調査中としており、
+実際に閲覧・取得された範囲が確定した値ではない**〈未確定5〉——
+**本記録の整理として、これは「到達可能だった範囲」＝
+データベースの保有全件を示す値である。**
+</div></div><div class=fig><div class=fh><span class=fl>不正アクセスの開始から検知まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>614<span class=fu>分</span></div><div class=fn>**2026年10月17日8時30分（出典1）から同日18時44分（出典1）までを
+本記録が算出した——10時間14分である。**
+**本記録の評価——土曜日の朝に始まり、同日の夕方に検知している**〈重要〉——
+**休日に10時間が経過したことは、
+監視が常時のものか営業時間に依存していたかを問う材料になる**（本記録の読み）。
+**検知の端緒は公表されていない**〈未確定7〉。
+</div></div><div class=fig><div class=fh><span class=fl>SQL インジェクションの実行から検知まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>382<span class=fu>分</span></div><div class=fn>**2026年10月17日12時22分（出典1）から同日18時44分（出典1）までを
+本記録が算出した——6時間22分である。**
+**本記録の評価——この6時間22分が、
+約40万件のデータベースに対する閲覧と更新が行われていた時間に相当する**
+（本記録の整理。実際の取得量は公表されていない）〈未確定5〉。
+</div></div><div class=fig><div class=fh><span class=fl>検知からサービスの緊急メンテナンス移行まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>18<span class=fu>分</span></div><div class=fn>**2026年10月17日18時44分の検知・アクセス遮断（出典1）から
+19時02分の緊急メンテナンス移行（出典1）までを本記録が算出した。**
+**本記録の評価——18分は速い**〈重要〉——
+**検知と同時にアクセスを遮断し、18分後にサービス自体を止めている。**
+**土曜日の夜に、サービスを止める判断が18分で下りている**（本記録の読み）——
+**止める権限が現場に下りていたか、手順が用意されていたことを示す。**
+</div></div><div class=fig><div class=fh><span class=fl>検知から個人情報保護委員会への速報まで</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**2026年10月17日18時44分（出典1）から10月20日18時07分（出典1）までを
+本記録が算出した——正確には2日23時間23分である。**
+**本記録の整理——個人情報保護法に基づく速報は
+「事態を知った後、速やかに」（おおむね3〜5日以内と解されている）とされており、
+その範囲に収まっている。**
+**10月17日は土曜日であり、間に休日が挟まっている**（本記録の確認）。
+</div></div><div class=fig><div class=fh><span class=fl>検知から公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>4<span class=fu>日</span></div><div class=fn>**2026年10月17日（出典1）から10月21日の公表（出典1）までを本記録が算出した。**
+**本記録の評価——4日での公表は速い。**
+**内容も、経緯を分単位で示し、対象を「保有全件」と明言している**（出典1）〈重要〉——
+**件数を小さく見せようとしていない。**
+</div></div><div class=fig><div class=fh><span class=fl>公表から本記録の確認までに続報が無い日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>27<span class=fu>日</span></div><div class=fn>**2026年10月21日の公表（出典1）から
+本記録が同社サイトを確認した11月17日（T8）までを本記録が算出した。**
+**この間、本記録の作成者は第2報・調査結果・Qzoo 再開の告知を確認できていない**
+〈齟齬2〉。
+**本記録の評価——第一報の内容は良いが、
+そこで示された「調査結果やサービス再開の見通しは判明次第サイトで順次告知」は
+27日が経過した時点で果たされていない**（本記録の読み）〈重要〉——
+**会員は Qzoo のパスワードを再設定できないまま待っている**（出典1 は
+再設定を再開時に必要としている）。
+</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**手口は公表されている**（本記録の確認）〈重要〉——
+**「SQL インジェクションによるデータベース閲覧・更新」である**（出典1）。
+**原因は「第三者が同社システム内の脆弱性を悪用して侵入した」とされるが、
+脆弱性の箇所は示されていない**〈未確定1〉。
+**以下の各段は、分単位で公表された経緯（出典1）に沿って並べたものである。**
+</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**2026年10月17日（土）8時30分、アンケートサイト「Qzoo」に対する
+第三者からの不正アクセスが開始された**（出典1）。
+**同社は「第三者が同社システム内の脆弱性を悪用して侵入した」ことを
+確認したとしている**（出典1）——
+**脆弱性の箇所・製品・既知か未知かは公表されていない**〈未確定1〉。
+**この時点から SQL インジェクションの実行（12時22分）までの
+約4時間に何が行われたかも示されていない**〈未確定2〉。
+</div><div class=fn>根拠: モニタスの公表（不正アクセスの開始時刻、脆弱性の悪用による侵入という記述）</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**2026年10月17日12時22分、SQL インジェクションによってデータベースの閲覧が行われた**（出典1）。
+**漏えいの可能性があるのは、同日時点で Qzoo システムが保有していた
+約40万件の個人情報の全件で、
+基本情報・会員認証情報・金融関連情報・アンケート回答情報の4区分が対象である**（出典1）。
+**実際に閲覧・取得されたレコードの範囲は調査中であり確定していない**〈未確定5〉。
+**クレジットカード情報とマイナンバーは同社が保有していない**（出典1）。
+</div><div class=fn>根拠: モニタスの公表（SQL インジェクションによるデータベース閲覧、約40万件・保有全件、4区分の対象項目）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**同じ SQL インジェクションによって、データベースの「更新」も行われた**（出典1）〈重要〉——
+**公表の表現は「SQLインジェクションによるデータベース閲覧・更新が行われた」である。**
+**何が更新されたのか、改変が復元されたのかは公表されていない**〈未確定3〉。
+**本記録の整理——更新が成立したことは、
+悪用された経路に書き込み権限が伴っていたことを示す**（本記録の推定）。
+</div><div class=fn>根拠: モニタスの公表（「データベース閲覧・更新が行われた」という記述）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">undisclosed</span><span class=srcs>[1]</span></div><div>**公表は「会員（モニター）の個人情報が漏えいした可能性がある」という表現で、
+外部への持ち出しが確認されたとは述べていない**（出典1）。
+**持ち出しの経路・量・送信先に関する記述は無い**（本記録の確認）。
+**漏えいした情報の不正利用や二次被害についても、
+確認・未確認のいずれの記載も無い**（本記録の確認）〈未確定8〉。
+</div><div class=fn>根拠: モニタスの公表（「漏えいした可能性がある」という表現。持ち出しの確認を示す記述は無い）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml></div><div class=mv></div><div class=fn>**不正アクセスの開始（2026年10月17日8時30分）から検知（同日18時44分）までを 本記録が算出した——10時間14分である**（出典1）。 **土曜日の朝に始まり、同日の夕方に検知している**〈重要〉—— **検知の端緒は公表されていない**〈未確定7〉。</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>**検知・アクセス遮断（18時44分）から緊急メンテナンス移行（19時02分）までを 本記録が算出した**（出典1）。 **本記録の評価——土曜日の夜に18分でサービスを止めている**〈重要〉—— **止める判断と手順が事前に用意されていたことを示す**（本記録の読み）。</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>**検知（10月17日18時44分）から個人情報保護委員会への速報（10月20日18時07分）までを 本記録が算出した——正確には2日23時間23分である**（出典1）。 **間に土日が挟まっている**（本記録の確認）。</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>**検知（10月17日）から公表（10月21日）までを本記録が算出した**（出典1）。 **公表の内容は、経緯を分単位で示し、 対象を保有全件（約40万件）と明言するものである**（出典1）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>検知と同時に第三者からのアクセスを遮断し（2026年10月17日18時44分）、 18分後の19時02分にアンケートサイト「Qzoo」を緊急メンテナンス状態へ移行して サービスを停止した。停止は2026年11月17日時点で継続している</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 停止すればデータベースへの到達経路は閉じるが、 会員はアンケートへの回答も謝礼の確認もできず、 自分のアカウントのパスワードを変えることもできない</div></li><li><div class=ui>漏えいの可能性がある件数を「2026年10月17日時点で Qzoo システムが保有している 約400,000件」＝保有全件として示し、経緯を分単位で公表した。 一方、脆弱性の箇所・更新された内容・パスワードの保存形式は示さなかった</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 保有全件を対象として示せば読者と会員は最悪値を前提に動けるが、 影響範囲が確定した値ではないため過大な不安を生む。 脆弱性の箇所を伏せれば追加攻撃を招かずに済むが、同種サービスは点検先を学べない</div></li><li><div class=ui>対象者へ順次個別に案内するとし、あわせて会員全体へ 「Qzoo や当社を装った不審なメール・SMS への注意」と 「同じメールアドレスとパスワードを使う他サービスのパスワード変更」を求めた。 Qzoo 自身のパスワードは再開時に再設定が必要としている</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 使い回しの変更を先に求めれば二次被害は抑えられるが、 自社のパスワード再設定を再開時まで延ばすと、 会員は自分のアカウントの危険を自分で下げられない期間が続く</div></li><li><div class=ui>検知（10月17日）から4日後の10月21日に第一報を公表し、 「調査結果やサービス再開の見通しは判明次第サイトで順次告知する」とした</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 第一報を速く出せば会員は早く対処できるが、 その後の更新が止まると「順次告知」の約束が守られない状態が続く</div></li></ul></div>
+<section id="s6"><h2>公表は分単位だった——8時30分に始まり、18時44分に気づいた<span class="b slot">概観</span><span class=srcs>出典 [1]</span></h2><p>モニタスが2026年10月21日に出した公表は、経緯を分単位で並べている（出典1）。</p>
+<ul>
+<li><strong>10月17日（土）8時30分</strong> — 第三者による不正アクセスが開始</li>
+<li><strong>10月17日（土）12時22分</strong> — SQL インジェクションによるデータベースの閲覧・更新</li>
+<li><strong>10月17日（土）18時44分</strong> — 事象を検知し、第三者からのアクセスを遮断</li>
+<li><strong>10月17日（土）19時02分</strong> — Qzoo を緊急メンテナンス状態へ移行</li>
+<li><strong>10月20日（火）18時07分</strong> — 個人情報保護委員会へ速報</li>
+</ul>
+<p>ここから読者が測れる数字は多い（本記録の整理）。<strong>侵入から検知まで10時間14分、SQL インジェクションの実行から検知まで6時間22分、検知からサービス停止まで18分、検知から当局速報まで約3日、検知から公表まで4日。</strong></p>
+<p>漏えいの可能性があるのは、<strong>2026年10月17日時点で Qzoo システムが保有していた約40万件の個人情報</strong>である。注目すべきは「一部」ではなく <strong>全件</strong> と書かれていることである（出典1）。影響範囲は調査中とされている。</p>
+<p>対象項目は4区分で示されている。</p>
+<ul>
+<li><strong>基本情報</strong>（氏名、生年月日、住所、電話番号、メールアドレス等）</li>
+<li><strong>会員認証情報</strong>（会員ID、パスワード等）</li>
+<li><strong>金融関連情報</strong>（口座番号、支店名、口座名義等）</li>
+<li><strong>アンケート回答情報</strong>（年収、職業、その他モニタスが取得した属性データ等）</li>
+</ul>
+<p>クレジットカード情報とマイナンバーは保有していないとされている。</p></section>
+<section id="s7"><h2>「閲覧」ではなく「閲覧・更新」と書かれている<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p>公表文の手口の記述は、短いが重い（本記録の評価）〈重要〉。</p>
+<blockquote>
+<p>同日午前12時22分にはSQLインジェクションによるデータベース閲覧・更新が行われた</p>
+</blockquote>
+<p><strong>「更新」が入っている。</strong> 読み出しだけでなく書き込みが行われたという記述である。SQL インジェクションで更新が通るなら、使われた権限は参照専用ではなかったことになる（本記録の推定）。</p>
+<p>ここから2つの論点が出る（本記録の整理）。</p>
+<p>ひとつは <strong>データの完全性</strong> である。漏えい事案は通常、秘密性の喪失として扱われる。だが更新が行われたのであれば、<strong>データが正しいかどうかも疑わしくなる。</strong>何が更新されたのか、復元したのかは公表されていない（〈未確定3〉）。アンケートモニターのサイトであれば、謝礼の振込先口座、ポイント残高、回答内容のいずれも書き換えの対象になり得る—— <strong>ただしこれは本記録の想定であり、公表はどのデータが更新されたかを述べていない。</strong></p>
+<p>もうひとつは <strong>権限の設計</strong> である。Web アプリケーションがデータベースへ接続するアカウントに更新権限が付いていれば、読み出しの穴がそのまま書き込みの穴になる。参照のみの機能に参照専用のアカウントを割り当てる設計であれば、同じ SQL インジェクションでも「閲覧」で止まった可能性がある（本記録の読み）。</p>
+<p>なお原因について、公表は<strong>「第三者が同社システム内の脆弱性を悪用して侵入したことを確認」</strong>した、としている。どの箇所の脆弱性か、8時30分の侵入開始と12時22分の SQL インジェクションが同一の経路によるものかは示されていない（〈未確定1〉〈未確定2〉）。</p></section>
+<section id="s8"><h2>カードを持っていなくても、口座と年収は持っていた<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p>公表は「クレジットカード情報及びマイナンバーは保有しておりません」と述べている（出典1）。これは本当に効く説明である（本記録の評価）——持っていない情報は漏れない。</p>
+<p>だが、残っていた組み合わせを見ておく必要がある（本記録の読み）〈重要〉。</p>
+<p><strong>金融関連情報</strong>として挙げられているのは、<strong>口座番号、支店名、口座名義等</strong>である。アンケートモニターの謝礼を振り込むために預かっていたものと考えられる（本記録の推定。公表は保持の目的を述べていない）。口座情報は、カード番号と違って<strong>本人が自由に差し替えられない。</strong>カードは再発行できるが、口座の番号を変えるのは容易ではない。</p>
+<p><strong>アンケート回答情報</strong>には、<strong>年収、職業、その他モニタスが取得した属性データ等</strong>が含まれる。これは市場調査のために集められた情報であり、<strong>その人の経済状況と働き方を示す。</strong>氏名・住所・電話番号と結びついた状態で出ていれば、<strong>誰を狙えば効率がよいかを選別する材料になる</strong>（本記録の評価）——投資詐欺・副業勧誘・還付金詐欺の名簿として、属性は価値を持つ。</p>
+<p>そして <strong>会員認証情報（会員ID、パスワード等）</strong>。同社は会員に対し、Qzoo や同社を装った不審なメール・SMS への注意と、<strong>同じメールアドレスとパスワードを使う他サービスのパスワード変更</strong>を求めている（出典1）。パスワードの保存形式は公表されていない（〈未確定4〉）。</p>
+<p>つまり、カードとマイナンバーが無かったことで避けられたのは「即時の金銭被害と行政手続の悪用」であって、<strong>本人を特定して狙うための材料は揃っていた</strong>（本記録の整理）。</p></section>
+<section id="s9"><h2>18分で止めた——そして1か月、まだ戻っていない<span class="b slot">組織の対応</span><span class=srcs>出典 [1]</span></h2><p>対応の速さは明確である（本記録の整理）。<strong>18時44分に検知してアクセスを遮断し、19時02分に Qzoo を緊急メンテナンス状態へ移行した。18分である。</strong> 土曜日の夜に、サービスを止める判断が18分で下りている。手順が用意され、止める権限が現場に下りていたことを示す（本記録の読み）。</p>
+<p>当局への速報は10月20日18時07分（出典1）。検知から2日23時間23分であり、個人情報保護法に基づく速報の範囲に収まっている。<strong>報告の日時を分単位で公表する例は少ない</strong>（本記録の確認）——読者が自分で経過を測れる形になっている。</p>
+<p>公表は10月21日で、検知から4日である。内容も、<strong>対象を「保有全件」と明言し、件数を小さく見せていない</strong>（出典1）。</p>
+<p>問題はそのあとである（本記録の評価）〈重要〉。公表文はこう書いている。</p>
+<blockquote>
+<p>調査結果やサービス再開の見通しは、判明次第サイトで順次告知対象となる方へは個別に案内再発防止策を講じ、安全性が確実に確認された段階でサービスを再開</p>
+</blockquote>
+<p><strong>2026年11月17日時点で、本記録の作成者は第2報を確認できていない</strong>（〈齟齬2〉）。公表から <strong>27日</strong> が経っている。影響範囲は確定しておらず（〈未確定5〉）、再開の見通しも示されていない（〈未確定6〉）。</p>
+<p>ここで会員の立場を考えておく（本記録の読み）。公表は「Qzoo のパスワードは再開時に再設定が必要」としている。つまり<strong>停止中、会員は自分のアカウントのパスワードを変えられない。</strong>できるのは、他のサービスで同じパスワードを使っているものを変えることだけである。<strong>侵害された側のアカウントは、事業者がサービスを再開するまで手がつけられない状態で置かれている。</strong></p></section>
+<section id="s10"><h2>公表されていないことが、読者と会員の判断を止めている箇所<span class="b slot">未確定事項</span><span class=srcs>出典 [1]</span></h2><p>第一報の質は高い（本記録の評価）。それでも、残っている空欄は小さくない。</p>
+<p><strong>脆弱性の箇所</strong>（〈未確定1〉）。SQL インジェクションという手口は示されたが、どの機能・どの画面かは分からない。同種のサービスを運営する事業者は、自社の優先点検先を本件から特定できない。</p>
+<p><strong>更新された内容</strong>（〈未確定3〉）。公表は「閲覧・更新」と書いたが、何が書き換えられたかに触れていない。会員は自分の登録情報（振込先口座など）が変えられていないかを確かめたいが、サービスは停止している。</p>
+<p><strong>パスワードの保存形式</strong>（〈未確定4〉）。ハッシュ化されていたのか、方式は何かが示されていない。会員が他サービスのパスワードをどれだけ急いで変えるべきかは、ここで決まる。</p>
+<p><strong>影響範囲の確定</strong>（〈未確定5〉）。約40万件は保有全件であり、実際に取得された範囲ではない。確定値は1か月を経ても示されていない。</p>
+<p><strong>口座情報の悪用の有無</strong>（〈未確定8〉）。金融関連情報が対象に入っているのに、不正な出金・振込の確認状況や金融機関との連携についての記述が無い。</p>
+<p><strong>検知の端緒</strong>（〈未確定7〉）。土曜日の10時間14分という時間が、常時監視のうえでの遅れなのか、休日体制の帰結なのかが分からない。</p></section>
+<section id="s11"><h2>評価——時刻を出した公表は良い。足りないのは、その後の更新である<span class="b slot">評価・解釈</span><span class=srcs>出典 [1]</span></h2><p>本記録の評価として、本事案から読める点を3つ書く。</p>
+<p><strong>ひとつ。時刻を分単位で出す公表は、それ自体が価値を持つ。</strong>モニタスの第一報は、侵入開始・SQL インジェクション実行・検知・遮断・停止・当局速報の6つの時点を分単位で示した（出典1）。これにより読者は、侵入から検知までの10時間14分、検知から停止までの18分という<strong>自組織と比べられる数字</strong>を得られる。「調査中」を理由に時刻を出さない公表と比べたときの差は大きい。本DB の読者にとって、<strong>本件は対応時間の基準として使える事例である。</strong></p>
+<p><strong>ふたつ。「カード情報は持っていない」は、安全の説明としては半分である。</strong> Qzoo が持っていたのは、本人を特定できる基本情報、認証情報、<strong>振込先の口座情報</strong>、そして<strong>年収と職業という属性</strong>である（出典1）。カードは再発行できるが口座番号は変えにくく、属性データは狙う相手を選ぶための材料になる（本記録の読み）。謝礼・報酬・キャッシュバックを扱うサービスは、カード非保持を達成していても<strong>金融情報を抱えている</strong>。</p>
+<p><strong>みっつ。更新（書き込み）が行われた事案は、秘密性だけの問題ではない。</strong>公表は「データベース閲覧・更新」と書いた（出典1）。SQL インジェクションで更新が通るなら、アプリケーションがデータベースへ接続する権限に更新が含まれていたことになる（本記録の推定）。<strong>参照しかしない機能に参照専用の権限を割り当てる設計は、SQL インジェクションそのものを防ぐ対策ではないが、成立したときの被害を変える。</strong></p>
+<p>最後に、第一報の良さと続報の不在は切り分けて評価する（本記録の読み）〈重要〉。<strong>速く、正確に、保有全件を認めて出した第一報は模範的である。</strong>だが<strong>「判明次第、順次告知」と書いたまま27日が経過している。</strong>会員はパスワードを再設定できず、影響範囲も分からない。公表の作法は、第一報の質だけでなく<strong>その後の更新の間隔</strong>で決まる。</p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたサービス</th><td>株式会社モニタスが運営するアンケートサイト「Qzoo」（アンケートモニター向けの会員サイト。 2026年10月17日19時02分から緊急メンテナンス状態で停止中）</td></tr><tr><th>直接原因</th><td>第三者がシステム内の脆弱性を悪用して侵入し、SQL インジェクションによって データベースの閲覧および更新を行った（脆弱性の箇所・SQL インジェクションの発生箇所は非公表）</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>基本情報（氏名、生年月日、住所、電話番号、メールアドレス等）</li><li>会員認証情報（会員ID、パスワード等。保存形式は非公表）</li><li>金融関連情報（口座番号、支店名、口座名義等）</li><li>アンケート回答情報（年収、職業、その他モニタスが取得した属性データ等）</li></ul><span class="b rsn">stated</span></td></tr><tr><th>not_leaked_data_items</th><td><ul class=cl><li>クレジットカード情報（同社は保有していない）</li><li>マイナンバー（同社は保有していない）</li></ul></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 公表されていない　<b>時点:</b> 2026年11月17日　<b>補足:</b> **出典1 に、漏えいの可能性がある情報の不正利用や二次被害に関する記述は無い** （本記録の確認）〈重要〉—— **「確認されていない」という明示の記載すら無く、論点そのものに触れていない。** **金融関連情報（口座番号・支店名・口座名義等）が対象に含まれるにもかかわらず、 不正な出金・振込の確認状況、金融機関との連携についての記述も無い**〈未確定8〉。 **同社が会員に求めているのは、不審なメール・SMS への注意と、 同じメールアドレスとパスワードを使う他サービスのパスワード変更である**（出典1）。</td></tr><tr><th>ログの有無</th><td>不正アクセスの開始（8時30分）、SQL インジェクションの実行（12時22分）、 検知（18時44分）が分単位で特定されていることから、 アクセスの時刻とクエリの実行を事後に追える記録は存在したと読める（本記録の推定）。 一方、漏えいの可能性がある件数が「保有全件（約40万件）」として示され、 影響範囲が調査中であることは、 どのレコードが実際に閲覧・取得されたかをレコード単位で確定できていないことを示す〈未確定5〉。 更新された内容も公表されていない〈未確定3〉。</td></tr><tr><th>organizational_response</th><td><ul class=cl><li>第三者からのアクセスの遮断（2026年10月17日18時44分）</li><li>アンケートサイト「Qzoo」の緊急メンテナンス状態への移行・サービス停止（同日19時02分）</li><li>個人情報保護委員会への速報（2026年10月20日18時07分）</li><li>外部の専門機関の協力を含む原因・影響範囲の究明</li><li>他の自社システムへの不正アクセスの有無の確認（確認されていないと公表）</li><li>対象者への順次個別案内</li><li>会員への注意喚起（不審なメール・SMS への注意、使い回しパスワードの変更）</li><li>再発防止策を講じ、安全性が確実に確認された段階でのサービス再開（Qzoo のパスワードは再開時に再設定が必要）</li><li>専用の問い合わせ窓口（メール）の設置</li></ul><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月17日（土）8時30分</td><td class=nowrap><span class="b kind">発生</span></td><td>アンケートサイト「Qzoo」に対する第三者からの不正アクセスが開始された （侵入の経路・悪用された脆弱性の箇所は公表されていない）</td></tr><tr><td class="sm nowrap tw">2026年10月17日（土）12時22分</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>SQL インジェクションによるデータベースの閲覧および更新が行われた （更新された内容は公表されていない）</td></tr><tr><td class="sm nowrap tw">2026年10月17日（土）18時44分</td><td class=nowrap><span class="b kind">検知</span></td><td>モニタスが事象を検知し、第三者からのアクセスを遮断した（検知の端緒は公表されていない）</td></tr><tr><td class="sm nowrap tw">2026年10月17日（土）19時02分</td><td class=nowrap><span class="b kind">サービス停止</span></td><td>アンケートサイト「Qzoo」を緊急メンテナンス状態へ移行し、サービスを停止した</td></tr><tr><td class="sm nowrap tw">2026年10月20日（火）18時07分</td><td class=nowrap><span class="b kind">当局・上位機関への報告（組織 → 当局の向き）</span></td><td>モニタスが個人情報保護委員会へ速報を行った</td></tr><tr><td class="sm nowrap tw">2026年10月21日</td><td class=nowrap><span class="b kind">公表</span></td><td>モニタスが「当社が運営するアンケートサイト『Qzoo』への不正アクセスによる 個人情報漏えいの可能性に関するお詫びとお知らせ」を公表した。 経緯を分単位で示し、約40万件（10月17日時点の保有全件）が漏えいの可能性があるとして 4区分の対象項目、カード情報とマイナンバーを保有していないこと、 外部専門機関を含む調査の継続、会員への注意喚起（使い回しパスワードの変更）を示した</td></tr><tr><td class="sm nowrap tw">2026年11月17日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>ScanNetSecurity が本件を報じた（本記録の起点となった記事。公表から約1か月後の掲載）</td></tr><tr><td class="sm nowrap tw">2026年11月17日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者がモニタスの公式サイトを確認し、本件の公表が2026年10月21日の1件のみであること、 第2報・調査結果・Qzoo 再開の告知を確認できないことを確認した</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><div class=sm>出典1 は「SQLインジェクションによるデータベース閲覧・更新が行われた」と明記しながら、 どのテーブル・どのレコードが更新されたのか、改変が復元されたのかを述べていない。 データの完全性に関する言及そのものが公表文に無い。 本記録は attack.chain の impact 段と unknowns に明示した</div></li><li><span class="b dk">裏取りできていない</span><div class=sm>出典1 は「調査結果やサービス再開の見通しは、判明次第サイトで順次告知」するとしている。 本記録の作成者は2026年11月17日に同社公式サイトのお知らせ一覧を確認し、 本件の告知が2026年10月21日の1件のみであることを確認した。 「続報が出ていない」ではなく「本記録が確認できていない」として記録する。 公表から27日が経過している</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>出典1 は漏えいの可能性がある対象を「『Qzoo』システムで保有している約400,000件の個人情報」と 記しており、単位は「件」である。会員の人数は公表されていない。 同一人物が複数の登録を持つ場合、人数は件数より少なくなる。 本記録は figures で単位「件」を明示した</div></li><li><span class="b dk">本記録による推定</span><div class=sm>出典1 は漏えいの可能性がある項目として金融関連情報（口座番号・支店名・口座名義等）を 挙げるが、その保持の目的を述べていない。 本記録は本文（scope 節）と lessons で、アンケートモニターの謝礼支払いのためと 読んでいるが、これは本記録の推定である</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>土曜日の朝に始まり夕方に止まるまで——SQL インジェクションが保有全件に到達した経路</div><div class=svgwrap><svg viewBox="0 0 1202 362" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,181.0 C193.0,181.0 193.0,136.0 220,136.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,136.0 C295.0,136.0 295.0,232.0 220,232.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,136.0 C397.0,136.0 397.0,181.0 424,181.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,181.0 C601.0,181.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,181.0 C601.0,181.0 601.0,149.0 628,149.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,181.0 C601.0,181.0 601.0,232.0 628,232.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C397.0,60.0 397.0,181.0 16,181.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,85.0 C601.0,85.0 601.0,232.0 220,232.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,85.0 C499.0,85.0 499.0,181.0 16,181.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,271.0 C907.0,271.0 907.0,175.0 832,175.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,271.0 C1009.0,271.0 1009.0,181.0 1036,181.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,232.0 C703.0,232.0 703.0,181.0 1036,181.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="144.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">第三者（攻撃者。帰属は未</text><text x="91.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表）</text><text x="91.0" y="193.0" text-anchor="middle" fill="#f48fb1" font-size="10">不正アクセス開始 10/</text><text x="91.0" y="205.0" text-anchor="middle" fill="#f48fb1" font-size="10">17 8:30</text><rect x="220" y="92.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="114.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">システム内の脆弱性（箇所</text><text x="295.0" y="128.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は未公表）／SQL イン</text><text x="295.0" y="142.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジェクション</text><text x="295.0" y="155.0" text-anchor="middle" fill="#f48fb1" font-size="10">SQLi 実行 10/1</text><text x="295.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">7 12:22</text><rect x="220" y="194.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アンケートサイト「Qzo</text><text x="295.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">o」（10/17 19:</text><text x="295.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">02 から停止中）</text><text x="295.0" y="257.0" text-anchor="middle" fill="#64b5f6" font-size="10">再開の見通しは未公表</text><rect x="424" y="143.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="165.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Qzoo のデータベース</text><text x="499.0" y="179.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（閲覧および更新が行われ</text><text x="499.0" y="193.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">た）</text><text x="499.0" y="206.0" text-anchor="middle" fill="#64b5f6" font-size="10">更新された内容は未公表</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">基本情報・会員認証情報（</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">氏名／生年月日／住所／電</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">話／メール／会員ID／…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">パスワードの保存形式は未</text><text x="703.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">公表</text><rect x="628" y="118.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">金融関連情報（口座番号・</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">支店名・口座名義等）</text><text x="703.0" y="167.0" text-anchor="middle" fill="#ffcc80" font-size="10">本人が差し替えにくい情報</text><rect x="628" y="194.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="216.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アンケート回答情報（年収</text><text x="703.0" y="230.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・職業・その他の属性デー</text><text x="703.0" y="244.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タ）</text><text x="703.0" y="257.0" text-anchor="middle" fill="#ffcc80" font-size="10">標的の選別に使える</text><rect x="628" y="284.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="306.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クレジットカード情報・マ</text><text x="703.0" y="320.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イナンバー（保有せず）</text><text x="703.0" y="333.0" text-anchor="middle" fill="#ffcc80" font-size="10">流出の対象外</text><rect x="832" y="47.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="69.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アクセス遮断（10/17</text><text x="907.0" y="83.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> 18:44）／緊急メン</text><text x="907.0" y="97.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">テナンス移行（10/1…</text><text x="907.0" y="110.0" text-anchor="middle" fill="#f48fb1" font-size="10">検知から18分で停止</text><rect x="832" y="137.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="907.0" y="159.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報保護委員会（10</text><text x="907.0" y="173.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">/20 18:07 速報</text><text x="907.0" y="187.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="907.0" y="200.0" text-anchor="middle" fill="#b0bec5" font-size="10">確報の時期は未公表</text><rect x="832" y="227.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表（10/21・経緯を</text><text x="907.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">分単位で開示／約40万件</text><text x="907.0" y="277.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は保有全件）</text><text x="907.0" y="290.0" text-anchor="middle" fill="#f48fb1" font-size="10">11/17 時点で第2報</text><text x="907.0" y="302.0" text-anchor="middle" fill="#f48fb1" font-size="10">を確認できず</text><rect x="1036" y="144.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1111.0" y="166.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Qzoo の会員（約40</text><text x="1111.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">万件の対象）</text><text x="1111.0" y="193.0" text-anchor="middle" fill="#8892b0" font-size="10">停止中はパスワードを変え</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#8892b0" font-size="10">られない</text></svg></div><div class=fn>2026年10月17日（土）8時30分、第三者がアンケートサイト「Qzoo」（layer 1）への 不正アクセスを開始した。株式会社モニタスは、第三者がシステム内の脆弱性（layer 1）を 悪用して侵入したことを確認したとしているが、脆弱性の箇所は公表されていない。 同日12時22分、SQL インジェクションによってデータベース（layer 2）の閲覧および更新が行われた。 データベースには、2026年10月17日時点で約40万件の個人情報が保持されており（layer 3）、 基本情報（氏名・生年月日・住所・電話番号・メールアドレス等）、 会員認証情報（会員ID・パスワード等）、 金融関連情報（口座番号・支店名・口座名義等）、 アンケート回答情報（年収・職業等の属性データ）の4区分が漏えいの可能性の対象とされた。 クレジットカード情報とマイナンバーは保有していない。 モニタスは同日18時44分に事象を検知して第三者からのアクセスを遮断し、 19時02分に Qzoo を緊急メンテナンス状態へ移行した（layer 4）。 10月20日18時07分に個人情報保護委員会へ速報し、10月21日に公表した（layer 4）。 会員へは、不審なメール・SMS への注意と、同じメールアドレスとパスワードを使う 他サービスのパスワード変更を求めている（layer 5）—— Qzoo 自身のパスワードはサービス再開時に再設定が必要とされており、 停止中は会員が自分で変えることができない。 更新された内容、影響範囲の確定、再開の見通しは公表されていない。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**8時30分の開始から18時44分の検知まで10時間14分が経過している**
+（出典1。本記録の算出）〈重要〉——
+**土曜日である。**
+**検知の端緒は公表されていない**〈未確定7〉——
+**常時監視のうえでの遅れか、休日体制の帰結かは判断できない**（本記録の確認）。
+**本記録の評価——攻撃の開始時刻が特定できている以上、
+記録は残っていた。問われるのは、それが休日の日中に見られていたかである。**
+</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>公開 Web アプリケーションに WAF を置き、SQL インジェクションの試行を検知・遮断して警報を当番へ届ける</div><div class=ctl><span class="b eff">検知できた</span>休日・夜間も含めた常時の警報受領体制（当番とエスカレーション先）を定め、受領までの目標時間を決める</div><div class=ctl><span class="b eff">侵入を防げた</span>公開面の資産とその脆弱性診断の実施状況を一覧で持ち、診断の未実施・古い診断結果を期限付きで解消する</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**閲覧から検知までは6時間22分である**（出典1。本記録の算出）。
+**本記録の評価——この段で効くのは、
+データベースへの異常なクエリと大量の結果返却を見る監視である**（本記録の読み）——
+**1つのアプリケーションアカウントが短時間に全件に近い行を返したことは、
+データベース側の統計や監査ログに現れる性質の事象である。**
+**影響範囲が確定していないことは、
+どの行が読まれたかを追える記録が十分でなかった可能性を示す**〈未確定5〉。
+</div></td><td><div class=ctl><span class="b eff">検知できた</span>データベースの監査ログを有効にし、想定外のクエリ形・大量行の返却・テーブル全件走査を警報対象にする</div><div class=ctl><span class="b eff">影響を限定できた</span>アプリケーションのデータベース接続を機能別のアカウントに分け、参照専用の機能には参照専用の権限のみを与える</div><div class=ctl><span class="b eff">影響を限定できた</span>口座情報などの機微な列を暗号化・トークン化し、アプリケーションから平文で一括取得できない構成にする</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**更新の検知について公表に記述は無い**（本記録の確認）。
+**本記録の評価——更新は、閲覧よりも検知しやすい事象である**（本記録の読み）——
+**データの変更は差分として残り、
+更新件数・更新時刻・更新した接続元を監査ログから追える。**
+**それでも気づくまでに6時間22分かかっていることは、
+データベースの監査が警報として機能していなかった可能性を示す**（本記録の推定）。
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>参照しかしない機能のデータベース権限から UPDATE・INSERT・DELETE を外し、更新は専用の経路に限定する</div><div class=ctl><span class="b eff">検知できた</span>機微なテーブル（口座情報・認証情報・ポイント残高）の更新を監査ログで常時記録し、業務時間外・大量更新を即時警報する</div><div class=ctl><span class="b eff">復旧を早められた</span>日次のバックアップに加えて、変更前後の値を追えるログ（トランザクションログの保全）を確保し、改変の特定と復元を可能にする</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">公表されていない</span><div class=sm>**外向きの通信の監視について公表に記述は無い**（本記録の確認）。
+**本記録の評価——SQL インジェクションでは、
+応答そのものにデータが載るため、
+出口の監視で「持ち出し」として切り出すのは難しい**（本記録の整理）——
+**検知線は前段（クエリと返却行数）に置くほかない。**
+</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>漏えい時に本人が自力で認証情報を変えられる経路（サービス停止中でもパスワード再設定を受け付ける仕組み）を用意する</div><div class=ctl><span class="b eff">影響を限定できた</span>口座情報が対象になり得る事案では、金融機関との連携と不正出金の監視依頼を手順に入れておく</div><div class=ctl><span class="b eff">影響を限定できた</span>対象者への通知を自社ドメインから出し、通知の真正性を確かめる方法を公式サイトに併記して便乗詐欺と区別させる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>検知と同時に第三者からのアクセスを遮断し（2026年10月17日18時44分）、 18分後の19時02分にアンケートサイト「Qzoo」を緊急メンテナンス状態へ移行して サービスを停止した。停止は2026年11月17日時点で継続している</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価——初動として妥当であり、速い**（本記録の読み）〈重要〉。 **SQL インジェクションの箇所が特定できていない段階で サービスを動かし続けることは、同じ経路からの再取得を許す**（本記録の整理）—— **18分で止めた判断は、原因が分からない時点での選択として正しい。** **留保——停止が長期化したときの会員への影響が設計されていない** （本記録の評価）—— **Qzoo のパスワードは「再開時に再設定が必要」とされているため、 会員は停止中に自分の認証情報を変えられない**（出典1）。</td></tr><tr><td>漏えいの可能性がある件数を「2026年10月17日時点で Qzoo システムが保有している 約400,000件」＝保有全件として示し、経緯を分単位で公表した。 一方、脆弱性の箇所・更新された内容・パスワードの保存形式は示さなかった</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価——件数の示し方は誠実である**（本記録の読み）〈重要〉—— **「一部」と書かずに保有全件を対象として示し、 影響範囲は調査中と明記している**（出典1）。 **さらに経緯を分単位で公表したことは、 読者が対応時間を自組織と比べられる形になっている**（本記録の評価）—— **本DB の読者にとって、本件は数少ない「時間の基準」になる事例である。** **留保——SQL インジェクションという手口を公表した一方で その発生箇所を示さないのは妥当な範囲だが、 更新された内容を示さないことは会員の実害の確認を妨げる**〈未確定3〉。</td></tr><tr><td>対象者へ順次個別に案内するとし、あわせて会員全体へ 「Qzoo や当社を装った不審なメール・SMS への注意」と 「同じメールアドレスとパスワードを使う他サービスのパスワード変更」を求めた。 Qzoo 自身のパスワードは再開時に再設定が必要としている</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価——使い回しの変更を求める判断は正しい**（本記録の読み）—— **認証情報が対象に含まれる事案では、被害は他サービスへ伝播する。** **留保——Qzoo のパスワードを再設定できるのは再開時であり、 停止期間が1か月に及んでいる現状では、 会員は自分のアカウントについて何もできない**（出典1。本記録の確認）〈重要〉。 **パスワードの保存形式が公表されていないため、 会員は「どれだけ急ぐべきか」も判断できない**〈未確定4〉。</td></tr><tr><td>検知（10月17日）から4日後の10月21日に第一報を公表し、 「調査結果やサービス再開の見通しは判明次第サイトで順次告知する」とした</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価——第一報は速く、質も高い**（本記録の読み）。 **問題はその後である**〈重要〉—— **本記録の作成者は2026年11月17日に同社サイトを確認し、 本件の公表が10月21日の1件のみであることを確認した**（本記録の確認）〈齟齬2〉—— **公表から27日が経過している。** **影響範囲の確定もサービス再開の見通しも示されておらず、 「判明次第、順次告知」という記述は現時点で果たされていない。** **公表の作法は第一報の質だけでは決まらない**（本記録の評価）—— **続報の間隔（たとえば「2週間ごとに現状を出す」という約束）を 第一報の時点で示しておくことが、沈黙を避ける唯一の方法である。**</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>謝礼・報酬・キャッシュバックを扱うなら、カード非保持でも金融情報を抱えている</div><div class=lw>Qzoo が保有していたのは、氏名・住所・電話番号に加えて、 謝礼の振込先である口座番号・支店名・口座名義、そして年収・職業などの属性データである。 クレジットカード情報とマイナンバーは保有していなかったが、 口座番号は本人が自由に差し替えられず、属性データは狙う相手を選ぶ材料になる</div><div class=la><b>取るべき行動</b> 自社が保有する「金銭の受け渡しに関わる情報」を棚卸しし、 カード情報以外（口座情報・送金先・ポイント残高）も同じ重要度で管理対象に入れる。 振込口座は暗号化・トークン化して平文で一括取得できない構成にし、 保持の必要性（都度入力に変えられないか）を事業部門と見直す</div></li><li><div class=lp>「閲覧」と「更新」を区別して報告させる——更新はデータの完全性の問題である</div><div class=lw>本件の公表は「SQL インジェクションによるデータベース閲覧・更新が行われた」と述べている。 更新が行われたのであれば、失われたのは秘密性だけでなくデータの正しさでもある。 何が更新されたかは公表されておらず、会員は自分の登録情報の改変を確認できない</div><div class=la><b>取るべき行動</b> インシデント報告の様式に「読み出し／書き込み／削除」の区分を設け、 書き込みが確認された場合は、影響テーブル・件数・復元の有無を必ず記載させる。 あわせて変更前の値を追える記録（トランザクションログの保全）の有無を平時に確認する</div></li><li><div class=lp>止めた期間に会員ができることを設計しておく</div><div class=lw>モニタスは検知から18分でサービスを停止した。判断は正しい。 だが Qzoo のパスワードは「再開時に再設定が必要」とされており、 停止が1か月に及んでいる現在、会員は自分のアカウントの認証情報を変えられない。 会員ができるのは他サービスのパスワード変更だけである</div><div class=la><b>取るべき行動</b> サービス停止時でも「パスワード再設定」「退会」「登録情報の確認」を受け付ける 最小限の経路（静的ページからの申請・本人確認付きの窓口）を用意する。 停止の設計に「利用者が自分の危険を下げる手段」を1つ必ず残す</div></li><li><div class=lp>第一報で「順次告知」と書くなら、次の報告の期限も書く</div><div class=lw>公表文は「調査結果やサービス再開の見通しは判明次第サイトで順次告知」としたが、 27日が経過した時点で第2報は確認できていない。 影響範囲も再開時期も示されないまま沈黙が続くと、 第一報の誠実さがそのまま失われる</div><div class=la><b>取るべき行動</b> 公表の雛形に「次回報告の予定時期」の欄を設ける（例：2週間以内に進捗を掲載）。 進捗が無い場合でも「現時点で新たな判明事項は無い」と出す運用にし、 更新の間隔を社内の手順として固定する</div></li><li><div class=lp>時刻を分単位で公表できる体制は、それ自体が対外的な強みになる</div><div class=lw>モニタスの公表は、侵入開始・SQL インジェクション実行・検知・遮断・停止・当局速報の 6時点を分単位で示した。これにより、初動の速さ（検知から停止まで18分）が 読者にも当局にも検証可能な形で伝わっている</div><div class=la><b>取るべき行動</b> インシデント対応の記録様式に、各行動の実施時刻（分単位）と実施者を必ず残す欄を設ける。 訓練のたびに時刻記録の精度を点検し、公表文の雛形に時系列の表を標準で含める</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>SQL インジェクションは2026年でもまだ起きている——公開面の入力を全部数える</div><div class=lw>本件の手口は SQL インジェクションであり、同社は「システム内の脆弱性を悪用して侵入した」 ことを確認している。古典的な脆弱性であっても、 対象の画面が1つ残っていれば保有全件に到達される</div><div class=la><b>取るべき行動</b> 公開しているアプリケーションの入力点（フォーム・URL パラメータ・API・ 管理画面・古い検索機能）を一覧にし、プレースホルダ（パラメータ化クエリ）の 使用状況を機械的に検査する。文字列連結でクエリを組む箇所を検出する静的解析を CI に入れる</div></li><li><div class=lp>アプリケーションのデータベース権限から、不要な更新権限を外す</div><div class=lw>本件では閲覧に加えて更新が行われた。SQL インジェクションで更新が通るのは、 悪用された経路の接続権限に書き込みが含まれていたからである（本記録の推定）。 権限を分けていれば、同じ脆弱性でも被害は閲覧で止まり得た</div><div class=la><b>取るべき行動</b> データベース接続を機能別のアカウントに分け、参照しかしない機能には SELECT のみを許可する。更新が必要な処理は専用アカウント・専用経路に限定し、 権限の棚卸しを四半期ごとに行う</div></li><li><div class=lp>データベースの監査ログを「警報」として使う——全件走査と大量更新を見る</div><div class=lw>本件では、閲覧・更新から検知までに6時間22分かかっている。 1つのアプリケーションアカウントが短時間に全件に近い行を返したこと、 機微なテーブルが更新されたことは、監査ログに現れる性質の事象である</div><div class=la><b>取るべき行動</b> データベースの監査ログを有効にし、①条件なしの全件走査、 ②単位時間あたりの返却行数の急増、③機微なテーブルへの更新を 警報条件として実装する。警報は休日・夜間も人が受け取る経路に流す</div></li><li><div class=lp>休日の日中に警報を受け取る人がいるかを確かめる</div><div class=lw>攻撃は土曜日の8時30分に始まり、検知は同日18時44分だった。10時間14分である。 記録は残っていた（開始時刻が特定できている）。 問われるのは、その記録が休日に見られていたかである</div><div class=la><b>取るべき行動</b> 警報の受領体制を「平日日中／夜間／休日」の3区分で書き出し、 各区分の受領者と応答目標時間を決める。 四半期ごとに休日の時間帯にテスト警報を流し、受領までの実測値を記録する</div></li><li><div class=lp>「どの行が読まれたか」を追える記録が無いと、公表は保有全件になる</div><div class=lw>本件の公表件数は「10月17日時点で保有する全件」＝約40万件であり、 影響範囲は調査中とされている。1か月を経ても確定値は示されていない。 レコード単位で追える記録が無ければ、通知の対象は最大値で切るしかない</div><div class=la><b>取るべき行動</b> 個人情報を扱うテーブルへのアクセスについて、 クエリと返却行数を含む記録を90日以上保全する。 年1回、「仮に今日侵害が判明したら、どの範囲を何日分特定できるか」を机上で確認する</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 謝礼・報酬・キャッシュバック・返金のために利用者の銀行口座情報を預かり、 それを個人情報と同じデータベースに平文で保持している</td><td class=sm>本件で漏えいの可能性がある情報には、口座番号・支店名・口座名義が含まれる。
+クレジットカードは再発行できるが、口座番号は本人が容易に変えられない。
+カード非保持を達成した組織でも、謝礼の支払いを行うなら金融情報を抱えている。
+</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 年収・職業・家族構成などの属性データを、氏名・住所・電話番号と同じ基盤で保持している</td><td class=sm>本件のアンケート回答情報には年収・職業・その他の属性データが含まれる。
+これらが連絡先と結びついた状態で漏れると、
+「誰を狙えば効率がよいか」を選別する名簿になる。
+市場調査・会員制サービス・金融商品の勧誘を行う組織は当てはまる。
+</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> アプリケーションがデータベースへ接続するアカウントに、 参照しかしない機能でも更新権限が付いている</td><td class=sm>本件では SQL インジェクションにより閲覧だけでなく更新が行われた。
+権限が分かれていれば、同じ脆弱性でも被害は閲覧で止まり得た。
+権限の分離は脆弱性を防ぐ対策ではないが、成立したときの被害の種類を変える。
+</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> データベースの監査ログが取得されていない、または取得していても警報として使われていない</td><td class=sm>本件は閲覧・更新から検知までに6時間22分かかり、
+影響範囲は1か月を経ても確定していない。
+全件走査・大量の行返却・機微なテーブルの更新は監査ログに現れる事象であり、
+警報化していなければ気づく手段が無く、事後にどの行が読まれたかも追えない。
+</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 休日・夜間に警報を受け取る当番とエスカレーション先が決まっておらず、 受領までの目標時間も測っていない</td><td class=sm>本件の攻撃は土曜日の朝に始まり、検知は同日夕方だった。10時間14分である。
+記録があっても人が見ていなければ検知は遅れる。
+公開サービスは曜日を選んで攻撃されない。
+</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> サービスを緊急停止したときに、利用者が自分のパスワードを再設定したり 登録情報を確認したりする経路が用意されていない</td><td class=sm>本件では検知から18分でサービスを停止したが、
+Qzoo のパスワードは再開時に再設定が必要とされ、停止は1か月に及んでいる。
+その間、会員は自分のアカウントの危険を自分で下げられない。
+停止の設計には「止めているあいだに利用者ができること」が必要である。
+</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月21日 株式会社モニタス</span> <a href="https://monitas.co.jp/news/security-notice-20261021.html" target="_blank" rel="noreferrer noopener nofollow">当社が運営するアンケートサイト「Qzoo」への不正アクセスによる個人情報漏えいの可能性に関するお詫びとお知らせ</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（(一次資料。本記録の作成者が2026年11月17日に取得して内容を確認した。 経緯（2026年10月17日 8時30分の不正アクセス開始、12時22分の SQL インジェクションによる データベース閲覧・更新、18時44分の検知とアクセス遮断、19時02分の緊急メンテナンス移行、 10月20日 18時07分の個人情報保護委員会への速報）、 漏えいの可能性がある件数（約400,000件。10月17日時点で Qzoo が保有する全件）、 対象項目の4区分、クレジットカード情報とマイナンバーを保有していないこと、 原因（第三者がシステム内の脆弱性を悪用して侵入）、 他の自社システムへの不正アクセスは確認されていないこと、 外部専門機関を含む調査の継続、対象者への順次個別案内、 会員への注意喚起（不審なメール・SMS への注意、使い回しパスワードの変更、 Qzoo のパスワードは再開時に再設定が必要）、 再発防止策と安全確認後のサービス再開の出典)）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月17日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/11/17/56808.html" target="_blank" rel="noreferrer noopener nofollow">アンケートサイト「Qzoo」にSQLインジェクション攻撃</a> <span class="b kind">記事</span><span class=sm>（(2026年11月17日の日次ニュースに載り本記録の起点となった記事。本文は日次ニュースの保存分 〈output/articles/20261117/0040_scannetsecurity_qzoosql.md〉で確認した。 経緯の時刻・件数・対象項目は出典1 と一致する。 公表（2026年10月21日）から約1か月後の掲載であり、 個人情報保護委員会への速報（10月20日18時07分）には触れていない)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月17日</span> <span class="b rev">新規作成</span> **新規作成。** 2026年11月17日の日次ニュース（ScanNetSecurity・出典2）を起点に、 モニタス公式サイトの公表（出典1・2026年10月21日）を取得して内容を確認した。 経緯の6時点（不正アクセス開始 10/17 8:30、SQL インジェクションによる データベース閲覧・更新 12:22、検知とアクセス遮断 18:44、緊急メンテナンス移行 19:02、 個人情報保護委員会への速報 10/20 18:07、公表 10/21）、 件数（約40万件＝10月17日時点の保有全件）、対象項目の4区分、 クレジットカード情報とマイナンバーを保有していないこと、 原因（システム内の脆弱性の悪用）、会員への注意喚起は一次資料で確認した。 所要時間（侵入から検知まで10時間14分、SQL インジェクションの実行から検知まで6時間22分、 検知からサービス停止まで18分、検知から当局速報まで約3日、検知から公表まで4日、 公表から本記録の確認まで27日）は本記録が公表された時刻から算出した。 事実と評価の分け方——timeline・figures・orgs・attack.chain の description・detail・ references は出典1 の記述に限り、 「公表が『閲覧』ではなく『閲覧・更新』と書いていることはデータの完全性の問題である」 「カード非保持でも謝礼の口座情報と属性データを抱えている」 「止めた期間に会員ができることが設計されていない」 「第一報の質は高いが続報の間隔が示されていない」という読みは 本記録の評価として sections（analysis）・lessons・applicability・ response の assessment に置いた。 口座情報の保持目的を謝礼の支払いと読んだことは本記録の推定として〈齟齬4〉に明示した。 影響範囲が確定しておらずサービスも停止中で続報が見込まれるため status は updating とする。</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">モニタス</span><span class="b tag">Qzoo</span><span class="b tag">アンケートサイト</span><span class="b tag">SQLインジェクション</span><span class="b tag">口座情報</span><span class="b tag">市場調査</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-17 16:03 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>

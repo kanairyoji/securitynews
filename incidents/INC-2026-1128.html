@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>入居申込SaaS「GoWeb」にSQLi — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1128</span>入居申込SaaS「GoWeb」にSQLi</h1>
+<header class="site-header">
+  <p class="subtitle">**株式会社GoWebクラウドは2026年10月26日、賃貸の入居申込サービス「GoWeb」が SQLインジェクションによる不正アクセスを受け、複数の利用会社の利用環境が 影響を受けた可能性があると公表した**（出典1）。 **発覚は2026年10月15日、システム開発・保守会社からの報告による**（出典1）。 **対象となった可能性のある情報は、入居申込者・同居人・緊急連絡先等の 氏名・生年月日・性別・住所・電話番号・メールアドレス・続柄と、 サービスを利用する仲介会社のアカウント情報である**（出典1）。 **運転免許証・健康保険証などの本人確認書類の画像ファイルについては 不正アクセスがなかったことを確認したとしており、 クレジットカード情報は保有していないとしている**（出典1）。 **外部への持ち出しの有無、対象者の範囲・人数は調査中である**（出典1）。 **利用会社である株式会社Good不動産は、GoWebクラウドの公表より6日早い 10月20日に、自社の入居申込業務で利用するクラウドサービスへの 不正アクセスを2026年10月17日に確認したとして先に公表していた**（出典2）。</p>
+  <div><span class="b type">不正アクセス・侵害</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">日本の組織が当事者</span><span class="b cause">既知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月20日（利用会社である株式会社Good不動産の告知）</span>
+  <span>最終更新: 2026年11月17日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>株式会社GoWebクラウドは2026年10月26日、同社が提供する入居申込サービス 「GoWeb」において、外部の第三者がプログラムの脆弱性を突いた SQL インジェクションによる不正アクセスを行ったことを確認したと公表した</strong> （出典1）。 <strong>発覚は2026年10月15日で、システム開発・保守会社からの報告が端緒である</strong> （出典1）。 <strong>影響を受けた可能性があるのは「複数のご利用会社様の利用環境」で、 その会社数は公表されていない</strong>（出典1）〈未確定2〉。 <strong>対象となった可能性のある情報は、入居申込者・同居人・緊急連絡先等の 氏名・生年月日・性別・住所・電話番号・メールアドレス・続柄（入力がある場合のみ）と、 サービスを利用している仲介会社のアカウント情報である</strong>（出典1・3）—— <strong>項目は利用環境や入力内容によって異なるとされている</strong>（出典1）。 <strong>一方で、運転免許証や健康保険証などの本人確認書類の画像ファイルについては 不正アクセスがなかったことを確認したとし、 GoWeb システムはクレジットカード情報を保有していないとしている</strong>（出典1）〈重要〉。 <strong>外部への持ち出しの有無、対象者の範囲・人数はいずれも調査中である</strong>（出典1・3）。 <strong>同社は不正アクセスに利用された脆弱性の修正を完了しており、 修正以降に新たな不正アクセスは確認されていないとしている</strong>（出典1・3）。 <strong>公表と同日に個人情報保護委員会へ報告している</strong>（出典1）。 <strong>この事案は、利用会社の側から先に公になった。</strong> <strong>株式会社Good不動産は2026年10月20日、入居申込業務等に利用する クラウドサービス「GoWeb」への第三者による不正アクセスを 2026年10月17日に確認したとして、提供元の公表より6日早く告知を出している</strong> （出典2）〈重要〉—— <strong>同社は「対象となるクラウドサービスには、入居申込者様の個人情報のほか、 不動産仲介会社様の利用者情報が保存されております。現時点で、 当該個人情報の外部への漏えい、および不正利用については、調査中となります」と 記している</strong>（出典2。原文日本語を引用）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>9</span></div><ul><li><span class=ui>影響を受けた可能性のある利用会社の数と社名</span><span class="b rsn">公表されていない</span></li><li><span class=ui>対象者の範囲と人数（入居申込者・同居人・緊急連絡先）</span><span class="b rsn">調査中</span></li><li><span class=ui>情報が実際に外部へ持ち出されたか</span><span class="b rsn">調査中</span></li><li><span class=ui>脆弱性の所在（どの画面・どのパラメータ）と存在していた期間</span><span class="b rsn">公表されていない</span></li><li><span class=ui>不正アクセスが行われていた期間</span><span class="b rsn">公表されていない</span></li><li><span class=ui>システム開発・保守会社の社名と、報告に至った端緒</span><span class="b rsn">公表されていない</span></li><li><span class=ui>仲介会社アカウントの認証情報が悪用された形跡</span><span class="b rsn">調査中</span></li><li><span class=ui>個人情報保護委員会の対応・調査・処分</span><span class="b rsn">公表されていない</span></li><li><span class=ui>被害がなかったと確認された利用会社の有無</span><span class="b rsn">公表されていない</span></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>株式会社GoWebクラウド</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>株式会社Good不動産</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>株式会社Goodリアルエステート</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>株式会社アセットリード</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>システム開発・保守会社（社名非公表）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>個人情報保護委員会</span><span class="b role">監督官庁</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>対象となった可能性のある個人情報の項目の種類数（入居申込者等）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>種</span></div><div class=fn>**氏名・生年月日・性別・住所・電話番号・メールアドレス・続柄の7種**（出典1・3）〈重要〉—— **続柄は「入力がある場合のみ」とされ、 項目は利用環境や入力内容によって異なる**（出典1）—— **したがって全対象者が7項目すべてを持つわけではない**（本記録の読み）。 **これに加えて仲介会社のアカウント情報が別枠で対象になっている**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>提供元の把握から提供元の公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>11<span class=fu>日</span></div><div class=fn>**2026年10月15日の把握（T1）から10月26日の公表（T4）まで**（本記録の算出）〈重要〉—— **この間に利用会社の側（Good不動産）が10月20日に先に公表している**（出典2）。</div></div><div class=fig><div class=fh><span class=fl>利用会社（Good不動産）の確認から同社の公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**2026年10月17日の確認（T2）から10月20日の公表（T3）まで**（本記録の算出）—— **提供元より早い公表であり、利用会社は自社の顧客に対して 独自の説明責任を負っていることが表れている**（本記録の評価）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**外部の第三者が、入居申込サービス「GoWeb」のプログラムの脆弱性を突いて SQL インジェクションを行い、データベース内の情報へ到達した**（出典1）〈重要〉—— **1つのサービスの脆弱性が、そのサービスを使う複数の利用会社の 利用環境に同時に及んでいる。** **これは SaaS の構造そのものによる波及であり、 各利用会社の側に不備があったことを示す記述はない**（本記録の整理）—— **利用会社は、自社で選べない場所の実装不備の結果を 自社の顧客へ説明する立場に置かれている。** **侵入の経路・期間・持ち出しの有無は調査中である**（出典1）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[1] [3]</span></div><div>**外部の第三者が、プログラムの脆弱性を突いた SQL インジェクションにより 「GoWeb」へ不正アクセスした**（出典1）〈重要〉—— **SQL インジェクションは、入力欄などから不正な命令文を送り込み、 データベース内の情報を不正に取得する手法である**（出典1 の説明）。 **認証を突破したのではなく、アプリケーションの実装の不備を 通り道にしている**（本記録の整理）—— **起点となった画面・パラメータは公表されていない。**</div><div class=fn>根拠: GoWebクラウドの公表（出典1）</div></li><li><div class=stg><span class="b stage">2. 収集</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**入居申込者・同居人・緊急連絡先等の氏名・生年月日・性別・住所・ 電話番号・メールアドレス・続柄、および仲介会社のアカウント情報が 対象となった可能性があるとされた**（出典1）〈重要〉—— **複数の利用会社の利用環境が対象に含まれている。** **一方で、本人確認書類の画像ファイルには不正アクセスがなかったことが 確認されており、クレジットカード情報は保有していない**（出典1）—— **どの範囲が実際に取得されたかは調査中である。**</div><div class=fn>根拠: GoWebクラウドの公表（出典1）</div></li><li><div class=stg><span class="b stage">3. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[1] [3]</span></div><div>**情報が実際に外部へ持ち出されたかどうかは調査中とされている**（出典1・3）〈重要〉—— **同社はアクセス記録の保全と解析により影響範囲の特定を進めている**（出典1）。 **持ち出しの件数・対象者数は公表されていない**〈未確定2〉。</div><div class=fn>根拠: GoWebクラウドの公表（出典1）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[1]</span></div><div>**GoWebクラウドは本件に便乗し、GoWeb や不動産会社を名乗る 不審な連絡に注意するよう呼びかけた**（出典1）〈重要〉—— **身に覚えのないメール・電話・SMS に応じず、 記載された URL や添付ファイルを開かず、 個人情報やパスワードの入力・金銭の支払いに応じないよう案内している**（出典1）。 **実際の二次被害の発生は公表されていない**（本記録の確認）。</div><div class=fn>根拠: GoWebクラウドの公表（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml></div><div class=mv></div><div class=fn>**2026年10月15日の把握（T1）から10月26日の公表（T4）まで**（本記録の算出）〈重要〉—— **この11日のあいだに、利用会社の Good不動産が10月20日に 先に公表している**（出典2）—— **本記録は、提供元の公表が利用会社より後になったことを 改善の余地とみる**（本記録の判断）—— **利用会社は自社の顧客に説明する必要があり、 提供元の公表を待てないため、 結果として事案の全体像が後から追いかける形になった。**</div></div><div class=met><div class=ml></div><div class=mv></div><div class=fn>**脆弱性の修正は2026年10月26日の公表時点で完了しているが、 修正日そのものは公表されていない**（出典1）〈重要〉—— **したがってこの値は「把握から公表（＝修正完了が確認できる時点）まで」の 上限であり、実際の封じ込めはより早い可能性がある**（本記録の算出と留保）〈未確定5〉。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**対象者への連絡を、提供元が直接行うのではなく 「各ご利用会社様と連携のうえ、順次」行う方式を選んだ**（出典1・3）〈重要〉—— **入居申込者と契約関係にあるのは利用会社であり、 提供元は申込者の連絡先を自社の顧客として持っていない。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **得られたのは、申込者にとって見覚えのある差出人から連絡が届くことである** （本記録の評価）〈重要〉—— **本件では便乗詐欺への注意喚起が出ているため、 「知らない会社からの個人情報に関する連絡」は それ自体が詐欺と区別しにくい。** **失ったのは、通知の速さと内容の統一である**（本記録の評価）—— **利用会社の数と体制に通知の進度が左右され、 同じ事案でありながら説明の粒度が会社ごとに変わる。** **実際に Good不動産は提供元より6日早く独自の文面で告知しており、 その時点では SQL インジェクションであることも 対象項目も示されていない**（出典2）。</div></li><li><div class=ui>**「対象となった可能性のある情報」を項目まで示し、 さらに本人確認書類の画像には不正アクセスがなかったこと、 クレジットカード情報は保有していないことを明記した**（出典1）〈重要〉—— **一方で、影響を受けた利用会社の数は示さず、 対象者の範囲・人数と持ち出しの有無は調査中とした**（出典1）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **得られたのは、読者が「自分の何が対象か」を項目で確認できることである** （本記録の評価）〈重要〉—— **とくに「触られていないと確認したもの」と 「そもそも保有していないもの」を書き分けている点は、 不安の範囲を正しく狭める**（本記録の判断）。 **失ったのは規模の見当である**（本記録の評価）—— **「複数の利用会社」という表現では、 数社なのか数十社なのかが読者に分からない。** **自分が申し込んだ不動産会社が対象かどうかを 申込者が自分で判断する手段がない**（本記録の整理）。</div></li><li><div class=ui>**把握（10月15日）から11日後の10月26日に公表し、 同日に個人情報保護委員会へ報告した**（出典1）—— **公表時点で脆弱性の修正は完了していた**（出典1）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **得られたのは、修正完了を確認したうえで公表できたことである** （本記録の評価）—— **修正前の公表は、同じ脆弱性を狙う第二の攻撃者を呼ぶ。** **失ったのは、利用会社より後になったことで生じた説明の順序の乱れである** （本記録の評価）〈重要〉—— **本記録は、利用会社を持つサービス提供者は 「利用会社への個別報告」と「自社の公表」の間隔を あらかじめ決めておくべきだと考える**（本記録の判断）。</div></li></ul></div>
+<section id="s6"><h2>提供元より先に、利用会社の側から公になりました<span class="b slot">発覚の端緒</span></h2><p><strong>この事案が最初に世に出たのは、提供元の公表ではなく利用会社の告知でした</strong> （出典2）〈重要〉—— <strong>株式会社Good不動産は2026年10月20日、「当社が利用するクラウドサービス 『GoWeb』（提供元：株式会社GoWebクラウド）において、 第三者による不正アクセスが行われていたことを、2026年10月17日に 確認いたしました」と公表しています</strong>（出典2。原文日本語を引用）。 <strong>提供元である GoWebクラウドの公表は、その6日後の10月26日でした</strong>（出典1）。<strong>順序が逆になった理由は公表されていません</strong>（本記録の確認）—— <strong>ただし、構造から見れば自然な結果でもあります</strong>（本記録の整理）。 <strong>入居申込者と契約関係にあるのは利用会社であり、 顧客からの問い合わせを受けるのも利用会社です。</strong> <strong>提供元の調査が終わるまで黙っていれば、 自社の顧客への説明が遅れます。</strong> <strong>結果として、10月20日から26日までの6日間、 読者が参照できたのは「不正アクセスがあった」という事実だけでした</strong> （本記録の整理）〈重要〉—— <strong>SQL インジェクションという手口、対象となった情報の項目、 本人確認書類の画像には不正アクセスがなかったという確認は、 いずれも提供元の公表を待つ必要がありました</strong>（出典1・2）。<strong>提供元の把握は10月15日、利用会社の確認は10月17日です</strong>（出典1・2）—— <strong>提供元から利用会社への連絡がこの2日のあいだに行われたと読むのが 自然ですが、連絡の日付も方法も公表されていません</strong>（本記録の読み）〈未確定3〉。</p></section>
+<section id="s7"><h2>発覚は自社の監視ではなく、システム開発・保守会社からの報告でした<span class="b slot">原因・手口</span></h2><p><strong>GoWebクラウドの公表は、発覚の端緒を「システム開発・保守会社からの報告」と 記しています</strong>（出典1・3）〈重要〉—— <strong>自社の監視による検知ではありません。</strong> <strong>SQL インジェクションは、Web アプリケーションのログに 異常な入力として現れる種類の攻撃です</strong>（本記録の整理）—— <strong>WAF の遮断記録、アプリケーションのエラーログ、 応答サイズの異常、いずれも手がかりになります。</strong> <strong>それらが機能していれば、外部からの報告を待つ必要はありませんでした</strong> （本記録の評価）。<strong>ただし本記録は、監視が完全に不在だったとは断定しません</strong>（本記録の留保）〈重要〉—— <strong>保守会社が何を見て不正アクセスと判断したのかが公表されていないためです</strong> （本記録の確認）。 <strong>保守会社がログの異常に気づいたのであれば、 記録そのものは取れていたことになります。</strong> <strong>脆弱性の指摘から遡って発見したのであれば、話は違います。</strong> <strong>この区別は、他社が自組織の監視を点検するときに意味を持ちますが、 資料からは判定できません。</strong> <strong>一方で、事後の記録は残っています</strong>（出典1）—— <strong>同社は対処として「アクセス記録の保全と解析による影響範囲の特定」を 挙げており、追えるものは追っている形です。</strong></p></section>
+<section id="s8"><h2>「触られていないと確認したもの」と「そもそも持っていないもの」を書き分けています<span class="b slot">被害規模・影響範囲</span></h2><p><strong>公表の中で本記録が評価するのは、対象外とされた情報の書き方です</strong> （本記録の判断）〈重要〉。<strong>GoWebクラウドは、運転免許証や健康保険証などの本人確認書類の 画像ファイルについて「不正アクセスがなかったことを確認した」とし、 クレジットカード情報については「GoWeb システムでは保有していない」と 記しています</strong>（出典1）。<strong>この2つは読者にとって意味が違います</strong>（本記録の整理）—— <strong>前者は「そこにあったが、調べた結果触られていなかった」であり、 後者は「そこには最初から無い」です。</strong> <strong>前者には調査の確度という留保が付きますが、後者には付きません。</strong> <strong>「含まれません」と一括りにする書き方では、この差が消えます。</strong> <strong>入居申込の文脈では、この区別が実務に直結します</strong>（本記録の評価）—— <strong>本人確認書類の画像は、それ単体で本人になりすます材料になり、 氏名・住所・電話番号の組み合わせよりも悪用の幅が広いためです。</strong> <strong>それが対象外と確認されたことは、 対象者が取るべき行動の重さを変えます。</strong> <strong>他方で、規模は示されていません</strong>（出典1）〈重要〉—— <strong>「複数のご利用会社様の利用環境」という表現だけで、 社数も対象者数も公表されていません</strong>〈未確定2〉—— <strong>申込者は、自分が申し込んだ不動産会社が対象かどうかを 自分で確かめる手段を持っていません</strong>（本記録の整理）。</p></section>
+<section id="s9"><h2>1つの脆弱性が、選んでいない場所から複数の会社の顧客に届きました<span class="b slot">波及・関係先</span></h2><p><strong>影響を受けたのは「複数のご利用会社様の利用環境」です</strong>（出典1）〈重要〉—— <strong>各利用会社の側に不備があったことを示す記述は、 提供元の公表にも利用会社の告知にもありません</strong>（出典1・2）。<strong>これは SaaS の構造そのものによる波及です</strong>（本記録の整理）—— <strong>利用会社は、自社では選べない場所の実装不備の結果を、 自社の顧客へ説明する立場に置かれます。</strong> <strong>Good不動産の告知が「当社が利用するクラウドサービスへの 不正アクセス」という題名になっているのは、まさにこの位置です</strong>（出典2）。<strong>本記録が確認できた利用会社は3社です</strong>—— <strong>Good不動産（出典2）、Goodリアルエステート（出典4）、 アセットリード（出典5）。</strong> <strong>ただし後2社については本記録は原文を取得できておらず、 告知の存在を確認したにとどまります</strong>〈齟齬2〉。 <strong>全体で何社かは公表されていません</strong>〈未確定2〉。<strong>技術的に重要なのは、テナント分離の作りが公表されていないことです</strong> （本記録の確認）〈重要〉—— <strong>1つの SQL インジェクションで複数社分のデータへ到達できたのか、 それとも会社ごとに別の攻撃が必要だったのかは分かりません。</strong> <strong>前者であれば、アプリケーションの条件分岐だけで データを分けていたことになります</strong>（本記録の読み。公表に基づく判定ではありません）。</p></section>
+<section id="s10"><h2>対象者への連絡を利用会社に委ねたことで、通知の速さが体制に左右されます<span class="b slot">組織の対応</span></h2><p><strong>対象者への連絡は「各ご利用会社様と連携のうえ、順次」行うとされています</strong> （出典1・3）〈重要〉。<strong>この選択には理由があります</strong>（本記録の整理）—— <strong>入居申込者と契約関係にあるのは利用会社で、 提供元は申込者を自社の顧客として持っていません。</strong> <strong>見覚えのない会社から個人情報に関する連絡が届けば、 受け取った側はそれ自体を詐欺と疑います。</strong> <strong>同社が便乗詐欺への注意を同時に呼びかけている以上、 この懸念は現実的です</strong>（出典1）。<strong>代わりに失うのは、通知の速さと内容の統一です</strong>（本記録の評価）〈重要〉—— <strong>利用会社の数と体制に進度が左右され、同じ事案でありながら 説明の粒度が会社ごとに変わります。</strong> <strong>実際に Good不動産の10月20日の告知には、手口も対象項目も 書かれていません</strong>（出典2）—— <strong>提供元がまだ公表していなかったためです。</strong> <strong>本記録は、ここに他社が学べる形があると考えます</strong>（本記録の判断）—— <strong>利用会社を持つサービス提供者は、事案が起きた後ではなく 平時のうちに「利用会社への個別報告」と「自社の公表」の 間隔をあらかじめ決めておく必要があります。</strong> <strong>本件では把握から公表まで11日、 その途中で利用会社が先に公表しました</strong>（本記録の算出）。<strong>通知の開始日・完了日は公表されていません</strong>〈未確定2〉—— <strong>公表から3週間後の2026年11月17日時点でも、 対象者の人数は示されていません</strong>（本記録の確認）。</p></section>
+<section id="s11"><h2>緊急連絡先として名前を書かれた人は、自分の情報があることを知りません<span class="b slot">評価・解釈</span></h2><p><strong>対象情報には「入居申込者・同居人・緊急連絡先等」が含まれています</strong> （出典1）〈重要〉。<strong>本記録が注意を向けるのは、この3者の立場の違いです</strong>（本記録の整理）—— <strong>入居申込者は自分で申し込み、自分の情報が登録されていることを知っています。</strong> <strong>同居人も、多くの場合は申込の内容を把握しているでしょう。</strong> <strong>しかし緊急連絡先として名前を書かれた人は、 申込者の親族や知人であり、自分の氏名・生年月日・住所・電話番号が どの不動産会社のどのシステムに入っているかを知らない可能性があります。</strong> <strong>この立場の人には、通知が届きにくい構造があります</strong>（本記録の評価）〈重要〉—— <strong>通知は利用会社から行われますが、利用会社と契約関係にあるのは 申込者であって緊急連絡先ではありません。</strong> <strong>連絡先として登録された電話番号へ直接通知されるのか、 申込者を経由するのかは公表されていません</strong>（本記録の確認）〈未確定2〉。<strong>実務への含みは、自組織が預かっている個人情報の中に 「本人が登録を知らない第三者」がどれだけあるかという問いです</strong> （本記録の判断）—— <strong>申込書・保証人欄・緊急連絡先欄・推薦者欄は、いずれもこの性格を持ちます。</strong> <strong>漏えい時の通知義務を果たすには、 その人への連絡手段を事前に設計しておく必要があります。</strong></p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td>**入居申込サービス「GoWeb」のプログラムとその背後のデータベース**（出典1）—— **複数の利用会社が同じサービスを使う構成であり、 1つの脆弱性が複数社の利用環境に及んでいる**（本記録の整理）〈重要〉—— **テナント分離の作りは公表されていない。**</td></tr><tr><th>露出した情報項目</th><td><ul class=cl><li>入居申込者・同居人・緊急連絡先等の氏名</li><li>同生年月日</li><li>同性別</li><li>同住所</li><li>同電話番号</li><li>同メールアドレス</li><li>同続柄（入力がある場合のみ）</li><li>サービスを利用している仲介会社のアカウント情報</li></ul><span class="b rsn">stated</span><div class=fn>**項目は利用環境や入力内容によって異なるとされている**（出典1）〈重要〉—— **本人以外（同居人・緊急連絡先）の情報が含まれる点が、 この種のサービスの特徴である**（本記録の整理）—— **緊急連絡先として名前を書かれた人は、 自分の情報が登録されていることを知らない可能性がある。**</div></td></tr><tr><th>含まれていない情報</th><td><ul class=cl><li>運転免許証・健康保険証などの本人確認書類の画像ファイル（不正アクセスがなかったことを確認）</li><li>クレジットカード情報（GoWeb システムでは保有していない）</li></ul><span class="b rsn">stated</span><div class=fn>**「含まれない」ではなく「不正アクセスがなかったことを確認した」と 「そもそも保有していない」の2種類が示されている**（出典1）〈重要〉—— **本記録はこの書き分けを評価する**（本記録の判断）—— **保有していないものと、保有しているが触られていないものは、 読者にとって意味が違う。**</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年10月26日　<b>補足:</b> **情報が実際に外部へ持ち出されたかどうかは調査中とされている**（出典1）—— **二次被害の発生は公表されていない**（本記録の確認）—— **一方で同社は本件に便乗した不審な連絡への注意を呼びかけている**（出典1）。</td></tr><tr><th>ログの有無</th><td>**アクセス記録は残っており、保全と解析が行われている**（出典1）〈重要〉—— **同社は対処として「アクセス記録の保全と解析による影響範囲の特定」を 挙げている**（出典1）—— **ただし記録の保存期間や、不正アクセスの全期間を覆えているかは 公表されていない**〈未確定5〉—— **本記録は、持ち出しの有無が「調査中」にとどまっている理由が 記録の不足か解析の途中かを判定できない**（本記録の確認）。</td></tr><tr><th>criminal</th><td><b>police_contactの公表状況:</b> 公表されていない　<b>complaint_filedの公表状況:</b> 公表されていない　<b>補足:</b> **警察への相談・被害届の提出は公表されていない**（本記録の確認）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**GoWebクラウドが、システム開発・保守会社からの報告により 「GoWeb」への不正アクセスを把握した**（出典1・3）〈重要〉—— **自社の監視による検知ではなく、外部からの報告が端緒である。**</td></tr><tr><td class="sm nowrap tw">2026年10月17日</td><td class=nowrap><span class="b kind">判明</span></td><td>**利用会社の株式会社Good不動産が、自社が利用する「GoWeb」への 第三者による不正アクセスが行われていたことを確認した**（出典2）—— **提供元の把握（T1）から2日後である。**</td></tr><tr><td class="sm nowrap tw">2026年10月20日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Good不動産が「当社が利用するクラウドサービスへの不正アクセスに関する お知らせとお詫び」を公表した**（出典2）〈重要〉—— **この時点で提供元の公表はまだ出ていない。**</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">公表</span></td><td>**GoWebクラウドが「弊社提供サービス「GoWeb」への不正アクセスに関する ご報告とお詫び」を公表し、SQL インジェクションであること・ 対象情報の項目・本人確認書類画像への不正アクセスがなかったことを示した** （出典1）。</td></tr><tr><td class="sm nowrap tw">2026年10月26日</td><td class=nowrap><span class="b kind">当局・上位機関への報告（組織 → 当局の向き）</span></td><td>**GoWebクラウドが個人情報保護委員会へ報告した**（出典1）—— **公表と同日である。**</td></tr><tr><td class="sm nowrap tw">2026年10月26日時点で完了（修正日は非公表）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**不正アクセスに利用された脆弱性の修正が完了しており、 修正以降に新たな不正アクセスは確認されていない**（出典1・3）—— **修正を行った日付は公表されていない**〈未確定5〉。</td></tr><tr><td class="sm nowrap tw">2026年11月17日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**ScanNetSecurity が事案を報じ、本記録の起点となった**（出典3）—— **公表から3週間後の報道である。**</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>3</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>不正アクセスの「確認日」が提供元と利用会社で違う</span><div class=sm>**提供元の GoWebクラウドは2026年10月15日に システム開発・保守会社からの報告で発覚したとしている**（出典1）—— **利用会社の Good不動産は2026年10月17日に確認したとしている**（出典2）。 **これは食い違いではなく、主体が違う日付と読むのが自然である** （本記録の読み）〈重要〉—— **提供元が把握した日と、提供元からの連絡を受けて 利用会社が確認した日は別物である。** **ただし提供元から利用会社への連絡の日付・方法は公表されていないため、 この読みは確認できていない**〈未確定3〉。 **さらに検索結果には、Goodリアルエステートの告知が確認日を 10月16日としているとする記述があったが、 本記録は原文に到達できておらず裏取りできていない**（本記録の確認）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>利用会社2社の告知の原文に到達できていない</span><div class=sm>**Goodリアルエステート（出典4）とアセットリード（出典5）が 同名の告知を掲載していることは確認したが、 本記録は原文を取得できていない**〈重要〉—— **検索結果に現れた掲載の事実のみに依拠しており、 掲載日・記載内容・GoWeb との関係の明記の有無は裏取りできていない。** **したがって本記録は両社を「関係があるとみられる」扱いにとどめている。** **本記録は、両社が GoWeb の利用会社であると断定しない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>影響を受けた利用会社の数に触れた資料が無い</span><div class=sm>**提供元の公表は「複数のご利用会社様の利用環境」とだけ記し、 社数を示していない**（出典1）〈重要〉—— **報道（出典3）も同じ表現を踏襲している。** **読者が自分の申込先が対象かを判断する手段は、 各利用会社の告知を個別に探すことしかない**（本記録の整理）—— **本記録が確認できたのは3社だが、これが全体のうち どれだけかは分からない**〈未確定2〉。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>1つの脆弱性が、利用会社を経由して申込者と第三者に届く</div><div class=svgwrap><svg viewBox="0 0 1406 282" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,141.0 C193.0,141.0 193.0,141.0 220,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,141.0 C397.0,141.0 397.0,141.0 424,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C601.0,141.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C601.0,141.0 601.0,148.0 628,148.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C601.0,141.0 601.0,229.0 628,229.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C703.0,141.0 703.0,141.0 832,141.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,141.0 C1009.0,141.0 1009.0,90.0 1036,90.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,141.0 C805.0,141.0 805.0,192.0 1036,192.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,90.0 C1111.0,90.0 1111.0,192.0 1036,192.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,192.0 C1213.0,192.0 1213.0,97.0 1240,97.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,90.0 C1213.0,90.0 1213.0,192.0 1240,192.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="97.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">外部の第三者（侵入経路は</text><text x="91.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> SQL インジェクショ</text><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ン・起点の機能は未公表）</text><text x="91.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">不正アクセスの期間は公表</text><text x="91.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">されていない（出典1）</text><rect x="220" y="97.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">GoWeb のプログラム</text><text x="295.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の脆弱性（修正済み・所在</text><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は未公表）</text><text x="295.0" y="160.0" text-anchor="middle" fill="#f48fb1" font-size="10">公表時点で修正完了。以降</text><text x="295.0" y="172.0" text-anchor="middle" fill="#f48fb1" font-size="10">の新たな不正アクセスは確</text><rect x="424" y="97.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">入居申込サービス「GoW</text><text x="499.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">eb」（株式会社GoWe</text><text x="499.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">bクラウド提供）</text><text x="499.0" y="160.0" text-anchor="middle" fill="#64b5f6" font-size="10">テナント分離の作りは公表</text><text x="499.0" y="172.0" text-anchor="middle" fill="#64b5f6" font-size="10">されていない（本記録の確</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">入居申込者・同居人・緊急</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">連絡先の個人情報（7種・</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">人数は調査中）</text><text x="703.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">氏名・生年月日・性別・住</text><text x="703.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">所・電話番号・メールアド</text><rect x="628" y="118.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">仲介会社のアカウント情報</text><text x="703.0" y="153.0" text-anchor="middle" fill="#ffcc80" font-size="10">強制リセットの実施・悪用</text><text x="703.0" y="165.0" text-anchor="middle" fill="#ffcc80" font-size="10">の有無は公表されていない</text><rect x="628" y="192.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="214.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">本人確認書類の画像（不正</text><text x="703.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">アクセスなしと確認）</text><text x="703.0" y="241.0" text-anchor="middle" fill="#ffcc80" font-size="10">クレジットカード情報はそ</text><text x="703.0" y="253.0" text-anchor="middle" fill="#ffcc80" font-size="10">もそも保有していない（出</text><rect x="832" y="97.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="119.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">システム開発・保守会社（</text><text x="907.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">10月15日に不正アクセ</text><text x="907.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スを報告）</text><text x="907.0" y="160.0" text-anchor="middle" fill="#80cbc4" font-size="10">社名・報告の根拠は公表さ</text><text x="907.0" y="172.0" text-anchor="middle" fill="#80cbc4" font-size="10">れていない（出典1）</text><rect x="1036" y="46.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="68.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">株式会社GoWebクラウ</text><text x="1111.0" y="82.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド（10月26日公表・脆</text><text x="1111.0" y="96.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">弱性修正・記録を解析）</text><text x="1111.0" y="109.0" text-anchor="middle" fill="#80cbc4" font-size="10">把握から公表まで11日（</text><text x="1111.0" y="121.0" text-anchor="middle" fill="#80cbc4" font-size="10">本記録の算出）</text><rect x="1036" y="148.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="170.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">複数の利用会社（社数は未</text><text x="1111.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公表。告知を確認できたの</text><text x="1111.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は3社）</text><text x="1111.0" y="211.0" text-anchor="middle" fill="#80cbc4" font-size="10">Good不動産は10月2</text><text x="1111.0" y="223.0" text-anchor="middle" fill="#80cbc4" font-size="10">0日に先に公表（出典2）</text><rect x="1240" y="53.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#8892b0" stroke-width="1.4"/><text x="1315.0" y="75.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">入居申込者・同居人・緊急</text><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">連絡先（各利用会社経由で</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">順次連絡）</text><text x="1315.0" y="116.0" text-anchor="middle" fill="#8892b0" font-size="10">緊急連絡先は自分の情報の</text><text x="1315.0" y="128.0" text-anchor="middle" fill="#8892b0" font-size="10">登録を知らない可能性があ</text><rect x="1240" y="155.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1315.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">個人情報保護委員会（10</text><text x="1315.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">月26日に報告）</text><text x="1315.0" y="204.0" text-anchor="middle" fill="#b0bec5" font-size="10">委員会側の対応は公表され</text><text x="1315.0" y="216.0" text-anchor="middle" fill="#b0bec5" font-size="10">ていない（本記録の確認）</text></svg></div><div class=fn>出典1・2の記述から、波及の構造と通知の経路を整理した図である（整理は本記録）。 左が攻撃、中央が GoWeb と対象になった情報、右が利用会社・対象者・当局。 太線は本記録が注目する経路（SQL インジェクションの成立と、 利用会社を経由する通知）。 破線は公表されていない部分（利用会社の数、テナント分離の作り、 対象者の人数、持ち出しの有無）を示す。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検知は自社の監視ではなく、システム開発・保守会社からの報告だった** （出典1・3）〈重要〉—— **SQL インジェクションは Web アプリケーションのログに 異常な入力として現れるため、WAF やアプリログの監視で 捉えられる種類の攻撃である**（本記録の評価）—— **本記録は、自前の検知が働いた形跡が公表されていない点を 本事案の弱い部分とみる**（本記録の判断）—— **ただし、保守会社の報告が何を見たものかは公表されていないため、 監視が完全に不在だったとは断定できない**（本記録の留保）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>データベースへの問い合わせをプレースホルダ（パラメータ化クエリ）に 統一し、文字列連結で SQL を組み立てる箇所を実装の規約で禁じる</div><div class=ctl><span class="b eff">検知できた</span>WAF と Web アプリケーションログで、SQL 構文を含む入力・ 異常な応答サイズ・連続した失敗を常時の指標として監視する</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**データベースからの大量の読み出しを異常として捉える仕組みの有無は 公表されていない**（本記録の確認）〈重要〉—— **本記録の整理では、アクセス記録の保全・解析を行っていることから 事後に追える記録は存在する**（出典1）—— **しかし進行中に件数の異常として止められたかは述べられていない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>利用会社ごとのデータを、アプリケーションの条件だけでなく データベースの権限・行レベルの制御でも分離する （1つの脆弱性で全社分へ到達できない形にする）</div><div class=ctl><span class="b eff">影響を限定できた</span>本人確認書類の画像のように機微な資産を、 申込情報の本体とは別の保管領域・別の権限に置く （本件では画像への不正アクセスがなかったと確認されている）</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">公表されていない</span><div class=sm>**外向きの通信量や応答の大きさを監視していたかは公表されていない** （本記録の確認）—— **本記録の評価では、持ち出しの有無を公表から3週間たっても 断定できていないこと自体が、 記録からの再構成に時間を要していることを示す**（本記録の読み）—— **ただし記録が不足しているのか解析が途上なのかは判定できない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>データベースの監査ログを、アプリケーションのログとは 別に改変できない形で保存し、1回の問い合わせで返した 行数を記録する</div><div class=ctl><span class="b eff">影響を限定できた</span>個人情報を返す問い合わせについて、単位時間あたりの 取得件数に上限を設け、超過で自動的に遮断する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**二次被害を監視する体制は公表されていない**（本記録の確認）〈重要〉—— **本記録の整理では、対象情報に氏名・住所・電話番号・ メールアドレスが揃っている以上、 入居申込という文脈を装った連絡の材料は成立している**（本記録の評価）—— **入居申込は審査・入金・契約の連絡が前提として想定される手続きであり、 申込者が「不動産会社からの連絡」を待っている時期に重なると、 なりすましの連絡が通りやすい。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>対象者への通知に「自組織から絶対に尋ねない事項」を明記する （本件では実施されている）</div><div class=ctl><span class="b eff">影響を限定できた</span>仲介会社アカウントの認証情報を一律で失効・再設定し、 通知後の一定期間は不正ログインの試行を重点的に監視する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**対象者への連絡を、提供元が直接行うのではなく 「各ご利用会社様と連携のうえ、順次」行う方式を選んだ**（出典1・3）〈重要〉—— **入居申込者と契約関係にあるのは利用会社であり、 提供元は申込者の連絡先を自社の顧客として持っていない。**</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**「対象となった可能性のある情報」を項目まで示し、 さらに本人確認書類の画像には不正アクセスがなかったこと、 クレジットカード情報は保有していないことを明記した**（出典1）〈重要〉—— **一方で、影響を受けた利用会社の数は示さず、 対象者の範囲・人数と持ち出しの有無は調査中とした**（出典1）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr><tr><td>**把握（10月15日）から11日後の10月26日に公表し、 同日に個人情報保護委員会へ報告した**（出典1）—— **公表時点で脆弱性の修正は完了していた**（出典1）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>SaaS の利用会社は、提供元の公表を待たずに自社の顧客へ説明する場面がある。 その文面の雛形を平時に持っておく。</div><div class=lw>**Good不動産は提供元の公表（10月26日）より6日早い10月20日に 告知を出している**（出典1・2）〈重要〉—— **その時点では手口も対象項目も分かっておらず、 「不正アクセスが行われていたことを確認した」「調査中」という 内容にとどまっている**（出典2）—— **顧客への説明責任は提供元の調査の進度を待ってくれない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自社が使っている SaaS のうち、顧客の個人情報を預けているものを 一覧にし、それぞれについて「提供元で事案が起きたとき、 自社は何日以内に何を告知するか」を決めておく**〈重要〉—— **雛形には、分かっていないことを分かっていないと書く欄を設ける。** **提供元の名前を出すか出さないかも、事前に判断しておく （本件では利用会社が提供元名を明記している）。**</div></li><li><div class=lp>「対象外」は、触られていないと確認したものと、そもそも保有していないものを 書き分ける。一括りにすると読者が留保の有無を判断できない。</div><div class=lw>**GoWebクラウドは、本人確認書類の画像は「不正アクセスがなかったことを 確認した」、クレジットカード情報は「保有していない」と 書き分けている**（出典1）〈重要〉—— **前者には調査の確度という留保が付き、後者には付かない**（本記録の整理）—— **「含まれません」とだけ書けば、この差は読者に伝わらない。**</div><div class=la><b>取るべき行動</b> **自組織の公表の雛形で、対象外の情報を2つの欄に分ける**〈重要〉—— **①保有しているが影響がないと確認したもの（確認の根拠を添える） ②そもそも保有していないもの。** **前者には「現時点の調査では」という時点を必ず付ける。**</div></li><li><div class=lp>対象者への通知を利用会社に委ねるなら、通知の期限と文面の最低条件を 提供元が示す。委ねた先の体制差がそのまま被害者への到達差になる。</div><div class=lw>**対象者への連絡は「各ご利用会社様と連携のうえ、順次」とされ、 開始日・完了日は公表されていない**（出典1・3）〈重要〉—— **利用会社の数も公表されておらず、 通知がどこまで進んだかを外から測る手段がない**（本記録の確認）〈未確定2〉。</div><div class=la><b>取るべき行動</b> **自社がサービス提供者の側なら、利用会社向けの通知手順に 「何日以内に」「最低限どの項目を書くか」を明記した雛形を添えて配る**〈重要〉—— **自社が利用会社の側なら、提供元との契約に 事案発生時の情報提供の期限（把握から何時間以内に一次連絡か）を入れる。** **通知の進度を提供元へ報告する約束も、あわせて決めておく。**</div></li><li><div class=lp>預かっている個人情報の中に「本人が登録を知らない第三者」がいる場合、 その人への通知手段を事前に設計しておく。</div><div class=lw>**対象情報には緊急連絡先の氏名・生年月日・住所・電話番号が含まれる** （出典1）〈重要〉—— **緊急連絡先として書かれた人は、自分の情報がどの会社のシステムに あるかを知らない可能性がある**（本記録の整理）—— **通知は利用会社から行われるが、利用会社と契約関係にあるのは 申込者であって緊急連絡先ではない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織の申込書・保証人欄・緊急連絡先欄・推薦者欄を洗い出し、 「本人以外の情報を取得している欄」を一覧にする**〈重要〉—— **それぞれについて、漏えい時に本人へ到達する経路（直接連絡か、 申込者経由か）を決めておく。** **取得の時点で第三者本人への利用目的の通知が必要かも、 法務とあわせて確認する。**</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>SQL インジェクションは2026年でも現役の侵入口である。 フレームワーク任せにせず、文字列連結で SQL を組む箇所を規約で禁じる。</div><div class=lw>**本件の侵入口は「プログラムの脆弱性を突いた SQL インジェクション」と 明示されている**（出典1）〈重要〉—— **認証を突破したのではなく、アプリケーションの実装の不備が そのまま通り道になっている**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **自社のコードベースを検索し、SQL を文字列連結・文字列補間で 組み立てている箇所を全部挙げる**〈重要〉—— **プレースホルダ（パラメータ化クエリ）へ置き換え、 置き換えられない箇所（動的なテーブル名・ORDER BY 等）は 許可値の白名簿で囲う。** **静的解析を CI に入れ、新しい文字列連結を落とす。**</div></li><li><div class=lp>複数の利用会社が同じ基盤を使うなら、分離をアプリケーションの条件だけに 依存させない。1つの脆弱性で全社分に届く作りを避ける。</div><div class=lw>**1つの脆弱性が「複数のご利用会社様の利用環境」に及んでいる** （出典1）〈重要〉—— **テナント分離の作りは公表されていないため断定はできないが、 SQL インジェクションが成立した時点でアプリケーションの 条件分岐は迂回されている**（本記録の読み）。</div><div class=la><b>取るべき行動</b> **テナントごとに接続ユーザを分け、データベース側の権限 （スキーマ分離・行レベルセキュリティ）でも境界を作る**〈重要〉—— **1つの接続で全テナントの行が見える構成になっていないかを、 実際に検証用の環境で試して確かめる。** **「アプリが WHERE 句を付けているから大丈夫」を根拠にしない。**</div></li><li><div class=lp>機微な資産（本人確認書類の画像）は、申込情報の本体と別の保管領域・ 別の権限に置く。本件ではそれが被害の範囲を切っている。</div><div class=lw>**本人確認書類の画像ファイルには不正アクセスがなかったことが 確認されている**（出典1）〈重要〉—— **データベースへの SQL インジェクションが成立しても 画像まで届かなかったのは、保管の場所と到達経路が 別だったからと読める**（本記録の読み。公表に基づく判定ではありません）。</div><div class=la><b>取るべき行動</b> **自社が預かる本人確認書類・契約書・診断書などの画像・文書を、 業務データベースとは別のストレージに置き、 署名付き URL など短命な権限でのみ取り出す形にする**〈重要〉—— **業務データベースの侵害だけでは画像へ届かないことを、 実際に権限を落とした環境で確認する。**</div></li><li><div class=lp>データベースの監査ログを、アプリケーションのログとは別に残す。 「持ち出されたか」を後から言い切れるかはここで決まる。</div><div class=lw>**持ち出しの有無は公表から3週間たっても調査中である**（出典1・3）〈重要〉—— **一方でアクセス記録の保全・解析は行われており、 追える記録は存在する**（出典1）—— **記録が不足しているのか解析が途上なのかは外から判定できないが、 断定に時間を要していることは事実である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **データベース側の監査ログを有効にし、アプリケーションから 改変できない場所へ送る**〈重要〉—— **1回の問い合わせが返した行数を記録に残す （件数が分からないと「何人分が見られたか」が言えない）。** **保存期間を、想定する侵入期間より長く取る。**</div></li><li><div class=lp>利用会社アカウントの認証情報が対象に入った時点で、 強制失効を既定の動作にする。</div><div class=lw>**対象情報に「サービスを利用している仲介会社のアカウント情報」が 含まれている**（出典1）〈重要〉—— **パスワードの保存形式、強制リセットの実施、 不正ログインの有無はいずれも公表されていない**（本記録の確認）。</div><div class=la><b>取るべき行動</b> **アカウント情報が対象に入る事案では、全利用会社のパスワードと API トークン・セッションを一律で失効させる手順を用意しておく**〈重要〉—— **「悪用が確認されていないから据え置く」を既定にしない。** **失効後の一定期間、ログイン試行の失敗率と地域の偏りを監視する。**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 複数の利用会社・顧客が同じアプリケーションとデータベースを共有し、 データの分離がアプリケーションの条件分岐（WHERE 句）だけで行われている</td><td class=sm>**本件では1つの脆弱性が複数の利用会社の利用環境に及んでいる** （出典1）〈重要〉—— **当てはまる場合、1箇所の実装不備が 全顧客分のデータへの到達を許す構造になっている**（本記録の評価）—— **テナント分離の作りは公表されていないため、 本件がこれに該当するとは断定しない**（本記録の留保）。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> 本人確認書類の画像や契約書などの機微な文書を、 業務データベースと同じ権限・同じ経路で取り出せる形で保管している</td><td class=sm>**本件では画像ファイルへの不正アクセスがなかったことが 確認されている**（出典1）〈重要〉—— **当てはまる場合、データベースの侵害がそのまま 本人確認書類の流出につながり、 なりすましの材料まで渡ることになる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> Web アプリケーションのログ・WAF の遮断記録を、 異常な入力や応答サイズの指標として常時監視していない</td><td class=sm>**本件の発覚はシステム開発・保守会社からの報告だった** （出典1・3）〈重要〉—— **当てはまる場合、SQL インジェクションのように ログに現れる攻撃でも、外部からの指摘を待つことになる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> データベースの監査ログを持たず、 1回の問い合わせが返した行数を記録していない</td><td class=sm>**本件では持ち出しの有無が公表から3週間後も調査中である** （出典1・3）〈重要〉—— **当てはまる場合、侵害後に出せるのは 「アクセスされた可能性がある範囲」までになり、 通知の対象が実態より広くなる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 顧客の個人情報を預けている SaaS について、 事案発生時に提供元から何日以内にどの情報を受け取れるかを 契約・手順で決めていない</td><td class=sm>**本件では利用会社が提供元より6日早く公表しており、 その告知には手口も対象項目も書かれていない**（出典1・2）〈重要〉—— **当てはまる場合、自社の顧客への説明が 提供元の調査の進度に左右され、 内容の乏しい告知を先に出さざるを得なくなる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 申込書・保証人欄・緊急連絡先欄などで本人以外の第三者の情報を取得しており、 その第三者への通知手段を決めていない</td><td class=sm>**本件の対象情報には緊急連絡先の氏名・生年月日・住所・電話番号が 含まれる**（出典1）〈重要〉—— **当てはまる場合、漏えい時に本人へ到達する経路がなく、 自分の情報が漏れたことを知らない人が残る**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月26日 株式会社GoWebクラウド</span> <a href="https://gowebcloud.co.jp/news-ir/803" target="_blank" rel="noreferrer noopener nofollow">弊社提供サービス「GoWeb」への不正アクセスに関するご報告とお詫び</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**本事案の一次公表である**〈重要〉—— **本記録が取得して確認した。** **SQL インジェクションであること、2026年10月15日に システム開発・保守会社からの報告で発覚したこと、 複数の利用会社の利用環境が影響を受けた可能性があること、 対象情報の項目、本人確認書類の画像への不正アクセスがなかったこと、 クレジットカード情報を保有していないこと、 持ち出しの有無と対象者の範囲・人数が調査中であること、 脆弱性の修正が完了していること、 同日に個人情報保護委員会へ報告したこと、 便乗詐欺への注意喚起、問い合わせ窓口（info@gowebcloud.co.jp）を 確認した。** **今後判明した事実は同ページで順次知らせるとしている。**）</span></li></ol></div><div class=rg><div class=rgt>波及先組織の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年10月20日 株式会社Good不動産</span> <a href="https://www.good-fudousan.co.jp/app/wp-content/uploads/2026/10/6224bc5384d9939bf332ddebab21c679.pdf" target="_blank" rel="noreferrer noopener nofollow">当社が利用するクラウドサービスへの不正アクセスに関するお知らせとお詫び</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**利用会社による告知の PDF であり、本記録が取得して全文を確認した**〈重要〉—— **提供元の公表（出典1）より6日早い。** **「2026年10月17日に確認いたしました」「対象となるクラウドサービスには、 入居申込者様の個人情報のほか、不動産仲介会社様の利用者情報が 保存されております」「現時点で、当該個人情報の外部への漏えい、 および不正利用については、調査中となります」との記載を確認した （原文日本語）。** **手口（SQL インジェクション）・対象情報の項目には触れていない。** **問い合わせ先は gf_contact@good-fudousan.co.jp。**）</span></li><li><span class=rid>[4]</span> <span class=sm>株式会社Goodリアルエステート</span> <a href="https://www.good-realestate.co.jp/important/" target="_blank" rel="noreferrer noopener nofollow">当社が利用するクラウドサービスへの不正アクセスに関するお知らせとお詫び</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**同名の告知が重要なお知らせページに掲載されていることを確認したが、 本記録は原文を取得できていない**〈齟齬2〉—— **掲載日・確認日・記載内容は裏取りできていない。** **検索結果には確認日を10月16日とする記述があったが、 本記録はこれを確認していない。**）</span></li><li><span class=rid>[5]</span> <span class=sm>株式会社アセットリード</span> <a href="https://assetlead.co.jp/news/" target="_blank" rel="noreferrer noopener nofollow">当社が利用するクラウドサービスへの不正アクセスに関するお知らせとお詫び</a> <span class="b kind">お知らせ・告知ページ</span><span class=sm>（**同名の告知を自社サイトに掲載していることを確認したが、 本記録は原文を取得できていない**〈齟齬2〉—— **GoWeb との関係の明記の有無、掲載日、記載内容は裏取りできていない。** **URL は日本語を含む記事個別のものが検索結果に現れたが、 本記録が到達を確認できたのはお知らせ一覧の階層までである。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月17日 ScanNetSecurity</span> <a href="https://scan.netsecurity.ne.jp/article/2026/11/17/56809.html" target="_blank" rel="noreferrer noopener nofollow">入居申込サービス「GoWeb」にSQLインジェクション攻撃</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった報道である**—— **出典1 の内容を要約しており、本記録が照合した範囲で食い違いはない。** **本人確認書類の画像とクレジットカード情報への言及はこの報道には無く、 出典1 でのみ確認できた**（本記録の確認）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月17日</span> <span class="b rev">新規作成</span> **新規作成。** **2026年11月17日収集分の記事 〈output/articles/20261117/0039_scannetsecurity_gowebsql.md〉を起点に、 一次公表を取得して裏を取った。** **一次公表（出典1・株式会社GoWebクラウド 2026年10月26日）を取得し、 報道には無い事実——本人確認書類の画像ファイルへの不正アクセスが なかったことの確認、クレジットカード情報を保有していないこと、 個人情報保護委員会への同日報告、便乗詐欺への注意喚起、 アクセス記録の保全・解析——を確認した。** **利用会社である株式会社Good不動産の告知（出典2・2026年10月20日）の PDF を取得して全文を確認し、提供元より6日早い公表であることと、 確認日が10月17日であることを確認した。** **Goodリアルエステートとアセットリードの告知は掲載の事実のみ確認し、 原文に到達できていない〈齟齬2〉。** **status は updating とした ——持ち出しの有無と対象者の人数が調査中であり、 提供元が「今後判明した事実は順次お知らせする」としているため。**</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-17 16:03 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
