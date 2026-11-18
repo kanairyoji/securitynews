@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Puppet の RCE 脆弱性が KEV 収載 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1162</span>Puppet の RCE 脆弱性が KEV 収載</h1>
+<header class="site-header">
+  <p class="subtitle">**Perforce の構成管理製品「Puppet Enterprise」のレポート処理に、 CA が署名したエージェント証明書を持つクライアントから Puppet Server 上で任意のコードを実行できる脆弱性（CVE-2026-115731・CVSS 4.0 で 9.4）があり、 CISA は2026年11月17日にこれを KEV カタログへ収載した。** **収載は「悪用が確認された」ことを意味するが、誰がどこをどう攻撃したかは公表されていない。** 修正は2026年11月3日に出ており、米連邦行政機関の対応期限は2026年12月1日である。</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">設定不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月3日（CVE レコードの公表。KEV 収載は11月17日）</span>
+  <span>最終更新: 2026年11月18日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>Perforce が提供する構成管理製品「Puppet Enterprise」に、 Puppet Server 上で任意のコードを実行できる脆弱性 CVE-2026-115731 がある。</strong> <strong>Perforce 自身の題名は「Report Deserialization Code Execution」</strong>（出典1）。 <strong>CVE レコードは2026年11月3日20時40分（UTC）に公表され、 CVSS 4.0 の基本値は 9.4（Critical）である</strong>（出典1。本記録が直接確認）。 <strong>NVD は別途 CVSS 3.1 で 9.9（Critical）を付けている</strong>（出典2。本記録が直接確認）〈齟齬2〉。 本記録が最初に書いておくべきことは、<strong>悪用の位置づけである。</strong> <strong>CISA は2026年11月17日、本脆弱性を KEV（悪用が確認された脆弱性カタログ）へ収載した</strong> （出典3。本記録がカタログの JSON を直接確認）。 <strong>KEV はその定義上「悪用が確認された」ものだけを載せる目録であり、 収載そのものが CISA による悪用確認の表明である</strong>（本記録の整理）。 <strong>ただし、誰が・どの組織を・いつ攻撃したかは公表されていない</strong>（本記録の確認）〈未確定1〉—— <strong>攻撃者、被害組織、観測件数、侵害の痕跡（IoC）はいずれもカタログにも Perforce の資料にも示されていない。</strong> <strong>また「ランサムウェアキャンペーンでの使用」は Unknown（不明）とされ、 フォレンジック・トリアージの要求対象（forensicTriage）は No である</strong>（出典3）。 <strong>対応期限は2026年12月1日</strong>（出典3）—— <strong>収載から14日であり、米連邦行政機関に対する BOD 26-04 に基づく要求である。</strong> <strong>日本の組織に対する強制力は無いが、Puppet Enterprise は サーバ群の設定を一斉に配る位置にあるため、侵害されたときの射程が広い</strong>（本記録の評価）〈重要〉。 修正版は Puppet Enterprise 2023.8.13／2025.12.1／2026.0.1、 同梱される puppet-agent は 8.22.2／9.1.3 である（出典1）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>悪用の具体（攻撃者・被害組織・時期・観測件数・侵害の痕跡）</span><span class="b rsn">公表されていない</span><div class=sm>**KEV 収載は CISA による悪用確認の表明だが、その中身は何も公表されていない** （本記録の確認）〈重要〉。 **カタログのエントリには shortDescription（脆弱性の説明）・requiredAction・dueDate・ knownRansomwareCampaignUse・forensicTriage・notes・cwes しか無く、 誰がいつ何を攻撃したかを記す欄は存在しない**（出典3。本記録が JSON の全フィールドを確認）。 **したがって「悪用が確認された」以上のことは、本記録も言えない。** **ランサムウェアキャンペーンでの使用は Unknown（不明）と明記されており、 「使われていない」ではなく「分かっていない」である**（出典3）—— **この区別を落とすと、ランサムウェア前提の優先順位付けを誤る**（本記録の評価）。 **また forensicTriage が No であることは、CISA が本件について 連邦機関へ侵害調査の実施を要求していないことを意味する**（出典3。読みは本記録の整理）。</div></li><li><span class=ui>日本国内での悪用・影響の有無</span><span class="b rsn">公表されていない</span><div class=sm>**日本国内の被害・観測についての公表は確認できていない**（本記録の確認）。 **JPCERT/CC・IPA による注意喚起も、2026年11月18日時点では確認できていない** 〈未確定5〉。 **日本語での情報は Security NEXT の報道のみである**（出典4）。 **Puppet Enterprise の国内導入規模を示す公開統計も見つかっていない**（本記録の確認）—— **したがって「国内で何台が対象か」は本記録では answer できない。**</div></li><li><span class=ui>報告者（発見者）</span><span class="b rsn">公表されていない</span><div class=sm>**CVE レコードは &quot;source: {discovery: EXTERNAL}&quot; と記すのみで、 報告者名を記載していない**（出典1。本記録が確認）。 **外部からの報告であることは分かるが、研究者名・所属・報告日は分からない。** **謝辞を載せる欄（credits）自体がレコードに存在しない**（本記録の確認）。</div></li><li><span class=ui>実証コード（PoC）の公開状況</span><span class="b rsn">検証できない</span><div class=sm>**一部の二次情報は「完全な実証コードが公開されている」と述べているが、 本記録の作成者は一次資料でこれを確認できていない**（本記録の明示）〈重要〉。 **確認できたのは、CVE レコードの references が Perforce のアドバイザリ 1 件のみを挙げていることである**（出典1）。 **KEV カタログの notes も Perforce のアドバイザリ・BOD 26-04 の2文書・NVD の 4つの URL だけで、実証コードへの言及は無い**（出典3。本記録が確認）。 **「PoC が出ている」を前提に優先度を上げることは妥当だが、 本記録はその事実を裏付けていない。**</div></li><li><span class=ui>日本の公的機関（JPCERT/CC・IPA）による注意喚起の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**2026年11月18日時点で、JVN・JPCERT/CC の注意喚起は確認できていない** （本記録の確認）。 **「出ていない」と断定はしない**——**本記録の確認方法は収集済み記事と 検索に限られ、網羅的ではない**（本記録の明示）。</div></li><li><span class=ui>緩和策（パッチを当てられない場合の暫定対処）の公式な指示</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が確認できた一次資料に、暫定の緩和策は書かれていない**（本記録の確認）。 **CVE レコードの solutions は更新と puppet server の再起動のみである**（出典1）。 **KEV の requiredAction は「ベンダーの指示に従え／緩和策が無ければ使用を中止せよ」であり、 具体的な回避方法を示していない**（出典3）。 **autosign を止めることが有効な絞り込みになるのは説明文から読み取れるが、 Perforce がそれを緩和策として明示したかは確認できていない**（本記録の整理）〈齟齬1〉。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Perforce Software</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米国サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>NIST NVD（米国国立標準技術研究所 National Vulnerability Database）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Security NEXT</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS 4.0 基本値（Perforce／CNA の評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.4<span class=fu>点</span></div><div class=fn>**ベクタは CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H、 深刻度は CRITICAL**（出典1。本記録が CVE レコードを直接確認）。 **評点は被害額でも期間でもないため、金額・期間の集計には用いない** （本記録の整理）。</div></div><div class=fig><div class=fh><span class=fl>CVSS 3.1 基本値（NVD の評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.9<span class=fu>点</span></div><div class=fn>**ベクタは CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H、深刻度は CRITICAL** （出典2。本記録が API から直接確認）。 **Perforce の 9.4 との差は尺度の違い（4.0 と 3.1）であって評価の対立ではない** （本記録の整理）〈齟齬2〉——**ただし「CVSS 9.0 以上は48時間以内」のような 数値だけの社内規則では、どちらを採るかで扱いが変わる**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>KEV カタログの収載総数（版 2026.11.17 時点）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1,782<span class=fu>件</span></div><div class=fn>**カタログの JSON の count フィールドの値である**（出典3。本記録が直接確認）。 **本事案の規模ではなく、KEV という目録の大きさを示す背景値である。**</div></div><div class=fig><div class=fh><span class=fl>2026年11月17日に KEV へ追加された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>1<span class=fu>件</span></div><div class=fn>**カタログ全1,782件の dateAdded を走査し、2026年11月17日に追加されたものを数えた** （本記録が算出）〈重要〉——**本脆弱性のみであった。** **複数件をまとめた定期更新ではなく単独の追加であり、 CISA が本件を切り離して扱ったことを示す**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>CVE 公表から KEV 収載までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**2026年11月3日（CVE 公表）から2026年11月17日（KEV 収載）までの差である** （本記録が算出）。 **修正が出てから悪用が確認されるまでに2週間あったことになる**（本記録の整理）〈重要〉—— **ただし悪用が始まった時点は公表されていないため、 これは「公表から確認まで」であって「修正から悪用まで」ではない**（本記録の整理）〈未確定1〉。</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から米連邦行政機関の対応期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>14<span class=fu>日</span></div><div class=fn>**2026年11月17日の収載に対し、期限は2026年12月1日である** （出典3。日数は本記録が算出）。 **日本の組織に強制力は無いが、構成管理基盤の更新計画を立てる際の目安になる** （本記録の評価）。</div></div></div></div>
+<section id="s4"><h2>KEV 収載は「悪用が確認された」ことを意味するが、その中身は何も公表されていない<span class="b slot">帰属</span></h2><p>本件で最初に押さえるべきは、悪用の位置づけである。</p>
+<p><strong>CISA は2026年11月17日17時53分（UTC）、KEV カタログの版 2026.11.17 でCVE-2026-115731 を収載した</strong>（出典3。本記録がカタログの JSON を直接確認）。KEV は「悪用が確認された脆弱性」の目録であり、<strong>収載そのものがCISA による悪用確認の表明である</strong>（本記録の整理）。前日まで「悪用の確認なし」だった脆弱性が、この日に段階を1つ上げた。</p>
+<p>ところが、<strong>その中身は何も公表されていない</strong>（本記録の確認）。カタログのエントリに含まれるのは次のフィールドだけである（出典3）。</p>
+<table>
+<thead>
+<tr>
+<th>フィールド</th>
+<th>本件の値</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>dateAdded</td>
+<td>2026-11-17</td>
+</tr>
+<tr>
+<td>dueDate</td>
+<td>2026-12-01</td>
+</tr>
+<tr>
+<td>knownRansomwareCampaignUse</td>
+<td>Unknown（不明）</td>
+</tr>
+<tr>
+<td>forensicTriage</td>
+<td>No</td>
+</tr>
+<tr>
+<td>cwes</td>
+<td>CWE-502, CWE-94</td>
+</tr>
+<tr>
+<td>notes</td>
+<td>Perforce アドバイザリ・BOD 26-04 の2文書・NVD の URL</td>
+</tr>
+</tbody>
+</table>
+<p><strong>攻撃者、被害組織、観測の時期、観測件数、侵害の痕跡（IoC）を記す欄はそもそも存在しない。</strong> したがって本記録も「悪用が確認された」以上のことは言えない〈未確定1〉。</p>
+<p>ここで2つ、読み間違えやすい点がある（本記録の評価）。</p>
+<p><strong>第一に、<code>knownRansomwareCampaignUse: Unknown</code> は「使われていない」ではない。</strong>「分かっていない」である。ランサムウェアでの使用が確認された脆弱性を優先する運用をしている組織は、この値で優先度を下げてしまう。</p>
+<p><strong>第二に、<code>forensicTriage: No</code> は「侵害の可能性が低い」ではない。</strong>これは BOD 26-04 の枠組みで、CISA が連邦機関に対して侵害調査（フォレンジック・トリアージ）の実施まで要求するかどうかの指定である（出典3。読みは本記録の整理）。要求されていないことは、自組織で痕跡を調べなくてよいという判断の根拠にはならない。</p>
+<p>なお、<strong>この日に KEV へ追加されたのは本件1件のみである</strong>（出典3。本記録が全1,782件の dateAdded を走査して確認）〈重要〉。複数件をまとめた定期更新の一部ではなく、単独の追加だった。</p></section>
+<section id="s5"><h2>悪用の前提は「インターネット公開」ではなく「エージェント1台の掌握」である<span class="b slot">原因・手口</span></h2><p>技術的な条件を、一次資料の記述のまま置く（出典1・2・3）。</p>
+<blockquote>
+<p><strong>「Puppet のレポート処理コードにおける信頼できないデータのデシリアライズにより、CA が署名した任意のエージェント証明書を持つクライアントは、細工した rich-data 型を含むレポートを PUT 要求で送ることによって、Puppet Server 上でそのサービス実行ユーザとして任意のコードを実行できる。認証局が強い検証なしに署名要求を自動署名している場合は、認証を持たないネットワーク上の攻撃者が有効な証明書を取得して悪用できる。」</strong>（原文英語。本記録が訳した）</p>
+</blockquote>
+<p>読むべき点は3つある（本記録の整理）。</p>
+<p><strong>① 経路が正規の API である。</strong> Puppet のエージェントは適用結果をレポートとして Puppet Server へ PUT で送る。攻撃者は脆弱な入口を探す必要がなく、<strong>エージェントが毎回使っている経路に危険な型を混ぜるだけでよい。</strong>通信の見かけは正規のレポート送信と変わらない。</p>
+<p><strong>② 必要なのは「CA 署名済み証明書」である。</strong> CVSS 4.0 のベクタが PR:L（低い権限が必要）になっているのはこの前提である（出典1）。<strong>正規のエージェント1台が侵害されれば、条件は満たされる</strong>（本記録の評価）。末端のサーバ1台の侵害が、構成管理基盤の掌握に接続する。</p>
+<p><strong>③ 自動署名の構成では、前提が「ネットワーク到達性のみ」に落ちる。</strong>認証局が署名要求を強い検証なしに自動署名していると、攻撃者は自分で証明書を取得できる（出典1・2・3）。自動署名はクラウド環境でノードを自動増設するために広く使われる設定であり、<strong>「便利だから入れてある設定」が、必要権限を LOW から NONE へ落とす</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>だから「Puppet Server をインターネットに公開していないから対象外」という読み方は成立しない</strong>（本記録の評価）。本脆弱性は、社内に入った攻撃者が横展開の一手として使う形に向いている。CISA が要求行動で「資産ごとのインターネット露出を評価する責任」に触れているのはBOD 26-04 の優先順位付けの枠組みであって（出典3）、露出していなければ対象外という意味ではない（読みは本記録の整理）。</p></section>
+<section id="s6"><h2>構成管理基盤の侵害は「1台の侵害」では終わらない<span class="b slot">評価・解釈</span></h2><p>本脆弱性の深刻さは、CVSS の数値よりも<strong>侵害される対象の位置</strong>にある（本記録の評価）。</p>
+<p>Puppet Enterprise は、配下のサーバ群に対して次のものを中央から配る位置にいる。</p>
+<ul>
+<li>OS とミドルウェアの構成・パッケージ</li>
+<li>設定ファイル（認証・ネットワーク・ログ出力の設定を含む）</li>
+<li>秘密情報（Hiera／eyaml 経由の資格情報、SSH 鍵、API トークン）</li>
+<li>実行されるスクリプト（exec リソース）</li>
+</ul>
+<p><strong>Puppet Server を掌握した攻撃者は、配下ノードへ「正規の構成変更」として任意の処理を配布できる</strong>（本記録の評価）〈重要〉。エージェント側のログには、通常の構成適用として記録される。</p>
+<p>実行権限について、一次資料は「サービス実行ユーザとして」と書いており、root とは明記していない（出典1。本記録の確認）。<strong>しかし権限の高低より、その役割が問題である</strong>（本記録の評価）——サービス実行ユーザは、配布すべき構成と秘密情報に読み取りで届く。</p>
+<p><strong>検知の観点でも不利である</strong>（本記録の評価）。構成管理は「サーバの設定が勝手に変わる」ことを正常な動作として持つ仕組みであり、設定変更の検知だけでは異常として浮かばない。浮かび上がるのは、<strong>配布された内容を誰が承認したかを突き合わせたときだけである。</strong>コードとして管理している構成（Git のコミット）と、実際に Puppet Server から配られた構成の差分を取る仕組みを持っていない組織では、この突き合わせができない。</p></section>
+<section id="s7"><h2>同じ欠陥に 9.4 と 9.9 の2つの評点がある<span class="b slot">評価・解釈</span></h2><p>本脆弱性には、公的な評点が2つある（本記録が両方を直接確認）。</p>
+<table>
+<thead>
+<tr>
+<th>評価主体</th>
+<th>尺度</th>
+<th>基本値</th>
+<th>ベクタ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Perforce（CNA）</td>
+<td>CVSS 4.0</td>
+<td><strong>9.4</strong>（Critical）</td>
+<td>AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H</td>
+</tr>
+<tr>
+<td>NVD（NIST）</td>
+<td>CVSS 3.1</td>
+<td><strong>9.9</strong>（Critical）</td>
+<td>AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H</td>
+</tr>
+</tbody>
+</table>
+<p><strong>これは評価の対立ではなく、尺度の違いである</strong>（本記録の整理）〈齟齬2〉—— CVSS 4.0 と 3.1 は計算式が違い、同じ条件でも数値が一致しない。NVD が Scope を Changed（S:C）と見ていることが 9.9 を押し上げている。</p>
+<p>実務上の問題は、<strong>社内規則が数値だけで期限を決めている場合である</strong>（本記録の評価）。「CVSS 9.5 以上は48時間以内、9.0〜9.5 は7日以内」のような規則では、どちらの数値を採るかで初動の期限が変わる。そして本件は<strong>すでに KEV に載っている</strong>（出典3）——評点で揉めるより、「悪用が確認されたか」を先に見る規則のほうが本件では速い（本記録の評価）。</p>
+<p>なお日本語で報じた Security NEXT は CVSS 4.0 の 9.4 を採っており、一次資料（Perforce の CVE レコード）と一致している（出典1・4。本記録が突き合わせて確認）。</p></section>
+<section id="s8"><h2>修正は2週間前に出ており、問われるのは「出た修正をいつ当てたか」である<span class="b slot">再発防止</span></h2><p>時系列を並べると、本件の性質が見える（本記録の整理）。</p>
+<table>
+<thead>
+<tr>
+<th>日付（UTC）</th>
+<th>出来事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2026-10-23 11:46</td>
+<td>CVE 識別子が予約される（出典1）</td>
+</tr>
+<tr>
+<td>2026-11-03 20:40</td>
+<td>Perforce が CVE レコードを公表（修正版も同時期に提供）（出典1）</td>
+</tr>
+<tr>
+<td>2026-11-03 21:17</td>
+<td>NVD が収録（出典2）</td>
+</tr>
+<tr>
+<td>2026-11-17 17:53</td>
+<td>CISA が KEV へ収載（悪用の確認）（出典3）</td>
+</tr>
+<tr>
+<td>2026-12-01</td>
+<td>米連邦行政機関の対応期限（出典3）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CVE 公表から KEV 収載までは14日である</strong>（本記録が算出）。<strong>ゼロデイではない</strong>——修正は2週間前に出ていた（本記録の整理）〈重要〉。ただし悪用が始まった時点は公表されていないため、「修正が出てから2週間後に悪用が始まった」とは言えない〈未確定1〉。言えるのは「公表から14日で、CISA が悪用を確認する段階に達した」ことである。</p>
+<p><strong>対応は2段階で、2段目を落としやすい</strong>（本記録の評価）。Perforce の解決策の記述は次のとおりである（出典1。原文英語。本記録が訳した）。</p>
+<blockquote>
+<p><strong>「puppet-agent 8.22.2 または 9.1.3 を同梱する版（Puppet Enterprise 2023.8.13、2025.12.1、2026.0.1）へ更新し、修正コードが読み込まれるようにpuppet server を再起動せよ。」</strong></p>
+</blockquote>
+<p><strong>再起動が明示されている。</strong>構成管理基盤は「止めると配布が止まる」位置にあるため、更新と再起動の間に調整が入りやすい。<strong>「更新は済んだ」と「再起動して効いた」がずれていると、パッチ適用の記録上は対応済みでも脆弱なままである</strong>（本記録の評価）。</p>
+<p>影響版の記載にも落とし穴がある（出典1。本記録の確認）。CVE レコードの <code>defaultStatus</code> は <code>affected</code> で、列挙されているのは3つの範囲と、非影響として明記された3つの版だけである。<strong>列挙外の古い系列を「対象外」と読んではいけない</strong>（本記録の整理）〈重要〉——明示的に非影響とされているのは 2023.8.13／2025.12.1／2026.0.1 の3つだけである。</p></section>
+<section id="s9"><h2>Perforce の公式アドバイザリ本文は、本記録の作成者には読めなかった<span class="b slot">未確定事項</span></h2><p>本記録は一次資料で裏を取ることを方針としているため、<strong>取れなかったものを明示しておく</strong>（本記録の明示）〈齟齬1〉。</p>
+<p><strong>取得できたもの</strong>（本記録が直接確認）。</p>
+<ol>
+<li><strong>CVE レコード</strong>（cveawg.mitre.org の API）—— Perforce が CNA として登録した内容そのもの。題名・説明・CWE・CAPEC・影響版・解決策・CVSS 4.0・発見経路（EXTERNAL）を確認した。レコードの最終更新は2026年11月18日04時55分49秒（UTC）。</li>
+<li><strong>NVD の API</strong>——状態 Analyzed、CVSS 3.1 で 9.9、最終更新2026年11月18日05時19分（UTC）。</li>
+<li><strong>KEV カタログの JSON</strong>——版 2026.11.17、公表2026年11月17日17時53分15秒（UTC）、収載総数1,782件、本件が同日唯一の追加であること。</li>
+</ol>
+<p><strong>取得できなかったもの。</strong></p>
+<p><strong>Perforce の公式アドバイザリ本文</strong>（<code>portal.perforce.com/s/cve/a91Qi000003IaHpIAK/report-deserialization-code-execution</code>）は、HTTP 200 で応答するが中身が JavaScript で描画される Salesforce の画面であり、本文テキストを取り出せなかった（本記録の確認）。<strong>したがって、アドバイザリ本文にのみ書かれている情報（緩和策の有無、悪用に関する記述、報告者への謝辞など）は本記録に反映されていない</strong>〈未確定6〉。</p>
+<p>CVE レコードは Perforce 自身が登録したものなので、<strong>本記録が依拠しているのは「Perforce の一次情報」ではある</strong>（本記録の整理）。ただし<strong>アドバイザリ本文より情報量が少ない可能性は残る。</strong>対応にあたる読者は、Perforce のポータルを直接ブラウザで開いて確認してほしい。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Puppet Enterprise（Puppet Server のレポート処理）　<b>ベンダー:</b> Perforce Software　<b>CVE番号:</b> CVE-2026-115731　<b>バージョン:</b> **影響**: 2023.8.0 以上 2023.8.13 未満／2025.0.0 以上 2025.12.1 未満／ 2026.0.0 以上 2026.0.1 未満（出典1・2。本記録が CVE レコードの affected を直接確認）。 **非影響として明記**: 2023.8.13／2025.12.1／2026.0.1（出典1）。 **defaultStatus は affected であり、列挙外の版は「影響する」側に寄せられている** （出典1。読みは本記録の整理）〈重要〉—— **古い系列（2023.8.0 未満など）を「対象外」と読んではいけない。**　<b>概要:</b> **信頼できないデータのデシリアライズ（CWE-502）と、 コード生成の不適切な制御（CWE-94）**（出典1・3）。 **Puppet のレポート処理コードが、細工された rich-data 型を含むレポートを デシリアライズする際に、任意のコード実行に至る**（出典1・2・3）。　<b>症状:</b> **「CA が署名したエージェント証明書を持つクライアントは、 細工した rich-data 型を含むレポートを PUT 要求で送ることにより、 Puppet Server 上でそのサービス実行ユーザとして任意のコードを実行できる」** （出典1・2・3。原文英語。本記録が訳した）〈重要〉。 **実行権限は Puppet Server のサービス実行ユーザであり、 root とは明記されていない**（出典1。本記録の確認）—— **ただし Puppet Server は配下ノードの設定・秘密情報を保持・配布する位置にあるため、 サービスユーザの掌握で得られる射程は広い**（本記録の評価）。　<b>手法:</b> **経路はレポート送信の API である**（出典1・2・3）—— **Puppet のエージェントは適用結果をレポートとして Puppet Server へ PUT で送る。 この正規の経路に、デシリアライズで危険な型を混ぜる。** **「rich-data 型」は Puppet が構造化データを表現するための型体系であり、 これを細工することがコード実行の引き金になる**（出典1。読みは本記録の整理）。 **アプリケーションの脆弱な入口を探す必要はなく、 エージェントが日常的に使う経路をそのまま使える**（本記録の評価）〈重要〉。　<b>preconditions:</b> **2通りある**（出典1・2・3。整理は本記録）。 ①**通常の構成**: 攻撃者が「CA が署名したエージェント証明書」を持っている。 **正規のエージェント1台が侵害されれば条件を満たす**（本記録の評価）—— **CVSS で PR:L（低い権限が必要）とされているのはこの状態である。** ②**自動署名の構成**: 認証局が証明書署名要求を強い検証なしに自動署名している場合、 **認証を持たないネットワーク上の攻撃者が有効な証明書を取得して悪用できる**（出典1・2・3）。 **②に当たる組織では、前提が「ネットワーク到達性のみ」まで落ちる**（本記録の整理）〈重要〉。</div></td></tr><tr><th>fix</th><td><b>releases:</b> Puppet Enterprise 2023.8.13、Puppet Enterprise 2025.12.1、Puppet Enterprise 2026.0.1　<b>bundled_agent:</b> puppet-agent 8.22.2、puppet-agent 9.1.3　<b>puppet_core_versions_reported:</b> Puppet Core 9.1.3、Puppet Core 8.22.2　<b>puppet_core（補足）:</b> **Puppet Core の版番号は出典4（Security NEXT）の記載である**〈齟齬3〉—— **本記録が確認できた一次資料（出典1）は puppet-agent の版として 8.22.2／9.1.3 を挙げており、Puppet Core という製品名での記載は無い** （本記録の確認）。 **番号は一致しているため同一のものを指している可能性が高いが、 本記録は一次資料で裏を取れていない**（本記録の明示）。　<b>required_step:</b> **更新だけでは足りない**——**「修正コードを読み込ませるために puppet server を 再起動せよ」と Perforce が明示している**（出典1。原文英語。本記録が訳した）〈重要〉。 **構成管理基盤は停止の調整が要る位置にあるため、 「更新は済んだ」と「再起動して効いた」がずれやすい**（本記録の評価）。　<b>状況:</b> stated</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **更新できない期間は、認証局の自動署名（autosign）を無効化するか、 署名要求に強い検証（事前共有の課題文・ホスト名の照合等）を課す**（本記録の推奨。 根拠は出典1・2・3の「autosign without strong verification」という条件記述）。　<b>副作用:</b> **新規ノードの登録が手作業になる**（本記録の評価）〈重要〉—— **オートスケールする環境では、ノードの増設が止まる。** **自動署名はクラウド環境の運用を成立させている仕組みであることが多く、 止めると構成管理そのものが追従しなくなる。**</div><div class=sub><b>手順:</b> **Puppet Server のレポート受信口（PUT によるレポート送信）を、 既知のエージェントの送信元に限定する**（本記録の推奨）。　<b>副作用:</b> **出先・在宅のノードや動的 IP のノードがレポートを送れなくなり、 「適用できているが結果が見えない」状態が生じる**（本記録の評価）—— **設定のドリフト検知が止まるため、別の見落としを招く。**</div><div class=sub><b>手順:</b> **Puppet Server のサービス実行ユーザの権限と、 同サーバが保持する秘密情報（Hiera の eyaml 鍵・SSH 鍵・API トークン）の 棚卸しを行い、掌握されたときの射程を先に把握する**（本記録の推奨）。　<b>副作用:</b> **棚卸しの過程で、所有者が決まっていない秘密情報が出てくる**（本記録の評価）—— **回収・更新の工数が本件の対応とは別に発生し、 パッチ適用そのものが後ろへずれる危険がある。**</div><div class=sub><b>手順:</b> **既存のエージェント証明書を棚卸しし、退役済み・用途不明のものを失効させる** （本記録の推奨。根拠は「任意の CA 署名済み証明書で成立する」という条件）。　<b>副作用:</b> **失効の判断を誤ると稼働中のノードが構成管理から外れる**（本記録の評価）—— **外れたノードは静かに古い設定のまま残るため、気づくのが遅れる。**</div><div class=fn>**本欄は本記録の推奨であり、Perforce・CISA が緩和策として示したものではない** （本記録の明示）〈未確定6〉—— **両者が示しているのは「更新せよ」「緩和策が無ければ使用を中止せよ」だけである** （出典1・3）。</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年11月3日 20時40分（UTC）</td><td class=nowrap><span class="b kind">公表</span></td><td>**Perforce が CNA として CVE-2026-115731 のレコードを公表した**（出典1）。 **題名「Report Deserialization Code Execution」、CWE-502 および CWE-94、 CAPEC-586（オブジェクトインジェクション）および CAPEC-242（コードインジェクション）、 CVSS 4.0 で 9.4（Critical）。** **影響は Puppet Enterprise 2023.8.0〜2023.8.13未満／2025.0.0〜2025.12.1未満／ 2026.0.0〜2026.0.1未満。修正版は 2023.8.13／2025.12.1／2026.0.1。** **CVE 識別子の予約は2026年10月23日11時46分（UTC）であった**（出典1）。</td></tr><tr><td class="sm nowrap tw">2026年11月3日 21時17分（UTC）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**NVD が本脆弱性を収録した**（出典2）。 **NVD は CVSS 3.1 で 9.9（Critical）を付与し、Scope を Changed と評価した。**</td></tr><tr><td class="sm nowrap tw">2026年11月17日 17時53分（UTC。カタログ版 2026.11.17）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA が本脆弱性を KEV カタログへ収載した**（出典3）。 **収載により、CISA が実際の悪用を確認したことが示された。** **米連邦行政機関の対応期限は2026年12月1日。** **この日の追加は本件1件のみで、カタログの総数は1,782件になった** （出典3。本記録が全件を走査して確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月18日 03時31分（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Security NEXT が日本語で報じた**（出典4）。 **日本語での注意喚起として最初に確認できたものである**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月18日（本記録の作成時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が一次資料を確認した**（本記録の観測）。 **確認したもの**: ①CVE レコード（cveawg.mitre.org の API。更新時刻 2026年11月18日04時55分49秒 UTC）、②NVD の API（状態 Analyzed・ 最終更新2026年11月18日05時19分 UTC）、③KEV カタログの JSON（版 2026.11.17）。 **取得できなかったもの**: Perforce の公式アドバイザリ本文（portal.perforce.com は JavaScript で描画されるため本文が取れない）〈齟齬1〉。 **日本の公的機関（JPCERT/CC・IPA）による注意喚起は、この時点では確認できていない** （本記録の確認）〈未確定5〉。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>Perforce の公式アドバイザリ本文を本記録の作成者が取得できていない</span><div class=sm>**CVE レコードが唯一の参考文献として挙げているアドバイザリ （portal.perforce.com/s/cve/a91Qi000003IaHpIAK/report-deserialization-code-execution）は、 HTTP 200 で応答するが中身が JavaScript で描画される Salesforce の画面であり、 本文テキストを取り出せなかった**（本記録の確認）〈重要〉。 **したがって、アドバイザリ本文にのみ書かれている情報 （緩和策の有無、悪用に関する記述、報告者への謝辞など）は本記録に反映されていない。** **本記録が依拠しているのは、Perforce が CNA として登録した CVE レコード（出典1）である** ——これも Perforce の一次情報だが、アドバイザリ本文より情報量が少ない可能性がある。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CVSS の基本値が評価主体によって 9.4 と 9.9 に分かれている</span><div class=sm>**Perforce（CNA）は CVSS 4.0 で 9.4（Critical）、 NVD は CVSS 3.1 で 9.9（Critical）を付けている**（出典1・2。本記録が両方を直接確認）。 **尺度が違うため数値は一致しない**——**評価の対立ではない**（本記録の整理）。 **差を生んでいるのは NVD が Scope を Changed（S:C）と見ている点である** （出典2。読みは本記録の整理）。 **実務上は「CVSS 9.5 以上は48時間以内」のような数値だけの規則で 扱いが変わりうるため、本記録は両方を併記する。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Puppet Core の版番号が一次資料で確認できていない</span><div class=sm>**Security NEXT は修正版として「Puppet Core 9.1.3」「同8.22.2」を挙げている**（出典4）。 **一方、本記録が確認できた一次資料（出典1）は puppet-agent 8.22.2／9.1.3 という記載であり、 「Puppet Core」という製品名での記載は無い**（本記録の確認）。 **番号が一致しているため同一のものを指している可能性が高いが、 本記録は一次資料で裏を取れていない**（本記録の明示）—— **Perforce のアドバイザリ本文が読めていないことと同じ原因である**〈齟齬1〉。</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>「実証コードが公開されている」という二次情報を裏付けられていない</span><div class=sm>**一部の二次情報は本脆弱性の完全な実証コードが公開されていると述べているが、 本記録の作成者は一次資料でこれを確認できていない**（本記録の明示）〈重要〉。 **確認できたのは、CVE レコードの references が Perforce のアドバイザリ 1 件のみで 実証コードへの言及が無いこと**（出典1）、 **および KEV カタログの notes が Perforce のアドバイザリ・BOD 26-04 の2文書・ NVD の4つの URL だけで実証コードに触れていないことである**（出典3）。 **「PoC が出ているから優先度を上げる」という判断自体は妥当だが、 本記録はその前提を裏付けていない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>悪用の具体が KEV 収載以外のどこにも示されていない</span><div class=sm>**CISA は KEV 収載により悪用を確認したことを示したが、 攻撃者・被害組織・観測時期・観測件数・侵害の痕跡を公表していない** （出典3。本記録がカタログの全フィールドを確認）〈重要〉。 **カタログのデータ構造自体にそれらを記す欄が無い。** **Perforce の CVE レコードにも悪用に関する記述は無く、 CVSS 4.0 の exploitMaturity は NOT_DEFINED のままである**（出典1。本記録が確認）—— **CNA 側は悪用の段階を評点に反映していない。** **したがって本記録は「悪用が確認された」以上のことを書けない**〈未確定1〉。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>正規のレポート送信経路に細工した型を混ぜると Puppet Server 側でコードが実行される</div><div class=svgwrap><svg viewBox="0 0 1202 174" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,48.0 C193.0,48.0 193.0,48.0 220,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,48.0 C193.0,48.0 193.0,126.0 220,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,48.0 C397.0,48.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,126.0 C397.0,126.0 397.0,48.0 424,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,48.0 C601.0,48.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,87.0 C805.0,87.0 805.0,87.0 832,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,87.0 C1009.0,87.0 1009.0,48.0 1036,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,87.0 C1009.0,87.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C601.0,126.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,117.0 C295.0,117.0 295.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="25.0" width="150" height="46" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="47.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者</text><rect x="220" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害された正規のエージェ</text><text x="295.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ント（CA署名済み証明書</text><text x="295.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を保有）</text><rect x="220" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">自動署名の認証局（強い検</text><text x="295.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">証なし）— 証明書を自力</text><text x="295.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で取得できる</text><rect x="424" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Puppet Serve</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r のレポート受信API</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（PUT・正規の経路）</text><rect x="628" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">レポート処理のデシリアラ</text><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イズ（細工した rich</text><text x="703.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-data 型／CWE…</text><rect x="832" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Puppet Serve</text><text x="907.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">r 上での任意コード実行</text><text x="907.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（サービス実行ユーザ）</text><rect x="1036" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配布対象の構成・秘密情報</text><text x="1111.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（Hiera/eyaml</text><text x="1111.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・SSH鍵・APIトー…</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配下の全ノード（正規の構</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">成変更として処理を受け取</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る）</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Puppet Enter</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">prise 2023.8</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">.13／2025.12…</text><rect x="16" y="85.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="107.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV 収載（</text><text x="91.0" y="121.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2026年11月17日・</text><text x="91.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">期限2026年12月1…</text></svg></div><div class=fn>出典1・2・3の記述から、本脆弱性が成立する経路と前提条件の分岐を整理した図である （整理は本記録）。 **点線は、公表資料で確定していない部分（実際の悪用の具体）および 自動署名の構成でのみ成立する経路を表す。** **左下の「自動署名」を通る経路では、攻撃者は正規のエージェントを侵害せずに 証明書を取得できる**（出典1・2・3）。 **2026年11月17日に CISA が KEV へ収載したことで悪用の確認が示されたが、 誰がどこを攻撃したかは公表されていない**（出典3）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class="absent">公表された情報では攻撃の段階を分解できないため、段階ごとの検知機会と対策は整理できていません。外部からの攻撃ではない事案では、この節は該当しません。</div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「KEV に載った」を優先度の引き金にする規則を持っていないと、 CVSS の数値をめぐる議論で初動が遅れる。本件は評点が 9.4 と 9.9 に分かれている。</div><div class=lw>**同じ欠陥に Perforce の CVSS 4.0 で 9.4、NVD の CVSS 3.1 で 9.9 という 2つの公的な評点がある**（出典1・2。本記録が両方を直接確認）〈重要〉。 **尺度が違うため数値は一致しないが、社内規則が数値だけで期限を決めていると どちらを採るかで扱いが変わる**（本記録の評価）。 **一方で KEV 収載は二値である**——載っているか、いないか（出典3）。 **本件はすでに載っている。**</div><div class=la><b>取るべき行動</b> **脆弱性対応規程に「KEV 収載済みは、CVSS の値にかかわらず最上位」という 一行を置く**（本記録の推奨）。 **そのうえで KEV カタログの JSON を日次で取得し、 自組織の資産台帳の製品名と突き合わせる仕組みを作る**—— **カタログは機械可読で公開されており、vendorProject と product で照合できる**（出典3）。 **「CISA の発表を人が読む」運用では、単独追加（本件のように1日1件）を取り落とす。**</div></li><li><div class=lp>KEV の `knownRansomwareCampaignUse: Unknown` を「ランサムウェアでは使われていない」と 読む運用になっていると、優先度を下げてしまう。</div><div class=lw>**本件の値は Unknown（不明）である**（出典3。本記録が JSON を直接確認）〈重要〉。 **「使われていない」ではなく「分かっていない」である。** **ランサムウェアでの使用が確認された脆弱性を優先する運用は合理的だが、 Unknown を「否」として扱うと、収載直後の脆弱性は構造的に後回しになる** （本記録の評価）——**悪用が広がるのはまさにその時期である。**</div><div class=la><b>取るべき行動</b> **社内の判定表で `Unknown` を独立した第3の値として扱い、 「否」と同じ扱いにしない**（本記録の推奨）。 **併せて `forensicTriage` の値も「侵害調査が要るか」の判断根拠にしない**—— **これは CISA が米連邦機関に要求するかどうかの指定であって、 自組織のリスク評価ではない**（出典3。読みは本記録の整理）。</div></li><li><div class=lp>構成管理基盤・CI/CD・資産管理のような「全サーバへ届く仕組み」を、 通常のサーバと同じ優先度の枠で管理していると、1台の侵害が全体に接続する。</div><div class=lw>**Puppet Server は配下ノードの構成・設定・秘密情報・実行スクリプトを 中央から配る位置にある**（本記録の評価）〈重要〉。 **掌握した攻撃者は「正規の構成変更」として任意の処理を配布でき、 エージェント側のログには通常の適用として記録される。** **本脆弱性の前提は「CA 署名済み証明書を持つクライアントからの到達」であり、 末端サーバ1台の侵害が条件を満たす**（出典1・2・3）。</div><div class=la><b>取るべき行動</b> **資産台帳に「射程（この機器を掌握したら何台に届くか）」の欄を設け、 射程が一定数を超える機器を別の管理区分に移す**（本記録の推奨）。 **別区分に対しては、①パッチ適用の期限を短くする、 ②ネットワーク上の到達元を明示的に限定する、 ③配布された内容と承認記録（Git のコミット等）の差分を定期に突き合わせる、 の3点を標準とする。**</div></li><li><div class=lp>「更新したか」しか追っていない運用では、本件のように再起動が必要な修正で 「対応済みだが脆弱なまま」の状態が生まれる。</div><div class=lw>**Perforce は解決策に「修正コードが読み込まれるように puppet server を 再起動せよ」と明示している**（出典1。原文英語。本記録が訳した）〈重要〉。 **構成管理基盤は停止の調整が要る位置にあるため、 更新と再起動の間に時間が空きやすい**（本記録の評価）。 **パッチ管理台帳が版番号だけを見ていると、この空白が見えない。**</div><div class=la><b>取るべき行動</b> **パッチ適用の完了条件を「版が上がったこと」ではなく 「修正が有効になったこと」と定義し直す**（本記録の推奨）—— **再起動・サービス再読込・設定反映が必要な製品を一覧にし、 台帳にその欄を持たせる。** **確認は版番号の照会ではなく、プロセスの起動時刻で行う。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>認証局の自動署名（autosign）を有効にしているかどうかが、本件の必要権限を 「証明書の保有」から「ネットワーク到達性のみ」へ変える。まずここを確認する。</div><div class=lw>**一次資料は「認証局が強い検証なしに署名要求を自動署名している場合は、 認証を持たないネットワーク上の攻撃者が有効な証明書を取得して悪用できる」と 明記している**（出典1・2・3。原文英語。本記録が訳した）〈重要〉。 **自動署名はクラウド環境でノードを自動増設するために広く使われる設定であり、 「便利だから入れてある」ものが前提条件を一段下げる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **Puppet Server の `autosign` 設定（`puppet.conf` の autosign エントリ、 `autosign.conf`、autosign スクリプト）を確認し、 ①無条件の自動署名になっていないか、②検証に事前共有の課題文 （challengePassword）やホスト名の照合を使っているかを確かめる**（本記録の推奨）。 **無条件なら、更新までの間は自動署名を止める。 止めるとノードの増設が手作業になるため、増設予定を先に把握しておく。**</div></li><li><div class=lp>更新対象の判定をメジャー版だけで行うと取り落とす。影響版は3つの系列に分かれており、 明示的に非影響とされているのは3つの版だけである。</div><div class=lw>**影響範囲は 2023.8.0〜2023.8.13未満／2025.0.0〜2025.12.1未満／ 2026.0.0〜2026.0.1未満の3系列である**（出典1。本記録が affected を直接確認）。 **CVE レコードの `defaultStatus` は `affected` であり、 列挙外の版は「影響する」側に寄せられている**（出典1。読みは本記録の整理）〈重要〉—— **古い系列を「対象外」と読むのは誤りである。**</div><div class=la><b>取るべき行動</b> **稼働中の Puppet Enterprise と、同梱される puppet-agent の版 （8.22.2／9.1.3 が修正版）の両方を採取する**（本記録の推奨）。 **採取は Puppet 自身の fact（`puppetversion`・`aio_agent_version`）で 全ノードから集められる。** **非影響と明示されているのは 2023.8.13／2025.12.1／2026.0.1 の3つだけである、 という前提で突き合わせる。**</div></li><li><div class=lp>レポート送信の経路は正規の API なので、通信の形では異常に見えない。 見るべきはレポート処理のプロセスから生まれた子プロセスである。</div><div class=lw>**攻撃は、エージェントが日常的に使う PUT によるレポート送信に 細工した rich-data 型を混ぜる形をとる**（出典1・2・3）〈重要〉。 **通信の宛先・メソッド・証明書はすべて正規である**（本記録の整理）—— **ネットワーク側の特徴量では区別できない。** **一方、成立したときに起きるのは「Puppet Server のサービス実行ユーザによる 任意のコード実行」であり、これはプロセスの系統として現れる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **Puppet Server の JVM プロセスを親とする子プロセスの生成を監視対象に加える** （本記録の推奨）—— **シェル・インタプリタ（sh/bash/python/ruby）・ネットワーク系コマンド （curl/wget/nc）の起動を検知する。** **構成管理は「設定が勝手に変わる」ことを正常動作として持つため、 設定変更の検知だけでは浮かばない。**</div></li><li><div class=lp>エージェント証明書は「発行したら終わり」になりやすい。任意の CA 署名済み証明書で 成立する脆弱性なので、退役済み・用途不明の証明書を残しておく代価が上がった。</div><div class=lw>**成立条件は「CA が署名した任意のエージェント証明書」である**（出典1・2・3）〈重要〉。 **退役したノード、検証用に発行したまま忘れた証明書、外部委託先に渡した証明書が 残っていれば、それぞれが攻撃の足場になる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **`puppetserver ca list --all` で発行済み証明書を棚卸しし、 ①稼働中のノードに対応しないもの、②最終通信から一定期間が経ったものを 失効させる**（本記録の推奨）。 **失効の判断を誤ると稼働中のノードが構成管理から外れ、 古い設定のまま静かに残るため、失効前に最終通信時刻で突き合わせる。**</div></li><li><div class=lp>配られた構成と承認した構成の差分を取る仕組みが無いと、 基盤が侵害されたときに「正規の構成変更」として処理が通ってしまう。</div><div class=lw>**Puppet Server を掌握した攻撃者は、配下ノードへ任意の処理を 構成変更の形で配布できる**（本記録の評価）〈重要〉。 **エージェント側から見れば正規の適用であり、ログも正常として残る。** **気づける場所は、コードとして管理している構成（Git のコミット）と 実際に配られた構成の差である**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **Puppet Server が配布したカタログ・マニフェストの出所を、 Git のコミット（承認済み）と突き合わせる定期ジョブを置く**（本記録の推奨）。 **突き合わせの単位はファイルのハッシュにする—— 「Git にあるはずのない内容が配られた」ことを検出できる形にする。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Puppet Enterprise 2023.8.0〜2023.8.13未満／2025.0.0〜2025.12.1未満／ 2026.0.0〜2026.0.1未満のいずれかを運用している。 （または同梱の puppet-agent が 8.22.2／9.1.3 より古い。）</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> Puppet の認証局が証明書署名要求を自動署名（autosign）しており、 検証が無条件、または事前共有の課題文・ホスト名の照合を伴っていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 発行済みのエージェント証明書を棚卸ししておらず、 退役したノード・検証用・外部委託先へ渡したものが失効されずに残っている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> パッチ適用の完了を版番号だけで判定しており、 再起動・再読込が必要な製品を台帳で区別していない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性対応の優先度を CVSS の基本値で決める規則になっており、 「KEV 収載済み」を独立した引き金として持っていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 資産台帳に「射程（この機器を掌握されたら何台に届くか）」の観点が無く、 構成管理基盤・CI/CD・資産管理ツールを通常のサーバと同じ区分で管理している。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月3日 20時40分（UTC） Perforce Software（CNA）／CVE Program</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-115731" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-115731 — Report Deserialization Code Execution（CVE レコード）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**製品提供元が CNA として登録した一次資料であり、本記録の中核。** **本記録の作成者が2026年11月18日に API から直接取得して確認した** ——題名「Report Deserialization Code Execution」、 CWE-502／CWE-94、CAPEC-586／CAPEC-242、 CVSS 4.0 で 9.4（CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H）、 影響版（2023.8.0〜2023.8.13未満・2025.0.0〜2025.12.1未満・2026.0.0〜2026.0.1未満）、 非影響版（2023.8.13・2025.12.1・2026.0.1）、defaultStatus: affected、 解決策（puppet-agent 8.22.2／9.1.3 同梱版への更新と puppet server の再起動）、 発見経路 EXTERNAL、識別子予約 2026年10月23日、 レコード最終更新 2026年11月18日04時55分49秒（UTC）。 **references はアドバイザリ 1 件のみで、実証コードへの言及は無い。**）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月3日 21時17分（UTC。最終更新 2026年11月18日05時19分 UTC） NIST National Vulnerability Database</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-115731" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-115731 Detail（NVD）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**米国政府のデータベースによる評価。** **本記録の作成者が2026年11月18日に NVD の API （services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2026-115731）から 直接取得して確認した**——状態 &quot;Analyzed&quot;、 **NVD 自身の評価は CVSS 3.1 で 9.9（Critical）、 ベクタは CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H**、 Perforce の CVSS 4.0（9.4）は Secondary として併記されている。 **Scope を Changed と見ていることが 9.9 の根拠である**（読みは本記録の整理）。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月17日 17時53分15秒（UTC。カタログ版 2026.11.17） CISA（米国サイバーセキュリティ・インフラセキュリティ庁）</span> <a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog（KEV カタログ）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**悪用の確認を示す一次資料。** **本記録の作成者が2026年11月18日にカタログの JSON （www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json）を 直接取得し、該当エントリの全フィールドを確認した**—— catalogVersion 2026.11.17／dateReleased 2026-11-17T17:53:15.5664Z／count 1782、 dateAdded 2026-11-17／dueDate 2026-12-01／ **knownRansomwareCampaignUse: Unknown／forensicTriage: No**／ cwes: CWE-502, CWE-94。 **同日に追加された脆弱性は本件1件のみであることを、全件走査で確認した。** **攻撃者・被害組織・観測件数・IoC を記す欄は存在しない。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月18日 Security NEXT</span> <a href="https://www.security-next.com/193016" target="_blank" rel="noreferrer noopener nofollow">「Puppet Enterprise」RCE脆弱性、悪用を確認 - 米当局が注意喚起</a> <span class="b kind">記事</span><span class=sm>（**日本語で最初に確認できた報道。** **CVSS 4.0 で 9.4・クリティカル、KEV 収載（米国時間2026年11月17日）、 対応期限2026年12月1日、デシリアライズ起因、 自動署名の構成では攻撃者が証明書を取得しうること、 修正版（Puppet Enterprise 2026.0.1・2025.12.1・2023.8.13、 Puppet Core 9.1.3・8.22.2）を伝えている。** **一次資料と突き合わせた結果、数値・日付・条件の記述は一致していた** （本記録が確認）。 **ただし Puppet Core の版番号は、本記録が確認できた一次資料には その製品名での記載が無い**〈齟齬3〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月18日</span> <span class="b rev">新規作成</span> **2026年11月18日の Security NEXT の報道（出典4）を起点に、 一次資料を直接取得して作成した。** **本記録の作成者が直接取得して裏を取ったもの**: ①**CVE レコード（出典1）**——cveawg.mitre.org の API から取得し、 Perforce が CNA として登録した題名・説明・CWE-502／CWE-94・CAPEC・ 影響版と非影響版・defaultStatus: affected・解決策（更新＋puppet server の再起動）・ CVSS 4.0 の 9.4 とベクタ・発見経路 EXTERNAL・識別子予約日（2026年10月23日）を確認した。 ②**NVD（出典2）**——API から取得し、状態 Analyzed、 NVD 自身の CVSS 3.1 が 9.9（S:C）であることを確認した。 ③**KEV カタログ（出典3）**——JSON を取得し、 版 2026.11.17・公表2026年11月17日17時53分15秒（UTC）・収載総数1,782件、 該当エントリの dueDate 2026-12-01・knownRansomwareCampaignUse: Unknown・ forensicTriage: No・cwes、および**同日の追加が本件1件のみ**であることを 全件走査で確認した。 **裏が取れず記録したもの**: Perforce の公式アドバイザリ本文（JavaScript 描画のため 取得不能。齟齬1）、Puppet Core の版番号（齟齬3）、実証コードの公開状況（齟齬4）、 悪用の具体（未確定1）、日本国内の影響と公的注意喚起（未確定2・5）、報告者名（未確定3）。 **detail.mitigations は本記録の推奨であり、Perforce・CISA が示した緩和策ではない** （未確定6に明示した）。 **candidate 一覧の「悪用が確認された」という要約は、KEV 収載という形では正しい** ——ただし**悪用の中身は何も公表されていない**ため、本記録はその区別を全体を通して置いた。 **status を updating としたのは、対応期限（2026年12月1日）までに 悪用の詳細や緩和策が追加で公表される可能性があるためである。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">CVE-2026-115731</span><span class="b tag">Puppet Enterprise</span><span class="b tag">Puppet Server</span><span class="b tag">Perforce</span><span class="b tag">構成管理</span><span class="b tag">デシリアライズ</span><span class="b tag">CWE-502</span><span class="b tag">CWE-94</span><span class="b tag">リモートコード実行</span><span class="b tag">CISA KEV</span><span class="b tag">BOD 26-04</span><span class="b tag">autosign</span><span class="b tag">エージェント証明書</span><span class="b tag">供給網の中枢</span><span class="b tag">海外事案</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-18 16:08 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
