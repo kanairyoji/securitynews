@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Ruijie無線製品にOSコマンド注入 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1203</span>Ruijie無線製品にOSコマンド注入</h1>
+<header class="site-header">
+  <p class="subtitle">Ruijie Networks の無線アクセスポイント7機種に OS コマンドインジェクションの脆弱性 （CVE-2026-113347・CWE-78）があり、JPCERT/CC が開発者と調整して2026年11月19日に JVN#28897261 として公表した——Web 管理画面にログインできる攻撃者が CLI 経由で 任意の OS コマンドを実行できる。CVSS v4.0 8.6（PR:H）／v3.0 7.2。 報告は株式会社FFRIセキュリティの黒田浩平氏から IPA へ、 情報セキュリティ早期警戒パートナーシップに基づいて行われた。 Ruijie 側の公表（PSIRT-2026-092802）は2026年11月12日で、 修正ファームウェアのビルド名に「jp」が入る日本市場向けの機種が対象である</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月12日（Ruijie の公表。JVN は11月19日）</span>
+  <span>最終更新: 2026年11月20日</span>
+</div>
+
+<div class="lead"><p><strong>JPCERT/CC</strong> は2026年11月19日、<strong>JVN#28897261「複数のRuijie Networks製品におけるOSコマンドインジェクションの脆弱性」</strong>を公表しました。</p>
+<ul>
+<li><strong>CVE-2026-113347</strong>、<strong>CWE-78（OS コマンドインジェクション）</strong></li>
+<li><strong>CVSS v4.0 8.6</strong>（<code>CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N</code>）</li>
+<li><strong>CVSS v3.0 7.2</strong>（<code>CVSS:3.0/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H</code>）</li>
+<li><strong>影響</strong>: 「<strong>管理者権限を有する攻撃者によって、任意の OS コマンドを実行される可能性があります</strong>」</li>
+<li><strong>対策</strong>: 開発者が提供する情報をもとに、<strong>ファームウェアを最新版へアップデートする</strong></li>
+</ul>
+<p>報告の経路が日本のものです。</p>
+<blockquote>
+<p>この脆弱性情報は、情報セキュリティ早期警戒パートナーシップに基づき下記の方が IPA に報告し、JPCERT/CC が開発者との調整を行いました。報告者：<strong>株式会社FFRIセキュリティ 黒田 浩平 氏</strong></p>
+</blockquote>
+<p>JVN は影響製品を「多岐に渡ります」としてベンダー情報へ送っています。そこで本記録は <strong>Ruijie 側の公表（PSIRT-2026-092802・2026年11月12日）</strong>を取得しました。</p>
+<ul>
+<li><strong>影響機種は7つ</strong>: <strong>RG-MA2610-AC／RG-MA2610-PE／RG-MA2810／RG-AP180-AC V4／RG-AP180-PE V4／RG-MA3511-AC／RG-MA3511-PE</strong>——いずれも<strong>無線アクセスポイント</strong></li>
+<li><strong>欠陥の説明</strong>: 「<strong>一部の Ruijie 無線製品にコマンド実行の脆弱性がある</strong>」。<strong>Web 管理画面にログインできる攻撃者が、CLI 経由で OS コマンドを注入できる</strong>（原文英語）</li>
+<li><strong>回避策</strong>: ①<strong>Web ログインのパスワードを強くする</strong>（<strong>12文字以上</strong>、大文字・小文字・数字・特殊文字のうち<strong>3種類以上</strong>）、②<strong>管理アクセスの許可 IP 一覧（ホワイトリスト）を設定する</strong></li>
+</ul>
+<p><strong>修正ファームウェアのビルド名に <code>jp</code> が入っている点</strong>が、本記録の目を引きました（本記録の強調）。7機種すべての修正ビルドが <code>[xiyuan-jp-ma2610]</code>／<code>[xiyuan-jp-ap180v4]</code>／<code>[shizhu-ma3511-main]</code> のような名前で、ダウンロード先の案内も <strong><code>www.ruijie.co.jp</code></strong> です。<strong>日本市場向けに供給されている機種とみられます</strong>（本記録の推定）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>実際の悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>JVN にも Ruijie の公表にも、実際の悪用に関する記載が無い（出典1・2）。 「悪用されていない」という明示もない——CISA の ICS 勧告のような 「公開された悪用は報告されていない」という定型文に相当する記述が、どちらにも無い</div></li><li><span class=ui>どの管理機能（CLI のどのコマンド）から OS コマンドが注入できるか</span><span class="b rsn">公表されていない</span><div class=sm>Ruijie の記述は「Web 管理画面にログインできる攻撃者が CLI 経由で OS コマンドを注入できる」までで、 具体的な入力箇所は示されていない（出典2）。 JVN 側も「OSコマンドインジェクション（CWE-78）」の分類のみである（出典1）。 利用者は「どの操作を監視すればよいか」を判断できない</div></li><li><span class=ui>自動更新が有効な機種・構成の範囲</span><span class="b rsn">公表されていない</span><div class=sm>Ruijie は配布経路の1つとして「自動更新が有効な機器には更新の案内が出る」としているが、 どの機種・どの構成で自動更新が有効なのかは示していない（出典2）。 設置後に触られないアクセスポイントでは、ここが適用率を決める</div></li><li><span class=ui>日本国内における該当機種の設置台数・用途の分布</span><span class="b rsn">公表されていない</span><div class=sm>JPCERT/CC は周知のみで国内の該当台数を示しておらず、Ruijie も出荷数を公表していない（出典1・2）。 本記録の作成者も計測していない。 修正ビルド名に jp が入ることから日本市場向けの機種とみられるが、規模は分からない〈差異3〉</div></li><li><span class=ui>7機種以外の Ruijie 製品に同種の欠陥があるか</span><span class="b rsn">公表されていない</span><div class=sm>Ruijie の公表の題名は「Certain Ruijie Products（一部の Ruijie 製品）」であり、 本文では「一部の Ruijie 無線製品」とされている（出典2）。 列挙された7機種以外に同じ実装を共有する機種があるかは示されていない。 修正ビルドが3系統（MA2610／MA2810、AP180、MA3511）に分かれていることから、 複数のコードベースにまたがる欠陥とみられるが、範囲は確認できない（本記録の推定）</div></li><li><span class=ui>修正ファームウェアの公開日</span><span class="b rsn">公表されていない</span><div class=sm>Ruijie の公表（2026年11月12日・初版）に修正ビルドのファイル名は載っているが、 そのビルドがいつ公開されたかは示されていない（出典2）。 ビルド名の末尾の数字（13221212）が日付を表すのかも本記録では確認できていない</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Ruijie Networks Co., Ltd.</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>対象製品の製造元。2026年11月12日に PSIRT-2026-092802 「Command Injection Vulnerability in Certain Ruijie Products」を公表し、 7機種の影響バージョンと修正ファームウェアを示した</p><p class=org-p><span class=org-l>影響</span>自社の無線アクセスポイント7機種に OS コマンドインジェクションがあり、修正ファームウェアを提供した</p></div></div><div class=org><div class=org-h><span class=org-n>JPCERT/CC（JVN）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>情報セキュリティ早期警戒パートナーシップに基づき、IPA に報告された本脆弱性について 開発者（Ruijie Networks）との調整を行い、2026年11月19日に JVN#28897261 として公表した</p><p class=org-p><span class=org-l>影響</span>海外ベンダーの製品の脆弱性を、日本の枠組みで調整して公表した</p></div></div><div class=org><div class=org-h><span class=org-n>独立行政法人情報処理推進機構（IPA）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>情報セキュリティ早期警戒パートナーシップの受付機関。報告者からの届出を受け付けた</p><p class=org-p><span class=org-l>影響</span>本件の報告の入口</p></div></div><div class=org><div class=org-h><span class=org-n>株式会社FFRIセキュリティ（黒田 浩平 氏）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>本脆弱性を発見し、情報セキュリティ早期警戒パートナーシップに基づいて IPA に報告した</p><p class=org-p><span class=org-l>影響</span>本件の発見・報告の主体</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>影響を受ける機種の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>機種</span></div><div class=fn>**RG-MA2610-AC／RG-MA2610-PE／RG-MA2810／RG-AP180-AC V4／RG-AP180-PE V4／ RG-MA3511-AC／RG-MA3511-PE**（出典2。本記録の作成者が数えた）〈重要〉—— **単位は「機種（型番）」であり、設置台数ではない**（本記録の明示）。 **JVN 側は機種名を載せておらず「多岐に渡ります」としている**（出典1）〈差異2〉。</div></div><div class=fig><div class=fh><span class=fl>CVE-2026-113347 の CVSS v4.0 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8.6<span class=fu>スコア</span></div><div class=fn>**ベクターは CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N**（出典1）〈重要〉—— **PR:H（高い権限が必要）が付いている一方、VC:H/VI:H/VA:H（機密性・完全性・可用性すべてに高い影響）である。** **「管理者でなければ使えないが、使えれば機器を取れる」という形**（本記録の整理）。 **CVSS v3.0 では 7.2（CVSS:3.0/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H）に下がる**（出典1）。 **nature は分類上の便宜で population を当てた**（本記録の整理。被害額・件数ではない）。</div></div><div class=fig><div class=fh><span class=fl>Ruijie の公表から JVN の公表まで</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>7<span class=fu>日</span></div><div class=fn>**2026年11月12日→11月19日を本記録の作成者が算出した**（出典1・2。T1・T2）〈重要〉—— **ベンダーの公表が先で、日本語の周知が7日後である。** **ベンダーのセキュリティ告知を直接購読していない組織では、 この7日間は情報が届かない**（本記録の評価）—— **ただし本件は PR:H であり、7日の遅れが即座に被害に結びつく性質ではない**（本記録の留保）。</div></div><div class=fig><div class=fh><span class=fl>Ruijie が回避策として示した Web ログインパスワードの最小長</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>12<span class=fu>文字</span></div><div class=fn>**「12文字以上で、大文字・小文字・数字・特殊文字のうち少なくとも3種類を含む」**（出典2。原文英語を本記録が訳した）〈重要〉—— **これが回避策として示されていること自体が、 本件の防壁が管理者認証だけであることを示している**（本記録の評価）。 **修正ファームウェアを当てられない機器では、 パスワードの長さと許可 IP 一覧が最後の線になる。** **nature は分類上の便宜で population を当てた**（本記録の整理）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**実際の攻撃は観測されていない（公表されていない）**（出典1・2）〈重要〉—— **以下は、両者の公表が述べた成立条件と影響を、本記録が段階に並べ直したものである**（本記録の整理）。 **観測された手口ではない。** **形は「Web 管理画面に管理者としてログインする → CLI 経由で OS コマンドを注入する → 機器の OS で任意コマンドが走る」である**（出典1・2）。 **本記録が注目するのは、この経路に権限の段差が無いことである**（本記録の評価）〈重要〉—— **Web 管理者は機器の設定を変える権限であって、機器 OS で任意コードを実行する権限ではない。** **その2つが分かれていない。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**攻撃者が Web 管理画面に管理者としてログインする**（出典1・2）〈重要〉—— **本脆弱性そのものは認証を破るものではない。** **Ruijie の回避策が「12文字以上・3種類以上の文字種のパスワード」と 「管理アクセスの許可 IP 一覧」の2点であることから、 実務上の防壁がこの認証だけであることが読める**（本記録の整理）。</div><div class=fn>根拠: **CVSS v4.0 のベクターに PR:H（高い権限が必要）が含まれる**（出典1）。 **JVN の影響の記述は「管理者権限を有する攻撃者によって、 任意の OS コマンドを実行される可能性があります」**（出典1）。 **Ruijie の回避策は①パスワードの強化（12文字以上・4種類のうち3種類以上）、 ②管理アクセスの許可 IP 一覧の設定**（出典2）。</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [2]</span></div><div>**CLI 経由で OS コマンドを注入する**（出典2）〈重要〉—— **Ruijie の記述は「一部の Ruijie 無線製品にコマンド実行の脆弱性がある。 Web ログインアクセスを既に持つ攻撃者が、CLI を通じて OS コマンドを注入できる」である** （原文英語を本記録が訳した）。 **分類は CWE-78（OS コマンドインジェクション）**（出典1）。 **どの入力箇所かは公表されていない**〈未確定2〉。</div><div class=fn>根拠: **CWE-78。CVSS v4.0 8.6（VC:H/VI:H/VA:H）／v3.0 7.2（C:H/I:H/A:H）**（出典1）〈重要〉—— **機密性・完全性・可用性のすべてに高い影響がある。** **修正ビルドが3系統（MA2610／MA2810 系、AP180 系、MA3511 系）に分かれていることから、 複数のコードベースに同種の実装がある可能性がある**（本記録の推定。Ruijie は触れていない）。</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">推定</span><span class=srcs>[1] [2]</span></div><div>**機器の OS 上で任意のコマンドが実行される**（出典1・2）〈重要〉—— **JVN の表現は「任意の OS コマンドを実行される可能性があります」。** **CVSS の C:H/I:H/A:H は、機器の設定・通信・可用性のすべてが攻撃者の手に渡ることを示す**（本記録の整理）。 **ただし具体的に何ができるか（永続化の可否・通信の傍受の可否・ 他の機器への横展開の可否）は、どちらの公表にも記載が無い。**</div><div class=fn>根拠: **JVN: 「管理者権限を有する攻撃者によって、任意の OS コマンドを実行される可能性があります」**（出典1）。 **Ruijie: 影響は対象機器上での任意 OS コマンド実行**（出典2）。 **S:U（スコープ変更なし。CVSS v3.0）／SC:N・SI:N・SA:N（CVSS v4.0）であり、 影響は当該機器の内側に留まる評価になっている**（出典1）〈重要〉—— **ただし無線アクセスポイントは利用者の通信が通る機器であり、 「機器の内側」の意味は小さくない**（本記録の評価）。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**JVN は機種名を載せず「影響を受ける製品は多岐に渡ります。 詳細については『ベンダ情報』を参照してください」とした**（出典1。T2）〈重要〉—— **一方 Ruijie の公表には7機種と各ファームウェア版、修正ビルド名が列挙されている**（出典2）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **JVN 側に機種を載せれば、読者は1か所で「自社が該当するか」を判断できる**（本記録の整理）—— **一方、機種とファームウェア版の一覧は長く、ベンダー側で改訂もされるため、 JVN に写すと情報が古くなる危険がある。** **ベンダー情報へ送るのは、正確さを優先する選択とも読める。**</div></li></ul></div>
+<section id="s6"><h2>認証を破る脆弱性ではない——Web 管理者という設計上の権限が、そのまま機器 OS まで通る<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2]</span></h2><p>JPCERT/CC は2026年11月19日、<strong>JVN#28897261</strong>を公表した。</p>
+<ul>
+<li><strong>CVE-2026-113347</strong>、<strong>CWE-78（OS コマンドインジェクション）</strong></li>
+<li><strong>CVSS v4.0 8.6</strong>（<code>CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N</code>）</li>
+<li><strong>CVSS v3.0 7.2</strong>（<code>CVSS:3.0/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H</code>）</li>
+<li><strong>影響</strong>: 「<strong>管理者権限を有する攻撃者によって、任意の OS コマンドを実行される可能性があります</strong>」</li>
+</ul>
+<p>Ruijie 側の公告（<strong>PSIRT-2026-092802</strong>・2026年11月12日）の説明はこうである。</p>
+<blockquote>
+<p>一部の Ruijie 無線製品にコマンド実行の脆弱性がある。<strong>Web 管理画面へのログインアクセスを既に持つ攻撃者が、CLI を通じて OS コマンドを注入できる。</strong>（原文英語）</p>
+</blockquote>
+<p><strong>本脆弱性は認証を破るものではない</strong>（本記録の強調）。<strong>PR:H（高い権限が必要）</strong>であり、成立には<strong>管理者として Web 管理画面にログインできること</strong>が前提になる。</p>
+<p>それでいて <strong>CVSS v4.0 は 8.6</strong>、影響は <strong>VC:H/VI:H/VA:H</strong>（機密性・完全性・可用性すべてに高い影響）である。<strong>「管理者でなければ使えないが、使えれば機器を取れる」という形</strong>になる（本記録の整理）。</p>
+<p>ここで本記録が問題だと考えるのは、<strong>権限の段差が無いこと</strong>である（本記録の評価）〈重要〉。<strong>Web 管理者は「機器の設定を変える権限」であって、「機器の OS で任意のコードを実行する権限」ではない。</strong>本来は分かれているべき2つが、本件では地続きになっている。</p>
+<p>組み込み機器の管理 CLI は、内部でシェルコマンドを組み立てて実行する実装が多い。ping・traceroute・nslookup・tcpdump・ファームウェア更新・ログ取得といった機能である。引数に利用者の入力をそのまま連結すると、<strong>CWE-78 が成立する</strong>（本記録の整理。一般論）。ただし<strong>本件の具体的な注入箇所は公表されていない</strong>〈未確定2〉。</p></section>
+<section id="s7"><h2>対象は無線アクセスポイント7機種——修正ビルド名に「jp」が入り、ダウンロード先は ruijie.co.jp<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p>JVN は影響製品を「<strong>多岐に渡ります。詳細については『ベンダ情報』を参照してください</strong>」としており、機種名を載せていない〈差異2〉。そこで本記録は Ruijie の公告を取得した。</p>
+<p><strong>影響機種は7つで、いずれも無線アクセスポイントである。</strong></p>
+<table>
+<thead>
+<tr>
+<th>機種</th>
+<th>影響ファームウェア版（抜粋）</th>
+<th>修正ビルド</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RG-MA2610-AC</td>
+<td>MA_1.1(1)B5P4／B5P6 系、MA_1.3(1)B5P9、MA_1.3(1)B8P1 系</td>
+<td><code>MA_1.3(1)B8P1_MA2610_[xiyuan-jp-ma2610]_13221212.bin</code></td>
+</tr>
+<tr>
+<td>RG-MA2610-PE</td>
+<td>同上</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>RG-MA2810</td>
+<td>MA_1.1(1)B5P6 系、MA_1.3(1)B5P9、B8P1 系、B12P1 系</td>
+<td><code>MA_1.3(1)B12P1_MA2810_[xiyuan-jp-ma2810]_13221212.bin</code></td>
+</tr>
+<tr>
+<td>RG-AP180-AC V4</td>
+<td>MA_1.3(1)B10 系、B10P1 系、B10P2</td>
+<td><code>MA_1.3(1)B10P2_AP180_[xiyuan-jp-ap180v4]_13221212.bin</code></td>
+</tr>
+<tr>
+<td>RG-AP180-PE V4</td>
+<td>同上</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>RG-MA3511-AC</td>
+<td>MA_1.3(1)B11 系</td>
+<td><code>MA_1.3(1)B11_MA3511_[shizhu-ma3511-main]_13221212.bin</code></td>
+</tr>
+<tr>
+<td>RG-MA3511-PE</td>
+<td>同上</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p><strong>修正ビルドが3系統に分かれている</strong>（MA2610／MA2810 系、AP180 系、MA3511 系）。1つのコードベースの1箇所ではなく、<strong>複数の系統に同種の実装がある</strong>とみられる（本記録の推定）。</p>
+<p><strong>本記録がとくに目を引いたのは、ビルド名に <code>jp</code> が入っていることである</strong>（本記録の強調）〈重要〉。<code>[xiyuan-jp-ma2610]</code>、<code>[xiyuan-jp-ap180v4]</code>——そして Ruijie が案内するダウンロード先は <strong><code>https://www.ruijie.co.jp/products</code></strong> である。<strong>対象は日本市場向けに供給されている機種とみられる</strong>（本記録の推定）〈差異3〉。ただし <strong>RG-MA3511 系の修正ビルドは <code>[shizhu-ma3511-main]</code> で <code>jp</code> を含まない</strong>ため、系統によって事情が異なる可能性もある。<strong>Ruijie も JVN も、対象が日本市場向けであることは明言していない。</strong></p>
+<p><strong>修正の入手経路は3つ示されている。</strong></p>
+<ol>
+<li><strong>自動更新が有効な機器</strong>には、更新の案内が出る（どの機種・構成で有効かは<strong>非公表</strong>〈未確定3〉）</li>
+<li><strong>Ruijie のウェブサイト</strong>（www.ruijie.co.jp/products）からダウンロードする</li>
+<li><strong>各地の販売後サポート</strong>に連絡する</li>
+</ol>
+<p><strong>修正を当てられない間の回避策は2点である。</strong></p>
+<ul>
+<li><strong>Web ログインのパスワードを強くする</strong>—— <strong>12文字以上</strong>で、大文字・小文字・数字・特殊文字のうち<strong>3種類以上</strong>を含む</li>
+<li><strong>管理アクセスの許可 IP 一覧（ホワイトリスト）を設定する</strong>—— <strong>特定の IP アドレスからのみ Web 管理画面に到達できるようにする</strong></li>
+</ul>
+<p><strong>PR:H の脆弱性なので、回避策②が最も効く</strong>（本記録の整理）。管理画面に到達できなければ、本件は成立しない。</p></section>
+<section id="s8"><h2>報告は日本の枠組みを通った——ベンダー公告には報告者の名前が無く、JVN には機種名が無い<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [2]</span></h2><p>本件の報告経路は日本のものである。JVN の記載は次のとおりである。</p>
+<blockquote>
+<p>この脆弱性情報は、<strong>情報セキュリティ早期警戒パートナーシップ</strong>に基づき下記の方が<strong>IPA</strong> に報告し、<strong>JPCERT/CC</strong> が開発者との調整を行いました。報告者：<strong>株式会社FFRIセキュリティ 黒田 浩平 氏</strong></p>
+</blockquote>
+<p>つまり <strong>IPA（受付）→ JPCERT/CC（調整）→ JVN（公表）</strong>という日本の届出制度を経て、海外ベンダーの製品の脆弱性が公表されている。</p>
+<p><strong>一方、Ruijie の公告の謝辞はこうである。</strong></p>
+<blockquote>
+<p>この脆弱性は外部の研究者によって報告された。（原文英語）</p>
+</blockquote>
+<p><strong>氏名も所属も記載されていない</strong>〈差異1〉。矛盾ではなく謝辞の方針の違いだが、<strong>「誰が見つけたか」を辿れるのは JVN 側だけ</strong>である。</p>
+<p>逆に、<strong>機種名と影響ファームウェア版、修正ビルド名は Ruijie 側にしかない</strong>〈差異2〉。<strong>つまり本件は、どちらか一方だけでは情報が揃わない</strong>（本記録の整理）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>情報</th>
+<th>JVN</th>
+<th>Ruijie</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CVE・CWE</td>
+<td>○</td>
+<td>○（CWE は記載なし）</td>
+</tr>
+<tr>
+<td>CVSS v4.0</td>
+<td>○（8.6）</td>
+<td>✗</td>
+</tr>
+<tr>
+<td>CVSS v3 系</td>
+<td>○（v3.0 7.2）</td>
+<td>○（v3.1 7.2・同一ベクター）〈差異2〉</td>
+</tr>
+<tr>
+<td>影響機種・版の一覧</td>
+<td>✗（「多岐に渡ります」）</td>
+<td>○（7機種）</td>
+</tr>
+<tr>
+<td>修正ビルド名</td>
+<td>✗</td>
+<td>○</td>
+</tr>
+<tr>
+<td>回避策</td>
+<td>✗（「アップデートする」のみ）</td>
+<td>○（2点）</td>
+</tr>
+<tr>
+<td>報告者の氏名・所属</td>
+<td>○</td>
+<td>✗</td>
+</tr>
+<tr>
+<td>報告の枠組み</td>
+<td>○</td>
+<td>✗</td>
+</tr>
+</tbody>
+</table>
+<p>公表の順序は<strong>ベンダーが先</strong>である。<strong>Ruijie が2026年11月12日、JVN が11月19日——差は7日</strong>（本記録の算出）。<strong>ベンダーのセキュリティ告知を直接購読していない組織では、この7日間は情報が届かない</strong>（本記録の評価）。本件は PR:H なので7日の遅れが即座に被害に結びつく性質ではないが、<strong>同じ経路で未認証の脆弱性が出たときには、この7日が効く。</strong></p></section>
+<section id="s9"><h2>注入箇所・自動更新の範囲・実際の悪用の有無は公表されていない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2]</span></h2><p>2026年11月20日時点で、次の点は公表されていない。</p>
+<ul>
+<li><strong>実際の悪用の有無</strong>——<strong>「ある」とも「無い」とも書かれていない</strong>〈重要〉。CISA の ICS 勧告のような「公開された悪用は報告されていない」という定型文に相当する記述が、JVN にも Ruijie の公告にも存在しない</li>
+<li><strong>どの管理機能（CLI のどのコマンド・どの入力欄）から OS コマンドが注入できるか</strong>——利用者は「どの操作を監視すればよいか」を判断できない</li>
+<li><strong>自動更新が有効な機種・構成の範囲</strong>——「自動で入っているはず」という仮定が成り立つかが分からない</li>
+<li><strong>修正ファームウェアの公開日</strong>——ビルド名は示されているが、公開日は無い。末尾の数字（13221212）が日付を表すのかも本記録では確認できていない</li>
+<li><strong>7機種以外の Ruijie 製品に同種の欠陥があるか</strong>——公告の題名は「Certain Ruijie Products（一部の Ruijie 製品）」である。修正ビルドが3系統に分かれていることから複数のコードベースにまたがる欠陥とみられるが、範囲は確認できない</li>
+<li><strong>日本国内における該当機種の設置台数・用途の分布</strong>—— JPCERT/CC も Ruijie も示しておらず、本記録の作成者も計測していない〈差異4〉</li>
+</ul>
+<p><strong>本記録が「実地の悪用なし」としているのは「公表に悪用の記載が無い」という意味であり、「悪用が無いと確認された」ではない</strong>（本記録の明示）〈重要〉。読者がこの差を読み違えないよう、ここに明記しておく。</p></section>
+<section id="s10"><h2>「管理者権限が必要」を軽く扱う運用が、この型の脆弱性を取りこぼす（本記録の評価）<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2]</span></h2><p>ここからは本記録の作成者の評価である。</p>
+<p><strong>第一に、本件は「PR:H だから後回し」という判定に引っかかりやすい形をしている。</strong> CVSS v3.0 では <strong>7.2（High）</strong>で、v4.0 でも <strong>8.6</strong> は Critical の帯に入らない。脆弱性管理のツールが自動で付ける優先度は、おそらく「中〜高」に落ちる。だが実際に起きることは<strong>機器の OS での任意コマンド実行</strong>であり、対象は<strong>利用者の通信が通る無線アクセスポイント</strong>である。<strong>判定の軸に「その権限を持つ者が、本来できないことができるようになるか」を1つ加えるべきだと考える。</strong> Web 管理者は設定を変える権限であって、OS でコードを走らせる権限ではない——その段差が無いことが本件の中身である。</p>
+<p><strong>第二に、Ruijie の回避策の内容そのものが、防壁の薄さを教えている。</strong>示されたのは「<strong>12文字以上・文字種3種類以上のパスワード</strong>」と「<strong>管理アクセスの許可 IP 一覧</strong>」の2点だけである。<strong>ベンダー自身が、認証と到達制御以外に打てる手を示していない。</strong>ここから読み取るべきなのは、<strong>面的に設置された機器の管理パスワードが全台共通になっていないか</strong>という問いである（本記録の評価。本件の公表には無い一般論）。アクセスポイントは1組織に数十〜数百台が入る。共通パスワードは、<strong>1台から漏れた時点で全台が落ちる</strong>。長さを12文字に伸ばしても、この性質は変わらない。本件に対して最も安く最も効くのは、<strong>許可 IP 一覧で管理画面への到達を絞ること</strong>である。しかも副産物として、<strong>一覧の外からの試行が拒否として記録に残る</strong>——注入箇所が非公開である以上、「何が来たら危ないか」では検知が作れない。<strong>「そこに来られること自体が異常」という形なら作れる。</strong></p>
+<p><strong>第三に、本件は「JVN とベンダー公告を両方読まないと情報が揃わない」実例である。</strong> JVN には <strong>CVSS v4.0 と報告者と報告の枠組み</strong>があり、機種名が無い。Ruijie には <strong>7機種と影響版と修正ビルド名と回避策</strong>があり、報告者と v4.0 が無い。日本語で読める JVN だけを見た読者は、<strong>「自社の機器が該当するか」を判断できない。</strong>これは JPCERT/CC の不備ではなく役割分担の結果だが、実務としては<strong>「JVN を見たらベンダー公告も開く」を手順に1行として入れる</strong>しかない。</p>
+<p><strong>第四に、修正ビルド名に <code>jp</code> が入っていたことは、記録として残す価値があると考える。</strong> <code>[xiyuan-jp-ma2610]</code>、<code>[xiyuan-jp-ap180v4]</code>、ダウンロード先は <code>www.ruijie.co.jp</code>。<strong>海外ベンダーの製品でも、日本市場向けに別系統のファームウェアが供給されていることがある。</strong>これが意味するのは、<strong>海外のニュースで「このベンダーの製品が直った」と読んでも、自社に入っている国内向けの版が同じ時期に直っているとは限らない</strong>ということである（本記録の評価）。本記録はこの推定を<strong>明言された事実としては扱わない</strong>〈差異3〉—— Ruijie も JVN も、対象が日本市場向けであることを述べていない。ただし、国内向けの版の系統を把握しているかという問いは、海外製ネットワーク機器を使う組織すべてに当てはまる。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>vulnerability</th><td><b>CVE番号:</b> CVE-2026-113347　<b>cwe:</b> CWE-78（OS Command Injection／OS コマンドインジェクション）　<b>cvss_v31:</b> **CVSS v4.0 8.6**（CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N。出典1）／ **CVSS v3.0 7.2**（CVSS:3.0/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H。出典1）。 **Ruijie 側は同じ 7.2 を「CVSS v3.1」として示している**（出典2）〈差異2〉—— **ベクター文字列は同一であり、値も同じである。**　<b>affected:</b> **Ruijie Networks の無線アクセスポイント7機種**（出典2）〈重要〉—— **RG-MA2610-AC／RG-MA2610-PE**（MA_1.1(1)B5P4／B5P6 系、MA_1.3(1)B5P9、MA_1.3(1)B8P1 系）、 **RG-MA2810**（MA_1.1(1)B5P6 系、MA_1.3(1)B5P9、MA_1.3(1)B8P1 系、MA_1.3(1)B12P1 系）、 **RG-AP180-AC V4／RG-AP180-PE V4**（MA_1.3(1)B10 系、B10P1 系、B10P2）、 **RG-MA3511-AC／RG-MA3511-PE**（MA_1.3(1)B11 系）。 **JVN 側は機種名を載せず「影響を受ける製品は多岐に渡ります。 詳細については『ベンダ情報』を参照してください」としている**（出典1）〈差異2〉。　<b>fixed_in:</b> **機種ごとの修正ビルドが示されている**（出典2）—— **RG-MA2610-AC／-PE: `MA_1.3(1)B8P1_MA2610_[xiyuan-jp-ma2610]_13221212.bin`／ RG-MA2810: `MA_1.3(1)B12P1_MA2810_[xiyuan-jp-ma2810]_13221212.bin`／ RG-AP180-AC V4／-PE V4: `MA_1.3(1)B10P2_AP180_[xiyuan-jp-ap180v4]_13221212.bin`／ RG-MA3511-AC／-PE: `MA_1.3(1)B11_MA3511_[shizhu-ma3511-main]_13221212.bin`**〈重要〉—— **ビルド名に `jp` が含まれる点から、日本市場向けの供給とみられる**（本記録の推定）〈差異3〉。 **入手経路は①自動更新が有効な機器への更新案内、 ②www.ruijie.co.jp/products からのダウンロード、③各地の販売後サポートへの連絡の3つ**（出典2）。　<b>workarounds:</b> Web ログインのパスワードを強くする（12文字以上、大文字・小文字・数字・特殊文字のうち3種類以上）、管理アクセスの許可 IP 一覧（ホワイトリスト）を設定し、特定の IP アドレスからのみ Web 管理画面に到達できるようにする　<b>workaroundsの公表状況:</b> stated　<b>exploited_in_wild:</b> いいえ　<b>exploited（補足）:</b> **実際の悪用に関する記載は、JVN にも Ruijie の公表にも無い**（出典1・2。本記録の確認）〈重要〉—— **ただし「悪用されていない」という明示もない**（本記録の明示）—— **CISA の ICS 勧告のような「公開された悪用は報告されていない」という定型文に相当する記述が、 どちらにも存在しない。** **したがって本記録が「実地の悪用なし」としているのは 「公表に悪用の記載が無い」という意味であり、「悪用が無いと確認された」ではない**（本記録の留保）。　<b>advisory_published:</b> 2026年11月12日（Ruijie）／2026年11月19日（JVN）</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 影響機種のファームウェアを修正ビルドへ更新する　<b>状況:</b> ベンダー提供済み（2026年11月12日の公表に修正ビルド名が記載）　<b>副作用:</b> **アクセスポイントの更新は、無線が一時的に落ちることを意味する**（本記録の評価）〈重要〉—— **数十〜数百台が面的に入っている環境では、更新の順序と時間帯の計画が要る。** **加えて修正ビルドの公開日が示されていないため、 「いま入っている版が修正後かどうか」をビルド名の一致で判断するしかない**〈未確定6〉。 **自動更新が有効な機種・構成の範囲も示されていない**〈未確定3〉—— **「自動で入っているはず」と仮定せず、版数を実際に数える必要がある。**　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> 管理アクセスの許可 IP 一覧（ホワイトリスト）を設定する　<b>状況:</b> Ruijie の回避策　<b>副作用:</b> **運用の経路を1つに絞ることになる**（本記録の評価）〈重要〉—— **現場で保守する担当が自席以外から入れなくなるため、 代替経路（VPN・踏み台）を用意せずに設定すると、現場が独自に穴を開け直す。** **一方、これは本件で最も効く回避策である**（本記録の整理）—— **PR:H の脆弱性であり、管理画面に到達できなければ成立しない。** **副産物として、一覧の外からの試行が拒否として記録に残る。**　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> Web ログインのパスワードを強くする（12文字以上・文字種3種類以上）　<b>状況:</b> Ruijie の回避策　<b>副作用:</b> **多数のアクセスポイントで共通のパスワードを使っている環境では、 変更作業そのものが負担になる**（本記録の評価）〈重要〉—— **そして「全台共通の長いパスワード」は、1台から漏れた時点で全台が落ちる。** **長さを稼ぐだけでは、本件の防壁としては弱い**（本記録の整理）—— **機器ごとに異なる認証情報にするか、集中管理の仕組みに寄せるかの判断が本来は必要になる。**　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> Web 管理者と機器 OS の権限が分かれていない製品として扱い、管理画面への到達自体を資産として管理する　<b>状況:</b> 本記録の整理（Ruijie・JVN の公表には無い）　<b>副作用:</b> **管理台帳に項目が増える**（本記録の評価）—— **ただし本件のような PR:H の脆弱性は繰り返し出るため、 「管理画面に誰がどこから到達できるか」を機器種別ごとに把握しておくと、 次に同種の公表が出たときの判断が速くなる。** **本件固有の対策ではなく、ネットワーク機器全般に効く整理である。**　<b>出典:</b> 1、2</div></td></tr><tr><th>通知</th><td><b>手法:</b> JPCERT/CC の JVN（JVN#28897261）／Ruijie Networks のセキュリティ公告（PSIRT-2026-092802）　<b>範囲:</b> 対象機種の利用者全般（個別通知の有無は公表されていない）</td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年11月12日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>Ruijie Networks が PSIRT-2026-092802「Command Injection Vulnerability in Certain Ruijie Products」を 公表（初版）。CVE-2026-113347、CVSS v3.1 7.2。7機種の影響バージョンと修正ファームウェアを示した</td></tr><tr><td class="sm nowrap tw">2026年11月19日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>JPCERT/CC が JVN#28897261「複数のRuijie Networks製品におけるOSコマンドインジェクションの脆弱性」を公表。 CVE-2026-113347、CWE-78、CVSS v4.0 8.6／v3.0 7.2。 報告者は株式会社FFRIセキュリティの黒田浩平氏、調整は JPCERT/CC</td></tr><tr><td class="sm nowrap tw">2026年11月20日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>本記録の作成者が JVN#28897261 と Ruijie の PSIRT-2026-092802 を取得し、 CVE・CWE・CVSS の値とベクター・影響機種とファームウェア版・修正ビルド名・ 回避策2点・報告者の記載・公表日を逐語で確認した。 修正ビルド名に `jp` が含まれること、ダウンロード先が www.ruijie.co.jp であることを記録した</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>報告者の氏名・所属が JVN にはあり、Ruijie の公告には無い</span><div class=sm>**JVN は「この脆弱性情報は、情報セキュリティ早期警戒パートナーシップに基づき 下記の方が IPA に報告し、JPCERT/CC が開発者との調整を行いました。 報告者：株式会社FFRIセキュリティ 黒田 浩平 氏」と明記している**（出典1）。 **一方 Ruijie の公告の謝辞は「この脆弱性は外部の研究者によって報告された」であり、 氏名も所属も記載されていない**（出典2。原文英語を本記録が訳した）〈重要〉—— **矛盾ではなく、謝辞の方針の違いである**（本記録の整理）。 **ただし「誰が見つけたか」を辿れるのは JVN 側だけであり、 ベンダー公告のみを読む読者には報告経路が見えない。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>CVSS の版の表記が JVN と Ruijie で異なる（v3.0 と v3.1）</span><div class=sm>**JVN は CVSS v4.0 8.6 と CVSS v3.0 7.2 を示している**（出典1）。 **Ruijie は同じ 7.2 を「CVSS v3.1」として示している**（出典2）〈重要〉—— **ベクター文字列（AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H）は同一で、値も同じである。** **したがって実務上の影響は無いが、台帳に「CVSS の版」の欄を持つ組織では 出典によって値が揺れる**（本記録の注意）。 **また Ruijie 側には CVSS v4.0 の記載が無い**（本記録の確認）—— **v4.0 を正とする運用ではベンダー公告だけでは判定できない。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>日本市場向け機種とみられる根拠は本記録の推定であり、どちらの公表も明言していない</span><div class=sm>**Ruijie の修正ビルド名には `[xiyuan-jp-ma2610]`／`[xiyuan-jp-ap180v4]` のように `jp` の文字列が含まれ、ダウンロード先の案内は `https://www.ruijie.co.jp/products` である** （出典2。本記録の確認）〈重要〉—— **本記録はここから「対象は日本市場向けに供給されている機種とみられる」と推定した**（本記録の推定）。 **Ruijie も JVN も、対象が日本市場向けであることを明言していない。** **RG-MA3511 系の修正ビルドは `[shizhu-ma3511-main]` で `jp` を含まないため、 系統によって事情が異なる可能性もある**（本記録の確認）—— **推定であることを明示して扱う。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>日本国内の設置台数・影響範囲を本記録は確認していない</span><div class=sm>**JPCERT/CC は周知のみで国内の該当台数を示しておらず、 Ruijie も出荷数・設置数を公表していない**（出典1・2。本記録の確認）〈重要〉—— **本記録の作成者も計測していない。** **機種名から企業・宿泊施設・集合住宅・学校などで面的に設置される 管理型アクセスポイントとみられるが、これも本記録の推定である。** **したがって「日本にどれだけ影響があるか」という問いには、本記録は答えられない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>実際の悪用について「無い」とも「ある」とも書かれていない</span><div class=sm>**JVN にも Ruijie の公告にも、実際の悪用に関する記述が無い**（出典1・2。本記録の確認）〈重要〉—— **CISA の ICS 勧告のような「本脆弱性を狙う公開された悪用は、 現時点で報告されていない」という定型文に相当する記載が、どちらにも存在しない。** **本記録が「実地の悪用なし」としているのは 「公表に悪用の記載が無い」という意味であり、「悪用が無いと確認された」ではない**（本記録の明示）—— **読者がこの差を読み違えないよう、ここに記録する。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証を破る脆弱性ではない——Web 管理者という設計上の権限が、そのまま機器 OS の任意コマンド実行まで通る</div><div class=svgwrap><svg viewBox="0 0 998 426" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,60.0 C193.0,60.0 193.0,213.0 220,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,213.0 C397.0,213.0 397.0,213.0 424,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,213.0 C601.0,213.0 601.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C703.0,162.0 703.0,257.0 628,257.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,162.0 C91.0,162.0 91.0,264.0 16,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,264.0 C91.0,264.0 91.0,366.0 16,366.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,366.0 C499.0,366.0 499.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,366.0 C499.0,366.0 499.0,264.0 832,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,264.0 C601.0,264.0 601.0,213.0 220,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（ネットワーク越し</text><text x="91.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／AV:N・AC:L・U</text><text x="91.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">I:N）</text><text x="91.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証情報を持っていること</text><text x="91.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">が前提（PR:H）。本脆</text><rect x="220" y="176.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web 管理画面（管理者</text><text x="295.0" y="212.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">としてのログインが必要）</text><text x="295.0" y="225.0" text-anchor="middle" fill="#f48fb1" font-size="10">防壁はパスワードと許可 </text><text x="295.0" y="237.0" text-anchor="middle" fill="#f48fb1" font-size="10">IP 一覧の2つだけ。R</text><rect x="424" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">管理機能の CLI（OS</text><text x="499.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> コマンドの注入点・箇所</text><text x="499.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は非公表）</text><text x="499.0" y="232.0" text-anchor="middle" fill="#f48fb1" font-size="10">CWE-78。どの入力欄</text><text x="499.0" y="244.0" text-anchor="middle" fill="#f48fb1" font-size="10">かは JVN・Ruiji</text><rect x="628" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">機器 OS 上での任意コ</text><text x="703.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">マンド実行</text><text x="703.0" y="174.0" text-anchor="middle" fill="#64b5f6" font-size="10">CVSS v4.0 8.</text><text x="703.0" y="186.0" text-anchor="middle" fill="#64b5f6" font-size="10">6（VC:H/VI:H/</text><rect x="628" y="213.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">影響機種7つ（RG-MA</text><text x="703.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2610-AC/-PE・</text><text x="703.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">RG-MA2810・R…</text><text x="703.0" y="276.0" text-anchor="middle" fill="#64b5f6" font-size="10">修正ビルドは3系統（MA</text><text x="703.0" y="288.0" text-anchor="middle" fill="#64b5f6" font-size="10">2610/MA2810・</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正ファームウェア（ビル</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド名に jp・ダウンロー</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド先は www.rui…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">日本市場向けの供給とみら</text><text x="907.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">れる（本記録の推定）〈差</text><rect x="832" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避策（パスワード12文</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">字以上・文字種3種類以上</text><text x="907.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／管理アクセスの許可 …</text><text x="907.0" y="283.0" text-anchor="middle" fill="#ffcc80" font-size="10">PR:H の脆弱性なので</text><text x="907.0" y="295.0" text-anchor="middle" fill="#ffcc80" font-size="10">、許可 IP 一覧が最も</text><rect x="16" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="91.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">株式会社FFRIセキュリ</text><text x="91.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ティ 黒田 浩平 氏（発</text><text x="91.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">見・報告）</text><text x="91.0" y="181.0" text-anchor="middle" fill="#80cbc4" font-size="10">Ruijie 側の公告は</text><text x="91.0" y="193.0" text-anchor="middle" fill="#80cbc4" font-size="10">「外部の研究者」とするの</text><rect x="16" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">IPA（受付）→ JPC</text><text x="91.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ERT/CC（調整）→ </text><text x="91.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">JVN#2889726…</text><text x="91.0" y="283.0" text-anchor="middle" fill="#b0bec5" font-size="10">情報セキュリティ早期警戒</text><text x="91.0" y="295.0" text-anchor="middle" fill="#b0bec5" font-size="10">パートナーシップ。機種名</text><rect x="16" y="322.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="91.0" y="344.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ruijie PSIRT</text><text x="91.0" y="358.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-2026-092802</text><text x="91.0" y="372.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（2026-11-12…</text><text x="91.0" y="385.0" text-anchor="middle" fill="#b0bec5" font-size="10">7機種・影響版・修正ビル</text><text x="91.0" y="397.0" text-anchor="middle" fill="#b0bec5" font-size="10">ド名・回避策2点を列挙。</text></svg></div><div class=fn>CVE-2026-113347 の経路である。攻撃者（layer 0）は、まず Ruijie 無線アクセスポイントの
+Web 管理画面（layer 1）に管理者としてログインする必要がある（PR:H）。
+本脆弱性は認証を破るものではなく、Ruijie が示した回避策2点
+（12文字以上・文字種3種類以上のパスワード／管理アクセスの許可 IP 一覧）が示すとおり、
+実務上の防壁はこの認証と到達制御だけである。
+ログインできた攻撃者は、管理機能の CLI 経由で OS コマンドを注入できる（layer 2・CWE-78）。
+どの入力箇所かは公表されていない。
+結果として機器の OS 上で任意のコマンドが実行され（layer 3）、
+CVSS は機密性・完全性・可用性のすべてに高い影響があると評価している
+（v4.0 8.6／v3.0 7.2）。
+対象は無線アクセスポイント7機種（RG-MA2610-AC／-PE、RG-MA2810、
+RG-AP180-AC V4／-PE V4、RG-MA3511-AC／-PE）で、修正ビルドが3系統に分かれている。
+公表はベンダー（2026年11月12日・PSIRT-2026-092802）が先で、
+JPCERT/CC の JVN#28897261（11月19日）が7日後である。
+報告は株式会社FFRIセキュリティの黒田浩平氏から IPA へ行われ、JPCERT/CC が調整した。
+</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**両者とも検知の観点を示していない**（本記録の確認）。 **本記録の評価としては、この段階は「管理画面への成功ログイン」として記録されうる**〈重要〉—— **ただしアクセスポイントの認証ログを収集している組織は多くない**（本記録の評価）。 **許可 IP 一覧を設定していれば、一覧の外からの試行は拒否として残る—— 回避策②は検知の材料にもなる**（本記録の整理）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**注入箇所が公表されていないため、何を監視すればよいかを示せない**（本記録の明示）〈重要〉—— **「どの管理機能のどの入力か」が分からないと、 正常な管理操作と注入を区別する条件が作れない。** **現実的に取れるのは、管理画面への到達を許可 IP 一覧で絞り、 その上でログインの成否を記録しておくことまでである**（本記録の評価）。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**影響段階の検知について、どちらの公表にも記載が無い**（本記録の確認）。 **本記録の整理としては、アクセスポイントは ①通常はこちらから通信を始めない機器であり、 ②ファームウェアの版数が分かる機器である**〈重要〉—— **したがって「アクセスポイントからの外向き通信」と 「版数の棚卸し」の2つが、現場で取れる手がかりになる**（本記録の評価。公表には無い）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**JVN は機種名を載せず「影響を受ける製品は多岐に渡ります。 詳細については『ベンダ情報』を参照してください」とした**（出典1。T2）〈重要〉—— **一方 Ruijie の公表には7機種と各ファームウェア版、修正ビルド名が列挙されている**（出典2）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「管理者権限が必要」は深刻度を下げる理由にならない——Web 管理者から機器 OS まで段差が無い</div><div class=lw>**本件は PR:H（高い権限が必要）でありながら、CVSS v4.0 は 8.6、 VC:H/VI:H/VA:H（機密性・完全性・可用性すべてに高い影響）である**（出典1）〈重要〉—— **JVN の表現は「管理者権限を有する攻撃者によって、任意の OS コマンドを実行される可能性があります」。** **Web 管理者は「設定を変える権限」であって「機器 OS で任意コードを実行する権限」ではない—— その2つが分かれていないのが本件である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性の優先度判定で「PR:H だから後回し」という運用になっていないか見直す。** **判定の軸に「その権限を持つ者が、本来できないことができるようになるか」を1つ加える。** **ネットワーク機器・複合機・監視カメラ・UPS のような「管理画面を持つ箱」については、 管理画面への到達経路を資産として台帳に持つ（誰がどこから到達できるか）。**</div></li><li><div class=lp>ベンダーの公表と日本語の周知の間には日数差がある。ベンダー側を直接購読する</div><div class=lw>**Ruijie の公表は2026年11月12日、JVN の公表は11月19日で、差は7日である**（出典1・2。本記録の算出）〈重要〉—— **本件は PR:H なので7日の遅れが即座に被害に結びつく性質ではないが、 同じ経路で未認証の脆弱性が出たときには、この7日が効く**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織が使っているネットワーク機器のベンダーについて、 セキュリティ告知の配信（RSS・メール）を機器の調達時に登録する運用にする。** **登録先を機器台帳の欄として持ち、機器を導入した担当が登録する—— セキュリティ部門が後から探すと必ず漏れる。** **JVN・JPCERT/CC は「見落としを拾う二重化」として位置づけ、一次の入力源にしない。**</div></li><li><div class=lp>回避策が「パスワードを長くする」であるときは、防壁が1枚しかないと読む</div><div class=lw>**Ruijie が示した回避策は「12文字以上・文字種3種類以上のパスワード」と 「管理アクセスの許可 IP 一覧」の2点である**（出典2）〈重要〉—— **ベンダー自身が、認証と到達制御以外に打てる手を示していない。** **多数のアクセスポイントで管理パスワードが共通になっている環境では、 1台から漏れた時点で全台が落ちる**（本記録の評価。本件の公表には無い一般論）。</div><div class=la><b>取るべき行動</b> **面的に設置する機器（アクセスポイント・スイッチ・カメラ）について、 管理用の認証情報が全台共通になっていないかを確認する。** **共通である場合は、①到達経路を許可 IP 一覧で絞る、 ②集中管理の仕組みに寄せる、③機器ごとに異なる認証情報にする、のいずれかを選ぶ。** **①は最も安く、本件の PR:H という性質に対して最も効く。**</div></li><li><div class=lp>日本の届出制度を経た公表は、ベンダー側の公表に無い情報を持っていることがある</div><div class=lw>**JVN は報告者（株式会社FFRIセキュリティ 黒田浩平氏）と 情報セキュリティ早期警戒パートナーシップという枠組みを明記している**（出典1）〈重要〉—— **一方 Ruijie の公告は「外部の研究者によって報告された」とするのみで、氏名・所属が無い**（出典2）。 **逆に機種名と修正ビルド名は Ruijie 側にしかない。**</div><div class=la><b>取るべき行動</b> **海外ベンダーの製品について JVN の公表を見たときは、 ベンダー側の公告も必ず開く——どちらか一方では情報が揃わない。** **社内の脆弱性管理の手順に「JVN を見たらベンダー公告も確認する」を1行として入れる。** **機種・版・修正ビルドはベンダー側、報告経路・CVSS の複数版・日本語の影響説明は JVN 側にある。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>管理 CLI から OS シェルへ抜ける経路は、組み込み機器の定番の弱点である</div><div class=lw>**Ruijie の記述は「Web 管理画面にログインできる攻撃者が、 CLI 経由で OS コマンドを注入できる」である**（出典2。原文英語を本記録が訳した）〈重要〉—— **分類は CWE-78（OS コマンドインジェクション）**（出典1）。 **組み込み機器の管理 CLI は、内部でシェルコマンドを組み立てて実行する実装が多く、 引数に利用者入力をそのまま連結すると注入が成立する**（本記録の整理。一般論）。</div><div class=la><b>取るべき行動</b> **自組織が開発している機器・ツールで、管理機能が外部コマンドを呼んでいる箇所を列挙する （ping・traceroute・nslookup・tcpdump・ファームウェア更新・ログ取得・バックアップ）。** **シェルを経由しない呼び出し（引数を配列で渡す形）に直すか、 入力を許可文字の一覧で検証する。** **文字のエスケープで対処する実装は、逃げ道が残りやすいので避ける。**</div></li><li><div class=lp>「どこから注入できるか」が公表されていない脆弱性は、検知ではなく到達制御で止める</div><div class=lw>**Ruijie も JVN も、具体的な注入箇所（CLI のどのコマンド・どの入力欄か）を示していない** （出典1・2）〈未確定2〉〈重要〉—— **注入箇所が分からないと、正常な管理操作と注入を区別する条件が作れない。**</div><div class=la><b>取るべき行動</b> **注入箇所が非公開の脆弱性については、検知ルールを作ろうとせず、 管理画面への到達を許可 IP 一覧で絞る（Ruijie の回避策②）。** **副産物として、一覧の外からの試行が拒否として記録に残る。** **「何が来たら危ないか」が分からない場合でも、 「そこに来られること自体が異常」という形なら検知が成り立つ。**</div></li><li><div class=lp>修正の適用を「自動更新が有効だから大丈夫」と仮定しない。版数を実際に数える</div><div class=lw>**Ruijie は配布経路の1つとして「自動更新が有効な機器には更新の案内が出る」としているが、 どの機種・どの構成で有効なのかは示していない**（出典2）〈未確定3〉〈重要〉—— **アクセスポイントは「設置したら触らない」運用になりやすく、 数年前の版のまま置かれている台が出る**（本記録の評価）。 **さらに修正ビルドの公開日が示されていないため、 「いま入っている版が修正後か」をビルド名の一致で判断するしかない**〈未確定6〉。</div><div class=la><b>取るべき行動</b> **アクセスポイント・スイッチの版数を機械的に収集する手段を1つ作る （管理コントローラの一覧出力、SNMP、設定バックアップからの抽出のいずれか）。** **収集した版数を、ベンダーが示した修正ビルド名と突き合わせる。** **「全台更新済み」と言うために、台数を数えられる形にしておく。**</div></li><li><div class=lp>アクセスポイントは「こちらから通信を始めない機器」である。その性質を検知に使う</div><div class=lw>**本件の影響は機器 OS での任意コマンド実行であり、 CVSS の評価上は当該機器の内側に留まる（S:U／SC:N・SI:N・SA:N）**（出典1）〈重要〉—— **ただし無線アクセスポイントは利用者の通信が通る機器であり、 「内側」の意味は小さくない**（本記録の評価）。 **公表された検知手段は無い。**</div><div class=la><b>取るべき行動</b> **アクセスポイントからの外向き通信（管理コントローラ・NTP・DNS・ ファームウェア配布元以外への通信）を既定で拒否し、拒否をログに残す。** **アクセスポイント群を1つのネットワークセグメントにまとめ、 そのセグメントからの外部到達を宛先の許可制にする。** **本件固有の対策ではないが、注入箇所が非公開である以上、 「出ていく側」で気づく構えのほうが現実的である。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 無線アクセスポイント・スイッチ等の Web 管理画面が、業務ネットワーク全体から到達できる構成になっている</td><td class=sm>**本件は PR:H であり、管理画面に到達できなければ成立しない**（出典1・2）〈重要〉—— **Ruijie の回避策②（管理アクセスの許可 IP 一覧）が、最も効く手である。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 面的に設置した機器の管理用パスワードが全台共通である、または初期設定のままの台がある</td><td class=sm>**Ruijie の回避策①は「12文字以上・文字種3種類以上」であり、 防壁が管理者認証だけであることを示している**（出典2）—— **共通パスワードは、1台から漏れた時点で全台が落ちる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ネットワーク機器のファームウェア版数を機械的に収集・突き合わせる手段が無い</td><td class=sm>**Ruijie は機種ごとに修正ビルド名を示しているが、自動更新の有効範囲と 修正ビルドの公開日は示していない**（出典2）〈重要〉—— **「自動で入っているはず」では適用率を測れない。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 機器ベンダーのセキュリティ告知を購読しておらず、JVN・JPCERT/CC を一次の入力源にしている</td><td class=sm>**本件ではベンダーの公表（2026年11月12日）から JVN の公表（11月19日）まで7日ある** （出典1・2。本記録の算出）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 脆弱性の優先度判定で PR:H（高い権限が必要）を自動的に低く扱っている</td><td class=sm>**本件は PR:H でありながら CVSS v4.0 8.6、VC:H/VI:H/VA:H である**（出典1）〈重要〉—— **Web 管理者という設計上の権限が、機器 OS の任意コード実行まで通る。**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 日本市場向けに供給された海外製ネットワーク機器について、国内向けファームウェアの系統を把握していない</td><td class=sm>**本件の修正ビルド名には `jp` が含まれ、ダウンロード先の案内も www.ruijie.co.jp である** （出典2。本記録の確認）〈差異3〉—— **国内向けの版と海外向けの版で、修正の提供時期や版数体系が異なる可能性がある （本記録では確認していない）。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月12日 Ruijie Networks Co., Ltd.（PSIRT）</span> <a href="https://www.ruijie.com/en-global/support/securitybulletins/cybersecurity-bulletins/10009" target="_blank" rel="noreferrer noopener nofollow">Command Injection Vulnerability in Certain Ruijie Products（PSIRT-2026-092802）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（(製品ベンダーによる一次資料。本記録の作成者が2026年11月20日に取得し、 Ruijie の管理番号〈PSIRT-2026-092802〉、外部 ID〈JVN#28897261・CVE-2026-113347〉、 初版公表日〈2026-11-12。改訂履歴は初版のみ〉、 CVSS v3.1 7.2 とベクター〈AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H。v4.0 の記載は無い〉、 脆弱性の記述〈一部の Ruijie 無線製品にコマンド実行の脆弱性があり、 Web ログインアクセスを持つ攻撃者が CLI 経由で OS コマンドを注入できる〉、 影響機種7つ〈RG-MA2610-AC／RG-MA2610-PE／RG-MA2810／RG-AP180-AC V4／ RG-AP180-PE V4／RG-MA3511-AC／RG-MA3511-PE〉と各ファームウェア版の一覧、 機種ごとの修正ビルド名〈xiyuan-jp-ma2610／xiyuan-jp-ma2810／xiyuan-jp-ap180v4／ shizhu-ma3511-main の4種・いずれも末尾 13221212.bin〉、 入手経路3つ〈自動更新の案内／www.ruijie.co.jp/products からのダウンロード／ 各地の販売後サポートへの連絡〉、 回避策2点〈12文字以上かつ4種類のうち3種類以上の文字種を含むパスワード／ 管理アクセスの許可 IP 一覧の設定〉、 謝辞〈外部の研究者によって報告された。氏名・所属の記載なし〉を逐語で確認した。 実際の悪用に関する記載が無いことも確認した)）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月19日 JPCERT/CC（JVN）</span> <a href="https://jvn.jp/jp/JVN28897261/" target="_blank" rel="noreferrer noopener nofollow">JVN#28897261: 複数のRuijie Networks製品におけるOSコマンドインジェクションの脆弱性</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（(調整主体による一次資料。本記録の作成者が2026年11月20日に取得し、 公表日・最終更新日〈いずれも 2026/11/19〉、CVE-2026-113347、CWE-78、 CVSS v4.0 8.6〈AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N〉と CVSS v3.0 7.2〈CVSS:3.0/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H〉、 影響の記述〈管理者権限を有する攻撃者によって、任意の OS コマンドを実行される可能性があります〉、 対策〈開発者が提供する情報をもとにファームウェアを最新版へアップデートする〉、 報告者〈株式会社FFRIセキュリティ 黒田 浩平 氏〉と報告の枠組み 〈情報セキュリティ早期警戒パートナーシップに基づき IPA に報告、JPCERT/CC が開発者と調整〉、 ベンダー情報欄からのリンク先を逐語で確認した。 影響製品は「多岐に渡ります」とされ機種名の記載が無いことを確認した〈差異2〉。 あわせて output/articles/20261119/0019_jpcertcc-jvn-japan-vulner_ruijie-networksos.md の 保存分と突き合わせた)）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月20日</span> <span class="b rev">新規作成</span> 新規作成。2026年11月19日の収集に入った JVN#28897261 （output/articles/20261119/0019_jpcertcc-jvn-japan-vulner_ruijie-networksos.md）を起点に、 本記録の作成者が JVN と Ruijie Networks の公告（PSIRT-2026-092802）の両方を 直接取得して裏取りした。 CVE・CWE・CVSS の値とベクター、影響機種7つとファームウェア版の一覧、 機種ごとの修正ビルド名、回避策2点、入手経路3つ、公表日、報告者の記載を逐語で確認した。 JVN 側に機種名が無く、Ruijie 側に報告者の氏名と CVSS v4.0 が無いため、 両方を読まないと情報が揃わないことを差異1・2 として記録した。 修正ビルド名に jp が含まれダウンロード先が www.ruijie.co.jp であることから 日本市場向け機種とみられると推定し、これを authored_inference として明示した（差異3）。 実際の悪用について「ある」とも「無い」とも書かれていない点を source_silent として記録した。 日本国内の設置台数は公表されておらず、本記録でも計測していない。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">Ruijie Networks</span><span class="b tag">JPCERT/CC</span><span class="b tag">JVN</span><span class="b tag">IPA</span><span class="b tag">FFRIセキュリティ</span><span class="b tag">情報セキュリティ早期警戒パートナーシップ</span><span class="b tag">CVE-2026-113347</span><span class="b tag">CWE-78</span><span class="b tag">OSコマンドインジェクション</span><span class="b tag">無線アクセスポイント</span><span class="b tag">RG-AP180</span><span class="b tag">RG-MA2610</span><span class="b tag">RG-MA3511</span><span class="b tag">管理画面</span><span class="b tag">権限分離</span><span class="b tag">許可IP一覧</span><span class="b tag">ファームウェア更新</span><span class="b tag">日本市場向けファームウェア</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-20 09:23 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
