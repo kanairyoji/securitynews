@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Webworm が改造 SoftEther で常駐 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1225</span>Webworm が改造 SoftEther で常駐</h1>
+<header class="site-header">
+  <p class="subtitle">**Rapid7 が2026年11月19日、中国に連なる APT「Webworm」が オープンソースの SoftEther VPN をソースから作り直した独自版（内部名「NtMonitor」）を 政府機関のネットワークに常駐させていたと報告した。** **追加のマルウェア機能は無く、変更はすべて検知を避けるためのものである**—— **PE メタデータの偽装、HTTP 端点の改名、プロトコルの透かしの差し替え、 必須の資源ファイルの実行ファイルへの埋め込み、設定ファイルの独自暗号化。** **分析時点で VirusTotal の検出は1ベンダーのみで、試料は同年1月から公開されていた。** **帰属の確度は「中程度」で、被害組織・件数・初期侵入の経路はいずれも公表されていない。**</p>
+  <div><span class="b type">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">公表されていない／不明</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月19日（Rapid7 の報告公表）</span>
+  <span>最終更新: 2026年11月21日（本記録の作成時点）</span>
+</div>
+
+<div class="lead"><p><strong>2026年11月19日、Rapid7 が、中国に連なる APT「Webworm」に 中程度の確度で帰属する SoftEther VPN の独自改造版を分析して公表した</strong> （出典1。本記録が報告全文を直接取得して確認）。 <strong>報告の題は「Spying on Governments with Zero Lines of Malware」である</strong> （原文英語。題名は訳さない）。 <strong>最初に押さえるべきは、この道具に「マルウェアの機能が1つも足されていない」ことである</strong> 〈重要〉—— <strong>Rapid7 は、公開されている SoftEtherVPN_Stable リポジトリの該当タグと 逆コンパイル結果を突き合わせ、 直接のコマンド実行を与えるバックドアを探したが、見つからなかったと述べている</strong>（出典1）。 <strong>加えられていた変更は、すべて検知の表面を削るためのものである</strong>（出典1）—— <strong>①PE メタデータを「Network Systems Solutions Inc.」の 「Network Monitor Software」（netcapa.exe）に偽装、 ②内部の文字列を「SoftEther VPN」から「NtMonitor VPN」へ置換、 ③プロトコルの HTTP 端点を /vpnsvc/vpn.cgi・/vpnsvc/connect.cgi から /update/alive.cgi・/update/picture.cgi へ改名、 ④ハンドシェイクの「透かし」を既知の GIF から独自の切り詰めた PNG へ差し替え、 ⑤必須の資源書庫 hamcore.se2 を最小限に削って実行ファイルの PE 資源に埋め込み、 ⑥平文だった設定ファイル vpn_bridge.config を setting.conf に改名して独自暗号化。</strong> <strong>Rapid7 はこれを「攻撃者が SoftEther の検知表面を体系的に分析し、 検知技術者が狙いやすい容易な手口すべてに対策を講じた」と評している</strong> （出典1。原文英語。本記録が訳した）。 <strong>結果として、分析時点で VirusTotal の検出は1ベンダーのみだった</strong>（出典1）〈重要〉—— <strong>試料は同年1月から公開されていたにもかかわらずである。</strong> <strong>本記録が読者に渡したい一番の点はここである</strong>（本記録の評価）—— <strong>検知を正規製品の「既知の目印」（ファイル名・端点・透かし・付属ファイル）に 依存させていると、ソースから作り直されただけで全部外れる。</strong> <strong>公表されていないこと</strong>: 被害組織の名前、被害件数、国、初期侵入の経路、 侵害の時期、試料の完全なハッシュ値（出典1は先頭の「90e7…」のみ）、 Rapid7 が保有する試料の数、日本の組織が含まれるか （本記録の確認）〈未確定1〜6〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s12" title="事案の詳細">事案の詳細</a></li><li><a href="#s13" title="経過">経過</a></li><li><a href="#s14" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s15" title="波及の構造">波及の構造</a></li><li><a href="#s16" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s17" title="対応の評価">対応の評価</a></li><li><a href="#s18" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s19" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s20" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s21" title="出典">出典</a></li><li><a href="#s22" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s23" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>被害組織の名前と件数、国</span><span class="b rsn">公表されていない</span><div class=sm>**Rapid7 は「侵害された政府組織」という総称でのみ述べ、 組織名・件数・国を示していない**（出典1。本記録が報告全文を確認）〈重要〉。 **示されているのは「Webworm の活動は政府組織、とくに欧州の政府組織に 集中していることが知られている」という一般的な記述だけである** （出典1。原文英語。本記録が訳した）。 **したがって本記録は、本件の被害範囲を推定しない**（本記録の明示）—— **「欧州の政府機関が侵害された」と書くこともしない。** **日本の組織が含まれるかも分からない。**</div></li><li><span class=ui>初期侵入の経路と、侵害の時期</span><span class="b rsn">公表されていない</span><div class=sm>**報告は「どう居座るか」の道具を扱っており、 「どう入ったか」を扱っていない**（出典1。本記録の整理）〈重要〉。 **悪用された脆弱性、フィッシング等の経路、侵害が成立した時期は いずれも示されていない。** **これは報告の欠陥ではない**（本記録の明示）—— **Rapid7 が分析したのは1つの実行ファイルであり、 侵入の経路は試料から読めるものではない。** **本記録が本欄に残すのは、読者が 「この IoC を入れれば入口も塞がる」と誤解しないためである**（本記録の評価）。</div></li><li><span class=ui>「NtMonitor」が攻撃者自身の呼び名かどうか</span><span class="b rsn">公表されていない</span><div class=sm>**報告は、内部の文字列で「SoftEther VPN」が「NtMonitor VPN」に 置き換えられていることを事実として示しているが、 この名前が攻撃者の命名か Rapid7 の命名かを明示していない** （出典1。本記録が確認）〈重要〉。 **文脈からは攻撃者がビルド時に入れた文字列と読めるが、 報告はそう書いていない**（本記録の明示）〈齟齬2〉。 **本記録は「内部名」として記述し、 Webworm の作戦名・道具名としては扱わない。**</div></li><li><span class=ui>試料の完全なハッシュ値と、Rapid7 が保有する試料の数</span><span class="b rsn">公表されていない</span><div class=sm>**報告本文は試料を先頭の「90e7…」のみで示し、 完全なハッシュ値は IoC の一覧（GitHub）に委ねている** （出典1。本記録が確認）〈重要〉。 **本記録は IoC の一覧を取得していないため、完全な値を持たない** （本記録の明示）〈齟齬3〉。 **また「我々が見てきた試料はすべて」という複数形の記述から 非公開の試料を複数持っていることが読めるが、 何件かは示されていない。**</div></li><li><span class=ui>設定ファイルに含まれていた遠隔側の IP アドレスと、復号済み設定の件数</span><span class="b rsn">捜査上の理由</span><div class=sm>**Rapid7 は「Rapid7 Intelligence が保有する復号済みの設定に含まれる指標」が 帰属を支えていると述べ、 遠隔側の IP が AS 20473（The Constant Company, LLC）の内側にあったとするが、 個々の IP アドレスも件数も示していない**（出典1。本記録が確認）〈重要〉。 **「意図的な試験とは考えにくい事例のすべてで（in all of the cases ... that were not likely deliberate tests）」という限定が付いており、 試験とみなした事例が何件あったかも分からない**（本記録の確認）。 **本記録はこれを「顧客の環境に由来する情報の非開示」と読む**（本記録の評価）—— **ベンダーの報告では通常の扱いである。**</div></li><li><span class=ui>「1月から公開されていた」の年と、公開の経路</span><span class="b rsn">公表されていない</span><div class=sm>**報告は「public since January」と書くのみで、年を明示していない** （出典1。本記録が確認）〈齟齬1〉。 **また「公開」が VirusTotal への投稿を指すのか、 別の経路（公開のマルウェア共有基盤等）を指すのかも示されていない。** **本記録は報告の公表年（2026年）の1月と解したが、確定ではない** （本記録の明示）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Webworm（中国に連なる APT。ESET 等が追跡）</span><span class="b role">推定加害者</span><span class="b lc">推定</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Rapid7</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>SoftEther VPN Project（SoftEtherVPN_Stable。オープンソース）</span><span class="b role">悪用された資産の保有者</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>分析時点で VirusTotal が検出していたベンダー数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1<span class=fu>社</span></div><div class=fn>**Rapid7 の原文は「only one anti-virus vendor detected the sample on VirusTotal」である**（出典1。本記録が訳した）〈重要〉。 **試料が1月から公開されていたことを併記している。** **本記録はこの値を「検知の難しさの指標」として置いた**（本記録の整理）—— **ベンダー名・検出名は公表されていない。** **VirusTotal の検出数は時点で変わるため、 「分析時点」という限定が外せない**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>Rapid7 が把握している公開の試料の数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1<span class=fu>件</span></div><div class=fn>**Rapid7 は「我々が把握している、この道具の唯一の公開試料」と書いている** （出典1。原文英語。本記録が訳した）〈重要〉。 **これは「試料が1つしか無い」ではない**（本記録の整理）—— **報告は別の箇所で「我々が見てきた試料はすべて内部的に同じ NtMonitor の 名称を使っている（PE メタデータは試料間で異なるにもかかわらず）」と 複数形で述べており、非公開の試料を複数持っていることが読める。** **何件かは公表されていない**〈未確定6〉。</div></div><div class=fig><div class=fh><span class=fl>公式ビルドと比べた実行ファイルの増分</span><span class="b conf">約</span><span class="b org">第三者調査</span></div><div class=fv>1.5<span class=fu>MB</span></div><div class=fn>**資源書庫 hamcore.se2 を PE 資源として実行ファイルに埋め込んだ副作用として、 公式ビルドより約1.5MB 大きくなっている**（出典1。原文英語「by about 1.5 MB」）。 **本記録がこの値を置いたのは、検知に使える特徴だからである** （本記録の評価）〈重要〉—— **「SoftEther Bridge のはずなのに付属の hamcore.se2 が無く、 実行ファイルだけが1.5MB 太っている」という形は、 正規の導入では起こらない。**</div></div><div class=fig><div class=fh><span class=fl>Rapid7 が対応づけた ATT&amp;CK の技術の数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>9<span class=fu>件</span></div><div class=fn>**本記録が報告末尾の表を数えた**（出典1）。 **内訳**: T1587.001（能力開発: マルウェア）、 T1027.013（難読化: 暗号化・符号化されたファイル）、 T1140（ファイル・情報の復号）、 T1036.005（なりすまし: 正規の資源名・場所への一致）、 T1027.005（難読化: 道具からの指標の除去）、 T1686.003（システムファイアウォールの無効化・改変: Windows ホストファイアウォール）、 T1599（ネットワーク境界のブリッジング）、 T1071（アプリケーション層プロトコル）、 T1090.001（プロキシ: 内部プロキシ）。 **T1599 と T1090.001 の2つが本件の性格を決めている**（本記録の評価）〈重要〉—— **侵害した1台を、攻撃者のネットワークと社内 LAN をつなぐ橋にし、 その1台を経由して社内の他のホストへ C2 を中継する。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件の「攻撃」は、侵入の手口ではなく常駐の手口である**（本記録の整理）〈重要〉。 **Rapid7 が示したのは、正規のオープンソース製品を 検知されない形に作り直す作業の内容である**（出典1）。 **攻撃者は SoftEther の検知表面を6か所に分けて潰している**（出典1。整理は本記録）—— **①ファイルとしての見た目（PE メタデータ）、 ②ホスト内の文字列（デバッグ表示・サービス名・レジストリ・ HTTP 401 のエラーページ・ファイアウォール規則名）、 ③プロトコルの HTTP 端点、 ④ハンドシェイクの透かし、 ⑤付属の資源ファイル（hamcore.se2）の存在、 ⑥平文の設定ファイル。** **①〜④は外から見た姿、⑤⑥はホスト上の痕跡である**（本記録の整理）。 **一方で、③④の改変には副作用がある**（出典1）〈重要〉—— **素の SoftEther のクライアントとサーバは、この版とハンドシェイクできない。** **逆に言えば、この版の端点同士しかつながらない閉じた網になっている。** **Rapid7 は追加のマルウェア機能を1つも見つけていない**（出典1）—— **バックドアを探したが無かった。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 永続化</span><span class="b conf">third_party_research</span><span class=srcs>[1]</span></div><div>**SoftEther VPN Bridge のバージョン 4.44・ビルド 9807 を 公開ソースから作り直した実行ファイルを、 侵害した Windows ホストにサービスとして導入する**（出典1）〈重要〉—— **サービス名はエントリポイントが使うものが改名されておらず `SEVPNBRIDGE` のままである**（出典1）—— **レジストリのキーのパスも多くが「SoftEther Project」を参照したままである**（出典1）。 **PDB のパスも実行ファイルに残っている** （`...\SoftEtherVPN_Stable\src\DebugFiles\pdb\x64_Release\vpnbridge.pdb`。出典1）。</div><div class=fn>根拠: Rapid7 報告の内部的な改名が「inconsistent」であるとの記述、サービス名 SEVPNBRIDGE と PDB パスの提示（出典1）</div></li><li><div class=stg><span class="b stage">2. 検知回避</span><span class="b conf">third_party_research</span><span class=srcs>[1]</span></div><div>**検知の表面を体系的に削る**（出典1）〈重要〉。 **①PE メタデータの偽装**—— **OriginalFileName は `netcapa.exe`、 製品名は「Network Monitor Software」、 発行元は「Network Systems Solutions Inc.」。 素の実行ファイル（vpnbridge_x64.exe）から変えられていない項目は バージョン（4, 44, 0, 9807）だけである**（出典1）。 **②内部の文字列の置換**—— **デバッグ表示・サービス名・レジストリのキー・ サーバの HTTP 401 エラーページの内容・ ファイアウォール規則名で「SoftEther VPN」を「NtMonitor VPN」に置換**（出典1）。 **③資源書庫の埋め込み**—— **実行ファイルの隣に置かれ実行時に必要な `hamcore.se2` が 「不正な導入の分かりやすい検知の機会」になると攻撃者は理解したと Rapid7 はみており、 書庫の内容を最小限に削り、実行ファイルの PE 資源として同梱し、 実行時に読み込むための独自の資源ディレクトリ走査を実装している**（出典1）—— **副作用として実行ファイルが公式ビルドより約1.5MB 大きい**（出典1）。 **④設定ファイルの独自暗号化**—— **平文で well-recognizable な形式だった `vpn_bridge.config` を `setting.conf` に改名し、 ASCII の `RCEN` で始まる独自暗号化ファイルを扱うよう読み込み処理を改変**（出典1）—— **暗号化されたファイルの残りは単純な形式で、暗号鍵自体を含む**（出典1）〈重要〉—— **Rapid7 は RC4 に似た独自の暗号を復号する Python スクリプトを公開している。**</div><div class=fn>根拠: Rapid7 報告の「Internal rebranding」「Embedded resource archive」「Encrypted configuration」各節および PE メタデータの提示（出典1）</div></li><li><div class=stg><span class="b stage">3. C2通信</span><span class="b conf">third_party_research</span><span class=srcs>[1]</span></div><div>**SoftEther のプロトコルの HTTP 端点を改名して C2 を通す**（出典1）〈重要〉—— **素の SoftEther が Mayaqua/Network.h で定義する `HTTP_VPN_TARGET &quot;/vpnsvc/vpn.cgi&quot;` と `HTTP_VPN_TARGET2 &quot;/vpnsvc/connect.cgi&quot;` を、 `/update/alive.cgi` と `/update/picture.cgi` に置き換えている**（出典1）—— **Rapid7 はこれを「はるかに無害に聞こえる名前」と評している** （原文英語。本記録が訳した）。 **さらにハンドシェイクの「透かし」（正しい VPN プロトコルを話していることを 証明するバイト列）を、素の GIF の透かしから 独自のバイト列（Windows のロゴを表す切り詰めた PNG ファイル）に 差し替えている**（出典1）〈重要〉—— **これにより、素の SoftEther のクライアントとサーバはこの版と ハンドシェイクできず、 この版の端点は既知の GIF の透かしでは指紋採取できない**（出典1）。 **通信は HTTP(S) と SoftEther のアプリケーションプロトコルである** （出典1。ATT&amp;CK T1071）。</div><div class=fn>根拠: Rapid7 報告の「Network stealth」節および検知指針のバイト列（出典1）</div></li><li><div class=stg><span class="b stage">4. 横展開</span><span class="b conf">third_party_research</span><span class=srcs>[1]</span></div><div>**VPN ブリッジが、侵害したホストのローカルネットワークと 攻撃者のネットワークを結び付ける**（出典1。ATT&amp;CK T1599）〈重要〉—— **復号済みの設定のすべてで、遠隔のネットワークを ローカルへブリッジ（カスケード）する構成になっていた**（出典1）。 **侵害したホストは、ネットワーク上の他のホストへの C2 アクセスを仲介する内部プロキシとして働く**（出典1。ATT&amp;CK T1090.001）。 **併せて、素の SoftEther の機能を使って システムのファイアウォールに規則を追加する**（出典1。ATT&amp;CK T1686.003）。</div><div class=fn>根拠: Rapid7 報告の ATT&amp;CK 対応表（T1599・T1090.001・T1686.003）および「bridge (cascade) a remote network into the local one」の記述（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Rapid7 は、検知の指針とともに「その指針の限界」を公表した** （出典1。事実）〈重要〉—— **「samples we have seen all use the same NtMonitor branding internally (despite the PE metadata differing across samples), this is the easiest change for the threat actor to implement next. Similarly, the HTTP endpoints and watermark can be swapped out trivially.」** （原文英語。本記録が訳した: 「我々が見てきた試料はすべて 内部的に同じ NtMonitor の名称を使っているが（PE メタデータは 試料間で異なるにもかかわらず）、これは攻撃者が次に実装するのが 最も容易な変更である。同様に、HTTP の端点と透かしも 簡単に差し替えられる。」）</div><div class=fn><b>トレードオフ:</b> **限界を明示すれば、防御側が指標を入れて安心する事故を防げる** （本記録の評価）——**一方、攻撃者に「どこを変えれば外れるか」を 教えることにもなる。** **ただし本件では後者の損失は小さい**（本記録の評価）〈重要〉—— **攻撃者は既にこれらを変える判断をしてこの版を作っており、 次に何を変えればよいかを Rapid7 から教わる必要が無い。**</div></li><li><div class=ui>**Rapid7 は、顧客の環境に由来する情報（復号済み設定の個々の IP・件数）を 公表しなかった**（出典1。本記録の確認。事実）—— **公表したのは「AS 20473 の内側だった」という粒度までである。**</div><div class=fn><b>トレードオフ:</b> **粒度を落とせば顧客を特定されない**（本記録の評価）—— **一方、他の組織は自社のログと突き合わせる具体の IP を得られない。**</div></li></ul></div>
+<section id="s6"><h2>追加されたマルウェア機能はゼロで、変更はすべて検知を避けるためだった<span class="b slot">原因・手口</span></h2><p>本件の報告の題は「Spying on Governments with Zero Lines of Malware」である（出典1。題名は訳さない）。<strong>「Zero Lines of Malware」は修辞ではなく、分析の結論である</strong>（本記録の整理）。</p>
+<p>Rapid7 は、公開されている SoftEtherVPN_Stable リポジトリの該当タグと試料の逆コンパイル結果を突き合わせた（出典1）。探したのは、<strong>攻撃者に侵害ホスト上での直接のコマンド実行を与えるバックドア</strong>である。</p>
+<blockquote>
+<p><strong>「上に述べた変更を超えて、追加のマルウェア機能は発見しなかった。明らかに、この脅威アクターは生の能力よりも隠密性を優先している。」</strong>（出典1。原文英語。本記録が訳した）</p>
+</blockquote>
+<p>加えられていた変更は6か所で、<strong>すべて検知の表面を削るためのものである</strong>（出典1。整理は本記録）。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>変更された箇所</th>
+<th>素の SoftEther</th>
+<th>この版</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>①</td>
+<td>PE メタデータ</td>
+<td>vpnbridge_x64.exe</td>
+<td>netcapa.exe／「Network Monitor Software」／「Network Systems Solutions Inc.」</td>
+</tr>
+<tr>
+<td>②</td>
+<td>内部の文字列</td>
+<td>SoftEther VPN</td>
+<td>NtMonitor VPN（デバッグ表示・サービス名・レジストリ・HTTP 401 ページ・FW 規則名）</td>
+</tr>
+<tr>
+<td>③</td>
+<td>HTTP 端点</td>
+<td>/vpnsvc/vpn.cgi／/vpnsvc/connect.cgi</td>
+<td>/update/alive.cgi／/update/picture.cgi</td>
+</tr>
+<tr>
+<td>④</td>
+<td>ハンドシェイクの透かし</td>
+<td>既知の GIF</td>
+<td>独自のバイト列（Windows ロゴの切り詰めた PNG）</td>
+</tr>
+<tr>
+<td>⑤</td>
+<td>資源書庫 hamcore.se2</td>
+<td>実行ファイルの隣に置く</td>
+<td>最小限に削って PE 資源として同梱（約1.5MB 増）</td>
+</tr>
+<tr>
+<td>⑥</td>
+<td>設定ファイル</td>
+<td>vpn_bridge.config（平文）</td>
+<td>setting.conf（独自暗号化。magic は <code>RCEN</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>バージョンだけが素のまま残っている</strong>（出典1）—— <strong>PE メタデータで変えられていない項目は Version（4, 44, 0, 9807）だけである。</strong></p>
+<p>結果として、<strong>分析時点で VirusTotal の検出は1ベンダーのみだった</strong>（出典1）〈重要〉。試料は2026年1月から公開されていた〈齟齬1〉。</p>
+<p>本記録が読者に渡したい点はここである（本記録の評価）。<strong>これは「新しいマルウェアが検知されなかった」話ではない。</strong> <strong>正規のオープンソース製品を、ソースから作り直しただけで検知が外れた</strong>話である。攻撃者が書いたコードの量はごくわずかで、やったことは<strong>検知技術者が何を見ているかを列挙して、1つずつ潰す</strong>作業だった。</p></section>
+<section id="s7"><h2>潰せていないものが2つある——ホスト内の足跡と、橋渡しという挙動そのもの<span class="b slot">対策・注意喚起</span></h2><p>前節の6か所は、<strong>すべて「変えられる」ものである</strong>（本記録の評価）。Rapid7 自身がそう書いている（出典1。原文英語。本記録が訳した）。</p>
+<blockquote>
+<p><strong>「我々が見てきた試料はすべて内部的に同じ NtMonitor の名称を使っているが（PE メタデータは試料間で異なるにもかかわらず）、これは攻撃者が次に実装するのが最も容易な変更である。同様に、HTTP の端点と透かしも簡単に差し替えられる。」</strong></p>
+</blockquote>
+<p>では何が残るか。報告の記述から、<strong>2つある</strong>（出典1。整理は本記録）。</p>
+<p><strong>①ホスト内の足跡。</strong>改名が一貫していない（出典1。Rapid7 は「inconsistent」と明記）。</p>
+<ul>
+<li><strong>サービス名</strong>——エントリポイントが使うものは <code>SEVPNBRIDGE</code> のままである</li>
+<li><strong>レジストリ</strong>——キーのパスの多くが「SoftEther Project」を参照したままである</li>
+<li><strong>PDB パス</strong>——<code>...\SoftEtherVPN_Stable\src\DebugFiles\pdb\x64_Release\vpnbridge.pdb</code>が実行ファイルに残っている</li>
+</ul>
+<p>Rapid7 はこれを<strong>「この道具はリバースエンジニアに対して自分の出自を隠していない。隠しているのは外部との相互作用だけである」</strong>と整理している（出典1。原文英語。本記録が訳した）。</p>
+<p><strong>ここは攻撃者が「変える必要を感じなかった」箇所である</strong>（本記録の評価）〈重要〉——外から見えないため、変える動機が無い。<strong>外向きの指標より寿命が長いと考えられる。</strong></p>
+<p><strong>②橋渡しという挙動そのもの。</strong> ATT&amp;CK の対応表で本件の性格を決めているのは T1599（ネットワーク境界のブリッジング）とT1090.001（プロキシ: 内部プロキシ）の2つである（出典1）。<strong>侵害した1台を、攻撃者のネットワークと社内 LAN をつなぐ橋にし、その1台を経由して社内の他のホストへ C2 を中継する。</strong>名前も端点も透かしも変えられるが、<strong>この挙動は変えられない</strong> ——変えたら道具の用をなさない（本記録の評価）。</p>
+<p>これが Rapid7 の推奨の意味である（出典1。原文英語。本記録が訳した）。</p>
+<blockquote>
+<p><strong>「したがって我々は、政府部門の防御側に、SoftEther VPN の本来の挙動（intrinsic behavior）を把握して、脅威アクターが次に道具を更新したときの一歩先にいることを推奨する。」</strong></p>
+</blockquote></section>
+<section id="s8"><h2>設定ファイルは暗号鍵を自分の中に持っている——防御側に有利な材料である<span class="b slot">評価・解釈</span></h2><p>⑥の設定ファイルの暗号化には、<strong>攻撃者にとっての欠けがある</strong>（本記録の評価）。</p>
+<p>Rapid7 の記述はこうである（出典1。原文英語。本記録が訳した）。</p>
+<blockquote>
+<p><strong>「暗号化されたファイルの残りの部分は単純な形式であり、暗号鍵を含んでいる。」</strong></p>
+</blockquote>
+<p>Rapid7 は、この RC4 に似た独自の暗号で暗号化されたファイルを復号するPython スクリプトを公開している（出典1。Rapid7 Intelligence の GitHub リポジトリ）。</p>
+<p><strong>なぜこれが防御側に効くか</strong>（本記録の評価）〈重要〉。</p>
+<p>素の SoftEther の設定は平文で、<strong>形式がすぐ分かる</strong>（出典1）。攻撃者はそれを検知の機会とみて暗号化した。しかし<strong>鍵をファイル自身に入れたため、押収すれば中身が読める。</strong>つまり、<strong>侵害された端末を1台見つければ、攻撃者の接続先（カスケードの相手）を復元できる。</strong></p>
+<p>これは Rapid7 自身の帰属の根拠にもなっている（出典1）。復号済みの設定のすべてで、遠隔のネットワークをローカルへブリッジ（カスケード）する構成になっており、意図的な試験とは考えにくい事例のすべてで、遠隔側の IP アドレスが <strong>AS 20473（The Constant Company, LLC。子会社の Vultr を含む）</strong> の内側にあった。</p>
+<p><strong>ただし本記録は、この AS の一致を帰属の決め手として扱わない</strong>（本記録の明示）〈重要〉—— AS 20473 は廉価な VPS 事業者であり、多数の正当な利用者と他の攻撃者も同居する。Rapid7 が帰属の確度を「中程度」としているのはそのためと読める。<strong>根拠は「AS の一致」単独ではなく、ESET が報告した既知の TTP との整合と合わせてのものである</strong>（出典1）。</p></section>
+<section id="s9"><h2>被害組織・件数・初期侵入の経路は1つも公表されていない<span class="b slot">未確定事項</span></h2><p>本記録が最も注意して書く節である（本記録の明示）。</p>
+<p><strong>公表されていないもの</strong>（出典1。本記録が報告全文を確認）。</p>
+<ul>
+<li><strong>被害組織の名前</strong>——「侵害された政府組織」という総称のみ〈未確定1〉</li>
+<li><strong>被害件数・国</strong>——数値は1つも無い</li>
+<li><strong>初期侵入の経路・悪用された脆弱性</strong>——記述が無い〈未確定2〉</li>
+<li><strong>侵害の時期・期間</strong>——記述が無い</li>
+<li><strong>持ち出されたデータ</strong>——記述が無い</li>
+<li><strong>試料の完全なハッシュ値</strong>——本文は「90e7…」のみ〈未確定5〉</li>
+<li><strong>Rapid7 が保有する試料の数</strong>——「見てきた試料はすべて」という複数形のみ〈未確定6〉</li>
+<li><strong>復号済み設定の件数と個々の IP</strong>——「AS 20473 の内側」の粒度まで</li>
+</ul>
+<p>報告にあるのは、<strong>Webworm の活動が「政府組織、とくに欧州の政府組織に集中していることが知られている」という一般的な記述だけである</strong>（出典1。原文英語。本記録が訳した）。</p>
+<p><strong>したがって本記録は「欧州の政府機関が侵害された」と書かない</strong>（本記録の明示）〈重要〉——それは Webworm の既知の標的傾向であって、本件の被害の記録ではない。</p>
+<p><strong>また、これは報告の欠陥ではない</strong>（本記録の評価）。Rapid7 が分析したのは1つの実行ファイルである。<strong>初期侵入の経路は、試料から読めるものではない。</strong></p>
+<p>読者にとっての実務上の意味はこうである（本記録の評価）。<strong>この IoC と YARA を入れても、入口は塞がらない。</strong>本件の対策は「常駐を見つける」側にしか効かない。<strong>入口の対策は、本件とは別に立てる必要がある。</strong></p></section>
+<section id="s10"><h2>SoftEther VPN 自体には侵害も脆弱性も無い——供給網の汚染ではない<span class="b slot">背景・過去事例</span></h2><p>読み違えを防ぐために1節を割く（本記録の明示）。</p>
+<p><strong>公式の配布物が改ざんされたのではない</strong>（出典1。本記録の整理）〈重要〉。攻撃者がやったのは、<strong>公開されているソースコードから自分でビルドし直す</strong>ことである。Rapid7 は、公開されている SoftEtherVPN_Stable リポジトリの該当タグと逆コンパイル結果を比較してそれを確認している（出典1）。</p>
+<p>したがって、</p>
+<ul>
+<li><strong>SoftEther VPN Project の側に侵害があったことを示す材料は1つも無い</strong></li>
+<li><strong>SoftEther VPN に脆弱性があったことを示す材料も1つも無い</strong></li>
+<li><strong>本件は供給網（サプライチェーン）の汚染ではない</strong></li>
+</ul>
+<p><strong>悪用されたのは「オープンソースであること」そのものである</strong>（本記録の評価）。ソースが公開されているから、攻撃者は検知の目印を把握でき、1つずつ消したビルドを作れた。<strong>これはオープンソースの欠陥ではなく、性質である</strong>（本記録の評価）——同じ性質が、Rapid7 の側にも差分比較という分析手段を与えている。</p>
+<p><strong>なお本記録の補足として</strong>（Rapid7 の報告には記載が無い。本記録の明示）〈齟齬4〉—— <strong>SoftEther VPN は日本で開発されたオープンソースの VPN 製品である。</strong>日本の組織では業務上の正当な理由で導入されていることがあり、<strong>「見慣れた製品だから」という理由で例外扱いされている環境では、この版が1つ増えても気づかれにくい</strong>（本記録の評価）。<strong>本記録はこの点を一次資料で裏取りしていないため、齟齬として記録したうえで、判断の材料としてのみ置く。</strong></p></section>
+<section id="s11"><h2>ATT&amp;CK の9件のうち、T1599 と T1090.001 が本件の性格を決めている<span class="b slot">評価・解釈</span></h2><p>Rapid7 は報告末尾で ATT&amp;CK の技術9件を対応づけている（出典1。本記録が数えた）。</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>技術名</th>
+<th>Rapid7 の注記（本記録が訳した）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T1587.001</td>
+<td>能力開発: マルウェア</td>
+<td>攻撃者が悪用目的で SoftEther VPN の自前のフォークを保守している</td>
+</tr>
+<tr>
+<td>T1027.013</td>
+<td>難読化: 暗号化・符号化されたファイル</td>
+<td>設定ファイルが独自の暗号で暗号化されている</td>
+</tr>
+<tr>
+<td>T1140</td>
+<td>ファイル・情報の復号</td>
+<td>暗号化された設定ファイルを改変された読み込み処理が起動時に復号する</td>
+</tr>
+<tr>
+<td>T1036.005</td>
+<td>なりすまし: 正規の資源名・場所への一致</td>
+<td>PE メタデータを意図的に変え、汎用のシステムサービスを装う</td>
+</tr>
+<tr>
+<td>T1027.005</td>
+<td>難読化: 道具からの指標の除去</td>
+<td>既知の SoftEther の痕跡が体系的に実行ファイルから除去されている</td>
+</tr>
+<tr>
+<td>T1686.003</td>
+<td>システム FW の無効化・改変: Windows ホスト FW</td>
+<td>素の SoftEther の機能でシステムのファイアウォールに規則を追加する</td>
+</tr>
+<tr>
+<td>T1599</td>
+<td>ネットワーク境界のブリッジング</td>
+<td>VPN ブリッジが感染ホストの LAN と攻撃者のものを結び付ける</td>
+</tr>
+<tr>
+<td>T1071</td>
+<td>アプリケーション層プロトコル</td>
+<td>C2 は HTTP(S) と SoftEther のアプリケーションプロトコルを使う</td>
+</tr>
+<tr>
+<td>T1090.001</td>
+<td>プロキシ: 内部プロキシ</td>
+<td>感染ホストが、ネットワーク上の他のホストへの C2 アクセスを仲介する内部プロキシとして働く</td>
+</tr>
+</tbody>
+</table>
+<p><strong>9件のうち5件（T1587.001・T1027.013・T1140・T1036.005・T1027.005）は「検知を避けるための作業」である</strong>（本記録の整理）。前節で見たとおり、報告の中身の大半がここにある。</p>
+<p><strong>残る T1599 と T1090.001 が、被害の形を決めている</strong>（本記録の評価）〈重要〉。</p>
+<ul>
+<li><strong>T1599（境界のブリッジング）</strong>——侵害された1台が、攻撃者のネットワークと社内 LAN をつなぐ橋になる</li>
+<li><strong>T1090.001（内部プロキシ）</strong>——その1台を経由して、社内の他のホストへ C2 が中継される</li>
+</ul>
+<p><strong>数え方が変わる</strong>（本記録の評価）。「端末1台が侵害された」ではなく、<strong>「社内へ橋が1本かかった」</strong>である。橋の先に何台あるかは、区画化の作り次第で決まる。<strong>侵害された1台を見つけたとき、その台が到達できた範囲を即答できるかどうかが、被害の大きさを決める。</strong></p></section>
+<div class="blk " id="s12"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>campaign</th><td><b>名称:</b> Webworm による SoftEther VPN Bridge の独自改造版（内部名「NtMonitor」）の利用　<b>範囲:</b> **本件は単一の侵入の記録ではなく、1つの道具の分析である** （出典1。本記録の整理）〈重要〉。 **Rapid7 が分析したのは、SoftEther VPN Bridge 4.44（ビルド 9807）を 公開ソースから作り直した Windows の実行ファイル1件である。** **道具の役割は「ブリッジ（カスケード）」である**（出典1）—— **遠隔のネットワークを侵害した社内のネットワークへ橋渡しする設定に なっていた（復号済みの設定のすべてで）。** **つまりこの道具は、情報を盗むものではなく、 攻撃者が社内へ入り直すための常設の入口である**（本記録の評価）。 **Rapid7 は追加のマルウェア機能を見つけていない**（出典1）—— **直接のコマンド実行を与えるバックドアを探したが、無かった。** **「攻撃者は生の能力より隠密性を優先している」のが報告の結論である** （出典1。原文英語。本記録が訳した）。　<b>actor_attribution:</b> **Webworm（中国に連なる APT）に「中程度の確度」で帰属**（出典1）〈重要〉。 **根拠は①ESET が報告した既知の TTP との整合、 ②復号済み設定の遠隔側 IP が AS 20473（The Constant Company, LLC。 Vultr を含む）の内側にあったこと、である**（出典1）。 **本記録は確度を強めない**（本記録の明示）—— **AS 20473 は廉価な VPS 事業者であり、 多数の正当な利用者と他の攻撃者も同居する。** **「AS が一致したから Webworm」ではなく、 「過去の結び付きと TTP の整合を合わせて中程度」である**（本記録の整理）。</td></tr><tr><th>影響を受けたシステム</th><td>**Windows（PE32+・x64）**（出典1。本記録が確認）。 **導入される形は SoftEther VPN Bridge のサービスである**—— **エントリポイントが使うサービス名は改名されておらず `SEVPNBRIDGE` のままである**（出典1）〈重要〉。 **レジストリのキーのパスも多くが「SoftEther Project」を参照したままである**（出典1）—— **Rapid7 は改名が「一貫していない（inconsistent）」と明記している。** **本記録はここを検知の足がかりとして強調する**（本記録の評価）—— **外向きの見た目は変えられているが、 ホスト内に残る足跡は素の SoftEther のままの箇所がある。**</td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認されていない　<b>時点:</b> 2026年11月19日（報告の公表時点）　<b>補足:</b> **窃取されたデータの悪用についての記述は報告に無い**（出典1。本記録が確認）〈重要〉。 **本件は常駐の手口の分析であり、 被害の範囲・内容・その後の悪用はいずれも扱われていない。** **本記録は「確認されていない」として記録する**—— **「無かった」ではない。**　<b>ログの有無:</b> **公表されていない**（本記録の確認）。 **ただし Rapid7 は検知のための具体を2つ示している**（出典1）—— **①TLS を復号できる環境での通信の特徴 （`/update/picture.cgi` への POST・Content-Type が image/jpeg・ 本文が `89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52` で始まる）、 ②IoC の一覧と YARA 規則（GitHub の rapid7/Rapid7-Labs）。**</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **TLS を復号できる環境で、`/update/picture.cgi` への POST のうち Content-Type が image/jpeg で本文が独自の PNG の透かしで始まるものを探す** （出典1。Rapid7 の推奨）　<b>副作用:</b> **TLS の復号そのものが前提になる**（本記録の整理）〈重要〉—— **復号できない区間では当たらない。** **また Rapid7 自身が「端点と透かしは簡単に差し替えられる」と 明記している**（出典1）—— **この規則は次の版で外れる前提で入れる必要がある。**</div><div class=sub><b>数え方:</b> **Rapid7 が公開した IoC の一覧と YARA 規則を導入する** （出典1。GitHub の rapid7/Rapid7-Labs）　<b>副作用:</b> **試料が1件しか公開されていないため、網は狭い**（本記録の評価）〈重要〉。 **Rapid7 は「見てきた試料はすべて内部的に同じ NtMonitor の名称を使っているが、 これは攻撃者が次に変えるのが最も容易な箇所である」と述べている** （出典1。原文英語。本記録が訳した）。</div><div class=sub><b>数え方:</b> **SoftEther VPN の本来の挙動（intrinsic behavior）を把握しておく** （出典1。Rapid7 が政府部門の防御側に明示的に推奨）　<b>副作用:</b> **即効性が無い**（本記録の整理）〈重要〉—— **製品の挙動を学ぶ作業であり、規則を1行入れるのとは費用の性質が違う。** **一方これが本報告で唯一「次の版にも効く」対策である**（本記録の評価）—— **名前・端点・透かしは変えられるが、 VPN ブリッジがネットワークを橋渡しする挙動そのものは変えられない。**</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s13"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年より前（時期は公表されていない）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Webworm が、侵害した政府組織のネットワークに オープンソースの SoftEther VPN を導入して、 目立たない長期のアクセスを維持する手口が公開で文書化された**（出典1）。 **Rapid7 は、この手口が公になり防御側が目を光らせられるようになったあと、 攻撃者が「隠密性を高める方法を考え始めたと推測される」と述べている** （出典1。原文英語。本記録が訳した）〈重要〉—— **文書化の時期・文書化した主体の名称はこの箇所では示されていない** （本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年の早い時期（Rapid7 は「Earlier this year」と記す）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**ESET が、Webworm が独自のマルウェアから SoftEther VPN のような二重用途（dual-use）の道具へ軸足を移していると 指摘した**（出典1。原文英語。本記録が訳した）〈重要〉。 **Rapid7 は本件をその続きとして位置づけ、 「独自マルウェアと二重用途の道具のいわば混成—— トロイの木馬化されていない素の SoftEther を、 検知の指紋の多くを消す形でソースから作り直したもの」と評している** （出典1。原文英語。本記録が訳した）。 **ESET の報告の題名・公表日は出典1 に示されていない**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年1月（Rapid7 は「public since January」と記す。年の明示は無い）</td><td class=nowrap><span class="b kind">発生</span></td><td>**本件の試料が公開された**（出典1）〈重要〉—— **Rapid7 は「1月から公開されていたにもかかわらず、 分析の時点で VirusTotal 上で検出していたのは アンチウイルスのベンダー1社だけだった」と述べている** （出典1。原文英語。本記録が訳した）。 **「公開された（public）」が VirusTotal への投稿を指すのか 別の経路を指すのかは示されていない**（本記録の確認）〈齟齬1〉。 **年も明示されていないため、本記録は報告の公表年（2026年）の1月と解したうえで、 これを齟齬として記録する。**</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（Rapid7 の分析時点）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Rapid7 が試料を分析した**（出典1）。 **分析の内容**: PE32+（x64）の実行ファイルであること、 平文の文字列と定数から SoftEther VPN Bridge のバージョン 4.44・ ビルド 9807 の（改造された）ビルドと同定したこと、 実行ファイルに残っていた PDB のパスが `C:\Users\Administrator\Desktop\SoftEtherVPN_Stable\SoftEtherVPN_Stable\SoftEtherVPN_Stable\src\DebugFiles\pdb\x64_Release\vpnbridge.pdb` であること（出典1）〈重要〉—— **Rapid7 はこれを「この道具はリバースエンジニアに対して 自分の出自を隠していない。隠しているのは外部との相互作用だけである」と 整理している**（出典1。原文英語。本記録が訳した）。</td></tr><tr><td class="sm nowrap tw">時期は公表されていない（Rapid7 の分析時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**VirusTotal 上の検出は1ベンダーのみだった**（出典1）〈重要〉。 **Rapid7 の原文は「At the time of our analysis, only one anti-virus vendor detected the sample on VirusTotal, although it has been public since January.」である** （本記録が訳した）。 **検出したベンダーの名称・検出名は公表されていない**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 15時05分（UTC。RSS 上の公表時刻）</td><td class=nowrap><span class="b kind">調査報告書の公表</span></td><td>**Rapid7 が報告を公表した**（出典1）。 **併せて IoC の一覧と YARA 規則を GitHub（rapid7/Rapid7-Labs）で公開し、 独自暗号化された設定ファイルを復号する Python スクリプトを Rapid7 Intelligence の GitHub リポジトリで公開した**（出典1）〈重要〉。 **検知の指針として、TLS を復号できる環境向けに 「`/update/picture.cgi` への POST で、Content-Type が image/jpeg、 かつ本文が `89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52` で始まるもの」を 挙げている**（出典1）。 **ATT&amp;CK の技術9件を対応づけている。**</td></tr><tr><td class="sm nowrap tw">2026年11月21日（本記録の作成時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Rapid7 の報告本文を直接取得し、 公表日・著者名・帰属の確度の文言・SoftEther のバージョンとビルド・ IoC と YARA の公開先・検知の指針のバイト列を確認した**（本記録の観測）〈重要〉。 **併せて、被害組織の名前と被害件数がいずれも示されていないことを確かめた** （本記録の確認）〈未確定1〉。 **試料の完全なハッシュ値は報告本文に無く、 先頭の「90e7…」のみが示されていることも確認した**〈未確定5〉。</td></tr></tbody></table></div></div>
+<div id="s14"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>「1月から公開されていた」の年と、公開の経路が示されていない</span><div class=sm>**出典1 は「although it has been public since January」と書くのみで、 年を明示していない**（本記録が確認）〈重要〉。 **また「公開（public）」が VirusTotal への投稿を指すのか、 別の経路を指すのかも示されていない。** **本記録は報告の公表年（2026年）の1月と解したが、確定ではない** （本記録の明示）—— **このため「公開から報告まで何日」という算出は行わない。** **この値は「検知が外れていた期間」を示す数値として重要なので、 曖昧さを残したまま記録しておく。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>「NtMonitor」が攻撃者の命名か報告者の命名か示されていない</span><div class=sm>**出典1 は、内部の文字列で「SoftEther VPN」が「NtMonitor VPN」に 置き換えられていることを事実として示しているが、 この名前が攻撃者がビルド時に入れたものか、 Rapid7 が道具に与えた呼び名かを明示していない**（本記録が確認）〈重要〉。 **文脈からは前者と読めるが、報告はそう書いていない。** **本記録は「内部名」として記述し、 Webworm の作戦名・道具名としては扱わない**（本記録の明示）—— **読者が他の資料と突き合わせるときに、 名前の出自を知らないと混ざるためである。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>IoC の一覧と YARA 規則の内容を本記録は取得していない</span><div class=sm>**出典1 は IoC の一覧と YARA 規則を GitHub（rapid7/Rapid7-Labs）で 公開しているとしているが、 本記録の作成者はそのリポジトリの内容を取得していない** （本記録の明示）〈重要〉。 **したがって次の2点を確認していない**—— **①試料の完全なハッシュ値（本文は「90e7…」のみ）、 ②遠隔側の IP アドレスが IoC に含まれるか。** **また、設定ファイルの復号スクリプトの URL も 出典1 に具体が示されていない**（本記録の確認）。 **実務でこの事案に当たる読者は、 ここを自分で取得する必要がある**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>SoftEther VPN が日本で開発された製品であることは出典1 に記載が無い</span><div class=sm>**本記録は背景の節で「SoftEther VPN は日本で開発された オープンソースの VPN 製品である」と述べたが、 これは出典1 に記載が無く、本記録が一次資料で裏取りしていない** （本記録の明示）〈重要〉。 **日本の読者にとっては「社内に正規の導入があり得る製品かどうか」が 判断に効くため、材料としては置いた。** **ただし本記録はこれを事実の記録としては扱わない**—— **自組織での判断に使う前に、各自が確認すること。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>ESET の報告の題名・公表日が示されていない</span><div class=sm>**出典1 は帰属の根拠の1つとして 「ESET が報告した Webworm の TTP との整合」を挙げ、 「Earlier this year, ESET already noted this group to shift away from custom malware to dual-use tools such as SoftEther VPN」と述べているが、 報告の題名・公表日・URL を示していない**（本記録が確認）〈重要〉。 **したがって本記録は ESET の報告を出典として持てない**（本記録の明示）—— **帰属の根拠の半分を、出典1 の記述を通してしか確認できていない。** **これは帰属の確度を本記録が強めない理由の1つである。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>AS の一致を帰属の決め手として扱わない</span><div class=sm>**出典1 は、意図的な試験とは考えにくい事例のすべてで 遠隔側の IP が AS 20473（The Constant Company, LLC。 子会社の Vultr を含む）の内側にあったとし、 同 AS が過去に何度も Webworm と結び付けられてきたと述べている**（出典1）。 **本記録はこれを帰属の決め手として扱わない**（本記録の評価）〈重要〉—— **AS 20473 は廉価な VPS 事業者であり、 多数の正当な利用者と他の攻撃者も同居する。** **Rapid7 自身が確度を「中程度（moderate）」としており、 本記録はそれを強めない**（本記録の明示）。 **この判断は本記録の評価であり、出典1 の記述ではない。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s15"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>攻撃者は正規製品の「既知の目印」を6か所潰したが、ホスト内の足跡と橋渡しの挙動は残った</div><div class=svgwrap><svg viewBox="0 0 1406 252" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,126.0 C193.0,126.0 193.0,126.0 220,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,126.0 C397.0,126.0 397.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,126.0 C397.0,126.0 397.0,126.0 628,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C601.0,126.0 601.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C805.0,126.0 805.0,48.0 832,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C805.0,126.0 805.0,126.0 832,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,48.0 C907.0,48.0 907.0,204.0 832,204.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,126.0 C805.0,126.0 805.0,87.0 1036,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,87.0 C1111.0,87.0 1111.0,165.0 1036,165.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,87.0 C1213.0,87.0 1213.0,126.0 1240,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,126.0 C703.0,126.0 703.0,126.0 424,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Webworm（中国に連</text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">なる APT／帰属の確度</text><text x="91.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は「中程度」）</text><rect x="220" y="101.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="123.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">初期侵入の経路（公表され</text><text x="295.0" y="137.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ていない）</text><rect x="424" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害された Window</text><text x="499.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">s ホスト（政府組織。名</text><text x="499.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">前・件数は公表されてい…</text><rect x="628" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">改造 SoftEther</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> VPN Bridge </text><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">4.44/9807（内…</text><rect x="832" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">潰された目印（PEメタデ</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ータ・内部文字列・HTT</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">P端点・透かし・ham…</text><rect x="832" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">残った足跡（サービス名S</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">EVPNBRIDGE・レ</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジストリのSoftEt…</text><rect x="1036" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ネットワークの橋渡し（T</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1599。遠隔網を社内L</text><text x="1111.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ANへカスケード）</text><rect x="1240" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">社内LANの他のホスト（</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達範囲は公表されていな</text><text x="1315.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">い）</text><rect x="1036" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">C2（AS 20473／</text><text x="1111.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">The Constant</text><text x="1111.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> Company・Vu…</text><rect x="832" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VirusTotal の</text><text x="907.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">検出（分析時点で1ベンダ</text><text x="907.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーのみ／試料は1月から…</text></svg></div><div class=fn>出典1 の分析から、改変された箇所（検知が外れた箇所）と 改変されなかった箇所（検知が残る箇所）を整理した図である（整理は本記録）。 **実線は報告が事実として示したもの、 点線は公表されていない要素を表す**—— **初期侵入の経路、被害組織、被害件数はいずれも示されていない** （本記録の確認）〈未確定1・2〉。 **「改変されなかった箇所」を独立の層として置いたのは、 そこが検知の足がかりとして寿命が長いためである**（本記録の評価）。</div></div></div>
+<div class="blk " id="s16"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**外向きの見た目は変えられているが、 ホスト上には素の SoftEther の足跡が残っている**（出典1。本記録の評価）〈重要〉—— **サービス名 `SEVPNBRIDGE`、 「SoftEther Project」を参照するレジストリのキー、 `vpnbridge.pdb` を含む PDB パス。** **ここは攻撃者が「変える必要を感じなかった」箇所であり、 外向きの指標より寿命が長い**（本記録の評価）—— **端点と透かしは簡単に差し替えられると Rapid7 自身が述べている。** **VirusTotal の検出が1社だけだったことは、 ファイルのハッシュと署名に頼る検知が外れたことを示す**（出典1）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>サービスの新規登録とレジストリのキーの作成を記録し、 `SEVPNBRIDGE` を含むサービス名・ 「SoftEther」を含むレジストリのパスを、 承認済みの導入台帳と突き合わせて洗い出す</div><div class=ctl><span class="b eff">検知できた</span>VPN・リモートアクセス製品の導入を承認制にし、 承認済みの製品・版・導入先の台帳を持つ （台帳に無い VPN の存在そのものを異常として扱う）</div><div class=ctl><span class="b eff">侵入を防げた</span>端末・サーバでの未署名の実行ファイルの実行を、 許可リストで制限する</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**この段階が本件の全部である**（本記録の評価）〈重要〉。 **攻撃者が潰したのは「正規製品の既知の目印」である**—— **ファイル名、端点の URL、透かしのバイト列、付属ファイルの存在、 設定ファイルの名前と形式。** **つまり、検知をこれらの目印に依存させていた組織は全部外れた** （本記録の評価）。 **一方、潰せていないものが2つある**（出典1。整理は本記録）—— **①ホスト内の足跡（サービス名・レジストリ・PDB パス）、 ②VPN ブリッジがネットワークを橋渡しするという挙動そのもの。** **後者が Rapid7 の推奨（製品の本来の挙動を把握せよ）の理由である。** **なお設定ファイルが暗号鍵を自分の中に持っている点は、 防御側に有利な材料である**（本記録の評価）—— **押収した設定から接続先を復元できる。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>検知の規則を「製品の既知の目印」ではなく 「製品の本来の挙動」に寄せる （VPN ブリッジがネットワークを橋渡しする通信の形で見る）</div><div class=ctl><span class="b eff">検知できた</span>発行元の名称と実行ファイルの実体の乖離を測る （署名の無い、または聞いたことのない発行元名を持つ 「ネットワーク監視ソフト」の存在を異常として扱う）</div><div class=ctl><span class="b eff">検知できた</span>Rapid7 が公開した YARA 規則で既存の端末・サーバを一斗検査する</div></td></tr><tr><td class=nowrap><span class="b stage">C2通信</span></td><td><span class="b do">検知した</span><div class=sm>**Rapid7 が「いま配備できる最も信頼できる検知」として挙げているのが この段階である**（出典1）〈重要〉—— **`/update/picture.cgi` への POST で、 Content-Type が image/jpeg、 かつ本文が `89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52` （独自の PNG の透かしの先頭）で始まるもの。** **ここに矛盾があり、それが検知の手がかりになっている**（本記録の評価）—— **Content-Type は JPEG を名乗るのに、本文は PNG の署名で始まる。** **ただし条件が付く**（出典1）—— **TLS を復号できる環境でしか見えない。** **そして Rapid7 自身が、端点と透かしは簡単に差し替えられると 明記している。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>TLS を復号できる区間で、 宣言された Content-Type と本文の実際の形式（マジックバイト）の 不一致を検知する（本件の規則に限らず効く）</div><div class=ctl><span class="b eff">影響を限定できた</span>サーバ・端末からの外向きの通信を、 宛先の許可リストで制限する （未知の宛先への HTTPS の常時接続そのものを異常として扱う）</div><div class=ctl><span class="b eff">検知できた</span>「更新（/update/）」のような無害に見える経路への POST の量と周期を基準化し、逸脱を見る</div></td></tr><tr><td class=nowrap><span class="b stage">横展開</span></td><td><span class="b do">公表されていない</span><div class=sm>**この段階で何が起きたかは公表されていない**（本記録の確認）〈未確定1〉〈重要〉—— **どの組織で、どこまで横に広がり、何が持ち出されたかは示されていない。** **本記録が書けるのは、道具が与える能力の範囲だけである**（本記録の明示）。 **能力としては、1台の侵害が社内ネットワーク全体への経路になる** （出典1。本記録の整理）—— **「侵害された1台」ではなく「開いた1本の橋」として数える必要がある。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>サーバ・端末の所属区画を越える通信を既定で拒否し、 業務で必要な経路だけを明示的に許可する （橋がかかっても渡れる先を限る）</div><div class=ctl><span class="b eff">検知できた</span>ホストのファイアウォール規則の追加・変更を記録し、 承認されていない規則の出現を検知する</div><div class=ctl><span class="b eff">復旧を早められた</span>侵害された1台を見つけたとき、 その台の「到達できた範囲」を即答できる台帳を持つ</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s17"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Rapid7 は、検知の指針とともに「その指針の限界」を公表した** （出典1。事実）〈重要〉—— **「samples we have seen all use the same NtMonitor branding internally (despite the PE metadata differing across samples), this is the easiest change for the threat actor to implement next. Similarly, the HTTP endpoints and watermark can be swapped out trivially.」** （原文英語。本記録が訳した: 「我々が見てきた試料はすべて 内部的に同じ NtMonitor の名称を使っているが（PE メタデータは 試料間で異なるにもかかわらず）、これは攻撃者が次に実装するのが 最も容易な変更である。同様に、HTTP の端点と透かしも 簡単に差し替えられる。」）</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価である。** **評価の根拠は、本件の指標の寿命が構造的に短いことである** （本記録の評価）〈重要〉—— **端点の URL と透かしのバイト列は、 ソースを持っている攻撃者には1行の変更である。** **限界を書かずに指標だけ出すと、 読者は「規則を入れたので見える」と判断し、 次の版で静かに見えなくなる。** **Rapid7 が代わりに推奨したのは 「製品の本来の挙動を把握すること」であり、 これは版が変わっても外れない**（出典1。評価は本記録）。</td></tr><tr><td>**Rapid7 は、顧客の環境に由来する情報（復号済み設定の個々の IP・件数）を 公表しなかった**（出典1。本記録の確認。事実）—— **公表したのは「AS 20473 の内側だった」という粒度までである。**</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>**本記録の評価である。** **顧客由来の情報を伏せるのはベンダーの報告では通常の扱いである** （本記録の整理）。 **partial としたのは、IoC の一覧（GitHub）に何が含まれるかが 報告本文から読めないためである**（本記録の明示）〈齟齬3〉—— **本記録は IoC の一覧を取得していないため、 遠隔側の IP が含まれるかどうかを確認していない。**</td></tr></tbody></table></div></div>
+<div id="s18"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「正規製品だから許可」という例外が、そのまま攻撃者の常駐手段になる。 VPN・リモートアクセス製品は、製品名ではなく「誰が・いつ・どこへ入れたか」の 台帳で管理する。</div><div class=lw>**本件の道具は、オープンソースの SoftEther VPN Bridge を ソースから作り直したものである**（出典1）〈重要〉。 **追加のマルウェア機能は1つも無い**（出典1）—— **したがって「悪いことをするコード」を探す検知には引っかからない。** **分析時点で VirusTotal の検出は1ベンダーのみだった**（出典1）。 **一方で、ホストにはサービスが登録され、 レジストリのキーが作られ、ファイアウォールに規則が追加される** （出典1。ATT&amp;CK T1686.003）—— **「何が入っているか」を把握している組織には見える。**</div><div class=la><b>取るべき行動</b> **VPN・リモートアクセス製品の導入を承認制にし、 「承認済みの製品・版・導入先ホスト」の台帳を持つ**（本記録の推奨）。 **台帳に無い VPN の存在そのものを異常として扱う**—— **製品が正規かどうかを判定しようとしない。** **最初の一歩は棚卸しである**—— **サーバと端末のサービス一覧を取得し、 台帳と突き合わせて差分を出す。** **差分が出せない（台帳が無い）なら、 本件の IoC を入れても意味が無い**（本記録の評価）。</div></li><li><div class=lp>検知の指標には寿命がある。「規則を入れたので見えている」という報告を、 指標の種類ごとに寿命を添えて受け取る体制にする。</div><div class=lw>**Rapid7 自身が本件の指標の寿命を明示している**（出典1）〈重要〉—— **「我々が見てきた試料はすべて内部的に同じ NtMonitor の名称を使っているが、 これは攻撃者が次に実装するのが最も容易な変更である。 同様に、HTTP の端点と透かしも簡単に差し替えられる」** （原文英語。本記録が訳した）。 **攻撃者は既にソースを持っており、1行の変更で外せる**（本記録の評価）。 **一方、攻撃者が変えなかった箇所がある**（出典1）—— **サービス名 `SEVPNBRIDGE`、 「SoftEther Project」を参照するレジストリ、PDB パス。** **外から見えないため変える動機が無く、寿命が長いと考えられる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脅威情報を受け取るとき、指標を3つに分けて扱う**（本記録の推奨）—— **①ハッシュ値・ファイル名（寿命は最短。ビルドし直すだけで変わる）、 ②通信の目印（URL・透かし。寿命は短い。設定の1行）、 ③挙動（寿命は長い。変えると道具の用をなさない）。** **③に投資の重心を置く。** **併せて、入れた規則に「いつ見直すか」を書く**—— **本件の端点の規則は、次の版が出た時点で黙って効かなくなる。**</div></li><li><div class=lp>「侵害された1台」ではなく「開いた1本の橋」として数える。 1台の侵害がどこまで到達できたかを即答できないなら、被害の大きさを報告できない。</div><div class=lw>**本件の道具の役割は、遠隔のネットワークを社内へブリッジ（カスケード）する ことである**（出典1）〈重要〉—— **復号済みの設定のすべてでそう構成されていた。** **侵害したホストは、社内の他のホストへの C2 アクセスを仲介する 内部プロキシとして働く**（出典1。ATT&amp;CK T1599・T1090.001）。 **つまり1台の侵害が、社内ネットワーク全体への経路になりうる** （本記録の整理）。 **橋の先に何台あるかは、区画化の作り次第で決まる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **「端末1台が侵害された」という想定で、 到達できた範囲を即答する訓練を1回やる**（本記録の推奨）。 **測るのは3つ**—— **①その台から到達できる区画と台数、 ②その台の資格情報が通る範囲、 ③その範囲を特定するのに何分かかったか。** **③が「構成図を見ながら数時間」なら、 インシデント時には答えが出ない**（本記録の評価）。</div></li><li><div class=lp>初期侵入の経路が公表されていない報告を受け取ったとき、 「対策した」と判断しない。本件の対策は常駐の発見にしか効かない。</div><div class=lw>**Rapid7 の報告は常駐の道具の分析であり、 初期侵入の経路・悪用された脆弱性・侵害の時期を示していない** （出典1。本記録が報告全文を確認）〈未確定2〉〈重要〉。 **これは報告の欠陥ではない**（本記録の明示）—— **分析対象は1つの実行ファイルであり、侵入の経路は試料から読めない。** **しかし受け取る側が区別しないと、 「IoC を入れたので対策済み」という報告が上がる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **脅威情報の社内報告の様式に、 「この情報が効く段階」を1行で書く欄を作る**（本記録の推奨）—— **初期侵入／常駐／横展開／持ち出しのどれか。** **本件は「常駐」である**——**入口の対策は別に立てる。** **欄を設けるだけで、 「対策済み」の意味が段階ごとに分かれる**（本記録の評価）。</div></li></ul></div></div>
+<div id="s19"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>外向きの指標ではなく、ホスト内に残った素の SoftEther の足跡を探す。 サービス名 SEVPNBRIDGE とレジストリの「SoftEther」参照は改名されていない。</div><div class=lw>**Rapid7 は内部の改名が「一貫していない（inconsistent）」と明記している** （出典1）〈重要〉—— **エントリポイントが使うサービス名は `SEVPNBRIDGE` のままで、 レジストリのキーのパスも多くが「SoftEther Project」を参照したままである。** **PDB パスも実行ファイルに残っている** （`...\SoftEtherVPN_Stable\src\DebugFiles\pdb\x64_Release\vpnbridge.pdb`。出典1）。 **Rapid7 はこれを「リバースエンジニアに対して出自を隠していない。 隠しているのは外部との相互作用だけ」と整理している** （出典1。原文英語。本記録が訳した）。</div><div class=la><b>取るべき行動</b> **3つを横断で探す**（本記録の推奨）—— **①サービス名に `SEVPNBRIDGE` を含むもの、 ②レジストリのキーのパスに `SoftEther` を含むもの、 ③`hamcore.se2` が無いのに SoftEther 由来の文字列を持つ実行ファイル （PE 資源に埋め込まれている形）。** **③は「公式ビルドより約1.5MB 大きい」という特徴と組み合わせる**（出典1）。 **いずれも、承認済みの導入台帳との突き合わせが前提である**（本記録の明示）—— **正規の SoftEther を使っている組織では、台帳が無いと差分が出ない。**</div></li><li><div class=lp>宣言された Content-Type と本文のマジックバイトの不一致を検知する。 本件に限らず効く、挙動側の規則である。</div><div class=lw>**Rapid7 が「いま配備できる最も信頼できる検知」として挙げたのは、 `/update/picture.cgi` への POST で Content-Type が image/jpeg、 かつ本文が `89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52` で 始まるものである**（出典1）〈重要〉。 **この規則の核は、矛盾の検知である**（本記録の評価）—— **JPEG を名乗るのに、本文は PNG の署名で始まる。** **URL と透かしは差し替えられるが、 「画像を名乗って別の中身を送る」構造は、 透かしを画像に似せている限り残る**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **TLS を復号できる区間で、 Content-Type と本文のマジックバイトの不一致を検知する規則を入れる** （本記録の推奨）。 **本件の URL だけを条件にしない**——**URL は変わる。** **併せて、復号できない区間を一覧にする**（本記録の明示）〈重要〉—— **この検知は TLS の復号が前提であり、 復号できない区間では当たらない。** **その区間には、宛先の許可リストで別の網をかける。**</div></li><li><div class=lp>侵害された端末を1台押収できたら、設定ファイル setting.conf を復号して 接続先を復元する。暗号鍵はファイル自身に入っている。</div><div class=lw>**攻撃者は平文だった `vpn_bridge.config` を `setting.conf` に改名し、 ASCII の `RCEN` で始まる独自暗号化ファイルに変えた**（出典1）。 **しかし Rapid7 は「暗号化されたファイルの残りの部分は単純な形式であり、 暗号鍵を含んでいる」と述べている**（出典1。原文英語。本記録が訳した）〈重要〉。 **Rapid7 は RC4 に似た独自の暗号を復号する Python スクリプトを 公開している**（出典1）。 **実際、Rapid7 自身の帰属の根拠の1つが 復号済みの設定に含まれる遠隔側の IP である**（出典1）。</div><div class=la><b>取るべき行動</b> **侵害ホストから `setting.conf`（および `RCEN` で始まるファイル）を 押収対象に入れる**（本記録の推奨）。 **復号して確認するのは2点**—— **①カスケードの相手（遠隔側の IP とポート）、 ②ブリッジの対象になっているローカルのネットワーク。** **①をログに当てて、他の侵害ホストを探す。** **②で、橋の先に何があったかを確定させる。**</div></li><li><div class=lp>未署名の実行ファイルの実行を許可リストで制限する。 本件は署名の無い「ネットワーク監視ソフト」として入ってくる。</div><div class=lw>**PE メタデータは「Network Systems Solutions Inc.」の 「Network Monitor Software」（`netcapa.exe`）に偽装されている** （出典1）〈重要〉—— **素の実行ファイルから変えられていない項目は Version （4, 44, 0, 9807）だけである。** **Rapid7 はこれを ATT&amp;CK の T1036.005 （正規の資源名・場所への一致）として整理している**（出典1）。 **一方、報告には有効な署名があったという記述が無い** （本記録の確認）——**ソースから自分でビルドしたものであり、 正規の署名を得る経路が無い。**</div><div class=la><b>取るべき行動</b> **サーバと、管理者権限で動く端末から順に、 未署名の実行ファイルの実行を許可リストで制限する**（本記録の推奨）。 **全社一斉に入れない**（本記録の明示）—— **業務の実行ファイルを止めると運用が壊れる。** **まず監査モードで1か月回し、 未署名の実行ファイルの一覧を作る**—— **その一覧が、本件に限らず常駐の棚卸しになる。**</div></li></ul></div></div>
+<div class="blk " id="s20"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> VPN・リモートアクセス製品について、「承認済みの製品・版・導入先ホスト」の台帳が 無く、サーバ・端末に何が入っているかを一覧で出せない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 外向き通信の TLS を復号できない区間があり、その区間の一覧を持っていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> サーバ・端末の所属区画を越える通信が既定で許可されており、 「1台が侵害されたとき到達できる範囲」を即答できない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> オープンソースのネットワーク製品を「社内の判断で」導入できる運用になっており、 導入の記録が部門に留まっている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 端末・サーバでの実行ファイルの実行制御（署名・許可リスト）が無く、 未署名の実行ファイルの一覧を出せない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 政府機関・防衛関連・国際機関との取引があり、 相手方の組織から見て自組織が「周辺の入口」になりうる。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s21"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月19日 15時05分（UTC。RSS 上の表示。ページ上の表示は Nov 19, 2026） Rapid7（著者 Milan Spinka）</span> <a href="https://www.rapid7.com/blog/post/tr-spying-on-governments-no-malware-custom-webworms-toolkit-softether-bridge" target="_blank" rel="noreferrer noopener nofollow">Spying on Governments with Zero Lines of Malware: A Custom SoftEther Bridge in Webworm&#x27;s Toolkit</a> <span class="b kind">ブログ</span><span class=sm>（**本事案の唯一の根拠資料であり、分析を行ったベンダー自身の一次報告。** **本記録の作成者が2026年11月21日に本文を直接取得し、 公表日（Nov 19, 2026）・著者名（Milan Spinka）・ 帰属の確度の文言（「we attribute to Webworm with moderate confidence」）・ SoftEther のバージョンとビルド（4.44 / 9807）・ IoC と YARA の公開先（github.com/rapid7/Rapid7-Labs）・ 検知の指針のバイト列を確認した**〈重要〉。 **併せて確認したこと**: **被害組織の名前が1つも挙がっていないこと、 被害件数が示されていないこと、 試料の完全なハッシュ値が本文に無く「90e7…」のみであること。** **報告が示している具体**: PE32+（x64）／SoftEther VPN Bridge 4.44 ビルド 9807／ PDB パス `...\SoftEtherVPN_Stable\src\DebugFiles\pdb\x64_Release\vpnbridge.pdb`／ OriginalFileName `netcapa.exe`／「Network Monitor Software」／ 「Network Systems Solutions Inc.」／Version 4, 44, 0, 9807（唯一の素のまま）／ 内部名 NtMonitor VPN／サービス名 `SEVPNBRIDGE`（改名されず）／ 端点 `/update/alive.cgi`・`/update/picture.cgi`（素は `/vpnsvc/vpn.cgi`・ `/vpnsvc/connect.cgi`）／透かしは独自のバイト列（切り詰めた PNG）／ `hamcore.se2` を PE 資源に同梱（約1.5MB 増）／ 設定は `setting.conf`・magic `RCEN`・RC4 に似た独自暗号・鍵を自身に含む／ AS 20473（The Constant Company, LLC。Vultr を含む）／ VirusTotal の検出は分析時点で1ベンダーのみ（試料は1月から公開）／ ATT&amp;CK 9件。 **報告本文には「starting with and 89 50 4e 47 ...」という誤植がある** （本記録が確認）——**バイト列そのものは明確である。**）</span></li><li><span class=rid>[2]</span> <span class=sm>公表日は出典1 に示されていない Rapid7 Labs（GitHub）</span> <a href="https://github.com/rapid7/Rapid7-Labs" target="_blank" rel="noreferrer noopener nofollow">Rapid7-Labs（Webworm_NtMonitor の IoC 一覧および YARA 規則）</a> <span class="b kind">調査レポート</span><span class=sm>（**出典1 が IoC の一覧と YARA 規則の公開先として挙げているリポジトリ。** **本記録の作成者はこのリポジトリの内容を取得していない**（本記録の明示）〈齟齬3〉—— **したがって、完全なハッシュ値や遠隔側の IP が含まれるかどうかを 確認していない。** **実務では、ここを取得して YARA 規則を既存の端末・サーバに 当てるところから始めることになる**（本記録の推奨）。 **併せて出典1 は、独自暗号化された設定ファイルを復号する Python スクリプトを「Rapid7 Intelligence の GitHub リポジトリ」で 公開しているとしている**——**具体の URL は出典1 に示されていない。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s22"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月21日</span> <span class="b rev">新規作成</span> **2026年11月20日に収集した Rapid7 の記事（出典1）を起点に、 報告本文を直接取得して作成した。** **本記録の作成者が直接取得して裏を取ったもの**: ①**公表日と著者**——Nov 19, 2026／Milan Spinka。 ②**帰属の確度の文言**——「we attribute to Webworm with moderate confidence」を原文で確認した。 ③**SoftEther のバージョンとビルド**——4.44 / 9807。 ④**IoC と YARA の公開先**——github.com/rapid7/Rapid7-Labs。 ⑤**検知の指針のバイト列**—— `89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52`。 ⑥**被害組織の名前・件数がいずれも示されていないこと**（未確定1）。 ⑦**試料の完全なハッシュ値が本文に無く「90e7…」のみであること**（未確定5）。 **裏が取れず記録したもの**: 初期侵入の経路と侵害の時期（未確定2）、 「NtMonitor」の命名の出自（未確定3・齟齬2）、 完全なハッシュ値と保有試料の数（未確定4・齟齬3）、 復号済み設定の件数と個々の IP（未確定5）、 「1月から公開」の年と経路（未確定6・齟齬1）。 **IoC の一覧と YARA 規則（GitHub）の内容は取得していない**—— **齟齬3 として明示した。** **SoftEther VPN が日本で開発された製品であるという本記録の補足は、 出典1 に記載が無く一次資料で裏取りしていないため 齟齬4（self_unverified）として記録し、 事実の記録ではなく判断の材料として置いた。** **ESET の報告は題名・公表日・URL が出典1 に示されておらず、 出典として持てないため齟齬5 に記録した**—— **帰属の根拠の半分を出典1 の記述を通してしか確認できていない。** **type は threat-campaign とした**—— **特定組織の侵害ではなく道具の分析であるため、 response.metrics は算出せず、一次公表の要件は該当なしとした。** **root_causes は unknown とした**—— **報告が扱うのは常駐の手口であり、侵入の原因を扱っていない。** **attack.chain は persistence / defense-evasion / command-and-control / lateral-movement の4段で構成した**—— **reconnaissance と initial-access は公表されていないため置いていない。** **段階ごとの対策はすべて本記録の推奨であり、 被害組織が実施していた対策として公表されたものは1つも無い。** **candidate 一覧の「Webworm が改造 SoftEther VPN で政府機関に常駐」という 要約は報告と一致している**—— **本記録が加えたのは、改変された6か所と改変されなかった3か所の対比、 指標の寿命という読み方、 そして「橋が1本かかった」という被害の数え方である。**</li></ul></div></div>
+<div class="blk " id="s23"><h3>タグ</h3><span class="b tag">Webworm</span><span class="b tag">中国に連なるAPT</span><span class="b tag">SoftEther VPN</span><span class="b tag">NtMonitor</span><span class="b tag">netcapa.exe</span><span class="b tag">SEVPNBRIDGE</span><span class="b tag">二重用途の道具</span><span class="b tag">LOTL</span><span class="b tag">検知回避</span><span class="b tag">透かしの差し替え</span><span class="b tag">PEメタデータの偽装</span><span class="b tag">ネットワーク境界のブリッジング</span><span class="b tag">内部プロキシ</span><span class="b tag">AS20473</span><span class="b tag">Vultr</span><span class="b tag">政府機関</span><span class="b tag">指標の寿命</span><span class="b tag">YARA</span><span class="b tag">海外事案</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-21 08:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
