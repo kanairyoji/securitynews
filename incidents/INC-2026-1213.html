@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>vCenter 認証回避をゼロデイ悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1213</span>vCenter 認証回避をゼロデイ悪用</h1>
+<header class="site-header">
+  <p class="subtitle">**Broadcom は2026年11月19日、VMware vCenter Server のディレクトリサービスに 認証回避の脆弱性 CVE-2026-123890（CVSSv3.1 基本値 9.8・CWE-288）があるとして 緊急の修正を VMSA-2026-0009 で公開した。** **ネットワーク到達性があれば認証なしで administrator@vsphere.local の認証済み セッションを作られ、仮想化基盤全体の管理権限を奪われる。** **報告した Mandiant と Google Threat Intelligence Group は同日、 中国関連とみられる諜報アクター ARMORY CASTLE（旧 UNC5221）が 2026年9月上旬からこれをゼロデイとして悪用していたと公表した**—— **初期侵入は別のゼロデイ（BeyondTrust Remote Support の CVE-2026-102764）で、 内部の Linux アプライアンスを経由して vCenter に到達し、 独自ツール BONESAW でディレクトリデータベース（data.mdb）と SAML 署名鍵を奪い、 SAWSNAKE による Golden SAML で多要素認証を回避していた。** **Broadcom の勧告には悪用に関する記載が無く、回避策も無い。** **サポートが終了した vCenter 7.0 には公開修正が無い。**</p>
+  <div><span class="b type">脆弱性</span><span class="b type2">脅威・攻撃キャンペーン</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">未知の脆弱性の悪用</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月19日（Broadcom の VMSA-2026-0009 と Mandiant／GTIG の公表）</span>
+  <span>最終更新: 2026年11月20日（本記録の作成時点。一次資料2件を取得して確認した）</span>
+</div>
+
+<div class="lead"><p><strong>Broadcom</strong> は2026年11月19日、セキュリティ勧告 <strong>VMSA-2026-0009</strong> を公開し、 <strong>VMware vCenter Server</strong> の <strong>VMware Directory Service</strong> に存在する認証回避の脆弱性 <strong>CVE-2026-123890</strong>（<strong>CVSSv3.1 基本値 9.8</strong>・重要度クリティカル）を修正した（出典1・3）。 <strong>ネットワークから到達できる攻撃者は、認証情報なしで認証を回避し、 Administrator として不正アクセスできる</strong>（出典1・3）。 <strong>回避策（workaround）は示されていない</strong>（出典1・3）—— <strong>Broadcom は vCenter の更新を緊急の変更として扱うよう求めている</strong>（出典3）。 <strong>修正版は vCenter 9.1.1.0200／9.0.2.0200／8.0 U3m、VMware Cloud Foundation 5.2.5 で、 vCenter 7.0 には公開修正が無く、延長サポート契約者はサポートへの問い合わせとなる</strong> （出典1・3）〈重要〉。 同じ勧告では SDDC Manager の3件（CVE-2026-123891 SQLインジェクション／ CVE-2026-123892 コマンドインジェクション／CVE-2026-123893 ローカル権限昇格）と VMware Tools（Windows）の CVE-2026-123894 も修正された（出典1・7）。 <strong>報告者は Mandiant で、Mandiant と Google Threat Intelligence Group は同日、 中国関連とみられる諜報アクター ARMORY CASTLE（旧 UNC5221・別名 Warp Panda）が 2026年9月上旬からこの脆弱性をゼロデイとして悪用していたと公表した</strong>（出典1・2・5）。 <strong>侵入の起点は別のゼロデイ（BeyondTrust Remote Support の CVE-2026-102764）で、 内部の Linux アプライアンスに Webシェルを置いて root へ昇格し、 内部ネットワークを探索して vCenter に到達していた</strong>（出典2・4）。 <strong>vCenter では独自の Go 製ツール BONESAW で ディレクトリデータベース（data.mdb／LMDB）と SAML 署名鍵を取り出し、 SSO の管理者アカウントを作成。続く SAWSNAKE が SAML アサーションを偽造する Golden SAML を可能にし、多要素認証を回避して任意の利用者になりすませた</strong>（出典2・4）。 <strong>最終的に ESXi ホストへ移り、ゲスト仮想マシンから Active Directory のデータベース （NTDS）等を抜き出している</strong>（出典2・4）。 <strong>Broadcom の勧告には実際の悪用に関する記載が無い</strong>（出典1・3・5）〈重要〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>悪用された組織の数・業種・国</span><span class="b rsn">公表されていない</span><div class=sm>**Mandiant の分析は被害組織の属性を示していない**（出典2。本記録の確認）〈重要〉—— **Mandiant の CTO が「複数のインシデントを調査した」と述べたと報じられているが （出典5）、数も内訳も示されていない。** **このため、どの業種・地域で優先的に点検すべきかを外部から判断できない** （本記録の評価）。</div></li><li><span class=ui>日本国内の組織が悪用の被害を受けたか</span><span class="b rsn">公表されていない</span><div class=sm>**本記録は、日本の組織が本件で侵害されたという公表・報道を確認できていない** （本記録の確認。2026年11月20日）—— **Security NEXT の報道は脆弱性と悪用の事実を伝えるもので、 国内被害には触れていない**（出典7）。 **被害の有無ではなく、公表が無いことを意味する**（本記録の明示）。</div></li><li><span class=ui>Broadcom の勧告が実際の悪用に言及しない理由</span><span class="b rsn">公表されていない</span><div class=sm>**VMSA-2026-0009 には in-the-wild の悪用に関する記載が無い** （出典1。本記録の確認）〈差異1〉〈重要〉—— **SecurityWeek も「Broadcom の勧告は実際の悪用に触れていない」と記している** （出典5）。 **方針なのか、確認の段階の問題なのかは示されていない**（本記録の確認）—— **勧告だけを読む運用では、緊急度の判断材料が1つ欠ける**（本記録の評価）。</div></li><li><span class=ui>vCenter 7.0 への修正提供の見通し</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は vCenter 7.0 について「延長サポート契約者は Broadcom サポートへ 問い合わせ」としており、公開修正は示されていない**（出典1・3）〈重要〉—— **7.0 は2025年10月に一般サポートが終了している**（出典5）。 **BONESAW は vCenter 7.x でも動作するとされている**（出典5）ため、 **契約の無い利用者には適用できる修正が無い状態である**（本記録の整理）。</div></li><li><span class=ui>攻撃者が CVE-2026-123890 を知った経緯</span><span class="b rsn">公表されていない</span><div class=sm>**Mandiant は「CVE-2026-59309 の公表より前に知っていた証拠がある」と 述べるが、入手の経路（独自解析・情報の共有・内部情報）は示していない** （出典5。本記録の確認）—— **示されている傍証は BONESAW のビルドタイムスタンプ（2026年7月13日）と、 59309 を修正済みの vCenter に対して成功している事実である**（出典2・5）。</div></li><li><span class=ui>初期侵入（BeyondTrust）から vCenter 到達までの各段階の所要時間</span><span class="b rsn">公表されていない</span><div class=sm>**公表されているのは「8月下旬から BeyondTrust の悪用」「9月上旬に vCenter」 という粒度である**（出典2・4）—— **個々の侵害での滞留時間・検知までの日数は示されていない**（本記録の確認）。</div></li><li><span class=ui>ARMORY CASTLE の帰属の根拠</span><span class="b rsn">公表されていない</span><div class=sm>**「中国関連とみられる（suspected PRC-nexus）国家支援の諜報アクター」という 表現で、旧称 UNC5221・別名 Warp Panda とされている**（出典2・4・5）—— **帰属の判断根拠（インフラ・言語・活動時間帯等）は本記録が確認した範囲では 示されていない**（本記録の確認）〈重要〉。 **本記録は「中国関連とみられる」の確度をそのまま保持し、 国家の指示と断定しない**（本記録の明示）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Broadcom（VMware）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Mandiant（Google Cloud）／Google Threat Intelligence Group</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>BeyondTrust</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>悪用の確認時期から修正提供までの日数</span><span class="b conf">最少</span><span class="b org">本記録の算出</span></div><div class=fv>70<span class=fu>日</span></div><div class=fn>**「2026年9月上旬」（出典2）を9月10日とみなし、 2026年11月19日の修正提供（出典1）までを本記録が算出した下限である**〈重要〉—— **9月1日起点なら79日になる。** **SecurityWeek は「パッチ提供まで2か月以上」と表現している**（出典5）。 **これは「悪用が確認された時期」からの日数であり、 攻撃者が脆弱性を知った時期からの日数ではない**（本記録の明示）—— **Mandiant は2026年7月29日より前に知っていた証拠があるとしている**（出典5）。</div></div><div class=fig><div class=fh><span class=fl>BONESAW のビルド時刻から CVE-2026-59309 公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>16<span class=fu>日</span></div><div class=fn>**ビルドタイムスタンプ 2026-07-13T09:21:24Z（出典2）から 2026年7月29日（出典2・5）までを本記録が算出した。** **Mandiant は、Go のビルドメタデータがコンパイル前に改変可能であることを あわせて注記している**（出典2）〈差異3〉—— **本記録はこの16日を「攻撃者が先に知っていた」ことの傍証として扱い、 確定値としては扱わない**（本記録の判断）。</div></div><div class=fig><div class=fh><span class=fl>VMSA-2026-0009 で修正された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>**vCenter 1件（CVE-2026-123890）・SDDC Manager 3件 （CVE-2026-123891／123892／123893）・VMware Tools 1件（CVE-2026-123894）である** （出典1・7）——**クリティカルは vCenter の1件のみで、 残りは 8.1／7.2／6.7／6.7 である**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>本キャンペーンで確認されたマルウェア・悪用ツールの種類</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>6<span class=fu>種</span></div><div class=fn>**SLIMSAVAGE（Webシェル）・CAGEMATCH（Webシェル）・BONESAW（悪用ツール）・ SAWSNAKE（SAML 偽造）・BEARBONES（Dropbear 由来のバックドア）・ LAZYBONES（Slack を C2 に使うバックドア）の6種である**（出典2・4）—— **このほか RAR・vmfs_browser.py・WinSCP といった汎用の道具も使われている** （出典2）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>以下は Mandiant／Google Threat Intelligence Group の分析（出典2）と 報道（出典4・5）に書かれた事実関係を段階ごとに並べたものである。 初期侵入は BeyondTrust Remote Support のゼロデイ（CVE-2026-102764）で、 内部の Linux アプライアンスを経由して vCenter に到達し、 CVE-2026-123890 の悪用で管理者セッションを作り、 ディレクトリデータベースと SAML 署名鍵を奪って Golden SAML に至り、 最後に ESXi 経由でゲスト仮想マシンのデータを持ち出している。 被害組織の属性・件数は公表されていない。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>BeyondTrust Remote Support アプライアンスのゼロデイ（CVE-2026-102764）を悪用して 侵入した。この脆弱性の悪用は2026年8月下旬から確認されている</div><div class=fn>根拠: Mandiant／GTIG の分析（出典2）および同社が2026年10月15日に公表した BeyondTrust 側の記事（出典2・4）</div></li><li><div class=stg><span class="b stage">2. 永続化</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>内部の Linux アプライアンスに Webシェルを設置した。SLIMSAVAGE（ActiveSer.jsp。 pwd=123 を認証値としてコマンドを実行する）と CAGEMATCH（u.jsp。 multipart/form-data でアップロードしたファイルを /tmp に保存する）が使われた</div><div class=fn>根拠: Mandiant／GTIG の分析（ファイル名・動作・YARA ルールを含む）</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">disclosed</span><span class=srcs>[2]</span></div><div>root へ権限を昇格した。痕跡として、gdb を経由した /bin/env への SUID 設定が 挙げられている</div><div class=fn>根拠: Mandiant／GTIG の分析（侵害の痕跡の一覧）</div></li><li><div class=stg><span class="b stage">4. 内部探索</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>内部ネットワークを探索し、VMware の基盤（vCenter・ESXi）を探し出した</div><div class=fn>根拠: Mandiant／GTIG の分析および BleepingComputer の記述</div></li><li><div class=stg><span class="b stage">5. 認証情報アクセス</span><span class="b conf">disclosed</span><span class=srcs>[2] [4] [5]</span></div><div>Go 製のツール BONESAW（/tmp/123。vcenter-db-teamcheck-go）で CVE-2026-123890 を 悪用し、administrator@vsphere.local の認証済みセッションを作成した。 そのうえで vmdird の RPC インターフェース（vmdirdbcp）を通じて ディレクトリデータベース /storage/db/vmware-vmdir/data.mdb（LMDB）を持ち出し、 VMware STS の SAML 秘密 RSA 署名鍵を抽出し、SSO の管理者アカウント （sps-…@vsphere.local の形）を作成した。 さらに SSH 経由で vCenter の内部マスター暗号鍵と PostgreSQL のパスワードファイルを 奪っている</div><div class=fn>根拠: Mandiant／GTIG の分析（ツール名・ファイルパス・作成されたアカウントの形式）</div></li><li><div class=stg><span class="b stage">6. 検知回避</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>SAWSNAKE（/tmp/sss。Go 製の SAML 認証バイパスツール）で data.mdb から IdP の署名鍵と信頼済み証明書を取り出し、Administrator 向けの SAML アサーションを 偽造した（Golden SAML）。これにより多要素認証を回避し、任意の利用者に なりすますことができた</div><div class=fn>根拠: Mandiant／GTIG の分析（SAWSNAKE の出力ファイル idp_key.pem・ trusted_cert_2.pem・domain.txt を含む）</div></li><li><div class=stg><span class="b stage">7. 永続化</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>BEARBONES（/tmp/dbr。Dropbear ベースの C 製バックドア。SHA-256 のハードコード値に 一致するパスワードでログインを許し、平文の資格情報をログに記録する。 SSH バナーは SSH-2.0-pulsesecure_23345 に改変、待ち受けは TCP 53 と 33992）と LAZYBONES（/usr/bin/vmtoolscs。Go 製で Slack を C2 に使い、AES-256-CTR で暗号化、 150〜450 秒のジッターでポーリング、systemd で50分ごとに再起動）を設置した</div><div class=fn>根拠: Mandiant／GTIG の分析（ファイルパス・通信方式・永続化の設定）</div></li><li><div class=stg><span class="b stage">8. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>ESXi ホストへ移り、VMFS 上のゲスト仮想マシンから NTDS・SYSTEM・SECURITY・dns などを抽出し、o.tar.gz にまとめて持ち出した。隠しディレクトリ .a の使用、 scp -t による転送、ESXi の root の authorized_keys への鍵追加が痕跡として 挙げられている</div><div class=fn>根拠: Mandiant／GTIG の分析（ファイル名・転送方法・ESXi 側の痕跡）</div></li><li><div class=stg><span class="b stage">9. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs>[2] [4]</span></div><div>仮想化基盤の管理権限とゲスト仮想マシン内の認証情報（Active Directory の データベースを含む）が攻撃者の手に渡った。Mandiant は、アクターが 被害者の仮想化環境の奥へ進み、ESXi ホストへアクセスし、 仮想マシンから機微な情報を取り出せる状態になったとしている</div><div class=fn>根拠: Mandiant／GTIG の分析および BleepingComputer の記述</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Mandiant は脆弱性を Broadcom へ非公開で報告し、 修正が提供された2026年11月19日と同じ日に、悪用の詳細・侵害の痕跡・ YARA ルール・要塞化の手順を公表した</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 修正と同日の公表は、利用者が「更新する」と「侵害を点検する」を 同時に始められる形になる。 一方、手口と痕跡を詳細に出すことは、未更新の環境に対する模倣の手がかりにもなる。 9月上旬からの悪用に対し、公表は2か月以上あとである</div></li><li><div class=ui>Broadcom は VMSA-2026-0009 で CVSS・対象版・修正版・回避策の有無を示したが、 実際の悪用には触れていない。Mandiant は悪用・攻撃者名・手口・痕跡を示したが、 被害組織の業種・国・件数には触れていない</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> ベンダーが確認済みの事実に限る書き方は、誤った断定を避けられる。 一方、勧告だけを読む運用では「通常のクリティカル」と区別がつかず、 侵害の点検まで至らない。 被害組織を伏せることは当事者の保護になるが、 同業種の組織が自らの優先度を決める材料は得られない</div></li></ul></div>
+<section id="s6"><h2>修正の提供は、悪用が始まってから70日以上あとだった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [2] [3] [5]</span></h2><p>公表されている時系列はこうである。</p>
+<ul>
+<li><strong>2026年8月下旬</strong>: BeyondTrust Remote Support のゼロデイ（CVE-2026-102764）の悪用が始まる（出典4）</li>
+<li><strong>2026年9月上旬</strong>: ARMORY CASTLE が BONESAW で CVE-2026-123890 を悪用し、vCenter を侵害（出典2・3・5）</li>
+<li><strong>2026年11月19日</strong>: Broadcom が VMSA-2026-0009 で修正を提供（出典1）</li>
+</ul>
+<p><strong>9月上旬を9月10日とみなしても、修正提供までに70日以上ある</strong>（本記録の算出。figures 参照）。SecurityWeek は「2か月以上」と表現している（出典5）。</p>
+<p>さらに重要なのは、<strong>攻撃者が脆弱性を知った時期はもっと前である</strong>ことだ。Mandiant は <strong>「ARMORY CASTLE は CVE-2026-59309 の公表（2026年7月29日）より前にCVE-2026-123890 を知っていた証拠がある」</strong> としている（出典5。原文英語）〈重要〉。傍証として示されているのは、<strong>BONESAW のビルドタイムスタンプが2026年7月13日（59309 公表の16日前）</strong>であることと、<strong>59309 を修正済みの vCenter に対して BONESAW が成功している</strong>ことである（出典2・5）。ただし Mandiant 自身が、<strong>Go のビルドメタデータは改変可能</strong>だと注記している（出典2）〈差異3〉。</p>
+<p><strong>読み取るべきは、同じ製品の認証回避が短期間に2件続き、1件目の修正が2件目を止めなかったという事実である</strong>（本記録の評価）—— <strong>「7月に当てたから大丈夫」は成り立たなかった。</strong> Rapid7 も、<strong>59309 の修正を受けたシステムにも新しい更新が必要</strong>だと明示している（出典3）。</p></section>
+<section id="s7"><h2>ベンダー勧告には悪用の記載が無い——勧告だけを読む運用では緊急度を測れない<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [4] [5]</span></h2><p>2026年11月19日に出た2つの公表は、同じ脆弱性について別のことを書いている。</p>
+<ul>
+<li><strong>Broadcom（VMSA-2026-0009）</strong>: CVSS 9.8・回避策なし・緊急の更新。<strong>実際の悪用に関する記載は無い</strong>（出典1。本記録が取得して確認）</li>
+<li><strong>Mandiant／GTIG</strong>: 2026年9月上旬からのゼロデイ悪用、攻撃者名、6種のマルウェア、侵害の痕跡（出典2）</li>
+</ul>
+<p>SecurityWeek も <strong>「Broadcom の勧告は in-the-wild の悪用に触れていない」</strong>と記している（出典5）。BleepingComputer も<strong>「Broadcom は悪用を確認していないが、Mandiant の研究者が攻撃を文書化した」</strong>と書いている（出典4）。<strong>理由は公表されていない</strong>〈未確定3〉。</p>
+<p><strong>この差は運用に効く</strong>（本記録の評価）〈重要〉。脆弱性管理の優先度を「ベンダー勧告のスコアと記述」で決めている組織は、<strong>本件を「CVSS 9.8 の通常のクリティカル」として扱うことになる。</strong>一方、実態は<strong>国家支援とみられるアクターが2か月以上使っていたゼロデイ</strong>であり、<strong>更新だけでなく侵害の点検が必要な事案</strong>である（出典2・5）。</p>
+<p><strong>本DBがこの齟齬を記録するのは、どちらかが誤りだからではない</strong>（本記録の明示）——ベンダーは自ら確認した事実しか書かない方針を取ることがあり、調査会社は自ら調べた事実を書く。<strong>読む側が両方を突き合わせないと、緊急度を測り損なう構造になっている。</strong></p></section>
+<section id="s8"><h2>認証回避のあとに起きたのは鍵の窃取で、パッチを当てても偽造トークンは残る<span class="b slot">評価・解釈</span><span class=srcs>出典 [2] [4] [5]</span></h2><p>Mandiant が示した段階は次のとおりである（出典2・4）。</p>
+<ol>
+<li><strong>BeyondTrust Remote Support のゼロデイ</strong>（CVE-2026-102764）で初期侵入</li>
+<li>内部の Linux アプライアンスに Webシェル（<strong>SLIMSAVAGE</strong>・<strong>CAGEMATCH</strong>）を置き、root へ昇格、内部ネットワークを探索して VMware 基盤を探す</li>
+<li><strong>BONESAW</strong> で CVE-2026-123890 を悪用し、<strong>ディレクトリデータベース（data.mdb／LMDB）</strong>・<strong>VMware STS の SAML 秘密署名鍵</strong>を取り出し、<strong>SSO の管理者アカウントを作成</strong></li>
+<li><strong>SAWSNAKE</strong> が SAML アサーションを偽造（<strong>Golden SAML</strong>）し、<strong>多要素認証を回避</strong>して任意の利用者になりすます</li>
+<li><strong>BEARBONES</strong>（Dropbear 由来）・<strong>LAZYBONES</strong>（Slack を C2 に使う）で永続化</li>
+<li><strong>vCenter の内部マスター暗号鍵と PostgreSQL のパスワード</strong>を奪い、<strong>ESXi ホスト</strong>へ移り、ゲスト仮想マシンから<strong>NTDS・SYSTEM・SECURITY・dns</strong> を抜き出す</li>
+</ol>
+<p><strong>この並びで重要なのは、脆弱性の悪用が「入口」でしかないことである</strong>（本記録の評価）〈重要〉。奪われたのは鍵——<strong>SAML 署名鍵とマスター暗号鍵</strong>である（出典2）。<strong>署名鍵が外に出た後は、脆弱性を修正しても偽造トークンは有効なままになる</strong>（本記録の評価）。Mandiant の CTO が <strong>「パッチの適用と、侵害の証跡の調査の両方を行うべき」</strong>と述べているのは、この構造を指している（出典5。原文英語を訳出）。</p>
+<p><strong>仮想化基盤は、ゲストの中身まで到達できる位置にある</strong>（本記録の整理）——本キャンペーンは ESXi 経由で Active Directory のデータベースを持ち出している。<strong>vCenter の侵害は「管理ツールの侵害」ではなく「全系の侵害」として扱う</strong>のが妥当である（本記録の評価）。</p></section>
+<section id="s9"><h2>サポートが切れた vCenter 7.0 には公開修正が無く、BONESAW は 7.x でも動く<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3] [4] [5]</span></h2><p>修正版の一覧で、<strong>vCenter 7.0 の欄だけが版番号ではない</strong>（出典1・3）。</p>
+<blockquote>
+<p>「vCenter 7.0 — 延長サポート契約がある場合はブロードコムのサポートに問い合わせ」（出典1。原文英語を訳出）</p>
+</blockquote>
+<p><strong>7.0 は2025年10月に一般サポートが終了している</strong>（出典5）。一方、<strong>Mandiant によれば BONESAW は vCenter 7.x と 8.x のアプライアンスに対して動作する</strong>（出典5）〈重要〉。</p>
+<p><strong>つまり、延長サポート契約を結んでいない 7.0 の利用者には、適用できる修正が存在しない状態である</strong>（本記録の整理）〈未確定4〉。この場合に残る手は、<strong>①管理面へのネットワーク到達性を絞る</strong>（出典1・4。既定拒否と管理ポートの許可リスト化）、<strong>②侵害の点検</strong>（出典2）、<strong>③更新可能な版への移行計画の前倒し</strong>（本記録の推奨）である。</p>
+<p><strong>本記録がこれを独立の節に立てるのは、国内でもサポート切れの版が残りやすい領域だからである</strong>（本記録の評価）——仮想化基盤は停止調整が難しく、更新が後回しになる。<strong>「クリティカルな認証回避に、修正が提供されない版がある」という状態は、移行の優先度を決める材料になる。</strong></p></section>
+<section id="s10"><h2>被害組織は公表されておらず、「誰が狙われたか」から優先度を決められない<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [2] [4] [5]</span></h2><p>Mandiant の分析には、<strong>被害組織の業種・国・件数が無い</strong>（出典2。本記録の確認）〈未確定1〉。報じられているのは、<strong>Mandiant の CTO が「複数のインシデントを調査した」と述べた</strong>ことまでである（出典5）。<strong>日本の組織が被害を受けたという公表も確認できない</strong>（本記録の確認）〈未確定2〉。</p>
+<p><strong>この状態では「自社は対象か」を被害者像から判断できない</strong>（本記録の評価）。判断できるのは<strong>構成</strong>だけである—— <strong>脆弱な版の vCenter があり、ネットワークから到達できるなら対象である</strong>（出典1・3）。</p>
+<p>本キャンペーンの入口は<strong>インターネット越しの vCenter ではなく、別のゼロデイで内部に入ったうえでの内部からの到達</strong>だった（出典2・4）〈重要〉。<strong>「vCenter は外部公開していないから対象外」という切り方は成り立たない</strong>（本記録の評価）——リモートサポート製品・VPN・境界のアプライアンスが入口になれば、内部の vCenter は到達可能な位置にある。</p>
+<p><strong>ARMORY CASTLE は「中国関連とみられる」諜報アクターとされ、旧称 UNC5221・別名 Warp Panda である</strong>（出典2・4・5）—— <strong>Citrix NetScaler や Ivanti Connect Secure のゼロデイ悪用で知られる</strong>（出典4）。<strong>帰属の根拠は本記録が確認した範囲では示されていない</strong>〈未確定7〉ため、本記録は「とみられる」の確度をそのまま保持する。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> VMware vCenter Server（VMware Directory Service／vmdird）　<b>ベンダー:</b> Broadcom（VMware）　<b>CVE番号:</b> CVE-2026-123890　<b>バージョン:</b> **影響: VMSA-2026-0009 で「fixed」とされた版より前のすべての vCenter** （出典1）。 **修正: VMware Cloud Foundation／vSphere Foundation 9.1.x → 9.1.1.0200、 9.0.x → 9.0.2.0200、vCenter Server 8.0 → 8.0 U3m、 VMware Cloud Foundation 5.x → 5.2.5、 Telco Cloud Platform／Infrastructure → 8.0 U3m（KB463116）**（出典1・3）。 **vCenter 7.0 は延長サポート契約者が Broadcom サポートへ問い合わせとされ、 公開修正は無い**（出典1・3）〈未確定4〉。 **CVE-2026-59309 の修正を適用済みのシステムも、新しい更新が必要である** （出典3）〈重要〉。　<b>概要:</b> **VMware Directory Service における認証回避の脆弱性**（出典1）—— **CVSSv3.1 基本値 9.8・重要度クリティカル、CWE-288（代替経路・代替チャネルに よる認証回避）**（出典1・3）。 **Mandiant の説明では、DCE/RPC 経由の SRP-6a セッション鍵の開示であり、 SRP 認証インターフェースにおける予測可能な UUIDv1 タイムスタンプ生成が 原因である**（出典2）。　<b>症状:</b> **「ネットワークアクセスができる悪意ある攻撃者が認証を回避し、 システムへ不正アクセスする可能性がある」**（出典1。原文英語を訳出）—— **Mandiant は、悪用の結果として administrator@vsphere.local の認証済みセッションが作られると説明している** （出典2・4）。 **その状態で任意のコマンド実行とファイル取得が可能になり、 vmdird の RPC インターフェース（vmdirdbcp）を通じて ディレクトリデータベース data.mdb を取得できる**（出典2・4）。　<b>手法:</b> **公表されている範囲は、認証不要で共有セッション鍵を得られる仕組みまでである** （出典2）——**Mandiant は CVE-2026-59309（LDAP の認可トークン処理の不備）と 「パスワードを知らずに共有セッション鍵を得られる」点で重なるが、 本件は DCE/RPC インターフェースの SRP セッション鍵開示であり別物だとしている** （出典2）。 **実際の悪用では、Go 製のツール BONESAW が使われた**（出典2）。 **実証コードの公開は本記録が確認した範囲では見られない**（本記録の確認）。　<b>内容:</b> **奪われるのは仮想化基盤の管理権限そのものである**（出典2・4）—— **ディレクトリデータベース（data.mdb／LMDB）・VMware STS の SAML 秘密署名鍵・ vCenter の内部マスター暗号鍵・PostgreSQL のパスワードファイルが 実際に持ち出されている**（出典2）。 **ESXi ホストへ移った後は、ゲスト仮想マシンのファイルシステムから NTDS・SYSTEM・SECURITY・dns といった Active Directory のデータが 抜き出されている**（出典2）。　<b>preconditions:</b> **脆弱な vCenter へのネットワーク到達性のみ**（出典1・3）—— **認証は不要**（出典1）。 **Enhanced Linked Mode の有効・無効にかかわらず影響を受ける**（出典4）。 **本キャンペーンでは、インターネットからの直接攻撃ではなく、 別のゼロデイで内部に入ったうえで内部ネットワークから到達している** （出典2・4）〈重要〉。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **VMSA-2026-0009 の修正版へ直ちに更新する（通常のパッチ周期の外で、 緊急の変更として扱う）**（出典1・3）—— **CVE-2026-59309 の修正を当てているシステムにも必要である**（出典3）。　<b>副作用:</b> **vCenter Quick Patch では適用できず、通常の更新手順が必要になる**（出典3）。 **更新中は管理インターフェースが一時的に使えなくなるが、 稼働中の仮想マシンとコンテナのワークロードは動き続けるとされている**（出典3）。 **8.0 U3m と 9.0.2.0200 では「Back-in-Time」制限が入り、 VMware Cloud Foundation 9.1.1 への更新が阻まれる**（出典3）〈重要〉—— **移行作業中の組織は相互運用性マトリクスの確認が要る**（出典3）。</div><div class=sub><b>手順:</b> **侵害の有無を点検する（更新だけで終わらせない）**（出典2・5）—— **Mandiant の CTO は「パッチの適用と、侵害の証跡の調査の両方を行うべき」と 述べている**（出典5。原文英語を訳出）。 **点検対象は、VAMI API への `PUT /rest/appliance/access/ssh`、 不審な SSO 管理者アカウント（`sps-…@vsphere.local` の形）、 `/tmp/123`・`/tmp/sss`・`/tmp/dbr`・`/usr/bin/vmtoolscs` 等のファイル、 SSH バナー `SSH-2.0-pulsesecure_23345`、 ESXi の root の authorized_keys への鍵追加、VMFS 上の隠しディレクトリ `.a`、 systemd の50分間隔の再起動設定である**（出典2）。　<b>副作用:</b> **9月上旬からの悪用に対し、vCenter アプライアンスのログ保持期間が 足りない場合は、痕跡が残っていない可能性がある**（本記録の評価）〈重要〉—— **既定ではリモートへのログ転送が設定されていないため、 アプライアンス内のログだけでは遡れる範囲が限られる**（出典2 の要塞化手順から の整理。本記録）。</div><div class=sub><b>手順:</b> **vCenter の管理面へのネットワーク到達性を絞る**（出典1・4）—— **Broadcom は公式な回避策は無いとしつつ、 ネットワーク制限とファイアウォールによる制御が露出の低減に役立つとしている** （出典4）。 **Mandiant は、iptables による既定拒否（インバウンド DROP）と 管理ポート（443・2012・22・5480）の許可リスト化、送信方向のフィルタリング、 カーネルイベントのリモート syslog 転送を行うツール（vcsa-hardening-tool）を 提示している**（出典2）。　<b>副作用:</b> **既定拒否を誤って設定すると管理面に到達できなくなるため、 Mandiant 自身が十分な試験と変更管理を求めている**（出典2）。 **VAMI の GUI ではなくカーネルレベルで設定するため、 GUI 経由の迂回は防げる一方、運用の手順がツールに依存する** （出典2。本記録の整理）。</div><div class=sub><b>手順:</b> **SAML 署名鍵とマスター暗号鍵が奪われた前提で、 侵害が疑われる環境では鍵と資格情報を入れ替える**（本記録の推奨）—— **本キャンペーンでは SAML 署名鍵の窃取と Golden SAML による 多要素認証の回避が行われている**（出典2・4）。　<b>副作用:</b> **SAML 署名鍵の入れ替えは、vCenter を信頼する連携先の再設定を伴い、 一時的に SSO が使えなくなる**（本記録の評価）。 **逆に入れ替えないまま更新だけを行うと、 修正後も偽造トークンで入られる余地が残る**（本記録の評価）〈重要〉。</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年7月13日（BONESAW のビルドタイムスタンプ 2026-07-13T09:21:24Z）</td><td class=nowrap><span class="b kind">発生</span></td><td>**悪用ツール BONESAW のビルドタイムスタンプが示す日時**（出典2）—— **CVE-2026-59309 の公表（2026年7月29日）より16日前である**（本記録の算出）。 **ただし Mandiant は、Go のビルドメタデータはコンパイル前に改変できる点に 注意を促している**（出典2）〈差異3〉。</td></tr><tr><td class="sm nowrap tw">2026年7月29日</td><td class=nowrap><span class="b kind">公表</span></td><td>**vCenter の別の認証回避の脆弱性 CVE-2026-59309 が公表された**（出典2・5）—— **Mandiant は「ARMORY CASTLE は CVE-2026-59309 の公表より前に CVE-2026-123890 を知っていた証拠がある」としている**（出典5。原文英語）〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年8月下旬</td><td class=nowrap><span class="b kind">発生</span></td><td>**BeyondTrust Remote Support のゼロデイ CVE-2026-102764 の悪用が始まった** （出典4）——**これが本キャンペーンの初期侵入経路である**（出典2・4）。 **Mandiant は2026年10月15日にこの悪用を公表している**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年9月上旬</td><td class=nowrap><span class="b kind">発生</span></td><td>**ARMORY CASTLE が BONESAW で CVE-2026-123890 を悪用し、 vCenter Server を侵害した**（出典2・3・5）—— **フォレンジックの証跡に基づく時期である**（出典2）。 **侵害された vCenter は CVE-2026-59309 の修正を適用済みだった**（出典5）〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年10月15日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Mandiant が BeyondTrust Remote Support の悪用（CVE-2026-102764）に関する 記事を公表した**（出典2）——**vSphere 側の悪用はこの続きとして 11月に公表されている**（出典2。本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日（現地時間）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Broadcom が VMSA-2026-0009 を公開し、CVE-2026-123890 を含む5件を修正した** （出典1・3・7）——**重要度はクリティカル、回避策は無し、 vCenter の更新は緊急の変更として扱うよう求めている**（出典1・3）。 **勧告に実際の悪用の記載は無い**（出典1・3・5）〈差異1〉。</td></tr><tr><td class="sm nowrap tw">2026年11月19日（現地時間。Google Cloud ブログの表示日付は11月20日）</td><td class=nowrap><span class="b kind">帰属の公表</span></td><td>**Mandiant と Google Threat Intelligence Group が、 ARMORY CASTLE による CVE-2026-123890 のゼロデイ悪用を公表した** （出典2・4・5・6）——**攻撃の段階ごとの手口、6種のマルウェア・ツール （SLIMSAVAGE・CAGEMATCH・BONESAW・SAWSNAKE・BEARBONES・LAZYBONES）、 侵害の痕跡、YARA ルール、要塞化の手順が示された**（出典2）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**Rapid7 が解説記事を公開し、CWE-288 であること、 CVE-2026-59309 の修正済みシステムにも新しい更新が必要であること、 vCenter Quick Patch では適用できないことを示した**（出典3）—— **Nexpose／InsightVM の未認証チェックは11月20日の定義更新で提供予定とされた** （出典3）。</td></tr><tr><td class="sm nowrap tw">2026年11月20日</td><td class=nowrap><span class="b kind">訂正</span></td><td>**Broadcom が勧告を改訂（VMSA-2026-0009.1）し、 VMware Tools の対象バージョンを明確化した**（出典1）。 **同日、Security NEXT が日本語で報じた**（出典7）。</td></tr><tr><td class="sm nowrap tw">2026年11月20日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が Broadcom の勧告（出典1）と Mandiant／GTIG の分析（出典2）を 取得して確認した**——**悪用の有無について両者の記述が異なることを確認した** 〈差異1〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>5</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>ベンダー勧告は悪用に触れず、調査会社は9月上旬からのゼロデイ悪用を公表している</span><div class=sm>**Broadcom の VMSA-2026-0009 には in-the-wild の悪用に関する記載が無い** （出典1。本記録が2026年11月20日に取得して確認）〈重要〉。 **SecurityWeek は「Broadcom の勧告は実際の悪用に触れていない」と記し**（出典5）、 **BleepingComputer は「Broadcom は悪用を確認していないが、 Mandiant の研究者が攻撃を文書化した」と書いている**（出典4）。 **一方 Mandiant／GTIG は、2026年9月上旬からの悪用をフォレンジックの証跡に基づき 公表している**（出典2）。 **本記録は両者を矛盾ではなく「書く範囲の違い」として扱い、 悪用の事実は出典2 に拠る**（本記録の判断）—— **理由は公表されていない**〈未確定3〉。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Mandiant の記事の公開日が、ページ表示（11月20日）と報道（11月19日）で異なる</span><div class=sm>**本記録が取得した Google Cloud ブログのページ表示は2026年11月20日である** （出典2）。 **一方、BleepingComputer は2026年11月20日00時26分 UTC の記事で 「本日公表された報告」と述べ**（出典4）、 **SecurityWeek は11月19日19時21分 UTC の記事で同じ内容を伝えている**（出典5）。 **時差による表記の違いとみられる**（本記録の推定）—— **本記録は timeline で現地時間11月19日を採り、 ページ表示が11月20日であることを併記した。**</div></li><li><span class="b dk">本記録による推定</span><span class=ui>BONESAW のビルドタイムスタンプは改変可能で、「先に知っていた」の確定根拠にはならない</span><div class=sm>**Mandiant は、BONESAW のビルドタイムスタンプ 2026-07-13T09:21:24Z が CVE-2026-59309 の公表（7月29日）の16日前であることを示す一方、 Go のビルドメタデータはコンパイル前に改変できると注記している**（出典2）〈重要〉。 **「59309 の公表より前に 123890 を知っていた証拠がある」という判断は Mandiant のものであり**（出典5）、 **本記録はビルド時刻を傍証として扱い、確定値としては扱わない** （本記録の判断）—— **より強い傍証は、59309 を修正済みの vCenter に対して BONESAW が成功している事実である**（出典5）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>悪用に使われる RPC のポート番号について、本記録は原文の表記を完全に確認していない</span><div class=sm>**本記録は Mandiant の分析（出典2）を取得した際、 RPC のポートとして 2012 と 2010 の両方の表記が現れることを把握した** （本記録の確認）〈重要〉—— **本文は 2012（SRP セッション鍵開示の DCE/RPC インターフェース）とし、 要塞化の許可リストにも 2012 が含まれる。** **本記録は本文側の 2012 を採るが、原文の表の記載を逐語で再確認していない** （本記録の明示）—— **ファイアウォールの設定に用いる前に、一次資料（出典2）で確認すること。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の記事は本文の取得に失敗しており、見出しと冒頭のみを確認している</span><div class=sm>**収集時の保存分〈output/articles/20261120/ 0124_the-hacker-news_critical-vmware-vcenter-zero-day-flaw-lets-network.md〉は content_source が fetch_failed で、本文が冒頭のみである**（本記録の確認）。 **確認できたのは、ネットワーク到達性のある攻撃者が認証を回避できること、 対応版が全サポート分岐に出ていること、回避策が無いこと、 vCenter が ESX ホストと仮想マシンの管理コンソールであることまでである**（出典6）。 **本記録は出典6 を補助的な裏付けとしてのみ用いる。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>2つのゼロデイをつないで内部から vCenter に到達し、鍵を奪って ESXi へ進んだ経路</div><div class=svgwrap><svg viewBox="0 0 1610 198" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,99.0 C193.0,99.0 193.0,99.0 220,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,99.0 C397.0,99.0 397.0,99.0 424,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,99.0 C601.0,99.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,99.0 832,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,99.0 C1009.0,99.0 1009.0,99.0 1036,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,99.0 C1213.0,99.0 1213.0,99.0 1240,99.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,99.0 C1417.0,99.0 1417.0,67.0 1444,67.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,67.0 C1519.0,67.0 1519.0,138.0 1444,138.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,150.0 C703.0,150.0 703.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ARMORY CASTL</text><text x="91.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">E（旧 UNC5221・</text><text x="91.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">別名 Warp Pan…</text><text x="91.0" y="118.0" text-anchor="middle" fill="#f48fb1" font-size="10">帰属の根拠は公表されてい</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">ない</text><rect x="220" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">BeyondTrust </text><text x="295.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Remote Suppo</text><text x="295.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">rt（CVE-2026…</text><text x="295.0" y="118.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年8月下旬から悪</text><text x="295.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">用。BT26-05 で修</text><rect x="424" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部の Linux アプ</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ライアンス（SLIMSA</text><text x="499.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VAGE・CAGEMA…</text><text x="499.0" y="118.0" text-anchor="middle" fill="#64b5f6" font-size="10">root へ昇格し内部を</text><text x="499.0" y="130.0" text-anchor="middle" fill="#64b5f6" font-size="10">探索</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VMware vCent</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">er Server（CV</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">E-2026-1238…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">2026年9月上旬に B</text><text x="703.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">ONESAW で侵害。5</text><rect x="832" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">data.mdb（LMD</text><text x="907.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">B）／SAML 署名鍵／</text><text x="907.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">マスター暗号鍵／Pos…</text><text x="907.0" y="118.0" text-anchor="middle" fill="#ffcc80" font-size="10">BONESAW が取得。</text><text x="907.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">SSO 管理者アカウント</text><rect x="1036" y="55.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Golden SAML（</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SAWSNAKE による</text><text x="1111.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> SAML アサーショ…</text><text x="1111.0" y="118.0" text-anchor="middle" fill="#f48fb1" font-size="10">多要素認証を回避し任意の</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">利用者になりすます</text><rect x="1240" y="62.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="1315.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ESXi ホスト／VMF</text><text x="1315.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S 上のゲスト仮想マシン</text><text x="1315.0" y="111.0" text-anchor="middle" fill="#64b5f6" font-size="10">authorized_k</text><text x="1315.0" y="123.0" text-anchor="middle" fill="#64b5f6" font-size="10">eys への鍵追加・隠し</text><rect x="1444" y="35.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="57.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NTDS・SYSTEM・</text><text x="1519.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SECURITY・dns</text><text x="1519.0" y="85.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">（o.tar.gz に…</text><rect x="1444" y="113.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1519.0" y="135.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害された組織（業種・国</text><text x="1519.0" y="149.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・件数は非公表）</text><rect x="628" y="118.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">VMSA-2026-00</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">09（2026年11月1</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9日・回避策なし／7.…</text></svg></div><div class=fn>Mandiant／GTIG の分析（出典2）と報道（出典4・5）から、 ARMORY CASTLE の侵入経路を段階ごとに整理した図である（整理は本記録）。 **起点は vCenter ではなく BeyondTrust Remote Support のゼロデイである** （出典2・4）〈重要〉。 **点線は、公表資料に手順の詳細が示されていない部分 （初期侵入の具体的な要求の形・被害組織の属性）である**〈未確定1〉。 **被害組織の業種・国・件数は公表されていないため、被害者ノードは 「侵害された組織（属性非公表）」としている**（出典2）。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**個々の侵害で検知の機会があったかは公表されていない**（本記録の確認）—— **ゼロデイであるため、署名による検知は期待できない**（本記録の評価）。 **境界のリモートサポート製品が入口になった点は、 その手前のネットワーク記録が検知の最後の砦になることを示す**（本記録の整理）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>境界に置くリモートサポート・VPN 製品の管理面を、必要な送信元のみに絞る</div><div class=ctl><span class="b eff">検知できた</span>境界アプライアンスのログを外部へ転送し、アプライアンス内の記録に依存しない</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**Webシェルは JSP ファイルとしてアプライアンス上に置かれており、 ファイルの追加を監視していれば気づける性質のものである**（本記録の評価）—— **実際に検知されたという記述は無い**（出典2。本記録の確認）。 **アプライアンスは利用者がファイル監視を入れにくい領域である**（本記録の整理）</div></td><td><div class=ctl><span class="b eff">検知できた</span>アプライアンス上のファイル追加・変更を検知対象にする（Mandiant の YARA ルールを活用）</div><div class=ctl><span class="b eff">影響を限定できた</span>アプライアンスから外向きの通信を既定拒否にし、必要な宛先のみ許可する</div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**SUID の付与は監査可能な操作である**（本記録の評価）—— **アプライアンスの既定ではカーネルイベントのリモート転送が 設定されていないため、記録が手元に残らない**（出典2 の要塞化手順からの整理。 本記録）〈重要〉</div></td><td><div class=ctl><span class="b eff">検知できた</span>カーネルイベント（SUID 付与・特権昇格）をリモート syslog へ転送する</div><div class=ctl><span class="b eff">検知できた</span>アプライアンスの SSH 有効化（VAMI API への PUT /rest/appliance/access/ssh）を監視する</div></td></tr><tr><td class=nowrap><span class="b stage">内部探索</span></td><td><span class="b do">公表されていない</span><div class=sm>**探索の検知可否は公表されていない**（本記録の確認）—— **内部の水平方向のスキャンは、東西方向の通信を記録していなければ見えない** （本記録の評価）</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>管理セグメントへの到達を既定拒否にし、踏み台（特権アクセスワークステーション）経由に限る</div><div class=ctl><span class="b eff">検知できた</span>内部スキャンの検知（短時間の多数ホストへの接続）を監視対象にする</div></td></tr><tr><td class=nowrap><span class="b stage">認証情報アクセス</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**SSO 管理者アカウントの作成は vCenter 側に記録が残る操作である** （本記録の評価）〈重要〉—— **Mandiant が痕跡として挙げているのもこのアカウント名の形である**（出典2）。 **アカウント作成の通知を設けていれば、この段階で気づける余地があった** （本記録の評価）。 **実際に検知されたという記述は無い**（本記録の確認）</div></td><td><div class=ctl><span class="b eff">検知できた</span>SSO 管理者アカウントの作成・権限付与を通知対象にし、台帳と突き合わせる</div><div class=ctl><span class="b eff">侵入を防げた</span>vCenter の管理ポート（443・2012・22・5480）への到達を許可リストで絞る</div><div class=ctl><span class="b eff">影響を限定できた</span>署名鍵・マスター暗号鍵をアプライアンス外の鍵管理（HSM 等）へ寄せ、取得の記録を残す</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**偽造されたアサーションは正規の署名鍵で署名されているため、 検証側からは正当な認証と区別できない**（本記録の評価）〈重要〉—— **多要素認証も通過する**（出典2・4）。 **検知は認証そのものではなく、認証後の振る舞い （通常と異なる時間・場所・操作）に頼ることになる**（本記録の整理）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>署名鍵の窃取を前提に、侵害時は鍵と資格情報を入れ替える手順を用意する</div><div class=ctl><span class="b eff">検知できた</span>管理者操作について、認証の成否ではなく操作内容を監視対象にする</div></td></tr><tr><td class=nowrap><span class="b stage">永続化</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**非標準の高ポートでの待ち受け（TCP 53・33992）と、 改変された SSH バナーは、外部からの観測で気づける痕跡である**（本記録の評価） 〈重要〉。 **C2 に Slack を使うため、宛先ドメインだけでは正規の業務通信と区別しにくい** （本記録の整理）——**SaaS を C2 に使う型は、宛先の評判では落とせない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>管理用アプライアンスの待ち受けポートを定期的に棚卸しし、差分を検知する</div><div class=ctl><span class="b eff">侵入を防げた</span>アプライアンスからの外向き通信を宛先の許可リスト方式にする（SaaS の C2 を遮断）</div><div class=ctl><span class="b eff">検知できた</span>systemd のユニット追加・変更を記録し、リモートへ転送する</div></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ESXi の root に対する authorized_keys の追加は、 構成管理で検知できる変更である**（本記録の評価）。 **ゲストのディスクから直接ファイルを抜く操作は、 ゲスト OS 側の監視では見えない**（本記録の整理）〈重要〉—— **EDR をゲストに入れていても、基盤側から読まれれば記録に残らない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>ESXi の authorized_keys・設定変更を構成管理で監視し、差分を通知する</div><div class=ctl><span class="b eff">影響を限定できた</span>仮想化基盤からの外向き転送を遮断し、管理セグメントからの持ち出し経路を閉じる</div><div class=ctl><span class="b eff">影響を限定できた</span>ドメインコントローラの仮想ディスクを暗号化し、基盤側からの読み出しの価値を下げる</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**影響の確定時点・各被害組織での発覚の経緯は公表されていない** （本記録の確認）〈未確定6〉—— **暗号化や破壊に関する記述は無く、諜報目的の情報収集として描かれている** （出典2・4。本記録の整理）</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>ドメイン管理者の資格情報を仮想化基盤の管理権限と分離し、侵害の連鎖を切る</div><div class=ctl><span class="b eff">復旧を早められた</span>侵害時に AD の資格情報を全面的に入れ替える手順（krbtgt の2回更新を含む）を用意する</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Mandiant は脆弱性を Broadcom へ非公開で報告し、 修正が提供された2026年11月19日と同じ日に、悪用の詳細・侵害の痕跡・ YARA ルール・要塞化の手順を公表した</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価である。修正の提供と同時に、点検に使える粒度 （ファイルパス・アカウント名の形式・待ち受けポート・YARA）まで出している点を 評価した。ただし「悪用開始から公表まで」の長さは、 報告から修正提供までの調整期間が公表されていないため評価できない〈未確定5〉</td></tr><tr><td>Broadcom は VMSA-2026-0009 で CVSS・対象版・修正版・回避策の有無を示したが、 実際の悪用には触れていない。Mandiant は悪用・攻撃者名・手口・痕跡を示したが、 被害組織の業種・国・件数には触れていない</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の評価である。2つの公表を合わせれば対処に必要な情報は揃うが、 どちらか一方だけでは足りない構造になっている〈差異1〉。 被害組織が示されないため、本記録も「構成が該当するか」でしか 当てはまりを判定できない（applicability 参照）</td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>仮想化基盤の認証回避は「管理ツールの脆弱性」ではなく 「全系の侵害」として扱う。影響評価を基盤単位で用意しておく。</div><div class=lw>**本件では vCenter の侵害後、SAML 署名鍵・マスター暗号鍵・PostgreSQL の パスワードが奪われ、ESXi 経由でゲスト仮想マシンから Active Directory のデータベース（NTDS）まで持ち出されている**（出典2）〈重要〉。 **ゲスト側に EDR を入れていても、基盤側から仮想ディスクを読まれれば 記録に残らない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **vCenter／ESXi が侵害された場合の影響範囲を、 基盤上の全仮想マシン（ドメインコントローラを含む）として事前に定義する。** **その前提で、資格情報の全面入れ替えを含む復旧手順を用意し、所要時間を見積もる。**</div></li><li><div class=lp>ベンダー勧告のスコアだけで優先度を決める運用は、本件のような 「勧告に悪用が書かれていないゼロデイ」を取り落とす。</div><div class=lw>**Broadcom の VMSA-2026-0009 には実際の悪用に関する記載が無い** （出典1。本記録が取得して確認）〈重要〉—— **一方 Mandiant は、2026年9月上旬からのゼロデイ悪用を同日に公表している** （出典2）。 **勧告だけを読む運用では、CVSS 9.8 の通常のクリティカルとして処理される** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **脆弱性の緊急度判定に、ベンダー勧告以外の情報源 （調査会社の分析・CISA KEV・第三者の解説）を突き合わせる工程を入れる。** **「悪用の有無」の判断は、勧告の記載が無いことを「悪用なし」と読まない規則にする。**</div></li><li><div class=lp>パッチ適用の完了報告に「侵害の点検」を含める。鍵が出た後は更新だけでは閉じない。</div><div class=lw>**本件では SAML 署名鍵が持ち出され、Golden SAML による 多要素認証の回避が行われている**（出典2・4）〈重要〉—— **署名鍵が外にある状態では、脆弱性を直しても偽造トークンは有効なままである** （本記録の評価）。 **Mandiant の CTO も「パッチの適用と侵害の証跡の調査の両方」を求めている** （出典5。原文英語を訳出）。</div><div class=la><b>取るべき行動</b> **緊急パッチの完了条件を「適用済み」から 「適用済み＋痕跡の点検済み（結果の記録を含む）」に変える。** **点検で痕跡が出た場合に、鍵と資格情報を入れ替える判断権限を事前に決める。**</div></li><li><div class=lp>サポートが切れた基盤ソフトは「修正が提供されない前提」で予算と移行計画を持つ。</div><div class=lw>**vCenter 7.0 には公開修正が無く、延長サポート契約者はサポートへの 問い合わせとされている**（出典1・3）—— **一方で悪用ツールは 7.x でも動作するとされる**（出典5）〈重要〉。 **仮想化基盤は停止調整が難しく、更新が後回しになりやすい**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **基盤ソフトのサポート終了日を一覧にし、終了後に クリティカルな脆弱性が出た場合の対応（延長契約・隔離・移行の前倒し）を あらかじめ決めておく。** **延長サポート契約の有無を資産台帳に記録する。**</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>vCenter の管理ポートへの到達性を既定拒否にする。回避策が無い脆弱性では 到達性の制御が唯一の時間稼ぎになる。</div><div class=lw>**本件には回避策が無い**（出典1・3）—— **Broadcom はネットワーク制限とファイアウォールが露出低減に役立つとし** （出典4）、**Mandiant は iptables による既定拒否と管理ポート （443・2012・22・5480）の許可リスト化を提示している**（出典2）。 **攻撃は内部ネットワークからの到達で成立している**（出典2・4）〈重要〉。</div><div class=la><b>取るべき行動</b> **vCenter の管理面へ到達できる送信元を、踏み台（特権アクセスワークステーション） のみに絞る。** **設定は VAMI の GUI ではなくカーネルレベルで行い、GUI 経由の迂回を防ぐ。** **変更前に十分な試験を行う（到達できなくなる事故を避ける）。**</div></li><li><div class=lp>アプライアンスのログは、アプライアンスの中に置いたままにしない。 遡れる期間が侵害調査の上限になる。</div><div class=lw>**悪用は2026年9月上旬から始まり、公表は11月19日である**（出典1・2）—— **70日以上前の痕跡を調べることになる**（本記録の算出）〈重要〉。 **Mandiant の要塞化ツールがカーネルイベントのリモート syslog 転送を 含んでいるのは、既定では転送されないためである**（出典2 からの整理。本記録）。</div><div class=la><b>取るべき行動</b> **vCenter・ESXi・境界アプライアンスのログを外部の収集基盤へ転送し、 保持期間を90日以上にする。** **転送が止まっていないかを定期的に確認する（止まった時点で調査能力が消える）。**</div></li><li><div class=lp>SSO 管理者アカウントの作成と、基盤アプライアンス上の待ち受けポートの変化は、 この型の攻撃で最も現実的な検知点である。</div><div class=lw>**BONESAW は SSO 管理者アカウント（sps-…@vsphere.local の形）を作成し、 BEARBONES は TCP 53 と 33992 で待ち受けた**（出典2）〈重要〉—— **Golden SAML の段階に入ると、偽造された認証は正規の署名で検証を通るため 区別できない**（本記録の評価）。 **検知の機会は、鍵が使われる前の「作成」と「待ち受け」にある**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **vCenter の SSO アカウント一覧を定期的に取得し、台帳との差分を通知する。** **基盤アプライアンスの待ち受けポートを棚卸しし、差分を検知対象にする。** **Mandiant 公表の YARA ルールを、アプライアンス上のファイル検査に取り込む。**</div></li><li><div class=lp>更新作業そのものに制約がある。Quick Patch 不可・「Back-in-Time」制限を 計画に織り込む。</div><div class=lw>**本件の修正は vCenter Quick Patch では適用できない**（出典3）—— **8.0 U3m と 9.0.2.0200 では「Back-in-Time」制限が入り、 VMware Cloud Foundation 9.1.1 への更新が阻まれる**（出典3）〈重要〉。 **更新中は管理インターフェースが使えなくなるが、 稼働中のワークロードは動き続けるとされている**（出典3）。</div><div class=la><b>取るべき行動</b> **緊急更新の手順書に、Quick Patch 不可・管理面の一時停止・ 移行計画への影響（相互運用性マトリクスの確認）を書き込む。** **移行作業中の環境は、適用順序をベンダー FAQ で確認してから着手する。**</div></li><li><div class=lp>ドメインコントローラを同じ仮想化基盤に置くなら、基盤の侵害が AD の侵害に直結することを前提に設計する。</div><div class=lw>**本キャンペーンは ESXi 経由でゲストの NTDS・SYSTEM・SECURITY を 持ち出している**（出典2）〈重要〉—— **ゲスト OS 側の防御では止まらない経路である**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **ドメイン管理者の資格情報と仮想化基盤の管理権限を、 同じ人・同じ端末・同じ認証基盤で兼ねないようにする。** **基盤侵害時の AD 復旧手順（krbtgt の2回更新を含む）を用意し、演習する。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> VMware vCenter Server（9.1.x／9.0.x／8.0／7.0）または これを含む VMware Cloud Foundation・vSphere Foundation・ Telco Cloud Platform／Infrastructure を運用している。</td><td class=sm>**VMSA-2026-0009 の修正版より前のすべての版が対象である**（出典1）—— **Enhanced Linked Mode の有効・無効は関係しない**（出典4）。 **該当する場合、緊急の更新と侵害の点検の両方が必要になる**（出典2・5）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> vCenter の管理面（443・2012・22・5480）へ、内部ネットワークの広い範囲から 到達できる状態になっている。</td><td class=sm>**本キャンペーンの vCenter 侵害は、インターネットからではなく 内部に侵入した後の到達で成立している**（出典2・4）〈重要〉—— **「外部公開していないから対象外」は成り立たない**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> vCenter の SSO 管理者アカウントの一覧を定期的に突き合わせておらず、 アカウント作成の通知も設けていない。</td><td class=sm>**BONESAW は SSO 管理者アカウントを作成しており、 これが Mandiant の挙げる痕跡の1つである**（出典2）—— **Golden SAML の段階に入ると偽造認証は区別できないため、 作成の検知が現実的な機会になる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">データの保持</span></td><td><span class=chk>□</span> ドメインコントローラや認証基盤の仮想マシンを、同じ vSphere 基盤上で 運用している（基盤管理者と AD 管理者の権限分離もしていない）。</td><td class=sm>**本件では ESXi 経由でゲストから NTDS・SYSTEM・SECURITY が持ち出されている** （出典2）〈重要〉——**該当する場合、基盤の侵害がそのまま AD の侵害になる** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 境界に BeyondTrust Remote Support・VPN・リモート管理のアプライアンスを置いており、 その管理面への到達元を絞っていない。</td><td class=sm>**本キャンペーンの入口は BeyondTrust Remote Support のゼロデイ （CVE-2026-102764）だった**（出典2・4）—— **該当する場合、vCenter の更新だけでは侵入経路が残る**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> サポートが終了した基盤ソフト（vCenter 7.0 等）を運用しており、 延長サポート契約の有無を資産台帳で把握していない。</td><td class=sm>**vCenter 7.0 には公開修正が無く、延長サポート契約者のみが サポート経由で対応できる**（出典1・3）〈重要〉—— **一方で悪用ツールは 7.x でも動作するとされる**（出典5）。 **該当する場合、当てられる修正が存在しない状態で運用していることになる。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月19日（初版。11月20日に VMSA-2026-0009.1 として改訂） Broadcom</span> <a href="https://support.broadcom.com/web/ecx/support-content-notification/-/external/content/SecurityAdvisories/0/39495" target="_blank" rel="noreferrer noopener nofollow">VMSA-2026-0009: VMware Cloud Foundation, vSphere Foundation, vCenter, Tools, Telco Cloud Platform, Telco Cloud Infrastructure updates address multiple vulnerabilities (CVE-2026-123890, CVE-2026-123891, CVE-2026-123892, CVE-2026-123893, CVE-2026-123894)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料（ベンダー勧告）。本記録の作成者が2026年11月20日に取得して確認した。** 公開日（初版11月19日・改訂11月20日で VMware Tools の対象版を明確化）・ 重大度クリティカル（最大 CVSS 9.8）・ステータス OPEN・ 全 CVE で回避策「なし」・対象製品・ CVE-2026-123890（VMware Directory Service の認証バイパス・CVSS 9.8・報告者 Mandiant）・ 修正版（vCenter 9.1.1.0200／9.0.2.0200／8.0 U3m、VCF 5.2.5、 Telco Cloud は KB463116、7.0 は延長サポート契約者がサポートへ問い合わせ）・ SDDC Manager の3件（CVE-2026-123891 SQLi 8.1／CVE-2026-123892 コマンド インジェクション 7.2／CVE-2026-123893 ローカル権限昇格 6.7・報告者は NATO NCSC の Arnoldas Radisauskas）・ VMware Tools（Windows）の CVE-2026-123894（SAML トークン署名バイパス 6.7）の出典。 **実際の悪用（in-the-wild）に関する記載は無い**〈差異1〉。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月19日（現地時間。ページ表示は11月20日） Mandiant（Google Cloud）／Google Threat Intelligence Group</span> <a href="https://cloud.google.com/blog/topics/threat-intelligence/armory-castle-exploits-vsphere" target="_blank" rel="noreferrer noopener nofollow">ARMORY CASTLE Exploits vSphere</a> <span class="b kind">調査レポート</span><span class=sm>（**一次資料（報告者による分析）。本続報の核。 本記録の作成者が2026年11月20日に取得して確認した。** CVE-2026-123890 が認証不要の SRP-6a セッション鍵開示であり DCE/RPC 経由で悪用され、SRP 認証インターフェースの予測可能な UUIDv1 タイムスタンプ生成が原因であること・悪用は2026年9月上旬からで 対象は vCenter 7.x・8.x であること・初期侵入が BeyondTrust Remote Support の CVE-2026-102764（2026年10月15日に別記事で公表）であること・ SLIMSAVAGE（ActiveSer.jsp）・CAGEMATCH（u.jsp）・BONESAW（/tmp/123）・ SAWSNAKE（/tmp/sss）・BEARBONES（/tmp/dbr）・LAZYBONES（/usr/bin/vmtoolscs）の 役割とファイルパス・data.mdb（LMDB）と SAML 秘密署名鍵の窃取・ SSO 管理者アカウント（sps-…@vsphere.local）の作成・Golden SAML・ vCenter の内部マスター暗号鍵と PostgreSQL のパスワードの窃取・ ESXi 経由での NTDS・SYSTEM・SECURITY・dns の抽出（o.tar.gz）・ 侵害の痕跡（IP・SSH バナー・ファイル・ログ・systemd の50分間隔再起動）・ YARA ルール・vcsa-hardening-tool による要塞化手順・ BONESAW のビルドタイムスタンプ（2026-07-13T09:21:24Z）と Go のビルドメタデータが改変可能である注記の出典。 **被害組織の業種・国・件数は示されていない**〈未確定1〉。 **RPC のポート番号について 2012 と 2010 の両方の表記が現れる**〈差異4〉。）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月19日 Rapid7</span> <a href="https://www.rapid7.com/blog/post/etr-cve-2026-123890-critical-authentication-bypass-vmware-vcenter" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-123890: Critical Authentication Bypass in VMware vCenter</a> <span class="b kind">ブログ</span><span class=sm>（**第三者の解説。保存分 〈output/articles/20261120/0068_rapid7-blog_cve-2026-123890-critical-authentication-bypass-in-.md〉 で本文を確認した。** CWE-288（代替経路・代替チャネルによる認証回避）であること・ Mandiant が非公開で報告したこと・Mandiant／Google Threat Intelligence が 2026年9月以降の悪用を確認したこと・CVE-2026-59309 とは別物で 既に修正済みのシステムにも新しい更新が必要であること・ vCenter Quick Patch では適用できないこと・修正の対応表 （9.1.1.0200／9.0.2.0200／8.0 U3m／VCF 5.2.5／Telco Cloud は KB463116／ 7.0 はサポートへ問い合わせ）・「Back-in-Time」制限で VMware Cloud Foundation 9.1.1 への更新が阻まれること・ 更新中は管理インターフェースが使えないが稼働中のワークロードは動き続けること・ Nexpose／InsightVM の未認証チェックが11月20日の定義更新で提供予定であることの出典。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月20日 00時26分 UTC BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/vmware-patches-vcenter-zero-day-exploited-in-attacks-since-september/" target="_blank" rel="noreferrer noopener nofollow">VMware patches vCenter zero-day exploited in attacks since September</a> <span class="b kind">記事</span><span class=sm>（**報道。保存分 〈output/articles/20261120/0030_bleepingcomputer_vmware-patches-vcenter-zero-day-exploited-in-attac.md〉 で本文を確認した。** Broadcom が緊急の更新として扱っていること・公式な回避策は無いが ネットワーク制限とファイアウォールが露出低減に役立つとされること・ Enhanced Linked Mode の有効無効に関係なく影響すること・ Broadcom は悪用を確認していないが Mandiant の研究者が攻撃を文書化したこと・ ARMORY CASTLE が Citrix NetScaler や Ivanti Connect Secure のゼロデイ悪用で 知られること・BeyondTrust Remote Support のゼロデイ（CVE-2026-102764）が 8月下旬から悪用され同じキャンペーンの入口だったこと・ 攻撃の段階（Webシェル・root 昇格・内部スキャン・BONESAW・SAWSNAKE・ CAGEMATCH・BEARBONES・LAZYBONES・ESXi 到達・AD データの抽出）の出典。）</span></li><li><span class=rid>[5]</span> <span class=sm>2026年11月19日 19時21分 UTC SecurityWeek</span> <a href="https://www.securityweek.com/newly-patched-vmware-vcenter-flaw-exploited-as-zero-day-by-chinese-apt/" target="_blank" rel="noreferrer noopener nofollow">Newly Patched VMware vCenter Flaw Exploited as Zero-Day by Chinese APT</a> <span class="b kind">記事</span><span class=sm>（**報道。保存分 〈output/articles/20261120/0078_securityweek_newly-patched-vmware-vcenter-flaw-exploited-as-zer.md〉 で本文を確認した。** 悪用がパッチ提供まで2か月以上続いたこと・ARMORY CASTLE（旧 UNC5221・ 別名 Warp Panda）への紐づけ・初期侵入が BeyondTrust Remote Support の CVE-2026-102764 であること・BONESAW による LMDB 窃取・SAML 署名材料の抽出・ SSO 管理者アカウントの作成・マスター暗号鍵と DB 資格情報の窃取・ ESXi への移動・「ARMORY CASTLE は CVE-2026-59309 の公表（2026年7月29日）より前に CVE-2026-123890 を知っていた証拠がある」という Google の記述・ BONESAW が 59309 を修正済みの vCenter に対して使われたこと・ BONESAW が vCenter 7.x・8.x で動作すること・7.0 に公開修正が無く 2025年10月に一般サポートが終了していること・ Broadcom の勧告が in-the-wild の悪用に触れていないこと・ Mandiant CTO の「パッチの適用と侵害の証跡の調査の両方を行うべき」との発言 （LinkedIn）の出典。）</span></li><li><span class=rid>[6]</span> <span class=sm>2026年11月19日 15時11分 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/11/critical-vmware-vcenter-flaw-cvss-98.html" target="_blank" rel="noreferrer noopener nofollow">Critical VMware vCenter Zero-Day Flaw Lets Network Attackers Bypass Authentication</a> <span class="b kind">記事</span><span class=sm>（**報道。保存分 〈output/articles/20261120/0124_the-hacker-news_critical-vmware-vcenter-zero-day-flaw-lets-network.md〉 は本文の取得に失敗しており（content_source: fetch_failed）、 冒頭のみを確認した**〈差異5〉—— **確認できたのは、ネットワーク到達性のある攻撃者が認証を回避できること、 修正版が全サポート分岐に出ていること、回避策が無いこと、 vCenter が ESX ホストと仮想マシンの管理コンソールであることまでである。** **補助的な裏付けとしてのみ用いる。**）</span></li><li><span class=rid>[7]</span> <span class=sm>2026年11月20日 00時08分 UTC Security NEXT</span> <a href="https://www.security-next.com/193141" target="_blank" rel="noreferrer noopener nofollow">「VMware vCenter」に認証回避の脆弱性 - ゼロデイ攻撃も</a> <span class="b kind">記事</span><span class=sm>（**報道（日本語）。保存分 〈output/articles/20261120/0031_security-next_vmware-vcenter.md〉で本文を確認した。** 日本語での報道があったこと・勧告の重要度が4段階中もっとも高い 「クリティカル」であること・CVSSv3.1 基本値 9.8・ SDDC Manager の3件（SQLインジェクション 8.1／コマンドインジェクション 7.2／ ローカル権限昇格 6.7）・Mandiant と Google Threat Intelligence Group が 少なくとも2026年9月上旬には攻撃キャンペーンに悪用されていたとする調査結果を 同日公表したことの出典。 **国内組織の被害に関する記述は無い**〈未確定2〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月20日</span> <span class="b rev">新規作成</span> **2026年11月20日収集分の5記事（出典3〜7）を起点に、 一次資料2件——Broadcom の勧告 VMSA-2026-0009（出典1）と Mandiant／Google Threat Intelligence Group の分析（出典2）——を 取得して裏取りした。** **一次資料にしか無かったのは、①勧告の改訂（11月20日・VMSA-2026-0009.1 で VMware Tools の対象版を明確化）と他4件の CVE の報告者 （NATO NCSC の Arnoldas Radisauskas・Noam Pomerantz）、 ②脆弱性の技術的な原因（SRP 認証インターフェースの予測可能な UUIDv1 タイムスタンプ生成による SRP-6a セッション鍵開示）、 ③マルウェア6種のファイルパス・通信方式・永続化の設定と侵害の痕跡、 ④vcsa-hardening-tool による要塞化手順、 ⑤BONESAW のビルドタイムスタンプ（2026-07-13T09:21:24Z）と Go のビルドメタデータが改変可能である注記である。** **最も重要な確認は「書かれていないこと」である**（本記録の整理）〈重要〉—— **Broadcom の勧告には実際の悪用に関する記載が無く、 Mandiant の分析には被害組織の業種・国・件数が無い。** **勧告だけを読む運用では緊急度を測れず、 被害者像からは当てはまりを判定できないため、 本記録は applicability を「構成が該当するか」で6項目立てた。** **日本の組織の被害は確認できないため japan_relevance は overseas-watch とし、 国内の仮想化基盤に広く当てはまることを japan_relevance_note に記した。** **RPC のポート番号（2012／2010）の原文表記を逐語確認していないことと、 The Hacker News の保存分が本文取得に失敗していることを discrepancies に残した。**</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">VMware vCenter</span><span class="b tag">Broadcom</span><span class="b tag">CVE-2026-123890</span><span class="b tag">VMSA-2026-0009</span><span class="b tag">認証回避</span><span class="b tag">ゼロデイ</span><span class="b tag">ARMORY CASTLE</span><span class="b tag">UNC5221</span><span class="b tag">Mandiant</span><span class="b tag">Golden SAML</span><span class="b tag">BONESAW</span><span class="b tag">SAWSNAKE</span><span class="b tag">ESXi</span><span class="b tag">仮想化基盤</span><span class="b tag">BeyondTrust</span><span class="b tag">CWE-288</span><span class="b tag">一次資料裏取り</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-20 15:24 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
