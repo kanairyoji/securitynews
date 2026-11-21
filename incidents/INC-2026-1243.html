@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ruby2shell で認証前に RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1243</span>ruby2shell で認証前に RCE</h1>
+<header class="site-header">
+  <p class="subtitle">**Ruby の開発チームは2026年11月18日、正規表現エンジンと文字列の case 変換に関する脆弱性7件を公表し、Ruby 4.0.10・3.4.13・3.3.14 を公開した。** **このうち文字列 case 変換の1バイトのヒープバッファオーバーフロー （GHSA-34m4-m9fh-gqp5・のちに CVE-2026-132825）は Veria Labs が「ruby2shell」と名づけて公表し、 既定構成の Rails と古典スタイルの Sinatra では 認証の前にこの処理に到達すると報告した。** **経路は Rack の MethodOverride ミドルウェアで、 フォームの `_method` を大文字化する処理が入口になる。** **原因はドイツ語の ß の大文字化が2バイト（SS）になるのに 1バイト分しか境界を確認していなかったことで、 Ruby 2.4.0 から存在していた。** **GitLab・GitHub Enterprise Server・Mastodon・OpenProject・ Discourse・Chatwoot など Ruby を同梱する自己ホスト型製品も影響を受けた。** **Ruby は深刻度をクリティカルとし「緩和策は無い」が、 MITRE が採番した CVE の CVSSv3.1 基本値は 7.4（攻撃元区分はローカル）で、 評価が食い違っている。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">日本に波及した海外事案</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月18日（Ruby 公式サイトの勧告）</span>
+  <span>最終更新: </span>
+</div>
+
+<div class="lead"><p><strong>2026年11月18日、Ruby の開発チームは正規表現エンジンと文字列の case 変換に関する脆弱性7件を公表し、 「いくつかについては遠隔コード実行を引き起こせることを示す 実証コードを把握している」として Ruby 4.0.10・3.4.13・3.3.14 を公開した</strong>（出典1。原文英語を訳出）〈重要〉。 <strong>このうち文字列 case 変換の1バイトのヒープバッファオーバーフロー （GHSA-34m4-m9fh-gqp5）について、Veria Labs は「ruby2shell」と名づけ、 「既定構成の一般的な Ruby Web フレームワークで、 認証を要さず到達できる」と報告した</strong>（出典3。原文英語を訳出）。 <strong>入口は Rack の MethodOverride ミドルウェアで、 フォームの <code>_method</code> の値を大文字化する処理が、 アプリケーションのコードや認証の確認より前に走る</strong>（出典2・3）〈重要〉。 <strong>Rails はこのミドルウェアを既定で含み、 古典スタイルの Sinatra も有効にしている</strong>（出典2・3）。 <strong>Ruby を同梱する自己ホスト型製品（GitLab・GitHub Enterprise Server・ Mastodon・OpenProject・Discourse・Chatwoot）も影響を受けた</strong>（出典2・3）。 <strong>Veria Labs は、公表から約1週間後に 素の Rails に対する遠隔コード実行の実証コードを公開する予定だとしている</strong> （出典3）—— <strong>修正を当てる猶予は短い</strong>（本記録の評価）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s9" title="事案の詳細">事案の詳細</a></li><li><a href="#s10" title="経過">経過</a></li><li><a href="#s11" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s12" title="波及の構造">波及の構造</a></li><li><a href="#s13" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s14" title="対応の評価">対応の評価</a></li><li><a href="#s15" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s16" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s17" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s18" title="出典">出典</a></li><li><a href="#s19" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際の悪用の有無・攻撃通信の観測状況</span><span class="b rsn">公表されていない</span><div class=sm>**本記録の作成時点で、実際の悪用の報告は確認できていない** 〈重要〉—— **Cloudflare は「攻撃通信の監視を続け、新しい手法が現れれば ルールを更新する」と述べるだけで、観測数を示していない** （出典2）。 **同社は自社システムについて「侵害の兆候は見つかっていない」 としている**（出典2。原文英語を訳出）。 **Veria Labs の実証コード公開（2026年11月25日ごろ予定）の後は 状況が変わる可能性が高い**（本記録の評価）。</div></li><li><span class=ui>残る6件の CVE 番号</span><span class="b rsn">公表されていない</span><div class=sm>**Ruby の勧告は「CVE 識別子を申請したがまだ採番されていない」 として GHSA 識別子で各件を指している**（出典1。原文英語を訳出） 〈重要〉—— **本件（GHSA-34m4-m9fh-gqp5）には CVE-2026-132825 が 採番されたが（出典4）、 本記録の作成時点で残る6件の番号は確認できていない。**</div></li><li><span class=ui>GitHub Enterprise Server の修正版の公開時期</span><span class="b rsn">公表されていない</span><div class=sm>**Veria Labs の一覧（2026年11月21日更新時点）では 「修正版なし」であり、 「現行のすべての版が脆弱である」と注記されている** （出典3。原文英語を訳出）〈重要〉—— **本記録は GitHub 側の一次情報を取得していない**〈未確定5 と同種〉—— **自己ホストで運用する組織は、自社では塞げない期間を抱える** （本記録の評価）。</div></li><li><span class=ui>Ruby 2.4.0 の公開日（欠陥が存在した期間の正確な起点）</span><span class="b rsn">公表されていない</span><div class=sm>**Veria Labs は「Ruby 2.4.0 からそこにあった」と書くだけで 公開日を示していない**（出典3）〈重要〉—— **本記録が算出した「約9年」は、 2.4.0 が2016年12月に公開された版であるという 一般的知識にもとづく概数であり、 一次資料では確認していない**（本記録の明示）。</div></li><li><span class=ui>Discourse の影響版の表記が資料によって異なる理由</span><span class="b rsn">見解が分かれる</span><div class=sm>**Cloudflare は「Discourse 2026.10.1」を影響版として挙げ** （出典2）、 **Veria Labs は「基盤イメージが 2.0.20261119-0203 より前」と している**（出典3）〈重要〉—— **前者は製品の版、後者は Docker 基盤イメージの版を指していると みられるが、両者の対応関係は資料から確認できない** （本記録の整理）—— **本記録は Discourse 側の一次情報を取得していない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Ruby（Ruby 開発チーム・ruby-lang.org）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Veria Labs</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Ada Logics（Stephan Lipp）・Anthropic</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Cloudflare</span><span class="b role">プラットフォーム事業者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Ruby を同梱する自己ホスト型製品の供給元（GitLab・GitHub Enterprise Server・Mastodon・OpenProject・Discourse・Chatwoot）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>同じリリースで修正された脆弱性の件数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7<span class=fu>件</span></div><div class=fa>2026年11月18日（Ruby の勧告） 時点</div><div class=fn>**Ruby の勧告が「7件の脆弱性が発見された」と明記している** （出典1。原文英語を訳出）〈重要〉—— **内訳は、文字列 case 変換が2件 （GHSA-34m4-m9fh-gqp5＝ヒープバッファオーバーフロー、 GHSA-87fm-7w84-j2px＝整数オーバーフロー）、 正規表現エンジンが5件 （GHSA-7x2q-68qv-6p8x・GHSA-wpqw-5qxg-m68r・ GHSA-3p8q-wmhx-vm2w・GHSA-7whj-cfh7-xgm4・ GHSA-pvgc-g7gj-pv6h）である**（出典1）。 **「ruby2shell」の名で語られるのはこのうち1件 （GHSA-34m4-m9fh-gqp5）だけである**（出典3）〈重要〉—— **残りを同じ緊急度で扱うと優先順位を誤る**（本記録の評価）。</div></div><div class=fig><div class=fh><span class=fl>バッファからあふれるバイト数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>1<span class=fu>バイト</span></div><div class=fa>2026年11月19日（Veria Labs の公表） 時点</div><div class=fn>**Veria Labs は「1バイトのヒープオーバーフローである。 書かれるバイトは、大文字化なら S（0x53）、 case 畳み込みなら s（0x73）で、 出力バッファの直後に着地する」と書いている** （出典3。原文英語を訳出）〈重要〉。 **攻撃者は入力の長さを通じてバッファの大きさを制御できる** （出典3）。 **Cloudflare は「1バイトのあふれは無害に見えうるが、 メモリ破壊の悪用では、ヒープバッファの末尾を越えて書かれた 1バイトが隣接するオブジェクトや確保機構のメタデータを 壊すのに十分なことがある」と説明している** （出典2。原文英語を訳出）。</div></div><div class=fig><div class=fh><span class=fl>あふれを起こすのに必要な ß の個数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>21<span class=fu>個</span></div><div class=fa>2026年11月19日（Veria Labs の公表） 時点</div><div class=fn>**Veria Labs は「出力バッファは入力長に20バイトを加えた大きさで 確保される。ß はそれぞれ出力を1バイト増やすので、 21個を含む入力でバッファが1バイトあふれる」と書いている** （出典3。原文英語を訳出）〈重要〉—— **この20という余白が、必要な ß の個数をそのまま決めている** （本記録の整理）。 **Cloudflare も「21個の ß を含む文字列が出力バッファを 1バイトあふれさせる」と同じ数を伝えている**（出典2）。</div></div><div class=fig><div class=fh><span class=fl>CVE レコードに載った CVSSv3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>7.4<span class=fu>点</span></div><div class=fa>2026年11月19日 6時34分 UTC（CVE レコードの公開） 時点</div><div class=fn>**MITRE が採番した CVE-2026-132825 の記録に載っている値である** （出典4。本記録が CVE レコードを取得して確認）〈重要〉—— **ベクタは `CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H` で、 深刻度は HIGH、攻撃元区分はローカル（AV:L）、 攻撃条件の複雑さは高（AC:H）である。** **これは Ruby と Veria Labs の評価と食い違う**〈差異3〉〈重要〉—— **Ruby は深刻度をクリティカルとし（出典1・2）、 Veria Labs は「必要なアクセス: ネットワーク、認証不要」と している（出典3）。** **本記録は、既定構成の Rails が認証前に到達するという 到達経路（出典2・3）が示されている以上、 実務上はネットワーク到達可能として扱うべきと判断する** （本記録の評価）—— **CVSS の値だけで優先順位を決めると取りこぼす。**</div></div><div class=fig><div class=fh><span class=fl>欠陥が Ruby に存在していた期間（2.4.0 の公開から修正まで）</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>9<span class=fu>年</span></div><div class=fa>2026年11月18日（修正版の公開） 時点</div><div class=fn>**本記録の算出である**〈重要〉—— **Veria Labs は「同じループは複数の ISO-8859 系・ Windows-125x 系の符号化にあり、Ruby 2.4.0 からそこにあった」 と書いている**（出典3。原文英語を訳出）。 **Ruby 2.4.0 は2016年12月に公開された版である** （本記録の一般的知識にもとづく補足。出典1〜3では公開日は示されていない） 〈未確定4〉—— **したがって2026年11月までの期間を概数で9年とした。** **confidence を approx としたのは、 本記録が 2.4.0 の公開日を一次資料で確認していないためである** （本記録の明示）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**公開された到達経路は、既定構成の Rails・古典スタイルの Sinatra に 対する multipart の POST である**（出典2・3）〈重要〉—— **以下の段階は、Veria Labs と Cloudflare が公表した到達経路の説明を 整理したものであり、実際の攻撃が観測されたものではない** （本記録の明示）〈未確定2〉。 **Veria Labs は遠隔コード実行を実証したとしているが、 実証コードは本記録の作成時点では未公開である**（出典3）〈重要〉—— **公開予定は2026年11月25日ごろである。** **検知機会と対策は本記録の評価である。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[2] [3]</span></div><div>対象が Ruby で動くアプリケーションか、Rails・Sinatra か、 また Ruby を同梱する自己ホスト型製品 （GitLab・GitHub Enterprise Server・Mastodon・OpenProject・ Discourse・Chatwoot）かを見分ける。 Cloudflare は公表後すぐに走査が始まると見込むと書いている</div><div class=fn>根拠: Cloudflare の記述（出典2）と Veria Labs の影響範囲表（出典3）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[2] [3]</span></div><div>`_method` のパートに旧来の文字集合を宣言し ß を21個以上含む multipart の POST を送る。Rack の MethodOverride が ルーティング中にこれを大文字化し、 アプリケーションのコードと認証の確認より前に 脆弱な処理へ到達する</div><div class=fn>根拠: Cloudflare の解説（出典2）と Veria Labs の技術説明（出典3）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[2] [3]</span></div><div>1バイトのヒープオーバーフロー（大文字化なら S・0x53、 case 畳み込みなら s・0x73）が出力バッファの直後に書かれる。 攻撃者は入力の長さでバッファの大きさを制御できる。 隣接するオブジェクトや確保機構のメタデータの破壊を経て コード実行に至りうる</div><div class=fn>根拠: Veria Labs の技術説明（出典3）と Cloudflare の解説（出典2）</div></li><li><div class=stg><span class="b stage">4. 影響（暗号化・破壊・改ざん）</span><span class="b conf">公表・報道に基づく</span><span class=srcs>[1] [2] [3]</span></div><div>遠隔コード実行に至りうる。Ruby は実証コードの存在を把握しており、 Veria Labs は素の Rails に対する遠隔コード実行を最初に実証したと している。実際の悪用は本記録の作成時点で報告されていない</div><div class=fn>根拠: Ruby の勧告（出典1）と Veria Labs の記述（出典3）</div></li></ol></div>
+<section id="s5"><h2>認証を固めても効かない——既定の Rails は認証の前にこの処理を踏む<span class="b slot">原因・手口</span></h2><p>本件の重さは、あふれるバイト数（1バイト）ではなく<strong>到達経路</strong>にある（本記録の評価）〈重要〉。</p>
+<p>経路はこうである（出典2・3）。</p>
+<ol>
+<li>HTML のフォームは GET と POST しか送れない</li>
+<li>PUT・PATCH・DELETE を模すため、多くのフレームワークがPOST の <code>_method</code> パラメータを受け付ける</li>
+<li>Rack の MethodOverride ミドルウェアがこれを実装しており、<code>_method</code> の値を<strong>大文字化する</strong></li>
+<li>Rails はこのミドルウェアを既定のスタックに含み、古典スタイルの Sinatra も有効にしている</li>
+<li>攻撃者は、<code>_method</code> のパートに旧来の文字集合を宣言しß の連続を入れた multipart の POST を送る</li>
+<li>フレームワークは<strong>要求をルーティングしている最中に</strong>、つまりアプリケーションのコードや認証の確認が走る前に、その値を大文字化する</li>
+</ol>
+<p>Cloudflare の記述は「フレームワークは、まだ要求をルーティングしている段階で、アプリケーションのコードや認証の確認が走る前にその値を大文字化する」である（出典2。原文英語を訳出）。</p>
+<p>ここから出る実務上の帰結は厳しい（本記録の評価）〈重要〉。<strong>認証・認可をどれだけ固めても、この経路には効かない。</strong>ログイン画面しか公開していないアプリケーションも、管理画面を社内からのみに制限したアプリケーションも、HTTP の要求が届く限り同じである。</p>
+<p>一方で、<strong>到達するのは Rails と古典スタイルの Sinatra に限られる</strong>（出典3）。素の Rack と他のフレームワークは既定では露出しない。ただし Veria Labs は「旧来の符号化で受け取った文字列のcase を変えるアプリケーションのコードは、どこから来た文字列であっても影響を受けうる」と付け加えている（出典3。原文英語を訳出）——つまり<strong>自分のコードに <code>upcase</code> があるなら、入口は HTTP に限らない</strong>。</p></section>
+<section id="s6"><h2>Ruby はクリティカル、CVE レコードは 7.4・攻撃元はローカル——評価が食い違っている<span class="b slot">評価・解釈</span></h2><p>同じ欠陥に対する評価が、出所によって大きく違う（本記録の整理）〈重要〉〈差異3〉。</p>
+<table>
+<thead>
+<tr>
+<th>出所</th>
+<th>深刻度</th>
+<th>攻撃元</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ruby（出典1・2）</td>
+<td>クリティカル</td>
+<td>記載なし</td>
+</tr>
+<tr>
+<td>Veria Labs（出典3）</td>
+<td>クリティカル</td>
+<td>ネットワーク・認証不要</td>
+</tr>
+<tr>
+<td>CVE レコード（MITRE・出典4）</td>
+<td>HIGH（7.4）</td>
+<td>ローカル（AV:L）・攻撃条件の複雑さ 高（AC:H）</td>
+</tr>
+<tr>
+<td>NVD（出典4）</td>
+<td>未付与（Received）</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>CVE レコードの記述自体は、処理系の欠陥としては妥当である（本記録の評価）。MITRE の説明文は「Ruby の 3.3.14、3.4.13、4.0.10 より前の版に、case 変換におけるヒープバッファオーバーフローがある。たとえば ISO-8859-1 や Windows-1252 では、バッファの外に1バイトが書かれうる」であり（出典4。原文英語を訳出）、<strong>フレームワーク経由の到達経路には触れていない</strong>。処理系そのものを見れば「文字列の case を変える処理を呼べる者」が前提になるため、AV:L になる。</p>
+<p>だが実務の判断材料としては、これは<strong>危険な過小評価</strong>である（本記録の評価）〈重要〉。既定構成の Rails が認証前に到達する（出典2・3）という事実が分かっている以上、公開された Web サービスではネットワークから認証なしに届く。</p>
+<p><strong>本記録の判断</strong>：CVSS の基本値で優先順位をつける運用をしている組織は、本件で取りこぼす。到達経路が公表されている脆弱性については、基本値ではなく「自社の構成で誰が到達できるか」で判断する必要がある。</p></section>
+<section id="s7"><h2>「bundle update」では直らない——直すのは処理系で、同梱製品はベンダー待ち<span class="b slot">対策・注意喚起</span></h2><p>対処の難しさは、<strong>修正を当てる対象が普段の管理単位と違う</strong>ところにある（本記録の評価）〈重要〉。</p>
+<p>修正は Ruby 本体（処理系）にある（出典1・3）。したがって Rails を更新しても、gem を更新しても直らない。必要なのは Ruby 4.0.10・3.4.13・3.3.14 への更新と、<strong>背景のワーカーを含むすべての Ruby プロセスの再起動</strong>、そしてコンテナイメージの再構築である（出典2）。</p>
+<p>さらに難しいのが同梱製品である（出典3）。GitLab・GitHub Enterprise Server・Mastodon・OpenProject・Discourse・Chatwoot は自前の Ruby を抱えているため、<strong>修正はベンダーが出すまで待つしかない</strong>。Veria Labs の一覧（2026年11月21日更新時点）では、GitHub Enterprise Server（3.22.5 以前）だけが修正版なしの状態である。</p>
+<p>加えて、Cloudflare は見落としやすい点を1つ挙げている（出典2）。<strong>ディストリビューションのパッケージは、バージョン番号を変えずに修正を取り込むことがある</strong>——したがって <code>ruby -v</code> の出力だけで判断せず、パッケージの完全なバージョンをディストリビューションの勧告と突き合わせる必要がある。</p>
+<p>回避策について、資料は一致していない（本記録の整理）。<strong>Ruby と Veria Labs は回避策を示していない</strong>（出典1・3）。Cloudflare は WAF による緩和を提供しつつ、「WAF は代償的な統制であり、修正の代わりにはならない。WAF が見ない経路からも攻撃は届きうる」と明記している（出典2。原文英語を訳出）——具体的には、オリジンに直接届く通信、内部サービス間の通信、および電子メール・ファイル取り込み・メッセージキュー・背景ジョブ経由の入力である（出典2）。</p></section>
+<section id="s8"><h2>残る6件は同じ緊急度ではない——正規表現5件は「攻撃者の与えたパターン」が前提<span class="b slot">被害規模・影響範囲</span></h2><p>同じリリースで7件が修正されており（数値参照）、<strong>7件を同じ扱いにすると優先順位を誤る</strong>（本記録の評価）〈重要〉。</p>
+<p>Ruby の勧告の記述を整理すると、前提条件が違う（出典1）。</p>
+<table>
+<thead>
+<tr>
+<th>識別子</th>
+<th>内容</th>
+<th>成立の前提（Ruby の記述から）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GHSA-34m4-m9fh-gqp5</td>
+<td>case 変換のヒープバッファオーバーフロー（＝ruby2shell）</td>
+<td>細工した文字列の case を変えること</td>
+</tr>
+<tr>
+<td>GHSA-87fm-7w84-j2px</td>
+<td>case 変換の整数オーバーフロー</td>
+<td>同上</td>
+</tr>
+<tr>
+<td>GHSA-7x2q-68qv-6p8x</td>
+<td>正規表現コンパイルの二重解放</td>
+<td>攻撃者が与えたパターンをコンパイルするアプリケーション</td>
+</tr>
+<tr>
+<td>GHSA-wpqw-5qxg-m68r</td>
+<td>大文字小文字を無視する照合の領域外読み出し</td>
+<td>攻撃者が与えたパターンを使うアプリケーション</td>
+</tr>
+<tr>
+<td>GHSA-3p8q-wmhx-vm2w</td>
+<td>正規表現コンパイルのヒープバッファオーバーフロー</td>
+<td>攻撃者が与えたパターンをコンパイルするアプリケーション</td>
+</tr>
+<tr>
+<td>GHSA-7whj-cfh7-xgm4</td>
+<td><code>Regexp#to_s</code> のヒープバッファオーバーフロー</td>
+<td>攻撃者が与えたパターンをコンパイルするアプリケーション</td>
+</tr>
+<tr>
+<td>GHSA-pvgc-g7gj-pv6h</td>
+<td>後方参照の照合の領域外読み出し</td>
+<td>細工した文字列の照合（影響はメモリ内容の開示またはクラッシュ）</td>
+</tr>
+</tbody>
+</table>
+<p>Cloudflare はこの違いを実務の言葉で書いている（出典2。原文英語を訳出）——「ほとんどは、アプリケーションが攻撃者の供給した正規表現パターンをコンパイルまたは照合することを要する。Web アプリケーションでは一般的ではないが、検索機能、フィルタ規則、管理ツールでは起こりうる」。</p>
+<p>つまり<strong>自社に「利用者が正規表現を入力できる機能」があるかどうかで、残り5件の重さが変わる</strong>（本記録の整理）。検索の絞り込み、通知の条件設定、ログの抽出条件——この種の機能を持つ組織は、5件も同列の緊急度で扱う必要がある。</p></section>
+<div class="blk " id="s9"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Ruby（文字列の case 変換・ruby2shell）　<b>ベンダー:</b> Ruby 開発チーム　<b>CVE番号:</b> CVE-2026-132825　<b>バージョン:</b> **影響: Ruby 3.3.13 以前、3.4.0〜3.4.12、4.0.0〜4.0.9** （出典1）〈重要〉—— **修正版は Ruby 4.0.10・3.4.13・3.3.14**（出典1）。 **Ruby 3.3 はセキュリティ修正のみの段階、 Ruby 3.2 以前はサポート終了で修正されない**（出典1）。 **CVE レコード上の範囲は 「3.3.14 未満／3.4.0 以上 3.4.13 未満／4.0.0 以上 4.0.10 未満」で、 既定の状態は unaffected である**（出典4）。 **Veria Labs は「3.2 以前の系列は 2.4.0 まで遡ってすべて影響を受ける （EOL）」としている**（出典3）。 **識別子は GHSA-34m4-m9fh-gqp5 である**（出典1・3・6）。　<b>概要:</b> **文字列の case 変換における1バイトのヒープバッファオーバーフローで、 Ruby は深刻度をクリティカルとしている**（出典1・2）〈重要〉—— **Ruby の記述は「Ruby には文字列の case 変換における 1バイトのヒープベースのバッファオーバーフローがある。 細工した文字列の case を変えると遠隔コード実行を許す可能性がある。 この欠陥が一部の状況で遠隔コード実行を引き起こせることを 示す実証コードを把握している」である** （出典1。原文英語を訳出）。 **CVE レコードの CVSSv3.1 基本値は 7.4（HIGH）で、 ベクタは `CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H` である** （出典4）〈差異3〉—— **Ruby・Veria Labs の評価と食い違う。**　<b>症状:</b> **大文字化で S（0x53）、case 畳み込みで s（0x73）の1バイトが 出力バッファの直後に書かれる**（出典3。原文英語を訳出）〈重要〉—— **攻撃者は入力の長さでバッファの大きさを制御できる。** **バッファから結果を複製する処理が、 続けて1バイトを領域外から読む**（出典3）。 **到達する処理は `upcase`・`swapcase`・`downcase(:fold)`・ `casecmp?` で、UTF-8 の文字列は別の経路を通るため影響しない** （出典2・3）。　<b>preconditions:</b> **旧来の単バイト符号化（ISO-8859 系・Windows-125x 系の14種）で ß を21個以上含む文字列の case を変えること**（出典2・3）〈重要〉—— **既定構成の Rails と古典スタイルの Sinatra では、 Rack の MethodOverride が `_method` を大文字化するため、 認証の前にこの条件が成立する**（出典2・3）。 **素の Rack と他のフレームワークは既定では露出しない**（出典3）—— **ただし旧来の符号化の文字列の case を変える アプリケーションのコードは、入力元に関係なく影響を受けうる**（出典3）。</div><div class=sub><b>名称:</b> Ruby を同梱する自己ホスト型製品　<b>ベンダー:</b> GitLab・GitHub・Mastodon・OpenProject・Discourse・Chatwoot　<b>CVE番号:</b> CVE-2026-132825　<b>バージョン:</b> **Veria Labs の一覧（2026年11月21日更新時点）である**（出典3）〈重要〉—— **GitHub Enterprise Server: 3.22.5 以前が影響・修正版なし、 Chatwoot: 4.20.0 以前が影響・4.20.1 で修正、 GitLab: 19.6.0 以前が影響・19.6.1／19.5.8／19.4.10 で修正、 Mastodon: 4.7.5 以前が影響・4.7.6／4.6.12／4.5.22／4.4.29 で修正、 OpenProject: 17.9.7 以前が影響・17.9.8／17.8.3 で修正、 Discourse の基盤イメージ: 2.0.20261119-0203 より前が影響・ 同版で修正。** **Cloudflare は2026年11月19日時点の一覧として GitLab 19.6.0・GitHub Enterprise Server 3.22.5・Mastodon 4.7.5・ OpenProject 17.9.7・Discourse 2026.10.1・Chatwoot 4.20.0 を 挙げている**（出典2）〈重要〉—— **Discourse の版表記が両資料で異なる**（本記録の確認）〈未確定5〉。　<b>概要:</b> **自前の Ruby を同梱しているため、 修正はベンダーが出す必要がある**（出典2・3）〈重要〉—— **Ruby を直接管理していない組織でも対象になる。**　<b>症状:</b> **同梱する Ruby が修正前であれば、 製品の最新版でも脆弱なままである**（出典2・3）〈重要〉—— **Cloudflare は「公表時点で、これらの製品は最新リリースに 影響を受ける Ruby を同梱して出荷していた」と書いている** （出典2。原文英語を訳出）。　<b>preconditions:</b> **当該製品を自己ホストで運用していること**（出典2・3）—— **Discourse は2026年11月19日に Docker の基盤イメージを Ruby 4.0.10 に移したため、Docker 構成を再構築すれば修正が入る** （出典2・3）。</div><div class=sub><b>名称:</b> Ruby（同じリリースで修正された他の6件）　<b>ベンダー:</b> Ruby 開発チーム　<b>バージョン:</b> **影響と修正版は本件と同じ （3.3.13 以前・3.4.0〜3.4.12・4.0.0〜4.0.9 が影響、 4.0.10・3.4.13・3.3.14 で修正）**（出典1）。 **勧告の時点では CVE 番号が採番されておらず、 GHSA 識別子のみである**（出典1）〈差異1〉。　<b>概要:</b> **文字列 case 変換の整数オーバーフロー1件 （GHSA-87fm-7w84-j2px）と、正規表現エンジンの5件である** （出典1）〈重要〉—— **GHSA-7x2q-68qv-6p8x（コンパイル時の二重解放）、 GHSA-wpqw-5qxg-m68r（大文字小文字を無視する照合の領域外読み出し）、 GHSA-3p8q-wmhx-vm2w（コンパイル時のヒープバッファオーバーフロー）、 GHSA-7whj-cfh7-xgm4（`Regexp#to_s` のヒープバッファオーバーフロー）、 GHSA-pvgc-g7gj-pv6h（後方参照の照合の領域外読み出し）。**　<b>症状:</b> **Ruby は GHSA-pvgc-g7gj-pv6h を除く各件について 「遠隔コード実行を引き起こせることを示す実証コードを 把握している」としている**（出典1。原文英語を訳出）〈重要〉—— **GHSA-pvgc-g7gj-pv6h は「メモリ内容の開示または プロセスのクラッシュ」である**（出典1）。 **GHSA-7whj-cfh7-xgm4 は情報開示または遠隔コード実行である**（出典1）。　<b>preconditions:</b> **正規表現系の5件は、アプリケーションが攻撃者の与えたパターンを コンパイルまたは照合することを要する**（出典1・2）〈重要〉—— **Cloudflare は「Web アプリケーションでは一般的ではないが、 検索機能、フィルタ規則、管理ツールでは起こりうる」と書いている** （出典2。原文英語を訳出）—— **整数オーバーフローの GHSA-87fm-7w84-j2px は 本件と同じ case 変換の経路であり、 Cloudflare は WAF ルールを本件とは別に用意している**（出典2）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> **Ruby を 4.0.10・3.4.13・3.3.14 に更新し、 背景のワーカーを含むすべての Ruby プロセスを再起動し、 コンテナイメージを再構築する**（出典1・2）〈重要〉—— **Ruby 3.2 以前の系列はサポートされる系列へ移行する**（出典1・2）。　<b>副作用:</b> **処理系の更新であり、アプリケーションの互換性確認が必要になる** （本記録の評価）〈重要〉—— **とくに系列をまたぐ移行（3.2 以前からの移行）は、 脆弱性対応の作業ではなく移行プロジェクトになる。** **Ruby・Cloudflare は副作用について述べていない**（本記録の確認）。　<b>出典:</b> 1、2</div><div class=sub><b>数え方:</b> **前段の WAF で遮断する**（出典2）—— **Cloudflare は無料プランを含む全顧客向けに、 本件（CVE-2026-132825）と GHSA-87fm-7w84-j2px の 2つのルールを既定動作 Block で追加した**（出典2）。　<b>副作用:</b> **WAF が見ない経路は守れない**（出典2）〈重要〉—— **同社自身が「代償的な統制であり、修正の代わりにはならない」 と明記し、守れない経路として ①オリジンの IP に直接送られた要求と内部サービス間の通信、 ②同じコードへの別の入口（電子メール・ファイル取り込み・ メッセージキュー・背景ジョブ）を挙げている** （出典2。原文英語を訳出）。 **また有料プランでは管理ルールセットが すべてのゾーンで有効とは限らないため、 実際に動いているかの確認が要る**（出典2）。　<b>出典:</b> 2</div><div class=sub><b>数え方:</b> **Rails で Rack::MethodOverride を外す、 または Sinatra で method_override を無効にする** （本記録が整理した選択肢）〈重要〉—— **ただし Ruby・Veria Labs はいずれも回避策を示していない** （出典1・3。本記録の確認）。　<b>副作用:</b> **HTML のフォームから PUT・PATCH・DELETE を模す機能が使えなくなる** （本記録の評価）〈重要〉—— **これに依存しているアプリケーションは動作が壊れる。** **さらに、閉じるのは入口の1つだけであり、 自分のコードが旧来の符号化の文字列の case を変えていれば 到達経路は残る**（出典3。本記録の整理）—— **本記録はこれを推奨策としてではなく、 更新までの時間を稼ぐ手段として記録する。**　<b>出典:</b> 1、3</div><div class=sub><b>数え方:</b> **ディストリビューションのパッケージの完全なバージョンを ディストリビューションの勧告と突き合わせる**（出典2）〈重要〉—— **パッケージはバージョン番号を変えずに修正を取り込むことがある** （出典2。原文英語を訳出）。　<b>副作用:</b> **該当しない**（本記録の明示）—— **確認作業であり、副作用は無い。**　<b>出典:</b> 2</div></td></tr><tr><th>経営責任</th><td>**言及は無い**（出典1〜3。本記録の確認）—— **オープンソースの処理系の脆弱性であり、 責任の所在を問う構図の事案ではない**（本記録の整理）。<span class="b rsn">該当なし</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s10"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2016年12月（Ruby 2.4.0 の公開。本記録の補足）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**Veria Labs の説明では、本件の欠陥は Ruby 2.4.0 から 存在していた**（出典3。原文英語を訳出）〈重要〉—— **「同じループは複数の ISO-8859 系・Windows-125x 系の符号化にあり、 Ruby 2.4.0 からそこにあった」。** **2.4.0 の具体的な公開日は出典1〜3では示されていない**〈未確定4〉—— **value は本記録が一般的知識から置いた概数であり、 precision は month である**（本記録の明示）。</td></tr><tr><td class="sm nowrap tw">2026年11月18日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Ruby が勧告「Security advisories: multiple vulnerabilities in Regexp and String case conversion」を公表し、 Ruby 4.0.10・3.4.13・3.3.14 を公開した**（出典1）〈重要〉—— **「7件の脆弱性が発見された。いくつかについては遠隔コード実行を 引き起こせることを示す実証コードを把握している。 強く更新を推奨する」（原文英語を訳出）。** **この時点で CVE 番号は採番されておらず、 GHSA 識別子で各件を指している**（出典1）〈差異1〉。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 0時0分 UTC</td><td class=nowrap><span class="b kind">訂正</span></td><td>**Ruby の勧告の履歴に「原文は2026年11月19日0時0分0秒（UTC）に公開」 と記されている**（出典1）〈重要〉—— **日本時間では11月18日の投稿、UTC では11月19日の公開であり、 資料によって「11月18日」と「11月19日」が混在する理由はこれである** （本記録の整理）〈差異4〉。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 3時45分 UTC</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Veria Labs が「Ruby2Shell（CVE-2026-132825）」のページを公表した** （出典3。本記録がページ内の構造化データから公開時刻を確認）〈重要〉—— **深刻度をクリティカル、必要なアクセスを 「ネットワーク、認証不要」とし、 既定構成の Rails と古典スタイルの Sinatra が影響を受けるとした。** **同ページは2026年11月21日3時52分 UTC に更新されている**（出典3）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 6時34分 UTC</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**MITRE が CVE-2026-132825 を公開した** （出典4。本記録が CVE レコードを取得して確認）〈重要〉—— **CVSSv3.1 基本値 7.4（HIGH）、 ベクタ `CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`、 影響範囲は 3.3.14 未満・3.4.0〜3.4.13 未満・4.0.0〜4.0.10 未満である。** **参照先に Ruby の勧告と GitHub の勧告 （ruby/ruby リポジトリの GHSA-34m4-m9fh-gqp5）が挙げられている** （出典4）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**同梱製品側の修正が動いた**（出典2・3）〈重要〉—— **Discourse は基盤の Docker イメージを Ruby 4.0.10 に移し （2.0.20261119-0203）、Docker 構成を再構築すれば修正が入る** （出典2・3）。 **Veria Labs の一覧では、GitLab・Mastodon・OpenProject・Chatwoot も 修正版を出している**（出典3）—— **GitLab が前倒しで更新を出したことは、 GnuPG プロジェクトの別件の勧告でも裏付けられる**（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年11月20日 20時24分 UTC</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Cloudflare が WAF の管理ルール2件を公表した**（出典2）〈重要〉—— **無料プラン向けの Cloudflare Free Managed Ruleset と 有料プラン向けの Cloudflare Managed Ruleset の両方に、 本件（CVE-2026-132825）と GHSA-87fm-7w84-j2px のルールを既定動作 Block で追加した。** **同社は「WAF は代償的な統制であり、修正の代わりにはならない」 と明記している**（出典2。原文英語を訳出）。</td></tr><tr><td class="sm nowrap tw">2026年11月25日ごろ（予定）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Veria Labs が、素の Rails に対する遠隔コード実行を実証する 実証コードを公開する予定である**（出典3）〈重要〉—— **「公表から約1週間後、または主要ベンダーが修正を出していなければ それ以降に公開する」としている**（出典3。原文英語を訳出）。 **Cloudflare も「公開実証コードが数日内に出ると見込まれ、 修正の猶予は短い」と書いている**（出典2。原文英語を訳出）。</td></tr><tr><td class="sm nowrap tw">2026年11月21日〜22日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が確認したところ、 NVD 上の CVE-2026-132825 は「Received」の状態で NVD による評価は付いておらず**（出典4。2026年11月21日の取得）、 **GitHub の全体向け勧告ページ（/advisories/）では参照できず、 ruby/ruby リポジトリの勧告では 「CVE ID を申請済みで採番待ち」の記述が残っていた** （出典6。2026年11月22日の取得）〈差異1〉〈重要〉—— **採番は済んでいるのに、供給元側の記載が追いついていない。**</td></tr></tbody></table></div></div>
+<div id="s11"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">一次資料が沈黙している</span><span class=ui>供給元の勧告が CVE 番号を反映していない</span><div class=sm>**Ruby の勧告は「CVE 識別子を申請したがまだ採番されていないため、 本勧告では GitHub Security Advisory（GHSA）の識別子で 各件を指す」と書いている**（出典1。原文英語を訳出）〈重要〉—— **一方、MITRE は2026年11月19日6時34分 UTC に CVE-2026-132825 を公開している**（出典4）。 **本記録の作成者が2026年11月22日に ruby/ruby リポジトリの 勧告を取得したところ、 「CVE ID を申請済みで採番待ち」の記述が残っていた** （出典6）—— **つまり採番は済んでいるのに供給元側の記載が追いついていない。** **GitHub の全体向け勧告ページ（/advisories/GHSA-34m4-m9fh-gqp5）は 参照できず、リポジトリ側の勧告でのみ参照できた** （本記録の確認）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>発見者の主張が供給元の記載と異なる</span><div class=sm>**Ruby の勧告は本件の報告者として Stephan Lipp（Ada Logics）と Anthropic を挙げている** （出典1）〈重要〉—— **一方 Veria Labs は「独自に本脆弱性を発見し、 遠隔コード実行を最初に実証した」としつつ、 Ruby の勧告が原因となる挙動の報告者として両者を 挙げていることと、 OpenAI と協働した Moritz Sanft も発見者に含まれることを 自ら書いている**（出典3。原文英語を訳出）。 **両者は矛盾していない**（本記録の判断）—— **「原因となる挙動の報告」と 「遠隔コード実行の実証」が別の貢献として整理されている。** **本記録はどちらが先かを判定しない。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>深刻度と攻撃元区分の評価が出所によって食い違う</span><div class=sm>**Ruby は深刻度をクリティカルとし「緩和策は無い」としている** （出典1・2）〈重要〉—— **Veria Labs も深刻度をクリティカル、 必要なアクセスを「ネットワーク、認証不要」としている**（出典3）。 **一方 MITRE が採番した CVE レコードは CVSSv3.1 基本値 7.4（HIGH）で、 ベクタは攻撃元区分がローカル（AV:L）、 攻撃条件の複雑さが高（AC:H）である**（出典4）。 **NVD では本記録の確認時点（2026年11月21日の取得）で 「Received」の状態であり、NVD による評価は付いていない**（出典4）。 **食い違いの理由は評価の対象範囲である**（本記録の整理）—— **処理系そのものを見れば「case 変換を呼べる者」が前提になり、 既定構成の Rails の到達経路まで見れば認証不要の遠隔到達になる。** **本記録は後者で扱う**（本記録の判断）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>公表日が「11月18日」と「11月19日」で混在する</span><div class=sm>**Ruby の勧告は「2026年11月18日に mame が投稿」と表示される一方、 履歴には「原文は2026年11月19日0時0分0秒（UTC）に公開」と 記されている**（出典1）〈重要〉—— **Cloudflare は「2026年11月19日に Ruby チームが ruby2shell を公表した」と書き**（出典2）、 **Veria Labs のページの公開時刻は 2026年11月19日3時45分 UTC である**（出典3）。 **本記録は、Ruby の表示に合わせて勧告の日付を 2026年11月18日とし、 UTC の公開時刻を別のイベント（T3）として記録する** （本記録の判断）—— **資料間で1日ずれて見えるのは時差による。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s12"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>multipart の POST が Rack の MethodOverride で大文字化され、認証の前に Ruby の case 変換に到達する経路</div><div class=svgwrap><svg viewBox="0 0 1406 222" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,111.0 C193.0,111.0 193.0,111.0 220,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C397.0,111.0 397.0,60.0 424,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,60.0 C601.0,60.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,111.0 C499.0,111.0 499.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,60.0 C805.0,60.0 805.0,60.0 832,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C703.0,162.0 703.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,155.0 832,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,155.0 C1009.0,155.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1213.0,111.0 1213.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遠隔の攻撃者（認証不要。</text><text x="91.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">実際の悪用は報告されてい</text><text x="91.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ない）</text><text x="91.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">公開実証コードは2026</text><text x="91.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">年11月25日ごろ公開予</text><rect x="220" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">multipart の </text><text x="295.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">POST（`_metho</text><text x="295.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">d` のパートに旧来の…</text><text x="295.0" y="130.0" text-anchor="middle" fill="#ffcc80" font-size="10">見た目は正規のフォーム送</text><text x="295.0" y="142.0" text-anchor="middle" fill="#ffcc80" font-size="10">信。`_method` </text><rect x="424" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">前段の WAF（Clou</text><text x="499.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">dflare は全プラン</text><text x="499.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">にルールを追加）</text><text x="499.0" y="79.0" text-anchor="middle" fill="#64b5f6" font-size="10">代償的な統制。オリジン直</text><text x="499.0" y="91.0" text-anchor="middle" fill="#64b5f6" font-size="10">接・内部通信・非 HTT</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Rack::Method</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Override（`_m</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ethod` を大文字…</text><text x="703.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">Rails は既定で含む</text><text x="703.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">。古典スタイル Sina</text><rect x="832" y="23.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="45.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認証・認可の確認（ここに</text><text x="907.0" y="59.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">は到達しない）</text><text x="907.0" y="72.0" text-anchor="middle" fill="#f48fb1" font-size="10">大文字化はルーティング中</text><text x="907.0" y="84.0" text-anchor="middle" fill="#f48fb1" font-size="10">、アプリのコードと認証の</text><rect x="832" y="111.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="133.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ruby の case </text><text x="907.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">変換（upcase／sw</text><text x="907.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">apcase／down…</text><text x="907.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">旧来の単バイト符号化のみ</text><text x="907.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">。UTF-8 は別経路で</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1バイトのヒープオーバー</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">フロー（S・0x53 ま</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">たは s・0x73）</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">出力バッファは入力長＋2</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">0バイト。ß 21個であ</text><rect x="1240" y="81.0" width="150" height="60" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">遠隔コード実行</text><text x="1315.0" y="116.0" text-anchor="middle" fill="#f48fb1" font-size="10">Ruby は実証コードの</text><text x="1315.0" y="128.0" text-anchor="middle" fill="#f48fb1" font-size="10">存在を把握。Veria </text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">非 HTTP の入口（電</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">子メール・ファイル取り込</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">み・メッセージキュー・…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">自社コードが旧来の符号化</text><text x="499.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">の文字列を大文字化する場</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Ruby を同梱する自己</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ホスト型製品（GitLa</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">b・GHES・Mast…</text><text x="703.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">修正はベンダー待ち。GH</text><text x="703.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">ES は2026年11月</text></svg></div><div class=fn>**Ruby の勧告（出典1）、Cloudflare の解説（出典2）、 Veria Labs の技術説明（出典3）から整理した図である** （整理は本記録）〈重要〉—— **実際に観測された攻撃の経路ではない**〈未確定2〉。 **点線は、本記録の作成時点で公開されていない部分 （遠隔コード実行の具体的な手順。実証コードは2026年11月25日ごろ 公開予定）である**（出典3）。 **認証の確認を灰色の到達しない経路として置いたのは、 大文字化がルーティングの最中、 アプリケーションのコードと認証の確認より前に走るためである** （出典2）〈重要〉—— **認証を固めても本件は防げない。**</div></div></div>
+<div class="blk " id="s13"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**走査の検知自体は難しくないが、意味が薄い**（本記録の評価）〈重要〉—— **本件の要求は見た目が通常の multipart POST であり、 `_method` も正規の機能である。** **検知に意味があるのは、 「旧来の文字集合を宣言したパートに ß が連続する」という 組み合わせを見る場合である**（本記録の整理）—— **Cloudflare のルールはこの層の検知にあたる**（出典2）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>自組織の Ruby ランタイムを棚卸しする（アプリケーションに加え、コンテナイメージに焼き込まれたもの・自己ホスト型製品が同梱するものを含める）</div><div class=ctl><span class="b eff">検知できた</span>ディストリビューションのパッケージはバージョン番号を変えずに修正を取り込むため、`ruby -v` ではなくパッケージの完全なバージョンを勧告と突き合わせる</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**検知の機会はあるが、既定では用意されていない** （本記録の評価）〈重要〉—— **`_method` の値は通常 PUT・PATCH・DELETE の短い語であり、 21個以上の ß が入ることは正常な利用では起こらない** （本記録の整理）。 **ただしこの検知はアプリケーションの前段 （WAF・リバースプロキシ）に置かないと、 脆弱な処理より後になり間に合わない。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>Ruby を 3.3.14・3.4.13・4.0.10 に更新し、背景のワーカーを含むすべての Ruby プロセスを再起動する（完全な修正はこれだけ）</div><div class=ctl><span class="b eff">影響を限定できた</span>即時に更新できない場合、前段の WAF で当該パターンを遮断する（Cloudflare は無料プランを含む全顧客にルールを追加）</div><div class=ctl><span class="b eff">影響を限定できた</span>Rails で Rack::MethodOverride を外す、Sinatra で method_override を無効にする（本件の経路の1つを閉じるが、他の入口は残る）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**プロセス内のメモリ破壊であり、外から見える機会は乏しい** （本記録の評価）〈重要〉—— **成立しなかった場合はプロセスの異常終了として現れうるが、 成立した場合は静かに進む**（本記録の整理）—— **Ruby プロセスの異常終了の増加を監視していれば 失敗した試行は見えるが、それは成功の検知ではない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>Ruby プロセスの異常終了・再起動の回数を監視し、急増を調査の起点にする（成立しなかった試行の痕跡として扱う）</div><div class=ctl><span class="b eff">影響を限定できた</span>利用者が正規表現パターンを入力できる機能（検索・フィルタ・管理ツール）を洗い出し、残る5件の正規表現系の脆弱性の影響も併せて評価する</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表資料は悪用の検知について述べていない** （本記録の確認）〈未確定2〉〈重要〉—— **Cloudflare は「WAF attack score が機械学習で 各要求を遠隔コード実行のペイロードについて採点し、 署名型のルールが取りこぼす攻撃の変種や 攻撃後の通信を捕まえるのに役立つ」と述べている** （出典2。原文英語を訳出）—— **メモリ破壊は最初の一歩にすぎず、 コマンドを実行するには第二段のペイロードの送達と 侵害後の対話が要る、という整理である**（出典2）。</div></td><td><div class=ctl><span class="b eff">検知できた</span>侵害後の通信（第二段のペイロードの取得・逆シェル）を検知する層を持つ（Cloudflare の例では WAF attack score の RCE スコアによる遮断）</div><div class=ctl><span class="b eff">影響を限定できた</span>オリジンへの直接到達を塞ぐ（前段のサービスからの通信のみを受け付ける設定にする）</div><div class=ctl><span class="b eff">侵入を防げた</span>Ruby 3.2 以前の系列は修正されないため、サポートされる系列へ移行する計画を立てる</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s14"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s15"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**CVSS の基本値で優先順位をつける運用は、本件で取りこぼす**</div><div class=lw>**CVE レコードの CVSSv3.1 基本値は 7.4・攻撃元区分はローカルだが （出典4）、 Ruby は深刻度をクリティカルとし、 Veria Labs は「ネットワーク・認証不要」としている** （出典1・3）〈差異3〉〈重要〉—— **食い違いの理由は、処理系そのものを見るか、 既定構成の Rails の到達経路まで見るかの違いである** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織の脆弱性対応の判断基準に、 CVSS 基本値に加えて「自社の構成で誰が到達できるか」の欄を設ける。** **到達経路が公表されている件については、 基本値が 7 点台でも最優先に上げられる運用にする。**</div></li><li><div class=lp>**「製品を最新にしている」ことが、同梱された処理系の 最新を意味しないと理解する**</div><div class=lw>**GitLab・GitHub Enterprise Server・Mastodon・OpenProject・ Discourse・Chatwoot は、公表時点の最新リリースに 影響を受ける Ruby を同梱していた**（出典2。原文英語を訳出） 〈重要〉—— **GitHub Enterprise Server は2026年11月21日時点でも 修正版が無い**（出典3）—— **自社では何もできない期間が生じる。**</div><div class=la><b>取るべき行動</b> **自己ホストで運用している製品について、 同梱されている処理系・ランタイムの版を台帳に持つ。** **ベンダーの修正を待つ間の代替手当て （前段での遮断、到達元の制限、機能の一時停止）を 製品ごとに事前に決めておく。**</div></li><li><div class=lp>**実証コードの公開予定日を、対応計画の締切として使う**</div><div class=lw>**Veria Labs は公表から約1週間後（2026年11月25日ごろ）に 素の Rails に対する遠隔コード実行の実証コードを 公開する予定だとしている**（出典3）〈重要〉—— **Cloudflare も「公開実証コードが数日内に出ると見込まれ、 修正の猶予は短い」と書いている**（出典2。原文英語を訳出）—— **公開予定が明示されている事案では、 対応の締切が外から決まる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **実証コードの公開予定が示された脆弱性について、 その日付を社内の対応期限として明示的に設定する。** **期限までに更新できない系統を洗い出し、 前段での遮断か機能停止のどちらを採るかを先に決める。**</div></li><li><div class=lp>**サポートが終了した系列を抱えていることの意味を、 脆弱性が出た日に初めて知らないようにする**</div><div class=lw>**Ruby 3.2 以前はサポート終了で本件の修正を受けない** （出典1）〈重要〉—— **Veria Labs によれば欠陥は 2.4.0 まで遡ってすべての版にあり （出典3）、 対処は系列の移行しかない**（本記録の整理）—— **移行は数日ではできない。**</div><div class=la><b>取るべき行動</b> **自組織のランタイム・フレームワークについて、 サポート終了日を一覧にし、終了の6か月前に移行計画を 起動する運用にする。** **終了済みのものは、残存理由と代替手当てを記録に残す。**</div></li></ul></div></div>
+<div id="s16"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**修正を当てる対象は Ruby 本体であり、 gem の更新では直らない**</div><div class=lw>**欠陥は処理系の文字列処理にあり、 修正は Ruby 4.0.10・3.4.13・3.3.14 である**（出典1・3）〈重要〉—— **Rails を更新しても `bundle update` を実行しても、 処理系が古ければ脆弱なままである**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **Ruby を 4.0.10・3.4.13・3.3.14 に更新し、 Web プロセスだけでなく背景のワーカー・cron 実行・ コンテナイメージも更新対象に含める。** **更新後、すべての Ruby プロセスを再起動する。**</div></li><li><div class=lp>**バージョン確認を `ruby -v` だけで済ませない**</div><div class=lw>**ディストリビューションのパッケージは、 バージョン番号を変えずに修正を取り込むことがある** （出典2。原文英語を訳出）〈重要〉—— **逆に、番号が新しく見えても そのディストリビューションが修正を入れていない場合もある** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **パッケージの完全なバージョン（リリース番号・ビルド番号を含む）を 取得し、ディストリビューションの勧告と突き合わせる手順を 確認作業の定型に入れる。**</div></li><li><div class=lp>**自分のコードにある `upcase` が、HTTP 以外の入口になりうる**</div><div class=lw>**Veria Labs は「旧来の符号化で受け取った文字列の case を変える アプリケーションのコードは、どこから来た文字列であっても 影響を受けうる」としており**（出典3。原文英語を訳出）、 **Cloudflare は電子メール・ファイル取り込み・ メッセージキュー・背景ジョブを具体例として挙げている** （出典2）〈重要〉—— **WAF で守れるのは HTTP の入口だけである**（出典2）。</div><div class=la><b>取るべき行動</b> **自社のコードから `upcase`・`swapcase`・`downcase(:fold)`・ `casecmp?` の呼び出しを洗い出し、 対象文字列の符号化が外部から指定されうる箇所を特定する。** **特定した箇所について、処理前に UTF-8 へ正規化する。**</div></li><li><div class=lp>**利用者が正規表現を入力できる機能があるなら、 同じリリースの残り5件も自組織の問題である**</div><div class=lw>**正規表現系の5件は、攻撃者の与えたパターンを コンパイルまたは照合することが前提である**（出典1・2）〈重要〉—— **Cloudflare は「Web アプリケーションでは一般的ではないが、 検索機能、フィルタ規則、管理ツールでは起こりうる」と 書いている**（出典2。原文英語を訳出）—— **「一般的でない」で済ませると、 自社の検索機能が該当することに気づかない**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **利用者の入力が正規表現としてコンパイル・照合される箇所を 洗い出す（検索の絞り込み、通知条件、ログ抽出、 管理者向けのフィルタ設定）。** **該当があれば、本件と同じ緊急度で処理系の更新を進め、 併せてパターンの入力を定型の選択肢に置き換えられるか検討する。**</div></li><li><div class=lp>**失敗した試行は、プロセスの異常終了として見える**</div><div class=lw>**メモリ破壊の悪用は、成立しなければプロセスの 異常終了として現れる**（本記録の評価）〈重要〉—— **成立した場合は静かに進むため、 異常終了の監視は「成功の検知」ではなく 「狙われていることの検知」として使う**（本記録の整理）。</div><div class=la><b>取るべき行動</b> **Ruby プロセスの異常終了・再起動の回数を指標として監視し、 急増を調査の起点にする閾値を設定する。** **併せて、異常終了の直前に処理していた要求を 記録から辿れるようにしておく。**</div></li></ul></div></div>
+<div class="blk " id="s17"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自組織が公開している Web サービスに、既定構成の Rails または 古典スタイルの Sinatra で動くものがあるか</td><td class=sm>**この2つは Rack の MethodOverride により、 認証の確認より前に脆弱な処理へ到達する**（出典2・3）〈重要〉—— **認証・認可の強化では防げないため、 「自社が該当するか」だけで緊急度が決まる**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 自己ホストで運用している製品（GitLab・GitHub Enterprise Server・ Mastodon・OpenProject・Discourse・Chatwoot 等）があり、 同梱された Ruby の版を把握しているか</td><td class=sm>**これらは自前の Ruby を同梱するため、 製品を最新にしていても脆弱なままのことがある**（出典2・3）〈重要〉—— **GitHub Enterprise Server は2026年11月21日時点で 修正版が無く、自社では塞げない期間が生じる**（出典3）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> ランタイムの更新時に、Web プロセス以外（背景のワーカー・ cron 実行・コンテナイメージ）も対象に含める手順があるか</td><td class=sm>**Cloudflare は「背景のワーカーを含むすべての Ruby プロセスを 再起動し、コンテナイメージを再構築せよ」と明記している** （出典2。原文英語を訳出）〈重要〉—— **再起動漏れは「更新したのに直っていない」状態を作る** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> 自社のコードに、外部から符号化を指定されうる文字列の case を変える処理（`upcase`・`swapcase`・`downcase(:fold)`・ `casecmp?`）があるか</td><td class=sm>**フレームワーク経由以外の入口（電子メール・ファイル取り込み・ メッセージキュー・背景ジョブ）からも到達しうる**（出典2・3） 〈重要〉—— **この経路は WAF では守れない**（出典2）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 利用者の入力が正規表現としてコンパイル・照合される機能があるか （検索の絞り込み・通知条件・ログ抽出・管理者向けフィルタ）</td><td class=sm>**同じリリースで修正された正規表現系5件の前提条件がこれである** （出典1・2）〈重要〉—— **該当するなら、7件全部を同じ緊急度で扱う必要がある** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> Ruby 3.2 以前の系列を使い続けているシステムがあり、 その移行計画と暫定の手当てが決まっているか</td><td class=sm>**Ruby 3.2 以前はサポート終了で修正を受けず、 欠陥は 2.4.0 まで遡ってすべての版にある**（出典1・3）〈重要〉—— **対処が「更新」ではなく「移行」になるため、 対応期間が桁で変わる**（本記録の評価）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s18"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月18日（履歴では原文の公開が2026年11月19日0時0分0秒 UTC） Ruby（ruby-lang.org・投稿者 mame）</span> <a href="https://www.ruby-lang.org/en/news/2026/11/18/multiple-vulnerabilities-in-regexp-and-string/" target="_blank" rel="noreferrer noopener nofollow">Security advisories: multiple vulnerabilities in Regexp and String case conversion</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**供給元による一次公表であり、本記録の基礎である** （本記録が2026年11月22日に取得して確認）〈重要〉—— **ここから採った事実: 7件の脆弱性と各件の GHSA 識別子・内容、 「いくつかについては遠隔コード実行を引き起こせることを示す 実証コードを把握している」という記述、 修正版（4.0.10・3.4.13・3.3.14）、 影響版（3.3.13 以前・3.4.0〜3.4.12・4.0.0〜4.0.9）、 Ruby 3.3 がセキュリティ修正のみの段階で 3.2 以前は サポート終了であること、 CVE 識別子が申請済みで未採番のため GHSA で指していること、 報告者の一覧（Stephan Lipp（Ada Logics）と Anthropic が4件、 baba__yaga、aphantom、Hiroya Fujinami と Hiroshi SHIBATA）、 履歴の「原文は2026年11月19日0時0分0秒（UTC）に公開」、 各版のリリース告知の投稿者（k0kubun・nagachika・hsbt）。**）</span></li><li><span class=rid>[6]</span> <span class=sm>公開日の明示は無い（本記録が2026年11月22日に取得） Ruby（ruby/ruby リポジトリの GitHub Security Advisory）</span> <a href="https://github.com/ruby/ruby/security/advisories/GHSA-34m4-m9fh-gqp5" target="_blank" rel="noreferrer noopener nofollow">GHSA-34m4-m9fh-gqp5 — Heap buffer overflow in case conversion of strings</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**GHSA の本体である**（本記録が2026年11月22日に取得して確認） 〈重要〉—— **GitHub の全体向け勧告ページ（/advisories/）では 参照できず、リポジトリ側でのみ参照できた**（本記録の確認）。 **「CVE ID を申請済みで採番待ちである」という記述が 取得時点でも残っていた**〈差異1〉—— **MITRE は2026年11月19日に採番している**（出典4）。 **ここから採った事実: 概要（1バイトのヒープベースの バッファオーバーフロー、遠隔コード実行を許す可能性、 実証コードの把握）、 詳細（ISO-8859-1 や Windows-1252 のような一部の単バイト符号化で 出力バッファの終端を1バイト越えて書きうる）、 修正（3.3.14・3.4.13・4.0.10 への更新）、 謝辞（Stephan Lipp（Ada Logics）と Anthropic）。**）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月19日 6時34分 UTC（CVE レコードの公開。NVD は2026年11月21日取得時点で Received） MITRE（CVE）・NVD</span> <a href="https://www.cve.org/CVERecord?id=CVE-2026-132825" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-132825（CVE レコードおよび NVD の登録状況）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**採番の一次記録である**（本記録が2026年11月21日〜22日に CVE および NVD の API から取得して確認）〈重要〉—— **ここから採った事実: 状態 PUBLISHED・公開時刻 2026年11月19日6時34分26秒 UTC・採番者 mitre、 説明文（「Ruby の 3.3.14、3.4.13、4.0.10 より前の版に、 case 変換におけるヒープバッファオーバーフローがある。 たとえば ISO-8859-1 や Windows-1252 では、 バッファの外に1バイトが書かれうる」）、 CVSSv3.1 基本値 7.4（HIGH）とベクタ `CVSS:3.1/AV:L/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`、 影響範囲（既定 unaffected・3.3.14 未満／ 3.4.0 以上 3.4.13 未満／4.0.0 以上 4.0.10 未満）、 参照先（Ruby の勧告と ruby/ruby リポジトリの GHSA-34m4-m9fh-gqp5）、 NVD 側の状態が「Received」で評価が未付与であること**〈差異3〉。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月20日 20時24分 UTC Cloudflare</span> <a href="https://blog.cloudflare.com/ruby2shell-waf-protection/" target="_blank" rel="noreferrer noopener nofollow">How Cloudflare WAF protects against ruby2shell (CVE-2026-132825)</a> <span class="b kind">ブログ</span><span class=sm>（**到達経路の説明と緩和の限界を最も具体的に書いた資料である** 〈重要〉—— **本記録が本件を把握した経路でもある （収集済みの本文 output/articles/20261121/ を使用）。** **ここから採った事実: Rack の MethodOverride による経路 （HTML フォームが GET と POST しか送れないこと、 `_method` の大文字化がルーティング中・認証の前に走ること）、 ß の大文字化が2バイトになるのに1バイト分しか確認していないこと、 14 の ISO-8859 系・Windows-125x 系の符号化、 ß 21個であふれること、 到達する4つの処理（upcase・swapcase・downcase(:fold)・casecmp?）と UTF-8 が影響しないこと、 1バイトのあふれが隣接オブジェクトや確保機構のメタデータを 壊しうること、 WAF ルール2件（本件と GHSA-87fm-7w84-j2px）を 無料プラン含む全顧客に既定動作 Block で追加したこと、 ルールセット ID と各ルール ID、 「WAF は代償的な統制であり修正の代わりにはならない」、 WAF が守れない経路（オリジン直接・内部通信・ 電子メール・ファイル取り込み・メッセージキュー・背景ジョブ）、 WAF attack score による侵害後通信の検知、 同梱製品の一覧（2026年11月19日時点）、 ディストリビューションのパッケージがバージョン番号を変えずに 修正を取り込むこと、 背景ワーカーを含む全プロセスの再起動とイメージ再構築の必要、 自社システムへの修正適用と侵害の兆候なし、 正規表現系5件の前提（検索機能・フィルタ規則・管理ツール）。**）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月19日 3時45分 UTC（2026年11月21日 3時52分 UTC 更新） Veria Labs</span> <a href="https://verialabs.com/ruby2shell/" target="_blank" rel="noreferrer noopener nofollow">Ruby2Shell (CVE-2026-132825)</a> <span class="b kind">調査レポート</span><span class=sm>（**「ruby2shell」の命名元であり、技術的な原因と影響範囲の 一次記述である**（本記録が2026年11月22日に取得して確認。 公開・更新時刻はページ内の構造化データから確認）〈重要〉—— **ここから採った事実: 深刻度クリティカル・ 必要なアクセス「ネットワーク、認証不要」、 影響版の表（4.0 系・3.4 系・3.3 系と 3.2 以前が 2.4.0 まで遡って EOL）、 フレームワークの表（Rails と古典スタイル Sinatra が影響、 素の Rack と他は既定で露出しない）、 自己ホスト型製品の表（GHES は修正版なし、 Chatwoot 4.20.1・GitLab 19.6.1／19.5.8／19.4.10・ Mastodon 4.7.6／4.6.12／4.5.22／4.4.29・ OpenProject 17.9.8／17.8.3・ Discourse 基盤イメージ 2.0.20261119-0203）、 原因（単バイト符号化に大文字 ß が無い、 SS の2バイトを書くのに `to &lt; to_end` で1バイト分しか 確認していない、出力バッファは入力長＋20バイト、 ß 21個であふれる、Ruby 2.4.0 から存在、 修正コミット ruby/ruby@d582f8f）、 書かれるバイト（S・0x53／s・0x73）と バッファ直後への着地・領域外の1バイト読み出し、 実証コードを公表から約1週間後またはそれ以降に公開する予定、 独自発見と遠隔コード実行の最初の実証の主張、 Ruby 勧告が Stephan Lipp（Ada Logics）と Anthropic を 挙げていることと Moritz Sanft（OpenAI と協働）の記載。**）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年11月20日 19時01分 CET GnuPG プロジェクト（Werner Koch）</span> <a href="https://lists.gnupg.org/pipermail/gnupg-announce/2026q4/000517.html" target="_blank" rel="noreferrer noopener nofollow">[Announce] GnuPG Security Advisory for GPGME (T8557,CVE-2026-129975)</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**別件（GPGME の脆弱性）の勧告だが、 本件が他プロジェクトの公表日程を動かしたことの裏付けになる** （本記録が2026年11月22日に取得して確認）〈重要〉—— **「当初は2026年11月25日を調整済み公表日としていたが、 新たな Ruby2Shell の不具合により GitLab が前倒しで 更新せざるを得なくなったため、 我々も GPGME の不具合を2026年11月20日に公表した」 と書かれている**（原文英語を訳出）。 **relevance を comparison としたのは、 本件の資料ではなく、影響の広がりを別経路から 裏づけるための対照資料だからである**（本記録の判断）。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s19"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月22日</span> <span class="b rev">新規作成</span> </li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-22 08:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
