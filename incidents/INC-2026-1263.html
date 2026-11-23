@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Tomcat クラスタに無認証で参加 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1263</span>Tomcat クラスタに無認証で参加</h1>
+<header class="site-header">
+  <p class="subtitle">Java の Web アプリケーションサーバ Apache Tomcat に、 **クラスタ通信を TLS 1.3 ＋ TLS-PSK で保護している構成では、 鍵交換の際に接続相手の身元を検証しないという欠陥があった** （CVE-2026-133325・CWE-322「entity authentication を伴わない鍵交換」）。 **クラスタ通信のポートに到達できる攻撃者は、認証を経ずに信頼されたノードとして クラスタに参加でき、クラスタ内の通信とデータに手が届く**（Apache の公表・CVE の記述）。 **対象は 11.0.28〜11.0.29・10.1.62・9.0.124 で、いずれも上記の特定構成を 採っている場合に限られる**（Apache の公表）。 **報告は2026年11月16日、公表は11月19日である**（Apache のセキュリティページ）。 **本記録の要点は、重大度の評点が提供元ごとに大きく割れていることである**〈重要〉—— **Apache 自身は CVSS を付けず「critical」と文言で述べ、 CISA-ADP は CVSS v3.1 で 9.8（Critical）を付け、 Red Hat は 8.1（Important）とした。** **Red Hat が下げた理由は「クラスタ設定が既定で無効であり、 TLS 1.3 ＋ TLS-PSK という非既定の構成を要する」ことである**（Red Hat の公表）。 **2026年11月23日時点で、修正版 11.0.30・10.1.63・9.0.125 はいずれも未リリースであり、 当面の回避策は「クラスタ通信を TLS 1.2 に切り替える」ことである**（本記録の確認）。</p>
+  <div><span class="b type">脆弱性</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月19日（Apache による公表・CVE-2026-133325 の採番）</span>
+  <span>最終更新: 2026年11月23日（本記録が CVE レコード・Tomcat の3ブランチのセキュリティページ・Red Hat の CVE ページ・NVD を取得して照合した）</span>
+</div>
+
+<div class="lead"><p><strong>Apache Tomcat のクラスタ通信に、重大（Critical）と格付けされた欠陥が公表された</strong>（出典2・3・4。2026年11月19日）。</p>
+<p><strong>成立する構成は限定されている</strong>——<strong>クラスタ通信を TLS 1.3 と TLS-PSK（事前共有鍵）で保護している場合である</strong>（出典1）。<strong>この構成では鍵交換の際に接続相手の身元が検証されず、クラスタ通信のサービスに到達できる攻撃者は、認証を経ずに信頼されたノードとしてクラスタに参加できる</strong>（出典1・2）。<strong>参加できれば、クラスタ内でやり取りされる通信とデータ——典型的にはセッションレプリケーションの内容——に手が届く</strong>（出典5。Red Hat の説明）。</p>
+<p><strong>対象は 11.0.28 から 11.0.29、10.1.62、9.0.124 である</strong>（出典1）。<strong>修正は3ブランチそれぞれにコミットされているが、2026年11月23日時点で 11.0.30・10.1.63・9.0.125 はいずれも未リリースである</strong>（出典2・3・4。各ページが「not yet released」と明記）〈未確定1〉。<strong>Apache が示す当面の回避策は、クラスタ通信を TLS 1.2 に切り替えることである</strong>（出典2・3・4）。<strong>Red Hat はこれに加えて、クラスタ通信のポートへの到達を認可済みノードに限ることを勧めている</strong>（出典5・7）。</p>
+<p><strong>本記録が重く見るのは、重大度の評点が提供元ごとに割れていることである</strong>〈重要〉〈差異1〉。<strong>Apache（CNA）は CVSS を付けず、重大度を「critical」という文言だけで示した</strong>（出典1。本記録が CVE レコードの <code>metrics</code> を確認）。<strong>CISA-ADP が後から CVSS v3.1 で 9.8（Critical・<code>AV:N/AC:L/PR:N/UI:N</code>）を付与し、これが NVD の画面に Secondary として並んでいる</strong>（出典1・6）。<strong>一方 Red Hat は 8.1（Important・<code>AC:H</code>）とし、「クラスタ設定は既定で無効であり、TLS 1.3 ＋ TLS-PSK という非既定の構成を要するため Critical ではなく Important とする」と理由を述べている</strong>（出典5。原文英語。本記録の訳）。<strong>9.8 と 8.1 の差は、<code>AC</code>（攻撃条件の複雑さ）を「低」と見るか「高」と見るかの差である</strong>（本記録の整理）。</p>
+<p><strong>読み方としては、この割れ自体が本件の実務的な核である</strong>（本記録の評価）。<strong>9.8 を見て全台の緊急対応に走ると、クラスタを使っていない大多数のTomcat に労力が流れる。8.1 を見て後回しにすると、該当構成のシステムで「ネットワークに到達できれば認証なしでクラスタに入れる」状態が放置される。</strong> <strong>分岐点は評点ではなく、<code>server.xml</code> に <code>&lt;Cluster&gt;</code> があり、その通信が TLS 1.3 ＋ TLS-PSK かどうかである</strong>（本記録の整理）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>修正版（11.0.30・10.1.63・9.0.125）のリリース日</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（出典2・3・4。本記録の確認）〈重要〉—— **3ブランチのセキュリティページはいずれも該当節を 「not yet released」と記すのみで、予定日は示されていない。** **修正そのものはコミット済みで内容が公開されている**（出典2・3・4）—— **つまり、攻撃者側は修正内容から欠陥の詳細を読める状態にあり、 利用者側はまだ正式版を適用できない。** **この間は回避策（TLS 1.2 への切り替え）が唯一の正式な手である。**</div></li><li><span class=ui>報告者</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（出典1・2・3・4。本記録の確認）—— **Apache のセキュリティページは「Tomcat security team に報告された」と だけ記し、報告者名・所属を挙げていない。** **CVE レコードにも `credits` が無い**（本記録が確認）。 **他の Tomcat の CVE では報告者が明記されることがあるため、 本件では意図的に記載されていないか、報告者が公表を望まなかった可能性がある** （本記録の推定であり、裏付けは無い）。</div></li><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**悪用を示す情報は確認できていない**（本記録の確認）〈重要〉—— **CVE レコード（出典1）・Apache のセキュリティページ（出典2・3・4）・ Red Hat の CVE ページ（出典5）・NVD（出典6）のいずれにも、 実環境での悪用に関する記述は無い。** **「悪用されていない」と断定はしない**（本記録の明示）—— **確認できているのは「悪用の報告を見つけられなかった」ことまでである。** **本件は該当構成が限られるため、 無差別のスキャンで広く悪用される形にはなりにくい**（本記録の評価）—— **一方で、クラスタ通信ポートが到達可能な環境では、 標的を定めた攻撃の足場になりうる。**</div></li><li><span class=ui>該当構成（クラスタ ＋ TLS 1.3 ＋ TLS-PSK）を採っている組織・台数の規模</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **Apache・Red Hat・NVD のいずれも、 影響を受ける実環境の規模を示していない。** **本記録も推定しない**（本記録の明示）—— **クラスタ通信は外部公開されるものではないため、 インターネット側からの観測では台数を数えられない。**</div></li><li><span class=ui>TLS 1.3 以外（TLS 1.2 ＋ TLS-PSK）に同種の欠陥が無いことの根拠</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **Apache の回避策は「TLS 1.2 に切り替えること」であり、 TLS 1.2 ＋ TLS-PSK の経路では身元検証が行われていることが 前提になっている**（出典2・3・4）。 **ただし、その検証がどこで行われているかの説明は公表資料に無い** （本記録の確認）—— **回避策を採る側は、その前提を自分で検証できない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Apache Software Foundation（Apache Tomcat の開発元・本件の CNA）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**Tomcat の提供元であり、本件 CVE の採番機関（CNA）でもある**（出典1）。 **2026年11月16日に報告を受け、11月19日に公表した**（出典2・3・4）。 **重大度は「Critical」と文言で示し、CVSS は付けていない** （出典1。本記録が CVE レコードの `metrics` を逐語確認）。 **修正は3ブランチそれぞれにコミットされている**—— **11.0 系は `2e6c85ba`、10.1 系は `8dcddccc`、9.0 系は `8dac862e`** （出典2・3・4）。</p></div></div><div class=org><div class=org-h><span class=org-n>Red Hat, Inc.（Tomcat を同梱する製品の提供元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**自社の評価として CVSS v3.1 8.1（Important）を付け、 Critical としない理由を明記した**（出典5）〈重要〉。 **「悪用の成立には TLS-PSK を TLS 1.3 で用いる非既定の クラスタ構成が必要である。Red Hat の標準的な配備では Tomcat のクラスタ機能は既定で無効になっている」** （出典5。原文英語。本記録の訳）。 **併せて、クラスタ通信ポートへの到達を認可済みノードに限る緩和を示している** （出典5・7）。</p></div></div><div class=org><div class=org-h><span class=org-n>CISA-ADP（CISA の Authorized Data Publisher）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b><p class=org-p><span class=org-l>関係</span>**CVE レコードに ADP コンテナとして CVSS v3.1 9.8（Critical）を追加した** （出典1。本記録が `containers.adp` の `providerMetadata` と `metrics` を確認。組織ID `134c704f-9b21-4f2e-91b3-4a467353bcc0`）〈重要〉。 **NVD の画面に出る 9.8 はこの値である**（出典6）—— **NVD 自身の解析は2026年11月21日時点で `Awaiting Analysis` であり、 9.8 は `Secondary` として掲載されている**（出典6。本記録の観測）。</p></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>報告から公表までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fa>2026年11月19日 時点</div><div class=fn>**2026年11月16日の報告から11月19日の公表まで3日である** （出典2・3・4。本記録の算出）〈重要〉—— **この短さは評価できる点であると同時に、注意も要る**（本記録の評価）—— **公表が速かった結果、修正版のリリースが公表に追いついておらず、 利用者が取れる手は回避策（TLS 1.2 への切り替え）だけである。**</div></div><div class=fig><div class=fh><span class=fl>影響を受けると公表されたバージョンの数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>4<span class=fu>件</span></div><div class=fa>2026年11月19日 時点</div><div class=fn>**11.0.28・11.0.29・10.1.62・9.0.124 の4件である**（出典1）—— **CVE レコードの `affected` は 11.0 系を 「11.0.28 以上 11.0.29 以下」と範囲で、 10.1 系と 9.0 系を単一バージョンで記している**（出典1。本記録の確認）。 **これは「脆弱なサーバの台数」ではない**（本記録の明示）—— **該当バージョンであっても、クラスタ通信を TLS 1.3 ＋ TLS-PSK で保護していなければ成立しない。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**以下は Apache の公表（出典2・3・4）・CVE の記述（出典1）・ Red Hat の説明（出典5）に基づく経路であり、 実環境で観測された攻撃の再構成ではない**（本記録の明示）〈重要〉—— **悪用を示す情報は無い**〈未確定3〉。 **前提は「クラスタ通信が TLS 1.3 ＋ TLS-PSK で保護されている」ことである。** **この構成では鍵交換時に接続相手の身元が検証されないため、 クラスタ通信のサービスに到達できる攻撃者は、 認証を経ずに信頼されたノードとしてクラスタに参加できる。** **参加後に手が届くのは、クラスタ内でやり取りされる通信とデータである。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">inferred</span><span class=srcs></span></div><div>**攻撃者が、クラスタ通信のポートに到達できる位置を得る** （出典1・5の前提に基づく本記録の整理）—— **公表資料はこの段階の手口を記していない**（本記録の明示）。</div><div class=fn>根拠: Red Hat の説明（「クラスタ通信ポートへネットワーク到達性のある未認証の攻撃者」）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**TLS 1.3 ＋ TLS-PSK の鍵交換に対し、接続相手の身元検証が行われないことを突いて、 認証を経ずにクラスタに参加する**（出典1・2・3・4）—— **CVE の記述は「Key exchange without entity authentication vulnerability in Apache Tomcat allowed an unauthenticated node to join a cluster when the cluster was secured with TLS 1.3 and TLS-PSK」** （出典1。原文英語。本記録の訳: Apache Tomcat における entity authentication を伴わない鍵交換の脆弱性により、 クラスタが TLS 1.3 と TLS-PSK で保護されている場合に、 認証されていないノードがクラスタに参加できた）。</div><div class=fn>根拠: CVE の記述（CWE-322）／Apache の3ブランチのセキュリティページ</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**クラスタに参加した状態で、クラスタ内の通信とデータに到達する** （出典5・7）—— **Red Hat は「クラスタの状態情報やセッションレプリケーションのデータを 参照できる」と述べている**（出典5。原文英語。本記録の訳）。 **iThome も「クラスタ通信とデータにアクセスしうる」と報じている** （出典7。原文中国語・繁体。本記録の訳）。</div><div class=fn>根拠: Red Hat の説明／iThome の報道</div></li></ol></div>
+<section id="s5"><h2>評点が 9.8 と 8.1 に割れているのは、測っている前提が違うからである<span class="b slot">評価・解釈</span></h2><p><strong>本件には、重大度を示す数値が3通りある</strong>（本記録の整理）〈重要〉。</p>
+<table>
+<thead>
+<tr>
+<th>提供元</th>
+<th>評価</th>
+<th>ベクタ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Apache Software Foundation（CNA）</td>
+<td>文言で「critical」（CVSS 無し）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>CISA-ADP</td>
+<td>CVSS v3.1 <strong>9.8</strong>（Critical）</td>
+<td><code>AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</code></td>
+</tr>
+<tr>
+<td>Red Hat</td>
+<td>CVSS v3.1 <strong>8.1</strong>（Important）</td>
+<td><code>AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H</code></td>
+</tr>
+</tbody>
+</table>
+<p>（出典1・5。本記録が CVE レコードの <code>metrics</code> と <code>containers.adp</code>、および Red Hat の CVE ページを逐語確認した）</p>
+<p><strong>違うのは1項目だけである</strong>——<strong><code>AC</code>（Attack Complexity）を<code>L</code>（低）と見るか <code>H</code>（高）と見るかである。</strong> <strong>他の8項目は完全に一致している。</strong></p>
+<p><strong>Red Hat は <code>H</code> と置いた理由を書いている</strong>（出典5。原文英語）。</p>
+<blockquote>
+<p>「Red Hat Product Security rates this vulnerability as Important rather than Critical because successful exploitation requires non-default clustering configurations employing TLS-PSK over TLS 1.3. In standard Red Hat deployments, Tomcat clustering is disabled by default.」</p>
+</blockquote>
+<p><strong>本記録による訳</strong>: 「Red Hat プロダクトセキュリティは本脆弱性をCritical ではなく Important と評価する。悪用の成立には、TLS 1.3 上で TLS-PSK を用いる非既定のクラスタ構成が必要だからである。Red Hat の標準的な配備では、Tomcat のクラスタ機能は既定で無効である」</p>
+<p><strong>つまり、9.8 は「該当構成であったとき、その欠陥はどれだけ危ないか」を測り、8.1 は「その構成に至っている環境がどれだけあるか」を割り引いている</strong>（本記録の整理）。<strong>どちらも誤りではない。</strong></p>
+<p><strong>実務上の帰結は、評点をそのまま優先度に写せないことである</strong>（本記録の評価）〈重要〉。<strong>9.8 で機械的に走ると、クラスタを使っていない大多数の Tomcat に緊急対応の労力が流れる。</strong> <strong>8.1 で後回しにすると、該当構成のシステムで「ネットワークに到達できれば認証なしでクラスタに入れる」状態が残る。</strong> <strong>本件で先に決まるべきは評点ではなく、<code>server.xml</code> に <code>&lt;Cluster&gt;</code> があるかどうかである。</strong></p></section>
+<section id="s6"><h2>NVD に出ている 9.8 は、NVD が付けた値ではない<span class="b slot">評価・解釈</span></h2><p><strong>報道は「NVD データベースが示す CVSS 評点は 9.8」と書いている</strong>（出典7。原文中国語・繁体。本記録の訳）。<strong>画面の見え方としては正しいが、値の出所は NVD ではない</strong>（本記録の確認）〈重要〉。</p>
+<p><strong>本記録が確認した事実は次のとおりである</strong>（出典1・6）。</p>
+<ul>
+<li><strong>CVE レコードの CNA（Apache）側の <code>metrics</code> には CVSS が無い。</strong> <strong>あるのは <code>{"other": {"type": "Textual description of severity", "content": {"text": "critical"}}}</code> だけである</strong>（出典1）</li>
+<li><strong>9.8 は ADP コンテナにある。提供元は <code>CISA-ADP</code>（組織ID <code>134c704f-9b21-4f2e-91b3-4a467353bcc0</code>）である</strong>（出典1）</li>
+<li><strong>NVD 上では、この 9.8 が <code>Secondary</code> として表示される。NVD 自身の状態は2026年11月21日 05時18分 UTC の最終更新時点で<code>Awaiting Analysis</code>（解析待ち）である</strong>（出典6）</li>
+</ul>
+<p><strong>なぜこれが実務に関わるか</strong>（本記録の評価）。<strong>脆弱性管理の道具は多くの場合 NVD の API を叩いて評点を取り込む。</strong> <strong>そのとき <code>Primary</code> と <code>Secondary</code>、そして <code>vulnStatus</code> を見分けていないと、「NVD が 9.8 と判定した」という誤った重みで台帳に載る。</strong> <strong>本件では、開発元が CVSS を付けず、ディストリビュータが 8.1 と評価し、第三者の ADP が 9.8 を付けた——という三者の判断の違いが、取り込みの時点で1つの数字に潰れる。</strong></p>
+<p><strong>CISA-ADP による補完そのものは有用である</strong>（本記録の明示）—— <strong>CNA が CVSS を付けない CVE に機械処理可能な評点が入ることで、自動化された優先度付けが動く。</strong> <strong>問題は、その評点が「誰の判断か」を運用側が保持していないことである。</strong></p></section>
+<section id="s7"><h2>修正版が出ていないので、取れる手は回避策しかない<span class="b slot">対策・注意喚起</span></h2><p><strong>2026年11月23日時点で、11.0.30・10.1.63・9.0.125 はいずれも未リリースである</strong>（出典2・3・4。本記録が3ブランチのセキュリティページを確認）〈未確定1〉。<strong>各ページは該当節を「not yet released」と記している。</strong></p>
+<p><strong>一方、修正の中身は公開されている</strong>（出典2・3・4）—— <strong>11.0 系 <code>2e6c85ba</code>、10.1 系 <code>8dcddccc</code>、9.0 系 <code>8dac862e</code> の3コミットが GitHub 上にある。</strong></p>
+<p><strong>この状態の意味は非対称である</strong>（本記録の評価）〈重要〉。<strong>攻撃者側は修正差分から欠陥の詳細を読める。</strong> <strong>利用者側は正式版を適用できない。</strong> <strong>期間の長さは公表されていない。</strong></p>
+<p><strong>したがって、本件で実際に実行できる手は2つに限られる</strong>（出典2・3・4・5・7）。</p>
+<ol>
+<li><strong>クラスタ通信を TLS 1.2 ＋ TLS-PSK に切り替える</strong>（Apache の公式回避策）</li>
+<li><strong>クラスタ通信ポートへの到達を認可済みノードに限る</strong>（Red Hat の推奨）</li>
+</ol>
+<p><strong>1は欠陥そのものを回避し、2は到達範囲を狭める</strong>（本記録の整理）。<strong>両方を採るのが素直である。</strong></p>
+<p><strong>ただし1には後始末が付く</strong>（本記録の評価）。<strong>TLS 1.2 への固定は、暗号要件を定めた内部規程や監査基準と衝突しうる。</strong> <strong>「脆弱性対応として一時的に戻した」ことを記録に残し、修正版のリリースを監視して 1.3 へ戻すところまでを1つの作業にしないと、回避策が恒久設定として居座る。</strong> <strong>修正版が未リリースである脆弱性は、「対応済み」として台帳を閉じられないことが本質的な負担である</strong>（本記録の評価）。</p></section>
+<section id="s8"><h2>既定でない構成だからこそ、自分の設定を見ないと該当するか分からない<span class="b slot">評価・解釈</span></h2><p><strong>本件の成立条件は、既定から外れた選択を2つ重ねた環境である</strong>（出典1・5。本記録の整理）。</p>
+<ul>
+<li><strong>クラスタ（セッションレプリケーション）を有効にしている</strong>—— <strong>Red Hat は標準配備では既定で無効と述べている</strong>（出典5）</li>
+<li><strong>そのクラスタ通信を TLS-PSK で保護し、TLS 1.3 を使っている</strong></li>
+</ul>
+<p><strong>「既定ではない」ことは、安心の材料にも危険の材料にもなる</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>安心の側</strong>——<strong>無差別のスキャンで広く悪用される形にはなりにくい。</strong> <strong>クラスタ通信はインターネットに向けて公開するものではなく、該当する環境の数も限られる。</strong></p>
+<p><strong>危険の側</strong>——<strong>該当する環境は、可用性を重視して複数台構成を組み、さらにノード間通信の暗号化まで検討した環境である</strong>（本記録の評価）。<strong>つまり、相対的に重要なシステムに偏る。</strong> <strong>加えて、その設定を入れた判断は過去の設計時点にあり、いま運用している担当者が把握しているとは限らない。</strong></p>
+<p><strong>確認は製品名では終わらない</strong>（本記録の整理）。<strong>「Tomcat 11.0.29 が入っているか」ではなく「その Tomcat の <code>server.xml</code> に <code>&lt;Cluster&gt;</code> があり、<code>&lt;Channel&gt;</code> の通信が TLS 1.3 ＋ TLS-PSK か」が分岐点である。</strong> <strong>業務パッケージに同梱された Tomcat では、この設定はベンダー側が持っていることが多く、利用者が自分で確認できない</strong>（本記録の評価）—— <strong>その場合、照会と回答待ちの時間が対応時間に乗る。</strong></p></section>
+<section id="s9"><h2>実環境での悪用は確認できていない<span class="b slot">未確定事項</span></h2><p><strong>悪用を示す情報は見つけられなかった</strong>（本記録の確認）〈未確定3〉。</p>
+<p><strong>確認した範囲は次のとおりである。</strong></p>
+<ul>
+<li><strong>CVE レコード（出典1）</strong> — 悪用に関する記述・<code>cisaExploitAdd</code> の記載は無い</li>
+<li><strong>Apache の3ブランチのセキュリティページ（出典2・3・4）</strong> — 記述無し</li>
+<li><strong>Red Hat の CVE ページ（出典5）</strong> — <code>statement</code> に悪用の言及は無い</li>
+<li><strong>NVD（出典6）</strong> — 解析待ちの状態で、悪用に関する記載は無い</li>
+</ul>
+<p><strong>「悪用されていない」とは書かない</strong>（本記録の明示）。<strong>確認できているのは「悪用の報告を見つけられなかった」ことまでである。</strong> <strong>本件は成立条件が限られ、かつ標的が外部公開のサービスではないため、仮に悪用が起きても外部から観測されにくい</strong>（本記録の評価）—— <strong>侵害後にクラスタへ参加する動きは、被害組織の内部ログにしか現れない。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>緩和策</th><td><div class=sub><b>item:</b> **まず「自組織の Tomcat がクラスタを使っているか」を確認する** （本記録の整理。出典1・5の条件に基づく）—— **`server.xml` に `&lt;Cluster&gt;` 要素があるか、 その `&lt;Channel&gt;` の通信が TLS 1.3 ＋ TLS-PSK かを見る。**　<b>副作用:</b> **設定ファイルが自組織の管理下に無い場合がある**（本記録の評価）〈重要〉—— **業務パッケージや製品に同梱された Tomcat では、 設定は製品側が持っており、利用者が見てよいとは限らない。** **その場合は製品ベンダーへの確認が先になり、 回答を待つ間は状態が分からない。**　<b>effect:</b> would_detect</div><div class=sub><b>item:</b> **該当構成であれば、クラスタ通信を TLS 1.2 ＋ TLS-PSK に切り替える** （出典2・3・4。Apache の公式な回避策）。　<b>副作用:</b> **プロトコルの世代を戻す措置である**（本記録の評価）—— **TLS 1.2 への固定は、他の基準（内部規程・監査・PCI DSS 等の 暗号要件）と衝突しうる。** **「脆弱性対応のために古い TLS に戻した」ことを 記録に残さないと、後の棚卸しで逆方向の是正を受ける。** **修正版が出た後に 1.3 へ戻す作業も計画に入れる必要がある。**　<b>effect:</b> would_prevent</div><div class=sub><b>item:</b> **クラスタ通信のポートへの到達を、認可済みノードに限る** （出典5・7。Red Hat の推奨）—— **ネットワーク側（セキュリティグループ・ファイアウォール・ ノード間の専用セグメント）で絞る。**　<b>副作用:</b> **本件の欠陥そのものは消えない**（本記録の明示）—— **「到達できる攻撃者」の範囲を狭めるだけであり、 同一セグメント内に足場を取られた場合は成立する。** **一方で、この措置はクラスタ通信に関する他の欠陥にも効く** （本記録の評価）—— **クラスタ通信をアプリケーションの通信と同じ経路に出さない設計は、 本件に限らず有効である。**　<b>effect:</b> would_limit</div><div class=sub><b>item:</b> **修正版（11.0.30・10.1.63・9.0.125）が出たら適用する** （出典2・3・4）—— **現時点では未リリースであり、リリースの監視が必要である**〈未確定1〉。　<b>副作用:</b> **「未リリース」の状態は、脆弱性管理の仕組みに乗りにくい** （本記録の評価）〈重要〉—— **多くの運用では「CVE が出た → 修正版を当てる」という流れを前提にしており、 修正版が無い期間は担当者の記憶に委ねられる。** **回避策を入れたまま忘れると、修正版が出ても TLS 1.2 のままになる。**　<b>effect:</b> would_prevent</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年11月16日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>**Tomcat セキュリティチームに報告が入った**（出典2・3・4）—— **「This issue was reported to the Tomcat security team on 16 November 2026」** （原文英語。本記録の訳: 本件は2026年11月16日に Tomcat セキュリティチームへ 報告された）。 **報告者は公表されていない**〈未確定2〉。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 21時38分 UTC</td><td class=nowrap><span class="b kind">公表</span></td><td>**CVE-2026-133325 が公表された**（出典1。CVE レコードの `datePublished`）—— **Apache のセキュリティページも同日 &quot;The issue was made public on 19 November 2026&quot; と記している**（出典2・3・4。原文英語）。 **重大度は Apache の文言で「critical」**（出典1）。 **同時に3ブランチの修正コミットが参照として示された**（出典2・3・4）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 21時38分 UTC</td><td class=nowrap><span class="b kind">公表</span></td><td>**Red Hat が自社の CVE ページを公開した**（出典5。`public_date`）—— **CVSS v3.1 8.1・`threat_severity: Important`。 評価の根拠として非既定構成を要する点を明記した**（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日 22時18分 UTC（NVD 掲載）／2026年11月21日 05時18分 UTC（最終更新）</td><td class=nowrap><span class="b kind">公表</span></td><td>**NVD に掲載された**（出典6）—— **CISA-ADP による CVSS v3.1 9.8（Critical）が `Secondary` として載り、 NVD 自身の状態は `Awaiting Analysis` のままである**（出典6。本記録の観測） 〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年11月23日 12時20分 UTC</td><td class=nowrap><span class="b kind">公表</span></td><td>**台湾の iThome が報道した**（出典7）—— **「NVD データベースが示す CVSS 評点は 9.8、Red Hat は 8.1」とし、 Red Hat の評点が低い理由を非既定のクラスタ構成に求めている** （出典7。原文中国語・繁体。本記録の訳）。</td></tr><tr><td class="sm nowrap tw">2026年11月23日（本記録の確認時点）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**修正版は未リリースのままである**（出典2・3・4。本記録の確認）〈未確定1〉—— **Tomcat のセキュリティページは 11.0.30・10.1.63・9.0.125 の各節を 「not yet released」と記しており、 回避策（TLS 1.2 への切り替え）だけが提示されている状態である。**</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>重大度の評点が提供元ごとに割れており、報道は 9.8 を「NVD の評点」としている</span><div class=sm>**3通りの評価がある**（出典1・5・6。本記録の確認）〈重要〉—— **①Apache（CNA）は CVSS を付けず、文言で「critical」と示す。 ②CISA-ADP は CVSS v3.1 9.8（`AC:L`）。 ③Red Hat は CVSS v3.1 8.1（`AC:H`・`threat_severity: Important`）。** **差は `AC` の1項目だけで、他の8項目は一致している**（本記録の算出）。 **Red Hat は下げた理由を明記している**（出典5）—— **非既定のクラスタ構成（TLS 1.3 ＋ TLS-PSK）を要し、 標準配備ではクラスタが既定で無効であること。** **本記録はどちらも誤りとは書かない**（本記録の判断）—— **測っている対象が「該当構成での危険度」と 「該当構成に至る環境の広さを割り引いた危険度」で異なる。** **一方、報道（出典7）が「NVD データベースが列挙する CVSS 評点は 9.8」と 書いている点は、値の出所としては正確でない**（本記録の確認）—— **NVD 上の 9.8 は CISA-ADP による `Secondary` の値であり、 NVD 自身の状態は `Awaiting Analysis` である**（出典6）。 **画面の見え方としては誤りではないが、 「NVD が判定した」と読めてしまう点が実務上の問題である。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Red Hat の CVE ページの記述に、Apache の原文と食い違う箇所がある</span><div class=sm>**Red Hat の `details` には 「upgrade to version 11.0.30, 10.1.63 or 9.0.123 (when released)」 および「switch to TLS 1.2 and PLDS-PSK」という記載がある** （出典5。本記録が JSON を逐語確認）。 **Apache の原文は 9.0.125 であり（出典4）、 CVE レコードの記述も「11.0.30, 10.1.63 or 9.0.125」である**（出典1）。 **また「PLDS-PSK」は「TLS-PSK」の誤記とみられる**（本記録の推定）。 **本記録は Apache と CVE レコードの記述を採る**（本記録の判断）〈重要〉—— **9.0 系の修正版は 9.0.125 である。** **影響バージョンについても、Red Hat は「11.0.29, 10.1.62, 9.0.124」と 記しているが、Apache と CVE レコードは 11.0 系を 「11.0.28 から 11.0.29」としている**（出典1・2）—— **本記録は後者を採る。** **この食い違いは Red Hat の評価（8.1 とその理由）の妥当性を 損なうものではない**（本記録の明示）—— **ただし、ベンダーの CVE ページを転記するだけの運用では 誤った修正版バージョンが台帳に入りうる。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>CVE が参照する Apache のメーリングリストのスレッド本文を取得できていない</span><div class=sm>**CVE レコードの参照は `https://lists.apache.org/thread.html/b53dmjwf81667pw1r27zxx8s6hw71bdn` の1件である**（出典1）。 **本記録の作成者は2026年11月23日にこの URL を取得しようとしたが、 Pony Mail の画面（JavaScript で描画される一覧）が返るのみで、 告知メールの本文を読めていない**（本記録の明示）。 **同じ内容はセキュリティページ（出典2・3・4）で確認できている**—— **重大度・影響バージョン・回避策・修正コミット・報告日と公表日の いずれも一致している。** **したがって本記録の記述に欠落は生じていないと判断する** （本記録の判断）——**ただし、告知メールに追加の記述 （クレジット等）があった場合、それは本記録に反映されていない。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>クラスタ通信にデシリアライズが伴うかどうかは公表資料に無い</span><div class=sm>**公表資料は、参加した攻撃者が到達するものとして 「クラスタ状態とセッションレプリケーションのデータ」を挙げている** （出典5・7）。 **そこから先——信頼ノードとしてクラスタに送信したデータが 他ノードでどう処理されるか——には、どの資料も触れていない** （出典1・2・3・4・5。本記録の確認）〈重要〉。 **本記録は推定しない**（本記録の明示）—— **一般にノード間でオブジェクトをやり取りする仕組みは デシリアライズを伴うが、本件の実装がどうであるかを 確認できる資料を持っていない。** **影響の見積もりを「データの参照まで」と置くか 「それ以上」と置くかは、この沈黙の扱い方で変わる。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>クラスタ通信ポートに到達した未認証ノードが、身元検証の欠落を突いて信頼ノードとして参加する構造</div><div class=svgwrap><svg viewBox="0 0 998 310" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,117.0 C91.0,117.0 91.0,193.0 16,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,193.0 C193.0,193.0 193.0,65.0 220,65.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,65.0 C295.0,65.0 295.0,161.0 220,161.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,251.0 C397.0,251.0 397.0,155.0 424,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,161.0 C397.0,161.0 397.0,155.0 424,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,155.0 C601.0,155.0 601.0,110.0 628,110.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,110.0 C703.0,110.0 703.0,193.0 628,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,60.0 C601.0,60.0 601.0,161.0 220,161.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,155.0 C499.0,155.0 499.0,193.0 16,193.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,250.0 C703.0,250.0 703.0,155.0 424,155.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="86.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="108.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタ通信ポートに到達</text><text x="91.0" y="122.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">できる攻撃者</text><text x="91.0" y="135.0" text-anchor="middle" fill="#f48fb1" font-size="10">認証情報は不要</text><rect x="16" y="162.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="91.0" y="184.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達可能な位置（同一セグ</text><text x="91.0" y="198.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メント・経路上）</text><text x="91.0" y="211.0" text-anchor="middle" fill="#64b5f6" font-size="10">取り方は公表されていない</text><rect x="220" y="21.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="43.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Tomcat のクラスタ</text><text x="295.0" y="57.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">機能（&lt;Cluster&gt;</text><text x="295.0" y="71.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">）</text><text x="295.0" y="84.0" text-anchor="middle" fill="#f48fb1" font-size="10">既定では無効（Red H</text><text x="295.0" y="96.0" text-anchor="middle" fill="#f48fb1" font-size="10">at）</text><rect x="220" y="123.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="145.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">クラスタ通信の保護: T</text><text x="295.0" y="159.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">LS 1.3 ＋ TLS</text><text x="295.0" y="173.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-PSK</text><text x="295.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">この組み合わせだけが対象</text><rect x="220" y="213.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="235.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">対象版: 11.0.28</text><text x="295.0" y="249.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">〜11.0.29・10.</text><text x="295.0" y="263.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1.62・9.0.124</text><text x="295.0" y="276.0" text-anchor="middle" fill="#f48fb1" font-size="10">版が一致しても構成次第</text><rect x="424" y="117.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="139.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">鍵交換時に接続相手の身元</text><text x="499.0" y="153.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を検証しない（CWE-3</text><text x="499.0" y="167.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">22）</text><text x="499.0" y="180.0" text-anchor="middle" fill="#f48fb1" font-size="10">TLS 1.3 経路のみ</text><rect x="628" y="79.0" width="150" height="62" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="101.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証ノードが信頼ノード</text><text x="703.0" y="115.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">としてクラスタに参加</text><text x="703.0" y="128.0" text-anchor="middle" fill="#f48fb1" font-size="10">CVE の記述</text><rect x="628" y="155.0" width="150" height="76" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="177.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">到達先: クラスタ状態・</text><text x="703.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セッションレプリケーショ</text><text x="703.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ンのデータ</text><text x="703.0" y="218.0" text-anchor="middle" fill="#ffcc80" font-size="10">Red Hat の説明</text><rect x="832" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">回避策: クラスタ通信を</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> TLS 1.2 へ切り</text><text x="907.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">替え</text><text x="907.0" y="79.0" text-anchor="middle" fill="#f48fb1" font-size="10">Apache の公式回避</text><text x="907.0" y="91.0" text-anchor="middle" fill="#f48fb1" font-size="10">策・暫定</text><rect x="832" y="118.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">緩和: クラスタ通信ポー</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">トを認可済みノードに限定</text><text x="907.0" y="167.0" text-anchor="middle" fill="#f48fb1" font-size="10">Red Hat の推奨・</text><text x="907.0" y="179.0" text-anchor="middle" fill="#f48fb1" font-size="10">影響範囲の限定</text><rect x="832" y="206.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="228.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正版 11.0.30・</text><text x="907.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">10.1.63・9.0.</text><text x="907.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">125</text><text x="907.0" y="269.0" text-anchor="middle" fill="#f48fb1" font-size="10">2026年11月23日時</text><text x="907.0" y="281.0" text-anchor="middle" fill="#f48fb1" font-size="10">点で未リリース</text></svg></div><div class=fn>layer 0 は攻撃者とその位置。 layer 1 は前提となる構成——**クラスタの有効化と TLS 1.3 ＋ TLS-PSK による保護**。 layer 2 は欠陥の位置（TLS 1.3 経路での鍵交換時の身元検証の欠落・CWE-322）。 layer 3 は結果（信頼ノードとしての参加と、到達するデータ）。 layer 4 は対処（TLS 1.2 への切り替え・ポートの制限・修正版）。 **これは公表された欠陥から導いた経路であり、 実環境で観測された攻撃の再構成ではない**（悪用を示す情報は無い）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **実環境での悪用が報告されていないため、検知事例も無い。** **本記録の評価としては、ここが最も見やすい段階である**〈重要〉—— **クラスタ通信のポートは、相手が有限個のノードに限られる。** **想定外の送信元からの接続は、 アプリケーションの通信と違って「正常な業務」と紛れにくい。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>クラスタ通信を専用のセグメント・経路に分離する</div><div class=ctl><span class="b eff">侵入を防げた</span>クラスタ通信ポートの接続元をノードのアドレスに限定する（出典5・7）</div><div class=ctl><span class="b eff">検知できた</span>クラスタ通信ポートへの想定外の送信元からの接続を記録・警報する</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **本記録の整理としては、クラスタの構成員が増えたこと自体が兆候である。** **Tomcat のクラスタはメンバーの参加・離脱をログに出すため、 「台数を知っている側」から見れば異常として認識できる余地がある** （本記録の評価。公表資料に基づく確認ではない）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>クラスタ通信を TLS 1.2 ＋ TLS-PSK に切り替える（出典2・3・4）</div><div class=ctl><span class="b eff">検知できた</span>クラスタのメンバー数・メンバーの参加イベントを監視する</div></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **本記録の評価としては、この段階の検知は難しい**〈重要〉—— **正規のノードとしてクラスタに入った後の通信は、 仕様どおりのクラスタ通信そのものである。** **区別できるのは「誰が参加しているか」であって 「何を取ったか」ではない。**</div></td><td><div class=ctl><span class="b eff">影響を限定できた</span>セッションに機密情報を載せない（セッションの中身を最小にする）</div><div class=ctl><span class="b eff">影響を限定できた</span>セッション管理をクラスタのレプリケーションから外部ストア（Redis 等）へ寄せ、 アクセス制御を別に掛ける</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>CVSS の数値をそのまま優先度に写す運用は、本件のような事案で必ず外れる</div><div class=lw>**同じ CVE に 9.8（CISA-ADP）と 8.1（Red Hat）が並び、 開発元自身は CVSS を付けていない**（出典1・5）〈重要〉。 **差は `AC` の1項目で、 「該当構成であればどれだけ危ないか」と 「該当構成に至っている環境がどれだけあるか」を 別々に測った結果である**（本記録の整理）。 **9.8 で全台を緊急扱いにすると労力が散り、 8.1 で後回しにすると該当構成が残る。**</div><div class=la><b>取るべき行動</b> **脆弱性管理の台帳に「評点の出所」の欄を設ける。** **NVD の API を取り込んでいる場合は `type`（Primary/Secondary）と `source`、および `vulnStatus` を保存し、 「誰の判断か」を失わないようにする。** **そのうえで、優先度は評点ではなく 「自組織が該当構成かどうか」で決める規則を明文化する。** **本件の分岐点は `server.xml` に `&lt;Cluster&gt;` があるかである。**</div></li><li><div class=lp>「修正版が未リリースの脆弱性」を扱える枠を作っておく</div><div class=lw>**本件は2026年11月19日に公表されたが、 11月23日時点で修正版は3ブランチすべて未リリースである** （出典2・3・4）〈未確定1〉。 **一方で修正コミットは公開されており、 攻撃者側は差分から欠陥の詳細を読める**（本記録の評価）。 **「CVE が出た → 修正版を当てる → 台帳を閉じる」という流れしか 持っていない運用では、この期間が担当者の記憶に委ねられる。**</div><div class=la><b>取るべき行動</b> **台帳に「回避策で暫定対応中・恒久対策待ち」の状態を持たせ、 恒久対策の監視担当と期限の再設定ルールを決める。** **回避策の内容（本件では TLS 1.2 への切り替え）と、 それを元に戻す条件（修正版の適用）を同じ記録に書く。** **暫定対応が規程・監査基準と衝突する場合（TLS 1.2 への固定は 暗号要件と衝突しうる）は、例外として記録を残す。**</div></li><li><div class=lp>資産台帳の粒度を「製品とバージョン」から「製品の設定」へ一段下げる</div><div class=lw>**本件は該当バージョンであっても、 クラスタを TLS 1.3 ＋ TLS-PSK で保護していなければ成立しない** （出典1・5）〈重要〉。 **逆に、台帳が「Tomcat 11.0.29」の粒度で止まっていると、 該当するかどうかが判定できず、全台を対象に扱うか、 全台を対象外に扱うかの二択になる。**</div><div class=la><b>取るべき行動</b> **可用性のために複数台構成を組んでいるシステムを棚卸しし、 ノード間通信（クラスタ・セッションレプリケーション）の有無と その暗号設定を台帳に持つ。** **業務パッケージに同梱された Tomcat は設定が自組織の管理下に無いことがあるため、 「ベンダー照会が必要な資産」として別に印を付け、 照会と回答待ちの時間を対応計画に織り込む。**</div></li><li><div class=lp>ノード間通信の経路を、アプリケーションの通信と同じ土俵に置かない</div><div class=lw>**Red Hat の緩和策は「クラスタ通信ポートへの到達を 認可済みノードに限ること」である**（出典5・7）。 **これは本件に限って効くものではない**（本記録の評価）—— **クラスタ通信は相手が有限個のノードに限られるため、 ネットワーク側で絞る費用対効果が高く、 同種の欠陥が次に出たときにも効く。**</div><div class=la><b>取るべき行動</b> **クラスタ通信・レプリケーション・管理用の通信を、 アプリケーションの通信とは別のセグメントまたは経路に分離する方針を定める。** **既存システムについては、クラスタ通信ポートの接続元が ノードのアドレスに限定されているかを点検項目に加える。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>該当判定は `server.xml` を見る。バージョン一致だけでは判定にならない</div><div class=lw>**成立条件は「クラスタ通信を TLS 1.3 ＋ TLS-PSK で保護している」ことである** （出典1・2・3・4）。 **Red Hat は標準配備ではクラスタが既定で無効と述べている**（出典5）—— **つまり、該当バージョンの大多数は対象外である可能性がある。**</div><div class=la><b>取るべき行動</b> **稼働中の各 Tomcat について、`server.xml` の `&lt;Engine&gt;`／`&lt;Host&gt;` 配下に `&lt;Cluster&gt;` 要素があるかを確認する。** **ある場合は `&lt;Channel&gt;` の送受信設定（`&lt;Transport&gt;` の TLS 設定）で プロトコルが TLS 1.3 か、鍵の方式が TLS-PSK かを確認する。** **確認結果（該当／非該当／ベンダー照会中）を資産ごとに記録し、 非該当であることの根拠も残す。**</div></li><li><div class=lp>回避策を入れるなら、戻す作業までを1つのチケットにする</div><div class=lw>**Apache の回避策は「TLS 1.2 への切り替え」である**（出典2・3・4）。 **プロトコルの世代を戻す措置であり、 修正版が出た後も放置されると恒久設定として残る**（本記録の評価）。 **修正版 11.0.30・10.1.63・9.0.125 のリリース日は公表されていない** 〈未確定1〉。</div><div class=la><b>取るべき行動</b> **TLS 1.2 への切り替えと、修正版適用後に TLS 1.3 へ戻す作業を 同一のチケットに含める。** **Tomcat のセキュリティページ（出典2・3・4）を定期的に確認する担当を決め、 「not yet released」の表記が消えたら作業を起こす。** **設定変更はコードまたは構成管理（Ansible 等）に残し、 手作業で入れた暫定設定が履歴から消えないようにする。**</div></li><li><div class=lp>クラスタのメンバー数を監視対象にする</div><div class=lw>**本件の攻撃は「認証を経ずに信頼されたノードとして参加する」ことである** （出典1）。 **参加後の通信は仕様どおりのクラスタ通信そのものであり、 中身からは区別できない**（本記録の評価）〈重要〉—— **区別できるのは「誰が参加しているか」である。**</div><div class=la><b>取るべき行動</b> **クラスタのメンバー数と、メンバーの参加・離脱イベントを 監視・警報の対象にする。** **想定台数と一致しない状態を異常として扱う。** **併せて、クラスタ通信ポートへの想定外の送信元からの接続を ネットワーク側のログで記録する。**</div></li><li><div class=lp>セッションに載せる情報を減らしておくと、この種の欠陥の影響が小さくなる</div><div class=lw>**Red Hat は、参加した攻撃者が到達しうる対象として 「機微なクラスタ状態やセッションレプリケーションのデータ」を挙げている** （出典5。原文英語。本記録の訳）。 **到達されるものの価値は、設計時にどれだけセッションへ載せたかで決まる** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **セッションに保持している項目を洗い出し、 個人情報・権限情報・トークンの実体を載せていないかを確認する。** **載せる必要があるものは、セッションストアを クラスタのレプリケーションから外部ストアへ寄せ、 そこに別のアクセス制御を掛ける構成を検討する。**</div></li><li><div class=lp>CVE の重大度は CNA・ADP・ディストリビュータの3層で読む</div><div class=lw>**本件では CNA（Apache）が CVSS を付けず、 ADP（CISA-ADP）が 9.8、ディストリビュータ（Red Hat）が 8.1 を付けた** （出典1・5・6）。 **NVD 自身は解析待ちである**（出典6）〈重要〉。 **1つの数値だけを見ると、どの前提に立った値かが分からない。**</div><div class=la><b>取るべき行動</b> **CVE を調べるときは `cveawg.mitre.org/api/cve/&lt;ID&gt;` で `containers.cna` と `containers.adp` を分けて見る習慣にする。** **自組織が使っているディストリビューション・製品ベンダーの CVE ページ（Red Hat・SUSE・Ubuntu 等）も併せて確認し、 評点が割れているときは割れた理由（本件では `AC`）を読む。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Tomcat（9.0 系・10.1 系・11.0 系）を複数台構成で運用し、 クラスタ機能（セッションレプリケーション）を有効にしている</td><td class=sm>本件はクラスタ通信の欠陥であり、クラスタを使っていなければ成立しない（出典1・5）—— Red Hat は標準配備ではクラスタが既定で無効と述べている（出典5）</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> クラスタ通信を TLS-PSK（事前共有鍵）で保護し、プロトコルに TLS 1.3 を使っている</td><td class=sm>成立条件そのものである（出典1・2・3・4）—— TLS 1.2 を使っている場合は Apache の回避策が示す前提により対象外とされる</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> ノード間通信の相手の正当性を、事前共有鍵を知っていることだけで担保している</td><td class=sm>本件は鍵交換時に相手の身元が検証されなかった欠陥である（CWE-322・出典1）—— 鍵の共有が認証の代わりになる設計は、実装がそれを検証していることに依存する</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> クラスタ通信のポートが、ノード以外から到達できるネットワークに置かれている</td><td class=sm>Red Hat の緩和策は到達範囲の制限である（出典5・7）—— 到達できる位置を取られなければ、欠陥が残っていても参加されない</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性管理の判断を、NVD や単一の CVSS 値の取り込みに委ねている</td><td class=sm>本件の 9.8 は CISA-ADP の値で、NVD 自身は解析待ちであり、 開発元は CVSS を付けていない（出典1・6）—— 出所を保持していないと「NVD が 9.8 と判定した」と誤読する</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> 業務パッケージ・製品に同梱された Tomcat を使っており、 その設定ファイルを自組織で確認できない</td><td class=sm>該当判定には `server.xml` の確認が要る（本記録の整理）—— 設定がベンダー側にある場合、照会と回答待ちの時間が対応時間に乗る</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月19日 21時38分 UTC（公表）／最終更新 2026年11月21日 04時55分 UTC CVE Program（CNA: Apache Software Foundation／ADP: CISA-ADP）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-133325" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-133325: Apache Tomcat: Cluster TLS-PSK configured to use TLS 1.3 does not validate peer</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料（CVE レコード）。本記録の作成者が2026年11月23日に CVE Services API 経由で JSON を取得し、逐語確認した。** 確認したのは——**①脆弱性の記述（TLS 1.3 ＋ TLS-PSK でクラスタを保護した場合に 未認証ノードがクラスタに参加できる）**、 **②影響範囲（11.0.28〜11.0.29・10.1.62・9.0.124）**、 **③CWE-322（Key exchange without entity authentication）**、 **④CNA（Apache）側の `metrics` に CVSS が無く、 `other` として `&quot;critical&quot;` の文言だけがあること**〈重要〉、 **⑤ADP コンテナに CISA-ADP による CVSS v3.1 9.8 （`AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`）があること**、 **⑥参照が Apache のメーリングリストのスレッド1件であること**、 **⑦`credits` が無く報告者が記載されていないこと**、 **⑧悪用に関する記述が無いこと。** **訳はすべて本記録の作成者によるものである。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月19日（公表） Apache Software Foundation（Apache Tomcat プロジェクト）</span> <a href="https://tomcat.apache.org/security-11.html" target="_blank" rel="noreferrer noopener nofollow">Apache Tomcat 11 Security Updates — Fixed in Apache Tomcat 11.0.30</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料。本記録の作成者が2026年11月23日に取得し、該当箇所を逐語確認した。** 確認したのは——**①見出し「Critical: Cluster TLS-PSK configured to use TLS 1.3 does not validate peer」**、 **②影響「Affects: 11.0.28 to 11.0.29」**、 **③回避策「Until Tomcat 11.0.30 is available, users are recommended to switch to TLS 1.2」**、 **④修正コミット `2e6c85ba`**、 **⑤「reported to the Tomcat security team on 16 November 2026」 「made public on 19 November 2026」**、 **⑥11.0.30 の節が「not yet released」と記されていること**〈重要〉、 **⑦報告者名の記載が無いこと。**）</span></li><li><span class=rid>[3]</span> <span class=sm>2026年11月19日（公表） Apache Software Foundation（Apache Tomcat プロジェクト）</span> <a href="https://tomcat.apache.org/security-10.html" target="_blank" rel="noreferrer noopener nofollow">Apache Tomcat 10 Security Updates — Fixed in Apache Tomcat 10.1.63</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料。本記録の作成者が2026年11月23日に取得し、該当箇所を逐語確認した。** **影響は「Affects: 10.1.62」、回避策は 10.1.63 が出るまで TLS 1.2 への切り替え、 修正コミットは `8dcddccc`。** **10.1.63 の節は「not yet released」と記されている。**）</span></li><li><span class=rid>[4]</span> <span class=sm>2026年11月19日（公表） Apache Software Foundation（Apache Tomcat プロジェクト）</span> <a href="https://tomcat.apache.org/security-9.html" target="_blank" rel="noreferrer noopener nofollow">Apache Tomcat 9 Security Updates — Fixed in Apache Tomcat 9.0.125</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料。本記録の作成者が2026年11月23日に取得し、該当箇所を逐語確認した。** **影響は「Affects: 9.0.124」、回避策は 9.0.125 が出るまで TLS 1.2 への切り替え、 修正コミットは `8dac862e`。** **9.0.125 の節は「not yet released」と記されている。**）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年11月19日 22時18分 UTC（掲載）／最終更新 2026年11月21日 05時18分 UTC NIST National Vulnerability Database（NVD）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-133325" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-133325 Detail — NVD</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**一次資料。本記録の作成者が2026年11月23日に NVD の API （`/rest/json/cves/2.0?cveId=`）経由で取得し、逐語確認した。** 確認したのは——**①`vulnStatus: Awaiting Analysis`**〈重要〉、 **②掲載されている CVSS v3.1 9.8 は `type: Secondary`・ `source: 134c704f-9b21-4f2e-91b3-4a467353bcc0`（CISA-ADP）であり、 NVD 自身（`Primary`）の評点は存在しないこと**、 **③悪用に関する記載が無いこと。** **HTML ページへの直接アクセスでは本文が取得できなかったため、 API 経由で確認している**（本記録の明示）。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年11月19日 21時38分 UTC Red Hat Product Security</span> <a href="https://access.redhat.com/security/cve/CVE-2026-133325" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-133325 — Red Hat Customer Portal security data</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**一次資料（Red Hat 自身の評価）。本記録の作成者が2026年11月23日に Red Hat のセキュリティデータ API（`/hydra/rest/securitydata/cve/`）経由で JSON を取得し、逐語確認した。** 確認したのは——**①`threat_severity: Important`**、 **②CVSS v3.1 8.1（`AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H`・`status: verified`）**、 **③Critical としない理由の説明（非既定のクラスタ構成を要する／ 標準配備ではクラスタが既定で無効）**〈重要〉、 **④「クラスタ通信ポートへネットワーク到達性のある未認証の攻撃者は クラスタに参加し、機微なクラスタ状態やセッションレプリケーションの データを参照しうる」という影響の記述。** **訳はすべて本記録の作成者によるものである。** **なお `details` の末尾に「upgrade to version 11.0.30, 10.1.63 or 9.0.123」 および「switch to TLS 1.2 and PLDS-PSK」という記載があり、 Apache の原文（9.0.125・TLS-PSK）と食い違う**〈差異2〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[7]</span> <span class=sm>2026年11月23日 12時20分 UTC iThome（台湾）</span> <a href="https://www.ithome.com.tw/news/180707" target="_blank" rel="noreferrer noopener nofollow">Apache Tomcat傳出重大漏洞，可能導致未經身分驗證攻擊者加入受信任伺服器叢集</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった報道（2026年11月23日収集分）。原文は中国語・繁体。** **確認したのは——①影響バージョンと成立条件（TLS 1.3 ＋ TLS-PSK）、 ②Apache が重大（Critical）と格付けしたこと、 ③「NVD データベースが列挙する CVSS 評点は 9.8、Red Hat は 8.1」と 対比して述べていること、 ④Red Hat の評点が低い理由を非既定のクラスタ構成に求めていること、 ⑤修正が GitHub に提出され 11.0.30・10.1.63・9.0.125 に入る見込みとしていること、 ⑥Apache は TLS 1.2 への切り替え、Red Hat はクラスタ通信ポートの制限を 勧めているとしていること。** **「NVD の評点」という記述は、値の出所としては CISA-ADP である** 〈差異1〉（本記録の確認）。 **訳はすべて本記録の作成者によるものである。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月23日（新規作成。2026年11月23日収集の報道1件を起点に、CVE レコード・Tomcat の3ブランチのセキュリティページ・Red Hat の CVE ページ・NVD を一次で取得して照合した）</span> <span class="b rev">新規作成</span> 新規作成。2026年11月23日収集分の1記事 〈output/articles/20261123/0072_ithome-security_apache-tomcat.md（出典7）〉 を起点とした。
+**一次資料で裏を取った項目**—— **①脆弱性の記述・CWE・影響バージョン（CVE レコードの JSON）、 ②重大度の表現（CNA は CVSS 無しで「critical」）、 ③CISA-ADP による CVSS 9.8 とその出所、 ④Red Hat の 8.1 と Important とした理由、 ⑤NVD が解析待ちであること、 ⑥修正コミット3件と回避策、 ⑦報告日（11月16日）と公表日（11月19日）、 ⑧修正版3つがいずれも未リリースであること。**
+**報道の「NVD の評点は 9.8」という記述は、 値の出所としては CISA-ADP であることを確認した**〈差異1〉。
+**Red Hat の CVE ページに、修正版バージョン（9.0.123）と 鍵方式（PLDS-PSK）の誤記とみられる箇所を見つけた**〈差異2〉—— **本記録は Apache と CVE レコードの記述（9.0.125・TLS-PSK）を採った。**</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Apache Tomcat</span><span class="b tag">CVE-2026-133325</span><span class="b tag">CWE-322</span><span class="b tag">TLS-PSK</span><span class="b tag">TLS 1.3</span><span class="b tag">クラスタ</span><span class="b tag">セッションレプリケーション</span><span class="b tag">認証なし参加</span><span class="b tag">CVSS の割れ</span><span class="b tag">CISA-ADP</span><span class="b tag">Red Hat</span><span class="b tag">修正版未リリース</span><span class="b tag">回避策</span><span class="b tag">一次資料裏取り</span><span class="b tag">設定依存の脆弱性</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-23 18:58 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
