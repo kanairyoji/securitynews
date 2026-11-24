@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ASP.NET の CSRF 対策品に実悪用 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1271</span>ASP.NET の CSRF 対策品に実悪用</h1>
+<header class="site-header">
+  <p class="subtitle">**17年前に公開され、修正する者のいない ASP.NET 用の CSRF 対策ライブラリ `Idunno.AntiCsrf` に、認証不要の遠隔コード実行の穴が見つかり、 実環境での悪用が観測された**〈重要〉—— **CVE-2026-131914、CVSS 4.0 は 9.3（CRITICAL）である。** **穴は、CSRF トークンを検証する処理そのものにある**—— **`AntiCsrfModule.PreRequestHandlerExecute` が、 フォームから届いた CSRF トークンの値を、鍵を与えていない `System.Web.UI.ObjectStateFormatter` で逆シリアル化しており、 MAC も署名も検証していない（CWE-502・CAPEC-586 オブジェクトインジェクション）。** **攻撃者は、CSRF クッキーに空でない任意の値（例: `__CSRFCOOKIE=1`）を置き、 CSRF フォームフィールドに Base64 符号化した .NET のガジェットチェーンを 入れた `POST` を1回送るだけで、IIS のワーカープロセス（`w3wp.exe`）の権限で 任意コードを実行できる**〈重要〉—— **事前の認証も、正当な CSRF トークンも要らない。** **発見は、Mandiant のインシデント対応の現場である**—— **Google Cloud の FLARE が2026年11月4日に根本原因の分析を終え、 Mandiant は CNA として11月11日に CVE の採番に着手し、 11月18日に勧告と CVE を公開した。** **修正版は無い**〈重要〉—— **`Idunno.AntiCsrf` は CodePlex で公開され、 最終リリースが `0.9.1 Beta`（公式ビルドは2008年12月付）のまま 活動を終えた企画であり、維持する者も公式パッチも存在しない。** **Mandiant の勧告が示す対処は「使用をやめる」ことである。**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">委託先・供給元起因</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月18日（Mandiant 勧告 MNDT-2026-0048 の公開）</span>
+  <span>最終更新: 2026年11月24日</span>
+</div>
+
+<div class="lead"><p><strong>Mandiant（Google Cloud）は2026年11月18日、ASP.NET WebForms 向けのCSRF 対策ライブラリ <code>Idunno.AntiCsrf</code> に認証不要の遠隔コード実行の脆弱性があるとして勧告 MNDT-2026-0048 を公開し、同時にCVE-2026-131914 が採番された</strong>（出典1・2）。<strong>CVSS 4.0 は 9.3（CRITICAL）、ベクタは<code>CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A</code> である</strong>（出典2）——<strong>末尾の <code>E:A</code> は悪用成熟度 ATTACKED、すなわち実環境での悪用が観測されていることを示す。</strong> <strong>勧告本文も「実環境での活発な悪用が観測されている」と明記している</strong>（原文英語。出典1）。</p>
+<p><strong>穴の位置は、CSRF トークンを検証する処理の内側である。</strong> <strong><code>Idunno.AntiCsrf.AntiCsrfModule</code> の <code>PreRequestHandlerExecute</code> は、<code>POST</code> 要求について、CSRF クッキー（既定名 <code>__CSRFCOOKIE</code>）とフォームフィールド（既定名 <code>__CSRFTOKEN</code>）がいずれも空でないことだけを確かめた上で、引数なしの <code>new ObjectStateFormatter()</code> を作り、フォームフィールドの値を <code>Deserialize()</code> に渡す</strong>（出典1）。<strong>この時点では、クッキーが整形された GUID かどうかも検証されておらず、<code>&lt;form runat="server"&gt;</code> の存在も要求されていない。</strong> <strong>引数なしの <code>ObjectStateFormatter</code> は MAC・署名・暗号化・<code>machineKey</code> の検証を行わず、型の制限も課さないため、攻撃者は空でない任意のクッキー値と、Base64 符号化した.NET のガジェットチェーンを1回の <code>POST</code> で送り込むだけで、<code>w3wp.exe</code> の権限で任意コードを実行できる</strong>（出典1）〈重要〉。</p>
+<p><strong>到達の容易さについて、勧告は「Exploitability: High」と評価している</strong>（出典1）。<strong><code>PreRequestHandlerExecute</code> は <code>HttpApplication</code> のパイプライン段で、<code>IHttpHandler.ProcessRequest</code> と ASP.NET の <code>Page</code> ライフサイクル（<code>PreInit</code>・<code>Init</code>・<code>Page_Load</code>）より手前に動く</strong>—— <strong>パイプライン段の認証・認可（<code>AuthenticateRequest</code> / <code>AuthorizeRequest</code>）はさらに手前で動くが、匿名で到達できる <code>.aspx</code> ページ、あるいは <code>Page_Load</code> の中のアプリ層のセッション確認に依存しているページは、その逆シリアル化のシンクを <code>POST</code> に対して開いたままにしている</strong>（出典1）。<strong>つまり「ログインしていなければ安全」という前提は成り立たない</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>修正版は無い。</strong> <strong><code>Idunno.AntiCsrf</code> は CodePlex（<code>anticsrf.codeplex.com</code>）で公開された第三者の <code>IHttpModule</code> で、最終リリースは <code>0.9.1 Beta</code>（公式ビルドは2008年12月付）、CodePlex 自体も既に廃止されている</strong>（出典1）。<strong>維持する者も公式パッチも存在しないため、Mandiant が示した対処は「使用をやめて、保守されている代替に置き換える」ことである</strong>（出典1）〈重要〉。<strong>Mandiant が CNA として CVE を採番した理由も、勧告の開示経緯に「上流が活動を終えており、ベンダーや維持者によるパッチが無いため、周知のために」と明記されている</strong>（原文英語。出典1）。</p>
+<p><strong>発見の経路が、本件の性格を決めている</strong>（本記録の評価）〈重要〉。<strong>勧告の開示経緯は「2026年11月4日: インシデント対応の調査中にFLARE が根本原因の分析を完了」から始まる</strong>（原文英語。出典1）—— <strong>誰かの環境が実際に侵害され、その調査の中からこの穴が出てきた。</strong> <strong>被害組織・侵害の時期・規模は一切公表されていない</strong>〈未確定1〉。<strong>一方、CISA の Vulnrichment（ADP）が同じ CVE レコードに付したSSVC の判定は <code>Exploitation: none</code> であり、Mandiant の <code>E:A</code>（ATTACKED）と食い違っている</strong>（出典2）〈差異1〉。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（5件）">公表・報道からわかったこと（5件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>4</span></div><ul><li><span class=ui>悪用された被害組織・悪用の時期・件数・攻撃者</span><span class="b rsn">公表されていない</span><div class=sm>**一切公表されていない**（本記録の確認）〈重要〉—— **勧告は「実環境での活発な悪用が観測されている」と記し、 開示経緯に「インシデント対応の調査中に」とだけ書く**（出典1）。 **どの組織の、いつの、何件の侵害かは書かれていない。** **本記録は推測で埋めない**（本記録の方針）—— **Mandiant のインシデント対応の顧客に関する情報であり、 公表されない性格のものである可能性が高い（本記録の読み）。**</div></li><li><span class=ui>CISA の KEV への収載の有無</span><span class="b rsn">探索したが未発見</span><div class=sm>**本記録では確認できていない**（本記録の明示）—— **CVE レコードに KEV を示す項目は無く、 参考リンクは Mandiant の勧告と CodePlex のアーカイブ2件のみである** （出典2）。 **実悪用が観測されている脆弱性であるため収載の要件には合致しうるが、 収載を確認した資料は無い（本記録の読み）。**</div></li><li><span class=ui>利用している組織の数・業種・地域</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）〈重要〉—— **CodePlex は既に廃止されており、 ダウンロード数の統計を確認できる場所が残っていない（本記録の読み）。** **勧告は、社内で再コンパイル・改変した組織はハッシュが異なると 注意しているため、配布経路が公開ビルドだけでないことは分かる** （出典1）—— **規模を測る材料にはならない。**</div></li><li><span class=ui>実悪用で使われたガジェットチェーンの種類と、悪用後の活動</span><span class="b rsn">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **勧告は、悪用の痕跡がある環境で `Web.config` と `applicationHost.config` の秘密をローテーションし、 ウェブルートを点検するよう求めている**（出典1）—— **この求めから、秘密の窃取とウェブルートへのファイル設置が 観測された可能性は読み取れるが、 勧告はそう明言していない（本記録の読み）。** **本記録は推測で埋めない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Mandiant（Google Cloud）</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Idunno.AntiCsrf（CodePlex の AntiCSRF 企画）</span><span class="b role">製品・部品の供給元</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米国サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">推定</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS 4.0 基本値（CVSS-BT）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.3<span class=fu>点</span></div><div class=fa>2026年11月18日 時点</div><div class=fn>**深刻度は CRITICAL**（出典1・2）〈重要〉—— **ベクタは `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A`。** **読み方は、ネットワーク経由（AV:N）・攻撃条件なし（AT:N）・ 権限不要（PR:N）・利用者の操作不要（UI:N）で、 機密性・完全性・可用性のいずれにも高い影響（VC:H/VI:H/VA:H）。** **末尾の `E:A` は悪用成熟度 ATTACKED で、 Mandiant の勧告が「CVSS-BT」と明記している通り、 実悪用の観測を値に織り込んだものである**（出典1）。 **この値は金額でも被害数でもなく、深刻度の指標である** （本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>勧告に載った脆弱な DLL の公開ビルドの数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>件</span></div><div class=fa>2026年11月18日 時点</div><div class=fn>**いずれも `Idunno.AntiCsrf.dll`**（出典1）—— **①`0.9.1.0` 公式2008年リリースビルド（69,632 バイト・ SHA-256 `da1efcfed182597ee946a9ef2895dfdfeab2bdff16855aeef01656d8158ead06`）、 ②CodePlex の `0.9.1 Beta` ソースの再ビルド（Release。69,632 バイト・ SHA-256 `c5c994891783453ae85f3ef8efb48592b7c560aeb56f531ee9ea5736518246eb`）、 ③同（Debug。70,144 バイト・ SHA-256 `aa7bbad4a7ebc38519955ac65517716569508ee4f61fc2f1276086940501e9bf`）。** **これは悪性ファイルのハッシュではなく、脆弱な部品のハッシュである** （本記録の明示）〈重要〉—— **検知のためではなく、資産の棚卸しのために使う値である。** **社内で再コンパイル・改変した組織はハッシュが一致しないため、 勧告は名前（`Idunno.AntiCsrf` / `Idunno.AntiCsrf.AntiCsrfModule`）での 探索を併せて求めている**（出典1）。</div></div><div class=fig><div class=fh><span class=fl>攻撃に要する HTTP 要求の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>1<span class=fu>件</span></div><div class=fa>2026年11月18日 時点</div><div class=fn>**「悪用に要するのは、事前の認証も正当な CSRF トークンも無い、 1回の HTTP `POST` だけである」**（原文英語。出典1）〈重要〉—— **多段の前提を要さないことが、本件の緊急度を決めている （本記録の評価）。**</div></div><div class=fig><div class=fh><span class=fl>最終リリースから勧告の公開までの経過年数</span><span class="b conf">約</span><span class="b org">本記録の算出</span></div><div class=fv>18<span class=fu>年</span></div><div class=fa>2026年11月24日 時点</div><div class=fn>**2008年12月 → 2026年11月18日で約17年11か月**（本記録の算出）—— **年単位に丸めて18年とした。** **この期間ずっと穴が存在したことを示す値ではない**（本記録の明示）—— **示すのは「誰も直す立場にない状態が18年続いた」ことである。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**以下は Mandiant の勧告 MNDT-2026-0048 の技術解説に基づく**（出典1。 本記録の明示）〈重要〉—— **実環境での悪用は観測されているが、 実際の攻撃者が辿った段階は公表されていない**〈未確定1〉。 **ここに書くのは、勧告が示した悪用の成立経路である。** **連鎖は短い。** **①攻撃者は、`ISuppressCsrfCheck` を実装していない `.aspx` エンドポイントを1つ見つける（匿名で到達できるものでよい）。** **②CSRF クッキーに空でない任意の値を置き、 CSRF フォームフィールドに Base64 符号化した .NET の `ObjectStateFormatter` ガジェットチェーンを入れた `POST` を送る。** **③`PreRequestHandlerExecute` が、認証・認可の後、 `Page_Load` より手前で、鍵を与えていない `ObjectStateFormatter` で その値を逆シリアル化し、`w3wp.exe` の権限でコードが実行される。** **④直後に `RaiseError` が走るため、応答は 302 か 500 で返る。**</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**`.aspx` エンドポイントと、CSRF クッキー／フォームフィールドの名前を 把握する**（出典1。本記録の整理）—— **既定値は `__CSRFCOOKIE` と `__CSRFTOKEN` だが、 `Web.config` で変更されている場合がある**（出典1）。 **実際の攻撃者がこの段階で何をしたかは公表されていない**〈未確定1〉。</div><div class=fn>根拠: 勧告の設定既定値の記述（出典1）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**CSRF クッキーに空でない任意の値（例: `Cookie: __CSRFCOOKIE=1`）を置き、 CSRF フォームフィールドに Base64 符号化した .NET の `ObjectStateFormatter` ガジェットチェーンを入れた `POST` を1回送る** （出典1）〈重要〉—— **「悪用に要するのは、事前の認証も正当な CSRF トークンも無い、 1回の HTTP `POST` だけである」**（原文英語）。 **モジュールは、クッキーとフォームフィールドが いずれも空でないことだけを確かめ、 クッキーが整形された GUID かどうかは検証しない**（出典1）。</div><div class=fn>根拠: 勧告の Impact / Exploitability 節（出典1）</div></li><li><div class=stg><span class="b stage">3. 実行</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**`PreRequestHandlerExecute` が、引数なしの `new ObjectStateFormatter()` を作り、 `Deserialize(context.Request.Form[...])` を呼ぶ**（出典1）〈重要〉—— **引数なしのコンストラクタは MAC・署名・暗号化・`machineKey` の 検証を一切行わず、`SerializationBinder` による型の制限も課さない。** **ガジェットチェーンは `Deserialize()` の内側で動き、 IIS のワーカープロセス `w3wp.exe` の権限で任意コードが実行される** （出典1）。 **この処理は `IHttpHandler.ProcessRequest` と `Page` ライフサイクル（`PreInit`・`Init`・`Page_Load`）より 手前で走る**（出典1）。</div><div class=fn>根拠: 勧告の Details 節 1 項（出典1）</div></li><li><div class=stg><span class="b stage">4. 検知回避</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**逆シリアル化の直後に `RaiseError` が走るため、 攻撃が成立した要求も応答はエラーで返る**（出典1。本記録の整理） 〈重要〉—— **`detectionResult=&quot;Redirect&quot;` なら `&lt;csrfSettings errorPage=&quot;...&quot; /&gt;` へ `HTTP 302`、 `RaiseException` なら `PotentialCsrfException` が投げられ、 `customErrors` が有効なら `&lt;customErrors defaultRedirect=&quot;...&quot; /&gt;` へ `302`、 `mode=&quot;Off&quot;` なら `HTTP 500` を返す**（出典1）。 **これが攻撃者の意図した回避策かどうかは公表されていない** （本記録の明示）—— **ライブラリの作りの副作用である。**</div><div class=fn>根拠: 勧告の Details 節 1 項の末尾（出典1）</div></li><li><div class=stg><span class="b stage">5. 影響（暗号化・破壊・改ざん）</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**ウェブアプリケーションサーバの完全な侵害**（出典1）〈重要〉—— **「ウェブアプリケーションサーバの完全な侵害に至る」**（原文英語）。 **勧告は、悪用の痕跡がある環境では `Web.config` と `applicationHost.config` の秘密 （`&lt;machineKey&gt;` の鍵・暗号鍵・データベースの資格情報を含む）を すべてローテーションし、 権限のないファイルがウェブルートに置かれていないか 点検するよう求めている**（出典1）。 **実際の悪用で何が起きたか（データの持ち出し・横展開の有無）は 公表されていない**〈未確定1〉。</div><div class=fn>根拠: 勧告の Impact 節および Resolution 節 3 項（出典1）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>Mandiant は、インシデント対応の調査中に根本原因を特定した 2026年11月4日から2週間で、CVE の採番（11月11日着手）と 勧告の公開（11月18日）に至った。修正版が存在しない状態での公開である</div><div class=fn><b>トレードオフ:</b> **公開によって、まだ悪用されていない環境が標的になる余地は増える** （本記録の評価）—— **勧告には具体的な攻撃の組み立て方 （空でない任意のクッキー値＋Base64 のガジェットチェーン）が 書かれている。** **本記録は、既に悪用が観測されている段階ではこの代償は 受け入れるべきだったと評価する——ただし評価であって、 Mandiant が代償をどう量ったかは公表されていない。**</div></li></ul></div>
+<section id="s6"><h2>穴は、CSRF トークンを検証する処理の内側にあった<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong><code>Idunno.AntiCsrf</code> は、ASP.NET WebForms 向けに 二重送信クッキー方式の CSRF 対策を提供する第三者の <code>IHttpModule</code> である</strong> （出典1）—— <strong>CodePlex（<code>anticsrf.codeplex.com</code>）で公開されていた。</strong> <strong><code>Web.config</code> の <code>&lt;httpModules&gt;</code> / <code>&lt;modules&gt;</code> に <code>Idunno.AntiCsrf.AntiCsrfModule, Idunno.AntiCsrf</code> として登録し、 <code>&lt;csrfSettings&gt;</code> で設定する。</strong> <strong><code>[ConfigurationProperty]</code> の既定値は <code>cookieName</code> が <code>__CSRFCOOKIE</code>、<code>formFieldName</code> が <code>__CSRFTOKEN</code>、 <code>detectionResult</code> が <code>RaiseException</code> である</strong>（出典1）。</p>
+<p><strong><code>AntiCsrfModule.Init</code> は <code>PreSendRequestHeaders</code> と <code>PreRequestHandlerExecute</code> を購読し、 <code>PreRequestHandlerExecute</code> が各 <code>Page</code> ハンドラに <code>PageLoad</code> と <code>PagePreRender</code> を結び付ける</strong>（出典1）—— <strong>処理の順は <code>Init</code> → <code>PreRequestHandlerExecute</code> → <code>PageLoad</code> → <code>PagePreRender</code> → <code>PreSendRequestHeaders</code>。</strong></p>
+<p><strong>問題は <code>PreRequestHandlerExecute</code> である</strong>〈重要〉。 <strong><code>ISuppressCsrfCheck</code> を実装せず <code>[SuppressCsrfCheck]</code> も 付いていない <code>System.Web.UI.Page</code> ハンドラについて、 このメソッドは <code>Page_Load</code> より手前で <code>POST</code> 要求を調べる</strong>（出典1）。 <strong>確かめるのは <code>Request.Cookies[CsrfSettings.Settings.CookieName]</code> と <code>Request.Form[CsrfSettings.Settings.FormFieldName]</code> が いずれも空でないことだけである</strong>—— <strong>クッキーが整形された GUID であることも検証せず、 <code>&lt;form runat="server"&gt;</code> の存在も要求しない。</strong> <strong>その上で、引数なしの <code>new ObjectStateFormatter()</code> を作り、 <code>Deserialize(context.Request.Form[...])</code> を呼び、 結果をクッキーの値と比較する</strong>（出典1）。</p>
+<p><strong>引数なしの <code>ObjectStateFormatter</code> コンストラクタは、 MAC・署名・暗号化・<code>machineKey</code> の検証を一切行わず、 <code>SerializationBinder</code> による型の制限も課さない</strong>（出典1）〈重要〉—— <strong>したがって、空でない任意のクッキー（例: <code>Cookie: __CSRFCOOKIE=1</code>）と、 Base64 符号化した .NET の <code>ObjectStateFormatter</code> ガジェットチェーンを CSRF フォームフィールドに入れて送れば、 <code>Deserialize()</code> の内側で任意コードが <code>w3wp.exe</code> の権限で動く。</strong></p>
+<p><strong>検証の順序が逆であることが、本件の構造である</strong>（本記録の整理） 〈重要〉—— <strong>クッキー値が GUID かどうかの検証（<code>GuidTryParse</code>）は、 描画側の <code>PagePreRender</code> にしか実装されておらず、 <code>Deserialize()</code> を呼ぶ <code>PreRequestHandlerExecute</code> の手前には無い</strong> （出典1）。 <strong>比較する前に逆シリアル化してしまうため、 「正しいトークンかどうか」を判定する前に、コードが動く。</strong></p></section>
+<section id="s7"><h2>「ログインしていなければ安全」は成り立たない<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>勧告は到達の容易さを「Exploitability: High」と評価している</strong> （出典1）〈重要〉。 <strong>根拠は実行の順序である。</strong> <strong><code>AntiCsrfModule.PreRequestHandlerExecute</code> は <code>HttpApplication</code> のパイプライン段で、 <code>IHttpHandler.ProcessRequest</code> と ASP.NET の <code>Page</code> ライフサイクル （<code>PreInit</code>・<code>Init</code>・<code>Page_Load</code>）より手前に動く</strong>（出典1）。</p>
+<p><strong>パイプライン段の認証・認可 （<code>AuthenticateRequest</code> / <code>AuthorizeRequest</code>）は、さらに手前で動く</strong> （出典1）—— <strong>つまり URL 単位で認証を要求しているページは守られる （本記録の読み）。</strong> <strong>守られないのは次の2つである</strong>（出典1）〈重要〉—— <strong>①匿名で到達できる <code>.aspx</code> ページ、 ②<code>Page_Load</code> の中のアプリ層のセッション確認に依存しているページ。</strong> <strong>後者は、認可の判定が逆シリアル化より後に走るため、 判定に辿り着く前にコードが動く。</strong></p>
+<p><strong>本記録の評価として、②の構成は古い WebForms アプリで 珍しいものではない</strong>—— <strong>「ログイン画面は匿名で見せる」「権限は画面のコードで判定する」は、 2008年当時の標準的な作りである（本記録の読み。公表に根拠は無い）。</strong> <strong><code>&lt;form runat="server"&gt;</code> が無いページでも成立するため</strong>（出典1）<strong>、 「入力フォームの無いページは対象外」という切り分けもできない。</strong></p>
+<p><strong>影響範囲はバージョン全域である</strong>（出典2）—— <strong>CVE レコードの <code>affected</code> は 「<code>0</code> から <code>0.9.1.0</code> 以下」および「<code>0</code> から <code>0.9.1 Beta</code> 以下」で、 既定値は <code>affected</code>。</strong> <strong>存在する全バージョンが影響を受ける。</strong></p></section>
+<section id="s8"><h2>発見はインシデント対応の現場であり、被害組織は公表されていない<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1] [2]</span></h2><p><strong>勧告の開示経緯は3行である</strong>（原文英語。出典1）〈重要〉—— <strong>「2026-11-04: インシデント対応の調査中に FLARE が 脆弱性の根本原因の分析を完了」、 「2026-11-11: Mandiant CNA が周知のために CVE 採番を開始 （上流の企画は活動を終えており、ベンダーや維持者による パッチは入手できない）」、 「2026-11-18: Mandiant の勧告と CVE-2026-131914 を公開」。</strong></p>
+<p><strong>1行目が本件の性格を決めている</strong>（本記録の評価）〈重要〉—— <strong>この脆弱性は、机上の監査や懸賞金制度から出てきたものではない。</strong> <strong>誰かの環境が実際に侵害され、その対応の中で 根本原因として特定された。</strong> <strong>勧告の Exploitability 節も 「実環境での活発な悪用が観測されている」と結んでいる</strong>（原文英語）。</p>
+<p><strong>それでも、被害組織・侵害の時期・件数・攻撃者は 一切公表されていない</strong>〈未確定1〉。 <strong>勧告は発見者として5名を挙げる</strong>（出典1）—— <strong>LDB、Genwei Jiang 氏と Dhanesh Kizhakkinan 氏 （Google Cloud, FLARE OTF）、 Brian Bahtiarian 氏と Lucas Kossack 氏 （Mandiant Incident Response）。</strong> <strong>後2名の所属がインシデント対応部門であることが、 経緯の記述と整合する（本記録の読み）。</strong></p>
+<p><strong>一方、CISA の Vulnrichment（ADP）が同じ CVE レコードに 2026年11月19日 01:39 UTC 付で付した SSVC の判定は <code>Exploitation: none</code> である</strong>（出典2）〈差異1〉〈重要〉—— <strong><code>Automatable: yes</code>、<code>Technical Impact: total</code> は Mandiant の記述と整合するが、悪用の有無だけが食い違う。</strong> <strong>本記録は、Mandiant が実悪用を観測した当事者であることから <code>E:A</code>（ATTACKED）側を採る</strong>（本記録の判断）—— <strong>ただし CISA の判定が付いた時刻は勧告の公開から数時間後であり、 反映の遅れである可能性も否定できない（本記録の読み）。</strong></p></section>
+<section id="s9"><h2>対処は「使う側だけで完結する」——当てるパッチが無いから<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1]</span></h2><p><strong>公式パッチは存在しない</strong>（出典1）〈重要〉—— <strong>「<code>Idunno.AntiCsrf</code> は、既に廃止された CodePlex 上で <code>0.9.1 Beta</code>（公式ビルドは2008年12月付）を最終リリースとして 活動を終えたオープンソース企画であり、 活動中の維持者も公式パッチも無い」</strong>（原文英語）。</p>
+<p><strong>勧告が示す対処は3段である</strong>（出典1）。 <strong>①取り除く。</strong> <strong><code>&lt;httpModules&gt;</code> と <code>&lt;modules&gt;</code> から <code>Idunno.AntiCsrf.AntiCsrfModule</code> の登録をすべて削除し、 <code>&lt;configSections&gt;</code> の <code>&lt;section name="csrfSettings" ... /&gt;</code> と <code>Web.config</code> の <code>&lt;csrfSettings ... /&gt;</code> を削除し、 <code>ISuppressCsrfCheck</code> / <code>[SuppressCsrfCheck]</code> への参照を削除し、 <code>bin/</code> から <code>Idunno.AntiCsrf.dll</code> を削除する。</strong> <strong>②置き換える。</strong> <strong><code>System.Web.Helpers.AntiForgery</code>、 WebForms の <code>Page.ViewStateUserKey</code> ＋ MAC 検証・暗号化済み ViewState、 ASP.NET Core の <code>IAntiforgery</code> のいずれか。</strong> <strong>③探して、見直す。</strong> <strong>すべての <code>Web.config</code> と <code>bin/</code> を <code>Idunno.AntiCsrf</code> / <code>AntiCsrfModule</code> の名前で監査し、 IIS のログで <code>.aspx</code> への異常な <code>POST</code> （<code>HTTP 302</code> または <code>500</code> で <code>cs-bytes</code> が大きいもの）を見る。</strong></p>
+<p><strong>ここで注意すべき点が1つある</strong>（本記録の評価）〈重要〉—— <strong>攻撃が成功した要求も、応答はエラーで返る。</strong> <strong>逆シリアル化の直後に <code>RaiseError</code> が走るためである</strong>（出典1）—— <strong><code>detectionResult="Redirect"</code> なら <code>errorPage</code> へ 302、<code>RaiseException</code> なら <code>PotentialCsrfException</code> が投げられ、 <code>customErrors</code> が有効なら <code>defaultRedirect</code> へ 302、 <code>mode="Off"</code> なら 500。</strong> <strong>つまり「CSRF 検知エラーが出ている」というログは、 対策が効いている証拠にも、既に侵害された証拠にも読める （本記録の読み）。</strong> <strong>応答コードでは区別が付かない。</strong></p>
+<p><strong>悪用の痕跡がある環境では、<code>Web.config</code> と <code>applicationHost.config</code> の秘密をすべて入れ替えるよう求められている</strong> （出典1）〈重要〉—— <strong><code>&lt;machineKey&gt;</code> の鍵、暗号鍵、データベースの資格情報を含む。</strong> <strong>併せてウェブルートに権限のないファイルが置かれていないか点検する。</strong> <strong>本記録の評価として、<code>&lt;machineKey&gt;</code> のローテーションは 副作用が大きい</strong>—— <strong>既存の ViewState・認証クッキー・セッションが無効になるため、 複数サーバで鍵を共有している構成では 同時に入れ替えないと利用者がログインできなくなる。</strong> <strong>侵害が分かった日に手順を考え始めると、復旧が障害に変わる。</strong></p></section>
+<section id="s10"><h2>「防御のために足した部品」こそ、棚卸しから漏れる<span class="b slot">評価・解釈</span></h2><p><strong>以下は本記録の評価である</strong>〈重要〉。</p>
+<p><strong>本件の形は、第三者ライブラリの脆弱性として平凡である</strong>—— <strong>逆シリアル化（CWE-502）、オブジェクトインジェクション （CAPEC-586）、鍵のない <code>ObjectStateFormatter</code>。</strong> <strong>.NET の世界では長く知られた型の穴である。</strong> <strong>平凡でないのは、穴があった場所である。</strong></p>
+<p><strong>穴は、CSRF 対策の部品の中にあった</strong>〈重要〉。 <strong>セキュリティのために導入した部品が、 認証より手前のパイプライン段で、 信頼できない入力を鍵なしで逆シリアル化していた。</strong> <strong>しかも、その部品が守っていたはずの CSRF トークンの 「正しさの比較」は、逆シリアル化の後に置かれていた—— 比較に辿り着く前に、コードが動く。</strong></p>
+<p><strong>ここから出てくる問いは、資産管理のほうである</strong>（本記録の読み）。 <strong>多くの組織は、業務ロジックの依存ライブラリは棚卸ししている。</strong> <strong>一方で「セキュリティ対策として入れた部品」は、 対策の実施記録としては残っていても、 脆弱性管理の対象台帳には載りにくい—— 入れたこと自体が「対策済み」の印になってしまうからである。</strong> <strong>本記録は、これが本件から取れる最も移植可能な教訓だと評価する。</strong></p>
+<p><strong>もう1つ、供給元が存在しない依存の扱いがある</strong>〈重要〉。 <strong>本件は <code>patch-management</code>（脆弱性の放置）として整理できない</strong>—— <strong>当てるべきパッチが存在しない。</strong> <strong>2008年に最終リリースされた部品を18年動かし続けた組織は、 「更新が無い」ことを安定の印として読んでいた可能性がある （本記録の読み。公表に根拠は無い）。</strong> <strong>更新が止まっている依存は、安定しているのではなく、 直す者がいない状態である。</strong> <strong>この区別は、SBOM を持っているかどうかとは別の問題である—— 台帳にバージョンが載っていても、 「上流が生きているか」は別の列である。</strong></p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Idunno.AntiCsrf（Idunno.AntiCsrf.dll）0.9.1.0 / 0.9.1 Beta　<b>kind:</b> 第三者の ASP.NET HTTP モジュール　<b>補足:</b> **CVE レコードの影響範囲は「`0` から `0.9.1.0` 以下」および 「`0` から `0.9.1 Beta` 以下」で、既定は `affected`**（出典2）〈重要〉—— **すなわち存在する全バージョンが影響を受ける。** **脆弱な処理は `Idunno.AntiCsrf.AntiCsrfModule` の `PreRequestHandlerExecute`**（出典1）。 **モジュールは `Web.config` の `&lt;httpModules&gt;` / `&lt;modules&gt;` に `Idunno.AntiCsrf.AntiCsrfModule, Idunno.AntiCsrf` として登録され、 `&lt;csrfSettings&gt;`（`Idunno.AntiCsrf.Configuration.CsrfSettings`）で 設定される**（出典1）—— **`[ConfigurationProperty]` の既定値は `cookieName` が `__CSRFCOOKIE`、`formFieldName` が `__CSRFTOKEN`、 `detectionResult` が `RaiseException`。** **勧告は、`&lt;csrfSettings&gt;` セクションを `Web.config` から 完全に省いた場合、`CsrfSettings.DetectionResult` のセッタの不具合が `FormFieldName` のフォールバック値を `&quot;RaiseException&quot;` で 上書きすることも指摘している**（出典1）。</div><div class=sub><b>名称:</b> ASP.NET WebForms（System.Web.UI.Page）エンドポイント　<b>kind:</b> 影響を受けるアプリケーションの形　<b>補足:</b> **`ISuppressCsrfCheck` を実装せず `[SuppressCsrfCheck]` も 付いていない `System.Web.UI.Page` ハンドラが対象**（出典1）〈重要〉—— **①匿名で到達できる `.aspx` ページ、 ②`Page_Load` 内のアプリ層のセッション確認に依存しているページ、 のいずれも逆シリアル化のシンクを `POST` に対して開く。** **`&lt;form runat=&quot;server&quot;&gt;` が無いページでも成立する**（出典1）—— **「フォームが無いから対象外」という切り方はできない （本記録の整理）。** **実行権限は IIS のワーカープロセス `w3wp.exe` で、 結果はウェブアプリケーションサーバの完全な侵害**（出典1）。</div><span class="b rsn">stated</span></td></tr><tr><th>exploitation_status</th><td>**実環境での活発な悪用が観測されている**（原文英語。出典1）〈重要〉—— **勧告の Exploitability 節の末尾に 「Active exploitation in the wild has been observed.」と明記されている。** **CVSS 4.0 のベクタにも `E:A`（ATTACKED）が立っている**（出典2）。 **一方、CISA の Vulnrichment は 2026年11月19日時点で `Exploitation: none` と判定している**〈差異1〉。 **悪用の時期・被害組織・件数・攻撃者は公表されていない**〈未確定1〉。<span class="b rsn">stated</span></td></tr><tr><th>patch_status</th><td>**公式パッチは存在しない**（出典1）〈重要〉—— **「`Idunno.AntiCsrf` は、既に廃止された CodePlex 上で `0.9.1 Beta`（公式ビルドは2008年12月付）を最終リリースとして 活動を終えたオープンソース企画であり、 活動中の維持者も公式パッチも無い」**（原文英語）。 **Mandiant が求めているのは、使用の中止と代替品への置き換えである。**<span class="b rsn">stated</span></td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> `Idunno.AntiCsrf`（`Idunno.AntiCsrf.dll`）を取り除く　<b>詳細:</b> **`&lt;httpModules&gt;` と `&lt;modules&gt;` から `&lt;add name=&quot;...&quot; type=&quot;Idunno.AntiCsrf.AntiCsrfModule, Idunno.AntiCsrf&quot; /&gt;` の記述をすべて削除し、`&lt;configSections&gt;` の `&lt;section name=&quot;csrfSettings&quot; ... /&gt;` と `Web.config` の `&lt;csrfSettings ... /&gt;` 要素を削除し、 `ISuppressCsrfCheck` / `[SuppressCsrfCheck]` への参照を削除し、 アプリの `bin/` から `Idunno.AntiCsrf.dll` を削除する**（出典1）。　<b>effect:</b> would_prevent　<b>副作用:</b> **CSRF 対策が丸ごと外れる**（本記録の評価）〈重要〉—— **取り除くだけで止めると、本来この部品が担っていた CSRF の防御が無くなる。** **次の項目（代替の導入）と必ず対にして計画する必要がある。**</div><div class=sub><b>数え方:</b> 保守されている CSRF 対策の仕組みに置き換える　<b>詳細:</b> **勧告が挙げる代替は3つ**（出典1）—— **①`System.Web.Helpers.AntiForgery` （`System.Web.WebPages` の `AntiForgery.GetHtml()` と `AntiForgery.Validate()`）、 ②ASP.NET WebForms の `Page.ViewStateUserKey` と、 ポストバックするフォームでの MAC 検証・暗号化済み ViewState の併用、 ③ASP.NET Core の Anti-Request Forgery（`IAntiforgery`）。**　<b>effect:</b> would_prevent　<b>副作用:</b> **アプリ側の改修が要る**（本記録の評価）—— **②は ViewState の設定に踏み込むため、 古い WebForms アプリでは回帰試験の範囲が広がる。** **③は移行であって置き換えではない。**</div><div class=sub><b>数え方:</b> `Web.config` と `bin/` を名前で棚卸しし、IIS のログを見直す　<b>詳細:</b> **すべての ASP.NET の `Web.config` と `bin/` を `Idunno.AntiCsrf` または `AntiCsrfModule` の名前で監査する**（出典1）。 **IIS のログでは、`.aspx` エンドポイントへの異常な `POST` で `HTTP 302` または `HTTP 500` を返し、 `cs-bytes` が大きいもの（記録されている場合）を見る**（出典1）〈重要〉—— **302/500 が目印になるのは、逆シリアル化の直後に `RaiseError` が 走る作りのためである（本記録の読み）—— `detectionResult=&quot;Redirect&quot;` なら `&lt;csrfSettings errorPage=&quot;...&quot; /&gt;` へ 302、 `RaiseException` なら `PotentialCsrfException` が投げられ、 `customErrors` が有効なら `&lt;customErrors defaultRedirect=&quot;...&quot; /&gt;` へ 302、 `mode=&quot;Off&quot;` なら 500 を返す**（出典1）。 **つまり攻撃が成功した要求も、見た目はエラーで終わる。**　<b>effect:</b> would_detect　<b>副作用:</b> **ハッシュだけに頼ると漏れる**（出典1。本記録の整理）—— **社内で再コンパイル・改変した DLL はハッシュが一致しないため、 名前での探索を併用しないと見落とす。** **また `cs-bytes` を記録していない構成では、 ログ側の目印が1つ減る。**</div><div class=sub><b>数え方:</b> 悪用の痕跡がある環境では、設定ファイル内の秘密をすべて更新する　<b>詳細:</b> **`Web.config` と `applicationHost.config` に格納された秘密を すべてローテーションする**（出典1）〈重要〉—— **`&lt;machineKey&gt;` の鍵、暗号鍵、データベースの資格情報を含む。** **併せて、権限のないファイルが置かれていないか ウェブルートを点検する**（出典1）。　<b>effect:</b> would_limit　<b>副作用:</b> **`&lt;machineKey&gt;` の更新は、既存の ViewState・認証クッキー・ セッションを無効にする**（本記録の評価）〈重要〉—— **複数サーバで鍵を共有している構成では、 同時に入れ替えないとログインできない利用者が出る。** **計画なしに回すと、復旧が障害に変わる。**</div></td></tr><tr><th>ログの有無</th><td>**IIS のログが残っていれば目印はある**（出典1。本記録の整理）—— **`.aspx` への異常な `POST` で 302/500、`cs-bytes` が大きいもの。** **ただし `cs-bytes` を記録していない構成では確認できる材料が減る**（出典1）。 **攻撃が成功しても応答はエラーで返るため、 応答コードだけでは成功と失敗を区別できない**（本記録の読み）〈重要〉。</td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2008年12月（公式ビルドの日付）</td><td class=nowrap><span class="b kind">事案前のプロジェクト上の出来事（移行計画等）</span></td><td>**`Idunno.AntiCsrf` の最終リリース `0.9.1 Beta` の公式ビルドが作られる** （出典1）—— **以後、この企画は更新されていない。** **CodePlex 自体も後に廃止された。**</td></tr><tr><td class="sm nowrap tw">2026年11月4日</td><td class=nowrap><span class="b kind">判明</span></td><td>**インシデント対応の調査中に、FLARE が本脆弱性の根本原因の分析を完了する** （原文英語。出典1）〈重要〉—— **「2026-11-04: Vulnerability root-cause analysis completed by FLARE during incident response investigation」。** **どの組織のインシデント対応だったかは公表されていない**〈未確定1〉。</td></tr><tr><td class="sm nowrap tw">2026年11月11日</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Mandiant が CNA として CVE の採番に着手する**（出典1）—— **理由は勧告に「上流の企画が活動を終えており、 ベンダーや維持者によるパッチが無いため、周知のために」と明記されている** （原文英語）。</td></tr><tr><td class="sm nowrap tw">2026年11月18日</td><td class=nowrap><span class="b kind">公表</span></td><td>**Mandiant の勧告 MNDT-2026-0048 と CVE-2026-131914 が公開される** （出典1）〈重要〉—— **CVE レコードの `dateReserved` は 2026-11-18T05:18 UTC、 `datePublished` は 2026-11-19T01:29 UTC である**（出典2）〈差異2〉—— **勧告の開示経緯が示す「11月18日」と、 CVE レコードの公開時刻（UTC で11月19日未明）は1日ずれる。**</td></tr><tr><td class="sm nowrap tw">2026年11月19日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA の Vulnrichment（ADP）が SSVC の判定を付加する**（出典2）—— **タイムスタンプは 2026-11-19T01:39 UTC、 判定は `Exploitation: none` / `Automatable: yes` / `Technical Impact: total`。** **`Exploitation: none` は Mandiant の観測と食い違う**〈差異1〉。</td></tr><tr><td class="sm nowrap tw">2026年11月23日</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**The Hacker News が本件を報じ、利用の中止を促す**（出典3）—— **「研究者は、実環境で悪用された重大な脆弱性の発見を受けて、 `Idunno.AntiCsrf` という名のレガシーな ASP.NET の CSRF 対策ライブラリの使用をやめるよう利用者に促した」** （原文英語）。 **本記録が参照した取得結果では記事本文が第一段落で途切れており、 記事固有の追加情報は確認できていない**〈差異3〉。</td></tr><tr><td class="sm nowrap tw">2026年11月24日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成時点で、公式パッチは存在しない**（本記録の確認）〈重要〉—— **勧告に示された対処は使用の中止と代替品への置き換えのみである**（出典1）。 **CISA の KEV への収載は確認していない**〈未確定2〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>実環境での悪用の有無（Mandiant と CISA の判定が食い違う）</span><div class=sm>**Mandiant は「実環境での活発な悪用が観測されている」と明記し、 CVSS 4.0 のベクタに `E:A`（ATTACKED）を立てている** （出典1・2）〈重要〉。 **一方、同じ CVE レコードに CISA の Vulnrichment（ADP）が 2026年11月19日 01:39 UTC 付で付した SSVC の判定は `Exploitation: none` である**（出典2）。 **`Automatable: yes` と `Technical Impact: total` は整合するため、 食い違っているのは悪用の有無だけである。** **本記録は `E:A` 側を採る**（本記録の判断）—— **Mandiant は実悪用を観測した当事者であり、 発見の経路そのものがインシデント対応である。** **ただし CISA の判定が勧告の公開から数時間後に付いていることから、 反映の遅れである可能性も否定できない（本記録の読み）—— どちらかが誤りであると断定する材料は無い。**</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>公開日（勧告の記載は11月18日、CVE レコードの公開時刻は11月19日 UTC）</span><div class=sm>**勧告の開示経緯は「2026-11-18: Mandiant advisory and CVE-2026-131914 published」と記す**（出典1）。 **CVE レコードのメタデータは `dateReserved` が 2026-11-18T05:18 UTC、 `datePublished` が 2026-11-19T01:29 UTC である**（出典2）。 **本記録は、勧告の記述（11月18日）を公表日として採り、 CVE レコードの公開を翌日のタイムスタンプとして別に記録した** （本記録の判断）—— **時差の範囲であり、矛盾ではないとみられる（本記録の読み）。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>The Hacker News の記事本文を確認できていない</span><div class=sm>**本記録が参照した取得結果では、記事本文が第一段落で途切れている** （出典3。本記録の明示）〈重要〉—— **記事の収集時の `content_source` は `fetch_failed` であり、 本記録の作成時に当該 URL を直接取得したところ `HTTP 403` が返った。** **したがって、この記事固有の情報（取材で得た内容・ 研究者の追加の発言・利用状況の統計など）があったとしても 本記録には反映されていない。** **確認できたのは第一段落の範囲—— ライブラリ名 `Idunno.AntiCsrf`、CVE-2026-131914、 CVSS 9.3、影響バージョン `0.9.1.0` と `0.9.1 Beta`、 実環境での悪用——であり、 いずれも Mandiant の勧告と CVE レコードで裏が取れている**（出典1・2）。</div></li><li><span class="b dk">一次資料に裏付けなし</span><span class=ui>二次的な脆弱性情報サイトの「修正版」の記述</span><div class=sm>**本記録は、脆弱性情報の集約サイトの記述を事実として採らなかった** （本記録の明示）〈重要〉—— **検索の過程で、`0.9.1.0` と `0.9.1 Beta` を 「修正済みのビルド」と記述している集約サイトの存在が示されたが、 本記録はそのページを直接確認していない**〈差異3と同種〉。 **一次資料は逆である**—— **CVE レコードの `affected` は 「`0` から `0.9.1.0` 以下」および「`0` から `0.9.1 Beta` 以下」で、 既定値は `affected`**（出典2）**、 勧告は「活動中の維持者も公式パッチも無い」と明記している**（出典1）。 **影響バージョンを修正版と読み違えると、 「更新したから安全」という逆の結論に至るため、 食い違いとして残す。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>1回の POST が、認証より手前で任意コード実行に至る経路</div><div class=svgwrap><svg viewBox="0 0 998 238" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,80.0 C91.0,80.0 91.0,158.0 16,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,158.0 C193.0,158.0 193.0,80.0 220,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,80.0 C295.0,80.0 295.0,158.0 220,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,158.0 C397.0,158.0 397.0,80.0 424,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,80.0 C499.0,80.0 499.0,158.0 424,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,158.0 C601.0,158.0 601.0,80.0 628,80.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,80.0 C703.0,80.0 703.0,158.0 628,158.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,80.0 C805.0,80.0 805.0,41.0 832,41.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,41.0 C907.0,41.0 907.0,112.0 832,112.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,80.0 C703.0,80.0 703.0,190.0 832,190.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="48.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（事前の認証も正当</text><text x="91.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">な CSRF トークンも</text><text x="91.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">不要）</text><rect x="16" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="91.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1回の POST（__C</text><text x="91.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SRFCOOKIE=1 </text><text x="91.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">＋ Base64 のガ…</text><rect x="220" y="48.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="295.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パイプライン段の認証・認</text><text x="295.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">可（Authentica</text><text x="295.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">teRequest /…</text><rect x="220" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">匿名到達可能な .asp</text><text x="295.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">x／認可をコード側で行う</text><text x="295.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ページ</text><rect x="424" y="48.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AntiCsrfModu</text><text x="499.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">le.PreReques</text><text x="499.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">tHandlerExe…</text><rect x="424" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">引数なしの Object</text><text x="499.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">StateFormatt</text><text x="499.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">er（MAC・署名・m…</text><rect x="628" y="48.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="70.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">w3wp.exe の権限</text><text x="703.0" y="84.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で任意コード実行（CVE</text><text x="703.0" y="98.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-2026-13191…</text><rect x="628" y="126.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="148.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">この後に来るはずだった処</text><text x="703.0" y="162.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">理（トークンの比較・Pa</text><text x="703.0" y="176.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ge_Load の認可）</text><rect x="832" y="16.0" width="150" height="50" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="907.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ウェブアプリケーションサ</text><text x="907.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ーバの完全な侵害</text><rect x="832" y="80.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="102.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Web.config /</text><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> application</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Host.config…</text><rect x="832" y="158.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="180.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">応答は 302 または </text><text x="907.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">500（成功しても見た目</text><text x="907.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">はエラー）</text></svg></div><div class=fn>layer 0 は攻撃者と、送り込む要求（空でない任意の CSRF クッキー値と、 Base64 符号化した .NET のガジェットチェーン）。 layer 1 は IIS のパイプラインの手前側（認証・認可。 URL 単位で認証を要求しているページはここで守られる）。 layer 2 は `AntiCsrfModule.PreRequestHandlerExecute`—— クッキーとフォームフィールドが空でないことだけを確かめ、 鍵を与えていない `ObjectStateFormatter` で逆シリアル化する。 layer 3 は実行の結果（`w3wp.exe` の権限での任意コード実行）と、 本来その後に来るはずだった処理 （トークンの比較・`Page_Load` のアプリ層の認可）。 layer 4 は影響（ウェブアプリケーションサーバの完全な侵害・ `machineKey` を含む秘密）と、応答として返るもの（302 または 500）。 点線は本記録の読みである。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）〈重要〉—— **本記録の評価として、ここに現実的な検知機会は乏しい**—— **フォームフィールド名は、ページの HTML を1枚取れば分かる （`PagePreRender` が隠しフィールドとして出力する）。** **偵察は正常な閲覧と区別できない（本記録の読み）。**</div></td><td><div class=ctl><span class="b eff">効果は期待できない</span>CSRF クッキー／フォームフィールドの名前を既定値から変えても 防御にはならないと理解する</div></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**機会はあった**（本記録の評価）〈重要〉—— **要求の形が特徴的である**—— **CSRF フォームフィールドに通常より大きな Base64 の塊が入り、 クッキーは GUID の形をしていない。** **勧告も IIS ログの `cs-bytes` を見るよう求めている**（出典1）。 **実際の悪用で検知できていたかは公表されていない**〈未確定1〉—— **本件が「インシデント対応の調査中に」見つかったという経緯は、 事前には止まっていなかったことを示す（本記録の読み）。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>WAF で `.aspx` への `POST` のうち、CSRF フォームフィールドに 長い Base64 が入り、かつ CSRF クッキーが GUID 形式でないものを落とす</div><div class=ctl><span class="b eff">侵入を防げた</span>`Idunno.AntiCsrf` を取り除き、保守されている CSRF 対策に置き換える</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**機会はあった**（本記録の評価）〈重要〉—— **`w3wp.exe` が子プロセスを生む、 あるいは外向きの通信を始めるのは異常である。** **ただしガジェットチェーンの選び方によっては 子プロセスを作らずに済むため、 プロセス生成の監視だけでは取りこぼす（本記録の読み）。** **実際の悪用で検知できていたかは公表されていない**〈未確定1〉。</div></td><td><div class=ctl><span class="b eff">検知できた</span>`w3wp.exe` からの子プロセス生成と外向き通信を EDR で監視・遮断する</div><div class=ctl><span class="b eff">影響を限定できた</span>アプリプールの権限を絞り、ウェブルートへの書き込みを禁じる</div></td></tr><tr><td class=nowrap><span class="b stage">検知回避</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**ここが本件の難所である**（本記録の評価）〈重要〉—— **「CSRF 検知エラーが出ている」というログは、 運用者から見れば「対策が効いている」ようにも読める。** **成功した悪用と、単なる不正なトークンの区別は 応答コードでは付かない（本記録の読み）—— 区別には要求本体の大きさ・中身、 あるいはサーバ側の挙動（プロセス・通信）が要る。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>CSRF 検知エラーの急増を「対策が効いている」と読まず、 要求本体の大きさとサーバ側の挙動を併せて確認する</div><div class=ctl><span class="b eff">検知できた</span>IIS のログに `cs-bytes` を記録する設定を有効にする</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**（本記録の確認）—— **本記録の評価として、勧告が `&lt;machineKey&gt;` の ローテーションまで求めている点は重い**〈重要〉—— **`machineKey` が取られれば、ViewState と認証クッキーの偽造が 成立するため、侵害は「そのサーバの1回」で終わらない （本記録の読み）。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>ウェブルートの改変を検知するファイル完全性監視を置く</div><div class=ctl><span class="b eff">復旧を早められた</span>侵害時に `&lt;machineKey&gt;` を含む秘密を入れ替える手順を あらかじめ用意しておく</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>Mandiant は、インシデント対応の調査中に根本原因を特定した 2026年11月4日から2週間で、CVE の採番（11月11日着手）と 勧告の公開（11月18日）に至った。修正版が存在しない状態での公開である</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm></td></tr></tbody></table></div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「セキュリティ対策として入れた部品」を、脆弱性管理の台帳に載せる</div><div class=lw>**本件の穴は CSRF 対策ライブラリの中にあった**（出典1）〈重要〉—— **防御のために足した部品が、認証より手前で 信頼できない入力を鍵なしで逆シリアル化していた。** **本記録の評価として、この層は棚卸しから漏れやすい**—— **導入したこと自体が「対策済み」の記録になり、 以後は監視の対象ではなく実施の証跡として扱われる。**</div><div class=la><b>取るべき行動</b> 過去にセキュリティ対策として導入した第三者部品を列挙する （CSRF 対策・入力検証・暗号化・認証の補助部品・WAF の自作ルール等）。 それぞれについて①上流が生きているか ②最終更新はいつか ③代替の公式機能が存在するか を1列ずつ埋める。 脆弱性管理の台帳に、業務ロジックの依存と同じ扱いで載せる。</div></li><li><div class=lp>「更新が止まっている」を安定の印として読まない</div><div class=lw>**`Idunno.AntiCsrf` の最終リリースは2008年12月で、 18年にわたり更新が無かった**（出典1。本記録の算出）〈重要〉—— **その間、穴を直す立場の者は存在しなかった。** **本件は `patch-management`（脆弱性の放置）として整理できない** （本記録の整理）——**当てるべきパッチが無い。** **対処は「使用をやめる」しかなく、 これは適用作業ではなく改修案件である。**</div><div class=la><b>取るべき行動</b> 依存の台帳に「上流の生存」の列を足す。 最終リリースから3年以上更新が無いもの、 配布元の基盤が廃止されたもの（CodePlex・Google Code 等）を抽出し、 置き換えの計画を立てる。 「パッチが出たら当てる」運用では対処できない依存を、 あらかじめ別の扱いにする。</div></li><li><div class=lp>修正版が無い脆弱性に備えて、改修の意思決定を先に用意する</div><div class=lw>**本件の対処は、パッチの適用ではなく部品の除去と置き換えである** （出典1）〈重要〉—— **除去だけを行えば CSRF 対策が丸ごと外れるため、 代替の導入と対で計画する必要がある（本記録の評価）。** **これは運用の作業ではなく、開発の工数と回帰試験を要する判断である。** **実環境での悪用が既に観測されている状態で、 改修の承認から始めると時間が足りない（本記録の読み）。**</div><div class=la><b>取るべき行動</b> 「修正版が存在しない重大脆弱性」に備えた判断の枠をあらかじめ決める。 ①暫定遮断（WAF・該当エンドポイントの停止）を誰が何時間で判断するか ②恒久改修の予算と工数をどの枠から出すか ③暫定措置で業務が止まる範囲を事前に把握しているか。 本件のように対処が改修しかない事案は今後も出る。</div></li><li><div class=lp>侵害時に秘密を入れ替える手順を、平時に作って試す</div><div class=lw>**勧告は、悪用の痕跡がある環境で `&lt;machineKey&gt;` の鍵・暗号鍵・ データベースの資格情報をすべてローテーションするよう求めている** （出典1）〈重要〉。 **本記録の評価として、`&lt;machineKey&gt;` の入れ替えは副作用が大きい**—— **既存の ViewState・認証クッキー・セッションが無効になり、 複数サーバで鍵を共有している構成では 同時に入れ替えないと利用者がログインできなくなる。** **侵害が分かった日に手順を考え始めると、復旧が障害に変わる。**</div><div class=la><b>取るべき行動</b> ウェブアプリの秘密（`machineKey`・暗号鍵・DB 資格情報・API キー）の 一覧と、入れ替えの手順・所要時間・影響する利用者を文書にする。 複数サーバで共有している鍵は、同時入れ替えの手順を明記する。 年1回、本番相当の環境で実際に回して時間を測る。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>ファイル名と設定ファイルの文字列で、まず自組織の有無を確定させる</div><div class=lw>**探索の起点は2つだけである**（出典1）〈重要〉—— **`Web.config` の `&lt;httpModules&gt;` / `&lt;modules&gt;` に `Idunno.AntiCsrf.AntiCsrfModule` があるか、 `bin/` に `Idunno.AntiCsrf.dll` があるか。** **ハッシュは3種が勧告に載っているが、 社内で再コンパイル・改変した組織は一致しない**（出典1）—— **それでも脆弱な `ObjectStateFormatter.Deserialize` のシンクは残る。**</div><div class=la><b>取るべき行動</b> すべての IIS サーバで `Web.config` を `Idunno.AntiCsrf` および `AntiCsrfModule` の文字列で再帰的に検索する。 併せて `bin/` ディレクトリを `Idunno.AntiCsrf.dll` の名前で検索する。 ハッシュ照合だけで済ませない。 見つかった場合は、`&lt;csrfSettings&gt;` の `cookieName` / `formFieldName` の実際の値も記録する（既定値から変更されていることがある）。</div></li><li><div class=lp>「認証を要求しているページ」の意味を、パイプラインの段で確認する</div><div class=lw>**`PreRequestHandlerExecute` は `Page_Load` より手前で走る** （出典1）〈重要〉—— **パイプライン段の認証・認可 （`AuthenticateRequest` / `AuthorizeRequest`）は守るが、 `Page_Load` の中のアプリ層のセッション確認は手遅れである。** **「ログインしていないと使えない画面だから安全」という判断は、 認可をどこで行っているかに依存する（本記録の整理）。** **`&lt;form runat=&quot;server&quot;&gt;` の無いページでも成立する**（出典1）。</div><div class=la><b>取るべき行動</b> 該当アプリで、認可が `Web.config` の `&lt;authorization&gt;` / `&lt;location&gt;` で行われているか、コード側（`Page_Load` 等）で 行われているかを棚卸しする。 コード側のものは本件の対象として扱う。 匿名到達可能な `.aspx` を一覧にし、 `ISuppressCsrfCheck` / `[SuppressCsrfCheck]` の有無を確認する。</div></li><li><div class=lp>IIS のログで探すのは「エラーで終わった大きな POST」である</div><div class=lw>**攻撃が成功した要求も応答はエラーで返る**（出典1。本記録の整理） 〈重要〉—— **逆シリアル化の直後に `RaiseError` が走るため、 `302`（`errorPage` / `defaultRedirect` への転送）か `500`（`customErrors` が `Off` のとき）になる。** **勧告が `cs-bytes` を見るよう求めているのは、 応答コードだけでは区別が付かないためである（本記録の読み）。**</div><div class=la><b>取るべき行動</b> IIS のログで `.aspx` への `POST` のうち、`302` または `500` を返し、 かつ `cs-bytes` が通常の分布から外れて大きいものを抽出する。 `cs-bytes` を記録していない場合は、 まずログ設定でこの項目を有効にする。 併せて `w3wp.exe` の子プロセス生成と外向き通信を EDR で確認する。</div></li><li><div class=lp>CSRF 検知エラーの急増を「対策が効いている」と読まない</div><div class=lw>**本記録の評価として、ここが最も間違えやすい**〈重要〉—— **`PotentialCsrfException` や `errorPage` への転送が増えているログは、 運用者から見れば「不正なトークンを弾いている」と読める。** **しかし本件では、弾く判定の手前で逆シリアル化が終わっている** （出典1）—— **エラーは、攻撃が失敗した印ではない。**</div><div class=la><b>取るべき行動</b> 監視ルールで「CSRF 検知エラー」を正常系として抑制していないか確認する。 抑制している場合は、要求本体の大きさを条件に加えて 例外を切り出す。 過去のログが残っている範囲で遡って同じ条件を当て、 既に悪用されていないかを確認する。</div></li><li><div class=lp>置き換え先は、鍵つきの仕組みを選ぶ</div><div class=lw>**本件の根は、引数なしの `ObjectStateFormatter` が MAC も署名も `machineKey` も検証しないことである**（出典1）〈重要〉。 **勧告が挙げる代替は、いずれも鍵または MAC の検証を伴う**（出典1）—— **`System.Web.Helpers.AntiForgery`、 `Page.ViewStateUserKey` ＋ MAC 検証・暗号化済み ViewState、 ASP.NET Core の `IAntiforgery`。** **本記録の評価として、自作で置き換える場合も 「トークンの値を逆シリアル化しない」ことが要点である**—— **トークンは比較するだけでよく、復元する必要が無い。**</div><div class=la><b>取るべき行動</b> 置き換え先を選ぶとき、トークンの検証が ①鍵つきの MAC または署名を検証するか ②トークンの値を逆シリアル化せず文字列比較で済ませるか を確認する。 自作で済ませる場合は、ViewState の MAC 検証を有効にし、 `ViewStateUserKey` にセッション固有の値を設定する。</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> ASP.NET WebForms（`System.Web.UI.Page`）で作られたアプリケーションを IIS 上で運用しているか</td><td class=sm>**本件は WebForms 固有である**（出典1）〈重要〉—— **脆弱なモジュールは `Page` ハンドラに結び付いて動く。** **ASP.NET Core のみの構成であれば、この部品は使えない （本記録の整理）。**</td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> `Web.config` の `&lt;httpModules&gt;` / `&lt;modules&gt;` に `Idunno.AntiCsrf.AntiCsrfModule` の登録があるか、 `bin/` に `Idunno.AntiCsrf.dll` が存在するか</td><td class=sm>**これが唯一の確定条件である**（出典1）〈重要〉—— **ハッシュは3種が勧告に載っているが、 社内で再コンパイル・改変した場合は一致しない。** **名前で探すこと。**</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> 認可の判定を `Web.config` の `&lt;authorization&gt;` ではなく アプリのコード（`Page_Load` 等）で行っているページがあるか、 匿名で到達できる `.aspx` があるか</td><td class=sm>**パイプライン段の認証・認可は `PreRequestHandlerExecute` より 手前で動くため守るが、コード側の判定は手遅れである**（出典1）〈重要〉—— **「ログインが必要な画面」でも、必要性をコードで判定していれば 悪用は成立する。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> IIS のログに `cs-bytes` を記録しており、 かつ `.aspx` への `POST` のログを保持しているか</td><td class=sm>**攻撃が成功した要求も応答はエラー（302/500）で返るため、 応答コードだけでは判別できない**（出典1。本記録の整理）〈重要〉—— **要求本体の大きさが残っていないと、 遡って悪用の有無を確認できない。**</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> 過去にセキュリティ対策として導入した第三者部品が、 脆弱性管理の台帳に載っているか</td><td class=sm>**本記録の評価として、これが本件の移植可能な論点である**〈重要〉—— **業務ロジックの依存は棚卸しされていても、 「対策として入れた部品」は実施の証跡として扱われ、 監視の対象から外れやすい。**</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> `&lt;machineKey&gt;` を含むウェブアプリの秘密を入れ替える手順と 所要時間が文書化されており、試したことがあるか</td><td class=sm>**勧告は悪用の痕跡がある環境で `machineKey` までの ローテーションを求めている**（出典1）〈重要〉—— **入れ替えは既存の ViewState・認証クッキー・セッションを 無効にするため、手順が無いと復旧が障害に変わる （本記録の評価）。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月18日 Mandiant（Google Cloud）</span> <a href="https://github.com/mandiant/Vulnerability-Disclosures/blob/master/2026/MNDT-2026-0048.md" target="_blank" rel="noreferrer noopener nofollow">MNDT-2026-0048（Idunno.AntiCsrf の逆シリアル化の脆弱性に関する勧告）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本件の一次資料である**〈重要〉—— **`Idunno.AntiCsrf` には維持者が存在しないため「ベンダーの公表」が無く、 CNA である Mandiant の勧告がそれに当たる（本記録の整理）。** **内容は、脆弱性の説明（`AntiCsrfModule.PreRequestHandlerExecute` の 鍵なし `ObjectStateFormatter.Deserialize`）、影響 （`w3wp.exe` の権限での任意コード実行）、 到達性の評価（Exploitability: High・パイプラインの実行順）、 CWE-502、脆弱な DLL の3ビルドのハッシュ、 CVSS 4.0 の CVSS-BT ベクタ（9.3・`E:A`）、 対処（除去・代替の導入・探索とログの見直し・侵害時の秘密の更新）、 発見者5名、開示経緯3行、参考リンク。** **本記録の事実記述の大半はこの資料に拠る。** **引用は原文英語を日本語に訳した。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月19日（CVE レコードの公開時刻・UTC） CVE Program（CNA: Mandiant／ADP: CISA）</span> <a href="https://cveawg.mitre.org/api/cve/CVE-2026-131914" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-131914 レコード（CVE Services API）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**CVE レコードそのものを API から取得した**（本記録の明示）—— **`assignerShortName` は `Mandiant`、 `dateReserved` 2026-11-18T05:18 UTC、 `datePublished` 2026-11-19T01:29 UTC、 `dateUpdated` 2026-11-19T01:39 UTC。** **タイトルは「Deserialization of untrusted data in CodePlex AntiCSRF」、 CWE-502、CAPEC-586（オブジェクトインジェクション）。** **影響は Idunno / AntiCsrf の 「`0` から `0.9.1.0` 以下」および 「`0` から `0.9.1 Beta` 以下」で既定は `affected`。** **CVSS 4.0 は 9.3 CRITICAL、 ベクタ `CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A` で `exploitMaturity: ATTACKED`。** **ADP として CISA の Vulnrichment が SSVC（`Exploitation: none` / `Automatable: yes` / `Technical Impact: total`）を付している**〈差異1〉。）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[4]</span> <span class=sm>CodePlex Archive</span> <a href="https://codeplexarchive.org/project/AntiCSRF" target="_blank" rel="noreferrer noopener nofollow">AntiCSRF（CodePlex 企画ページのアーカイブ）</a> <span class="b kind">お知らせ・告知ページ</span><span class="b dead">現在参照不可</span><span class=sm>（**脆弱な部品の配布元のアーカイブである**（出典2 の `product` 参考リンク）—— **CodePlex は既に廃止されており、 勧告は Wayback Machine による企画ページ （`http://anticsrf.codeplex.com/`）の魚拓も併せて挙げている**（出典1）。 **本記録はこのページを直接確認していない**（本記録の明示）—— **「配布元が存在しない」ことを示すために参照として残す。**）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月23日 09:11 UTC The Hacker News</span> <a href="https://thehackernews.com/2026/11/hackers-exploit-critical-aspnet-anti.html" target="_blank" rel="noreferrer noopener nofollow">Hackers Exploit Critical ASP.NET Anti-CSRF Library Flaw Allowing Unauthenticated RCE</a> <span class="b kind">記事</span><span class=sm>（**本記録の起点となった記事だが、本文を確認できていない**〈差異3〉 〈重要〉—— **収集時の `content_source` は `fetch_failed` で第一段落のみが残り、 本記録の作成時に直接取得したところ `HTTP 403` が返った。** **`availability` を `paywalled` としたのは、 削除ではなく取得が拒否される状態を示すためである（本記録の整理）—— スキーマの語彙に「クローラ拒否」に相当する値が無い。** **確認できた範囲（ライブラリ名・CVE・CVSS 9.3・ 影響バージョン・実環境での悪用）は、 いずれも出典1・2 で裏が取れている。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月24日</span> <span class="b rev">新規作成</span> **2026年11月23日の The Hacker News 記事を起点に作成した**（出典3）—— **ただし記事本文が取得できなかったため**〈差異3〉**、 事実の裏取りは Mandiant の勧告 MNDT-2026-0048（出典1）と CVE レコード（出典2）で行った。** **一次資料に当たる「ベンダーの公表」は存在しない**—— **`Idunno.AntiCsrf` は維持者のいない企画であり、 CNA である Mandiant の勧告を一次資料として扱った（本記録の整理）。** **被害組織・悪用の時期・件数は一切公表されていないため、 未確定1として記録し、推測で埋めなかった。** **Mandiant の `E:A`（ATTACKED）と CISA Vulnrichment の `Exploitation: none` の食い違いは 齟齬1として残した。**</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-24 09:53 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
