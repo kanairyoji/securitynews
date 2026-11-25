@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>FreeSWITCH の SIP に実悪用の RCE — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1295</span>FreeSWITCH の SIP に実悪用の RCE</h1>
+<header class="site-header">
+  <p class="subtitle">FreeSWITCH の受信 SIP MESSAGE 処理に、**1通のメッセージで守護プロセス権限の OS コマンドが実行できる欠陥**があった（CVE-2026-116779・CVSS 9.8）—— **To ヘッダの利用者部分を `api+system%20id` と書くと、FreeSWITCH は `+` の左側を チャット protocol 名、右側を URL デコードして `switch_api_execute()` に渡す**。 **`api` は `mod_dptools` が既定で登録しているチャットインタフェースで、 `system` は OS コマンドを実行する標準 API である**。 **メモリ破壊も不正なパケットも無く、protocol 選択子とコマンド連結点が繋がっているだけ。** **SignalWire は2026年10月28日の勧告で「この経路の悪用が実際に観測されている」と述べ、 CISA は11月9日に KEV へ収載して期限を11月12日（3日後）に設定した**—— **修正は 1.11.3 で、profile 単位の `enable-chat-api-proto`（既定で無効）が 入った。1.10 系に同じ設定を書いても未知の引数として無視されるため、 設定での緩和はできず更新か該当パッチが要る**</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span><span class="b cause">既知の脆弱性の悪用</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年10月28日（SignalWire の勧告 GHSA-mg63-h38w-8p9p の公開）</span>
+  <span>最終更新: 2026年11月25日（本記録の作成。勧告と CISA KEV を取得して確認した時点）</span>
+</div>
+
+<div class="lead"><p><strong>SignalWire が2026年10月28日、FreeSWITCH の勧告 GHSA-mg63-h38w-8p9p を公開した</strong>（出典1）〈重要〉—— <strong>題は「Inbound SIP MESSAGE can select the api chat proto and run FreeSWITCH API commands」（受信 SIP MESSAGE が api チャット protocol を選択してFreeSWITCH の API コマンドを実行できる）、CVE-2026-116779、深刻度は Critical、CVSS 3.1 で 9.8（<code>AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</code>）である</strong>（出典1）。</p>
+<p><strong>仕組みは一本道である</strong>（出典1・3）〈重要〉—— <strong><code>sofia_presence_handle_sip_i_message()</code> は、受信 MESSAGE の To ヘッダの利用者部分のうち <code>+</code> より前をチャット protocol 名として扱う</strong>（出典1）。<strong><code>mod_dptools</code> が登録している <code>api</code> チャットインタフェースが選ばれると、メッセージの宛先部分が FreeSWITCH の API コマンドとして実行される</strong>（出典1）。<strong>「選択子に制限が無いため、MESSAGE を届けられる相手は、どの API コマンドが実行されるかを選べる」</strong>（出典1。原文英語。本記録が訳した）。</p>
+<p><strong>具体的には、To の利用者を <code>api+system%20id</code> と書く</strong>（出典3）〈重要〉—— <strong>SIP 層で <code>api</code> と <code>system id</code> に分解され、<code>api</code> がチャットインタフェースを選び、<code>system id</code> が <code>switch_api_execute("system", "id")</code> になる</strong>（出典3）。<strong><code>system</code> は OS コマンドを実行する FreeSWITCH の標準 API である</strong>（出典3）。<strong>メモリ破壊も不正なパケットも無い</strong>（出典3）〈重要〉—— <strong>protocol の選択子と、コマンドの連結点が繋がっているだけである</strong>（出典3）。</p>
+<p><strong>影響は守護プロセスの権限で決まる</strong>（出典1・3）〈重要〉—— <strong>勧告は、OS コマンドの実行、設定と資格情報の開示、通話の完全な制御を挙げ、さらに vanilla 設定が含む <code>mod_lua</code> が読み込まれている場合はインラインの Lua が第2の到達点になると述べている</strong>（出典1）。</p>
+<p><strong>悪用は実際に観測されている</strong>（出典1）〈重要〉—— <strong>「この経路の悪用が実際に観測されている」</strong>（出典1。原文英語。本記録が訳した）。<strong>CISA は2026年11月9日に KEV（悪用が確認された脆弱性のカタログ）へ収載し、期限を11月12日——収載から3日後——に設定した</strong>（出典2）〈重要〉。<strong>KEV の記載では、フォレンジックのトリアージ対象（<code>forensicTriage: Yes</code>）であり、ランサムウェアキャンペーンでの使用は「不明」である</strong>（出典2）。</p>
+<p><strong>修正は 1.11.3 である</strong>（出典1・3）〈重要〉—— <strong>profile 単位の新しい引数 <code>enable-chat-api-proto</code> が入り、明示的に有効にしない限り受信 MESSAGE は <code>api</code> protocol を選べず、拒否された要求には 403 を返して記録に残す</strong>（出典1）。<strong>1.10 系には同じ関門が無く、設定にこの引数を書いても未知の引数として無視されるため、設定層では緩和できない</strong>（出典3）〈重要〉—— <strong>更新または該当パッチの適用が要る。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="公表・報道からわかったこと（6件）">公表・報道からわかったこと（6件）</a></li><li><a href="#s11" title="事案の詳細">事案の詳細</a></li><li><a href="#s12" title="経過">経過</a></li><li><a href="#s13" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s14" title="波及の構造">波及の構造</a></li><li><a href="#s15" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s16" title="対応の評価">対応の評価</a></li><li><a href="#s17" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s18" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s19" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s20" title="出典">出典</a></li><li><a href="#s21" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s22" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>5</span></div><ul><li><span class=ui>実際に悪用された組織・時期・攻撃者</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は「この経路の悪用が実際に観測されている」と述べるだけである** （出典1）〈重要〉—— **誰が観測したのか、いつからか、どの組織が被害を受けたのか、 攻撃者は誰かのいずれも記載されていない**（本記録の確認）。 **CISA の KEV も、ランサムウェアキャンペーンでの使用を「不明」としている** （出典2）。 **本記録は、悪用の規模・標的の業種・地域を推定しない**（本記録の明示）。</div></li><li><span class=ui>悪用の痕跡をどう探せばよいか（公式な調査手順）</span><span class="b rsn">公表されていない</span><div class=sm>**CISA は KEV で `forensicTriage: Yes` とし、 「CISA のフォレンジックトリアージ要件」に従うよう求めているが、 本脆弱性に固有の痕跡（どのログの、どの記録を見るか）は KEV の記載からは読めない**（出典2。本記録の確認）〈重要〉。 **勧告も、修正後は拒否された要求に 403 を返して記録に残すと述べる一方、 修正前の悪用をどう見つけるかには触れていない**（出典1）。 **本記録が整理できる手がかりは、出典3 の記述から導いたもののみである** （本記録の明示）—— **①受信 MESSAGE の To 利用者部分に `+` を含む記録、 ②`switch_api_execute` 経由で実行された API の記録、 ③`system`／`module_load`／`originate` 等の API の実行記録。** **ただし本記録は、これらが実際に FreeSWITCH の既定の記録に 残るかを検証していない**〈自己未確認2〉。</div></li><li><span class=ui>1.10 系に対する後方移植（バックポート）パッチの提供状況</span><span class="b rsn">公表されていない</span><div class=sm>**勧告は修正版を 1.11.3 以降としており、1.10 系の扱いを述べていない** （出典1。本記録の確認）〈重要〉。 **出典3 は「1.10.11 と 1.10.12 のソースにこの関門は無い。 `enable-chat-api-proto=true` を 1.10.10 に書いても効かず、 解析器が未知の引数として無視する。設定層では緩和できず、 更新または該当するパッチを当てるしかない」と記している**（出典3）〈重要〉。 **本記録は、1.10 系向けの公式なパッチの有無を確認できていない**〈自己未確認3〉。</div></li><li><span class=ui>FreeSWITCH を同梱する第三者製品の一覧と各製品の対応</span><span class="b rsn">公表されていない</span><div class=sm>**CISA は「この脆弱性はオープンソースの部品・第三者ライブラリ・protocol・ 独自実装に影響し、異なる製品で使われうる」と備考に記している** （出典2。原文英語。本記録が訳した）〈重要〉—— **どの製品が該当するかの一覧は示されていない**（本記録の確認）。 **本記録も一覧を持たない**（本記録の明示）—— **利用者側は、SIP の受信ポートを持つ製品について、 ベンダーへの照会で確認するほかない**（本記録の判断）。</div></li><li><span class=ui>報告者の所属と報告の経緯</span><span class="b rsn">公表されていない</span><div class=sm>**勧告の謝辞は Örn Arnarson と Gunnlaugur（報告者 orn1983、 解析 gunnlaugurmani）を挙げるが、所属・報告日・発見の経緯は 記載されていない**（出典1。本記録の確認）〈重要〉—— **「実際の悪用が観測されている」という記述と、 この報告の関係（悪用の観測が報告の端緒だったのか）も不明である**（本記録の整理）。</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>SignalWire（FreeSWITCH の開発元）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>FreeSWITCH 1.11.2 以前を運用する組織（特定されていない）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>CISA（米国サイバーセキュリティ・インフラセキュリティ庁）</span><span class="b role">注意喚起主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Örn Arnarson（報告者）／Gunnlaugur（解析）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>阿里云先知（Aliyun Xianzhi）の寄稿者</span><span class="b role">検証者（学術・ファクトチェック機関）</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS 3.1 基本値</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fn>**`CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`**（出典1）〈重要〉—— **網経由（AV:N）、攻撃条件が低い（AC:L）、必要な権限なし（PR:N）、 利用者の関与なし（UI:N）、機密性・完全性・可用性すべて高い影響（C:H/I:H/A:H）。** **`PR:N`（権限不要）は、勧告が述べる前提条件 （「MESSAGE 認証が強制されている場合は profile 上の任意の有効な アカウントで足りる」）と合わせて読む必要がある**（出典1。整理は本記録）〈重要〉—— **vanilla の `conf/vanilla/directory/default/default.xml` を そのまま残している構成では、その利用者がパスワードも a1-hash も持たないため、 アカウント無しで悪用できる場合があるとされている**（出典1）〈齟齬1〉。 **出典3 は、stock 既定では MESSAGE 認証が要り、 公開 PoC の「単包未認証」は `auth-messages=false` の構成でのみ成立すると 記しており、前提条件の読みが分かれている**（出典3）〈齟齬1〉。</div></div><div class=fig><div class=fh><span class=fl>勧告公開から KEV 収載までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>12<span class=fu>日</span></div><div class=fn>**2026年10月28日（勧告）から11月9日（KEV 収載）までで12日である** （本記録が算出）〈重要〉—— **勧告の時点で既に「実際の悪用が観測されている」と書かれていた**（出典1）—— **したがってこの12日は「悪用が始まるまでの猶予」ではなく、 公的なカタログに載るまでの時間である**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>KEV 収載から対応期限までの日数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>3<span class=fu>日</span></div><div class=fn>**2026年11月9日（収載）から11月12日（期限）までで3日である** （本記録が算出）〈重要〉—— **KEV の期限は通常これより長い**（本記録の評価）—— **3日という設定は、CISA が緊急度を高く見たことを示す。** **対象は米国連邦民間行政機関であり、 日本の組織に法的な義務は生じない**（本記録の明示）。</div></div><div class=fig><div class=fh><span class=fl>protocol 名を写し取るバッファの大きさ（成立条件の一つ）</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>512<span class=fu>バイト</span></div><div class=fn>**To の利用者部分の左側は `char proto[512]` に複製されるため、 To 利用者の長さが512バイト未満である必要がある**（出典3）〈重要〉—— **超過すると切り詰められるか、通常のアドレスとして扱われる**（出典3）。 **防御側にとっては、この上限が緩和にならないことを意味する** （本記録の評価）——**必要なコマンドは短い。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**攻撃は1通の SIP MESSAGE で完結する**（出典1・3）〈重要〉—— **①受信 MESSAGE を受け付ける sofia profile に到達する、 ②（profile がメッセージ認証を要求する場合）任意の有効なアカウントで認証を通す、 ③To ヘッダの利用者部分を `api+&lt;コマンド&gt;%20&lt;引数&gt;` の形で書く、 ④FreeSWITCH が `api` チャットインタフェースを選び、 右側を URL デコードして `switch_api_execute()` に渡す、 ⑤コマンドが守護プロセスの権限で実行される。** **メモリ破壊も不正なパケットも無い**（出典3）〈重要〉—— **本記録は、攻撃後の段階（持ち出し・横展開）については 公表されていないため記述しない**〈未確定1〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**攻撃者は1通の SIP MESSAGE を受理させる**（出典1）〈重要〉—— **攻撃面は受信 MESSAGE を受け付ける sofia profile であり、これが既定である**（出典1）。 **`sofia.c:4665` が `PFLAG_ENABLE_CHAT` を無条件に設定するため、 受信チャットは明示的に切らない限り有効である**（出典3）〈重要〉。 **認証については、`sofia.c:6118` 付近の論理により、 `auth-messages` を明示していない場合は `PFLAG_AUTH_MESSAGES` が設定され、 stock の internal／external では MESSAGE 認証が要求される**（出典3）。 **`external.xml` の `auth-calls=false` は呼の認証にのみ影響し、 メッセージ認証を切らない**（出典3）〈重要〉。 **勧告は、vanilla の既定利用者がパスワードも a1-hash も持たないため、 その設定を残している構成ではアカウント無しで悪用できる場合があるとする** （出典1）〈齟齬1〉。</div><div class=fn>根拠: SignalWire の勧告（出典1）／阿里云先知による再現と既定値の検証（出典3）</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs>[1] [3]</span></div><div>**To ヘッダの利用者部分が、protocol 選択子とコマンドの連結点になる** （出典1・3）〈重要〉—— **`sofia_presence.c:4870` 付近のコードは、To 利用者の最初の `+` を探し、 左側をチャット protocol 名として `char proto[512]` に複製し、 右側を宛先アドレスとする**（出典3）。 **`api` が選ばれると、`api_chat_send()` が事象の `to` ヘッダを URL デコードし、最初の空白でコマンド名と引数に切って `switch_api_execute()` を呼ぶ**（出典3。`mod_dptools.c:4698`・`:4705`）。 **したがって To 利用者を `api+system%20id` と書くと、 `switch_api_execute(&quot;system&quot;, &quot;id&quot;)` になる**（出典3）〈重要〉—— **`system` は OS コマンドを実行する標準 API である。** **成立条件**（出典3）—— **①To 利用者に `+` があり先頭文字ではないこと、左側が厳密に `api` であること、 ②右側が正当な FreeSWITCH API コマンドであること（空白は `%20`、 コマンド内の `+` は `%2B` だが、復号後の最初の `+` は `@` に書き換えられる）、 ③To 利用者の長さが512バイト未満であること、 ④profile が MESSAGE を受け付け、1.11.3 で `enable-chat-api-proto` を無効にしていないこと。**</div><div class=fn>根拠: SignalWire の勧告（出典1）／阿里云先知によるコード追跡と再現（出典3）</div></li><li><div class=stg><span class="b stage">3. 影響（暗号化・破壊・改ざん）</span><span class="b conf">確認済</span><span class=srcs>[1] [2] [3]</span></div><div>**守護プロセスの権限で何でもできる**（出典1・3）〈重要〉—— **勧告が挙げるのは、OS コマンドの実行、設定と資格情報の開示、 通話の完全な制御である**（出典1）。 **さらに `mod_lua` が読み込まれている場合（vanilla 設定が含む）、 インラインの Lua が第2の到達点になる**（出典1）〈重要〉—— **したがって `disable_system_api_commands=true` で `system` API だけを外しても経路は閉じない**（出典1）。 **出典3 が挙げる具体**（出典3）—— **①守護プロセスと同等の権限での任意シェルコマンドの実行、 ②FreeSWITCH の設定・directory 利用者・ゲートウェイ資格情報・CDR の 読み取りと改変、 ③`originate`・`uuid_*`・`sofia` 等の API による呼の制御・傍受・外部発信、 ④`module_load` による module の読み込み（永続化の面の拡大）、 ⑤管理者資格情報の漏えい・再設定による横展開。** **CISA の KEV の短い説明も、設定と資格情報の開示、 任意の通話制御、コマンド実行を挙げている**（出典2）。</div><div class=fn>根拠: SignalWire の勧告（出典1）／CISA KEV（出典2）／阿里云先知の検証（出典3）</div></li></ol></div>
+<section id="s5"><h2>To ヘッダに書いた1行が API コマンドになる——メモリ破壊も不正パケットも無く、protocol 選択子とコマンド連結点が繋がっていた<span class="b slot">概観</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>SignalWire が2026年10月28日、FreeSWITCH の勧告GHSA-mg63-h38w-8p9p を公開した</strong>（出典1）〈重要〉—— <strong>CVE-2026-116779、Critical、CVSS 3.1 で 9.8（<code>AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H</code>）、影響は 1.11.2 以前、修正は 1.11.3 以降、公開者は andywolk である</strong>（出典1）。<strong>CWE は CWE-77（コマンド注入）・CWE-78（OS コマンド注入）・CWE-749（危険なメソッドまたは関数の公開）</strong>（出典2）。</p>
+<p><strong>仕組みは単純である</strong>（出典1・3）〈重要〉—— <strong><code>sofia_presence_handle_sip_i_message()</code> は、受信 MESSAGE のTo ヘッダの利用者部分のうち <code>+</code> より前をチャット protocol 名として扱う</strong>（出典1）。<strong><code>mod_dptools</code> が登録している <code>api</code> チャットインタフェースが選ばれると、メッセージの宛先部分が FreeSWITCH の API コマンドとして実行される</strong>（出典1）。<strong>「選択子に制限が無いため、MESSAGE を届けられる相手は、どの API コマンドが実行されるかを選べる」</strong>（出典1。原文英語。本記録が訳した）。</p>
+<p><strong>具体的には、To の利用者を <code>api+system%20id</code> と書く</strong>（出典3）〈重要〉—— <strong>SIP 層で <code>api</code> と <code>system id</code> に分解され、<code>api</code> がチャットインタフェースを選び、<code>system id</code> が <code>switch_api_execute("system", "id")</code> になる。<code>system</code> は OS コマンドを実行する FreeSWITCH の標準 API である</strong>（出典3）。</p>
+<p><strong>本記録はこの事案の性格を次のように読む</strong>（本記録の評価）〈重要〉—— <strong>これはメモリ破壊の脆弱性ではなく、「機能の到達範囲を絞っていなかった」類型である</strong>（出典3 の表現を借りれば「protocol 選択子にコマンド連結点が繋がっているだけ」）。<strong>したがって攻撃の信頼性が極めて高い</strong>（本記録の評価）—— <strong>環境依存の要素が少なく、1通のメッセージで決まる。</strong></p></section>
+<section id="s6"><h2>api チャットインタフェースは裏口ではなく既定で登録された正規の機能で、profile ごとの許可一覧を持っていなかった<span class="b slot">原因・手口</span><span class=srcs>出典 [1] [3]</span></h2><p><strong><code>api</code> という protocol 名は <code>mod_dptools</code> が正規に登録している</strong>（出典3）〈重要〉—— <strong><code>mod_dptools.c:6486</code> で<code>SWITCH_ADD_CHAT(chat_interface, "event", event_chat_send)</code> と<code>SWITCH_ADD_CHAT(chat_interface, "api", api_chat_send)</code> が登録される。</strong> <strong>出典3 はこの点を明示している</strong>（出典3）〈重要〉—— <strong>「<code>api</code> protocol 自体は隠された裏口ではない。<code>mod_dptools</code> が正常に登録しているチャットインタフェースであり、設計上メッセージを通じて FreeSWITCH の API を実行できるようになっている。問題はこのインタフェースが既定で登録され、かつ profile ごとの許可一覧を持たなかったことである」</strong>（出典3。本記録が訳した）。<strong>1.11.3 の修正もインタフェースを削除せず、明示的な有効化（opt-in）に変えただけである</strong>（出典3）。</p>
+<p><strong>処理の流れは3つのファイルにまたがる</strong>（出典3）〈重要〉—— ①<strong><code>sofia_presence.c:4870</code> 付近: To 利用者の最初の <code>+</code> を探し、左側を <code>char proto[512]</code> に複製、右側を宛先アドレスとする（宛先側に含まれる <code>+</code> は <code>@</code> に書き換えられる）、</strong> ②<strong><code>:4894</code>: 右側を事象ヘッダ <code>to_proto</code> に書き込む。<code>:5014</code>: <code>switch_core_chat_send(proto, event)</code> がprotocol 名でチャットインタフェースを探す、</strong> ③<strong><code>mod_dptools.c:4698</code>・<code>:4705</code>: <code>api_chat_send()</code> が事象の <code>to</code> ヘッダをURL デコードし、最初の空白でコマンド名と引数に切って<code>switch_api_execute()</code> を呼ぶ。</strong></p>
+<p><strong>既定値が2つ効いている</strong>（出典3）〈重要〉—— ①<strong><code>sofia.c:4665</code> は <code>PFLAG_ENABLE_CHAT</code> を無条件に設定するため、受信チャットは明示的に切らない限り有効である、</strong> ②<strong><code>sofia.c:6118</code> 付近の論理により、<code>auth-messages</code> を明示していない場合は<code>PFLAG_AUTH_MESSAGES</code> が設定され、stock の internal／external ではMESSAGE 認証が要求される。</strong> <strong><code>external.xml</code> の <code>auth-calls=false</code> は呼の認証にのみ影響し、メッセージ認証を切らない</strong>（出典3）〈重要〉—— <strong>設定の名前が似ているため混同しやすい点である</strong>（本記録の評価）。</p></section>
+<section id="s7"><h2>攻撃面は「受信 MESSAGE を受け付ける profile」で、それが既定である——ただし認証の前提条件は資料間で読みが分かれる<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>勧告は攻撃面をこう述べる</strong>（出典1）〈重要〉—— <strong>「受信 MESSAGE を受け付ける任意の SIP profile。これが既定である。vanilla 設定は internal と external の profile でチャットを有効にしたままである」</strong>（出典1。原文英語。本記録が訳した）。<strong>vanilla では internal が 5060、external が 5080 で待ち受ける</strong>（出典3）。</p>
+<p><strong>前提条件の読みが分かれている</strong>〈齟齬1〉〈重要〉—— <strong>勧告は「1通の SIP MESSAGE を受理させること」が前提であり、「MESSAGE 認証が強制されている場合は profile 上の任意の有効なアカウントで足りる」とする</strong>（出典1）。<strong>さらに「<code>conf/vanilla/directory/default/default.xml</code> をそのまま残している構成は、その利用者がパスワードも a1-hash も持たないため、アカウント無しで悪用できる場合がある」とする</strong>（出典1）〈重要〉。<strong>一方、出典3 は「stock の internal／external は MESSAGE 認証を既定で要求する。公開 PoC の『単包未認証』は <code>auth-messages=false</code> を設定した構成でのみ成立し、stock の既定値ではない」とする</strong>（出典3）。</p>
+<p><strong>本記録はこの2つを矛盾とは読まない</strong>（本記録の整理）〈重要〉—— <strong>「認証は要求される」（出典3）と「vanilla の既定利用者はパスワードを持たないので認証が実質的に通る」（出典1）は両立する。</strong> <strong>ただし、どちらの読みを採るかで「自組織は危ないか」の判定が変わる</strong>（本記録の評価）〈重要〉—— <strong>したがって実務上の確認事項は2つである</strong>—— ①<strong>profile で <code>auth-messages</code> が無効化されていないか、</strong> ②<strong>directory にパスワードも a1-hash も持たない利用者が残っていないか。</strong> <strong>本記録は、どちらの構成が多いかを示す材料を持たない</strong>（本記録の明示）。</p>
+<p><strong>権限は守護プロセスのものである</strong>（出典3）〈重要〉—— <strong>出典3 の検証ではコンテナ内で root 権限で動いていたため<code>system touch /tmp/fs-pwned</code> が root 所有のファイルを作り、<code>id</code> は <code>uid=0(root)</code> を返した</strong>（出典3）。<strong>公式の推奨どおり権限を落としていれば到達点は<code>freeswitch</code> サービス利用者になるが、設定・directory 利用者・ゲートウェイ資格情報・CDR の読み取りと改変、呼の経路の変更、module の読み込みは依然として可能である</strong>（出典3）〈重要〉—— <strong>「root でないから軽い」とは読めない</strong>（本記録の明示）。</p>
+<p><strong>CISA は適用範囲をさらに広く見ている</strong>（出典2）〈重要〉—— <strong>「この脆弱性はオープンソースの部品・第三者ライブラリ・protocol・独自実装に影響し、異なる製品で使われうる」</strong>（出典2。原文英語。本記録が訳した）〈未確定4〉—— <strong>FreeSWITCH を直接導入した覚えがない組織でも、製品に同梱されている可能性がある</strong>（本記録の整理）。</p></section>
+<section id="s8"><h2>設定では閉じられない——1.10 系に新しい引数を書いても未知の引数として無視される<span class="b slot">対策・注意喚起</span><span class=srcs>出典 [1] [3]</span></h2><p><strong>修正は 1.11.3 である</strong>（出典1）〈重要〉—— <strong>profile 単位の新しい引数 <code>enable-chat-api-proto</code> が入り、明示的に有効にしない限り受信 MESSAGE は <code>api</code> protocol を選べない。拒否された要求には 403 を返して記録に残す。この引数は vanilla の profile と mod_sofia の見本設定ではコメントアウトされた状態で同梱される</strong>（出典1）。<strong>出典3 は修正コミットを <code>7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86</code> とする</strong>（出典3）。</p>
+<p><strong>設定層での緩和はできない</strong>（出典3）〈重要〉—— <strong>「1.10.11 と 1.10.12 のソースにこの関門は無い。<code>enable-chat-api-proto=true</code> を 1.10.10 に書いても効かず、解析器が未知の引数として無視する。設定層では緩和できず、更新するか該当するパッチを当てるしかない」</strong>（出典3。本記録が訳した）〈重要〉—— <strong>本記録はこれを本件で最も実務的に重い記述と見る</strong>（本記録の評価）—— <strong>「設定を1行足して様子を見る」という逃げ道が無い。</strong></p>
+<p><strong>勧告が挙げる迂回策は3つで、うち2つは経路を閉じない</strong>（出典1）〈重要〉—— ①<strong>受信チャットを必要としない profile で <code>enable-chat=false</code> を設定する（その profile では受信 MESSAGE のチャットを完全に無効にする。これは閉じる措置である）、</strong> ②<strong><code>auth-messages</code> を有効にするだけでは不十分であり、パスワードも a1-hash も持たない directory 利用者を削除することで認証済みの悪用に縮小できるが、経路は閉じない、</strong> ③<strong><code>disable_system_api_commands=true</code> は <code>system</code> API だけを外すため、経路は閉じない</strong>〈重要〉—— <strong><code>mod_lua</code> が読み込まれている場合（vanilla 設定が含む）、インラインの Lua が第2の到達点になる</strong>（出典1）。</p>
+<p><strong>したがって実務上の順序はこうなる</strong>（本記録の判断）〈重要〉—— <strong>ⓐまず <code>enable-chat</code> を業務で使っていない profile で false にする（即日・停止の影響が小さい）、ⓑ並行して 1.11.3 以降への更新を計画する（これが唯一の恒久対策）、ⓒ更新までの間、SIP の受信ポートに到達できる範囲を縮める（トランク事業者の IP のみ許可・内線は VPN 経由）、ⓓ守護プロセスの権限を落とす（被害の上限を下げる）。</strong> <strong>ⓐを実行する前に「どの profile が MESSAGE を業務で使っているか」を確認すること</strong>——<strong>WebRTC のチャットや SMS ゲートウェイ連携が該当しうる</strong>（本記録の整理）。</p></section>
+<section id="s9"><h2>読みどころは評点の高さではなく、「SIP の 202 応答では悪用の成否が分からない」という調査側の困難である<span class="b slot">評価・解釈</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>本記録は、この事案の要点を3つに整理する</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>第一に、悪用の成否が応答から分からない。</strong> <strong>出典3 は「SIP が <code>202 Accepted</code> を返すのは、メッセージが受理されたことだけを意味し、チャットインタフェースの実行が成功したことを意味しない。処理関数は <code>end:</code> ラベルで一律に 200／202 を返すため、チャットの配送に失敗してもここを通る」と記し、負の対照として <code>foo+...</code> を送った場合も 202 が返るがファイルは作られなかったと述べている</strong>（出典3。本記録が訳した）〈重要〉。<strong>防御側にとってこれは2つの意味を持つ</strong>（本記録の評価）—— ①<strong>攻撃者の側も、応答から成功を確認できない（当て逃げになる）、</strong> ②<strong>調査側は、SIP の記録だけでは「試みられたが失敗した」と「成功した」を区別できない。</strong> <strong>CISA がフォレンジックのトリアージ対象（<code>forensicTriage: Yes</code>）としたにもかかわらず、本脆弱性に固有の痕跡が示されていないことは、この困難と無関係ではない</strong>（本記録の評価）〈未確定2〉。</p>
+<p><strong>第二に、「悪用が観測されている」と勧告自身が書いていた。</strong> <strong>勧告（10月28日）の時点で既に実際の悪用があり、CISA の KEV 収載（11月9日）は12日後、期限は収載の3日後（11月12日）である</strong>（出典1・2。算出は本記録）〈重要〉—— <strong>この日程は、勧告を見た時点で既に時間が無かったことを示す</strong>（本記録の評価）。<strong>一方で、修正は設定では代替できず更新が要る</strong>（出典3）—— <strong>通話基盤の更新に必要な検証期間と、この日程は噛み合わない</strong>（本記録の評価）〈重要〉—— <strong>だからこそ <code>enable-chat=false</code> による時間稼ぎの価値が高い。</strong></p>
+<p><strong>第三に、これは「機能の到達範囲」の問題であり、再発しやすい類型である。</strong> <strong><code>api</code> チャットインタフェースは正規に登録された機能であり、1.11.3 の修正もそれを削除せず明示的な有効化に変えただけである</strong>（出典1・3）〈重要〉。<strong>本記録は、同じ構図が他の製品にもあると考える</strong>（本記録の評価）—— <strong>「外部から到達できる入力が、内部の管理 API の選択子になっている」箇所である。</strong> <strong>自組織で確認すべきは、SIP に限らず、外部入力から内部 API の名前を選べる経路の有無である</strong>（本記録の判断）。</p></section>
+<section id="s10"><h2>実際に悪用された組織・時期・攻撃者はいずれも公表されておらず、修正前の悪用を見つける公式な手順も無い<span class="b slot">未確定事項</span><span class=srcs>出典 [1] [2] [3]</span></h2><p><strong>勧告は「この経路の悪用が実際に観測されている」と述べるだけである</strong>（出典1）〈重要〉〈未確定1〉—— <strong>誰が観測したのか、いつからか、どの組織が被害を受けたのか、攻撃者は誰かのいずれも記載されていない。</strong> <strong>CISA の KEV も、ランサムウェアキャンペーンでの使用を「不明」としている</strong>（出典2）。<strong>本記録は、悪用の規模・標的の業種・地域を推定しない</strong>（本記録の明示）。</p>
+<p><strong>修正前の悪用を見つける公式な手順も示されていない</strong>〈未確定2〉〈重要〉—— <strong>CISA は <code>forensicTriage: Yes</code> としてトリアージを求めているが、本脆弱性に固有の痕跡（どのログの、どの記録を見るか）はKEV の記載からは読めない</strong>（出典2。本記録の確認）。<strong>勧告も、修正後は拒否された要求に 403 を返して記録に残すと述べる一方、修正前の悪用の見つけ方には触れていない</strong>（出典1）。</p>
+<p><strong>1.10 系向けの公式なパッチの有無も確認できていない</strong>〈未確定3〉〈重要〉—— <strong>勧告は修正版を 1.11.3 以降とし、1.10 系の扱いを述べていない</strong>（出典1）。<strong>出典3 は 1.10.11・1.10.12 のソースに関門が無いことを確認している</strong>（出典3）。</p>
+<p><strong>FreeSWITCH を同梱する第三者製品の一覧も無い</strong>〈未確定4〉〈重要〉—— <strong>CISA が「異なる製品で使われうる」と注意を促している一方、該当製品の一覧は示されていない</strong>（出典2）。<strong>利用者側は、SIP の受信ポートを持つ製品についてベンダーへ照会するほかない</strong>（本記録の判断）。</p></section>
+<div class="blk " id="s11"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> FreeSWITCH の mod_sofia（SIP スタックと profile を担う）　<b>ベンダー:</b> SignalWire（FreeSWITCH）　<b>CVE番号:</b> CVE-2026-116779　<b>バージョン:</b> **勧告は影響範囲を 1.11.2 以前、修正を 1.11.3 以降とする**（出典1）〈重要〉—— **出典3 は「1.11.3 より低い全バージョン」と記し、 修正コミットを `7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86` としている**（出典3）。 **1.10.11・1.10.12 のソースには関門が無い**（出典3）。　<b>概要:</b> **受信 MESSAGE の To ヘッダの利用者部分を、 `+` より前をチャット protocol 名、後ろをその protocol の宛先として解釈する** （出典1・3）〈重要〉—— **該当箇所は `src/mod/endpoints/mod_sofia/sofia_presence.c:4870` 付近で、 最初の `+` を探し、左側を `proto` に複製し、右側を `to_addr` にする （`to_addr` に含まれる `+` は `@` に書き換えられる）**（出典3）。 **右側は事象ヘッダ `to_proto` に書き込まれ（`:4894`）、 その後 `switch_core_chat_send(proto, event)` が protocol 名でチャットインタフェースを探す（`:5014`）**（出典3）。　<b>症状:</b> **protocol 選択子に制限が無い**（出典1）〈重要〉—— **「選択子に制限が無いため、MESSAGE を届けられる相手は、 どの API コマンドが実行されるかを選べる」** （出典1。原文英語。本記録が訳した）。 **受信 MESSAGE の処理は `sofia_presence_handle_sip_i_message()` （`sofia_presence.c:4747`）で始まり、 profile がチャットを許可しているか（`PFLAG_ENABLE_CHAT`）を見て、 `PFLAG_AUTH_MESSAGES` に従ってメッセージ認証を行い、 最後に To 利用者を分割してチャット事象を配送する**（出典3）。 **`sofia.c:4665` は `PFLAG_ENABLE_CHAT` を無条件に設定するため、 受信チャットは既定で有効である**（出典3）〈重要〉。</div><div class=sub><b>名称:</b> FreeSWITCH の mod_dptools（api チャットインタフェースと system API を提供）　<b>ベンダー:</b> SignalWire（FreeSWITCH）　<b>CVE番号:</b> CVE-2026-116779　<b>概要:</b> **`api` という protocol 名は `mod_dptools` が正規に登録している** （出典3）〈重要〉—— **`src/mod/applications/mod_dptools/mod_dptools.c:6486` で `SWITCH_ADD_CHAT(chat_interface, &quot;event&quot;, event_chat_send)` と `SWITCH_ADD_CHAT(chat_interface, &quot;api&quot;, api_chat_send)` が登録される。**　<b>症状:</b> **`api_chat_send()` は事象の `to` ヘッダを取り、URL デコードし、 最初の空白でコマンド名と引数に切って `switch_api_execute()` を呼ぶ** （出典3。`mod_dptools.c:4698` と `:4705`）〈重要〉—— **`system` は OS コマンドを実行する標準 API であり、 コマンドは FreeSWITCH 守護プロセスの権限を継承する**（出典3）。 **勧告は、`mod_lua` が読み込まれている場合（vanilla 設定が含む）、 インラインの Lua が第2の到達点になると述べている**（出典1）〈重要〉—— **したがって `disable_system_api_commands=true` で `system` API だけを 外しても経路は閉じない**（出典1）。</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 確認済み　<b>時点:</b> 2026年11月9日（CISA が KEV に収載した日）　<b>補足:</b> **勧告は「この経路の悪用が実際に観測されている」と明記している**（出典1）〈重要〉。 **CISA は2026年11月9日に KEV へ収載し、 フォレンジックのトリアージ対象（`forensicTriage: Yes`）とした**（出典2）。 **ランサムウェアキャンペーンでの使用は「不明」である**（出典2）。 **一方、誰が、どの組織に対して、いつ悪用したかは公表されていない**〈未確定1〉—— **本記録は「悪用が観測された」という事実までを確認済みとし、 規模・標的・攻撃者を推定しない**（本記録の明示）〈重要〉。</td></tr><tr><th>ログの有無</th><td>**修正後（1.11.3 以降）は、拒否された要求に 403 を返して記録に残す**（出典1）〈重要〉—— **つまり更新した後は探索の試みが見える。** **修正前の悪用をどう見つけるかについて、勧告も KEV も具体を示していない** 〈未確定2〉。 **出典3 が示す重要な注意点がある**（出典3）〈重要〉—— **「SIP が `202 Accepted` を返すのは、メッセージが受理されたことだけを意味し、 チャットインタフェースの実行が成功したことを意味しない。 処理関数は `end:` ラベルで一律に 200／202 を返すため、 チャットの配送に失敗してもここを通る」**（出典3。本記録が訳した）—— **したがって SIP の応答コードから悪用の成否を判定できない**（本記録の整理）〈重要〉—— **負の対照として `foo+...` を送った場合も 202 が返るが、 ファイルは作られなかったと記されている**（出典3）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **1.11.3 以降へ更新する**（出典1）〈重要〉—— **profile 単位の新しい引数 `enable-chat-api-proto` が入り、 明示的に有効にしない限り受信 MESSAGE は `api` protocol を選べず、 拒否された要求には 403 を返して記録に残す**（出典1）。 **この引数は vanilla の profile と mod_sofia の見本設定では コメントアウトされた状態で同梱される**（出典1）。　<b>副作用:</b> **メジャー更新に伴う回帰の危険がある**（本記録の評価）〈重要〉—— **通話基盤は停止の影響が大きく、検証に時間がかかる。** **ただし設定層での緩和ができない**（出典3）—— **1.10 系に `enable-chat-api-proto` を書いても未知の引数として 無視されるため、更新か該当パッチの適用以外に閉じる手段が無い。** **したがって「検証に時間がかかる」ことは、 次の `enable-chat=false` と組み合わせて時間を稼ぐ理由になる**（本記録の判断）。</div><div class=sub><b>手順:</b> **受信チャットが不要な profile で `enable-chat=false` を設定する** （出典1。勧告の迂回策）〈重要〉—— **「受信チャットを必要としない profile では `enable-chat=false` を設定する。 これはその profile で受信 MESSAGE のチャットを完全に無効にする」** （出典1。原文英語。本記録が訳した）。　<b>副作用:</b> **SIP MESSAGE によるチャット・通知・プレゼンス連携を使っている構成では 機能が止まる**（本記録の評価）〈重要〉—— **WebRTC のチャット機能や、SMS ゲートウェイとの連携が該当しうる。** **逆に言えば、使っていない profile（多くの環境の external など）では 無害に閉じられる**（本記録の判断）—— **まず「どの profile が MESSAGE を業務で使っているか」を調べる。**</div><div class=sub><b>手順:</b> **パスワードも a1-hash も持たない directory 利用者を削除する** （出典1。勧告の迂回策）〈重要〉—— **勧告は、`auth-messages` を有効にするだけでは不十分であり、 これを併せて行うことで認証済みの悪用に縮小できるが 経路は閉じないと述べている**（出典1）。　<b>副作用:</b> **vanilla の見本設定をそのまま使っている構成では、 試験用の内線が使えなくなる**（本記録の評価）—— **実運用で vanilla の既定利用者を残している場合、 それ自体が本件とは別の問題である**（本記録の判断）〈重要〉。</div><div class=sub><b>手順:</b> **SIP の受信ポート（既定 5060／5080）に到達できる範囲を限定する** （本記録の推奨）〈重要〉—— **成立に必要なのは「1通の MESSAGE を受理させること」である**（出典1）。　<b>副作用:</b> **外部の SIP トランク事業者・遠隔の内線・WebRTC の利用者からの 接続を壊しうる**（本記録の評価）〈重要〉—— **全面的な遮断は現実的でない場合が多い。** **その場合は「トランク事業者の IP だけを許可する」「内線は VPN 経由に限る」 といった段階的な縮小に落とす**（本記録の判断）。</div><div class=sub><b>手順:</b> **FreeSWITCH の守護プロセスを root で動かさない** （出典3。整理は本記録）〈重要〉—— **出典3 の検証では、コンテナ内で root 権限で動いていたため `system touch /tmp/fs-pwned` が root 所有のファイルを作り、 `id` は `uid=0(root)` を返した**（出典3）。 **公式の推奨どおり権限を落として動かしていれば、 到達点は `freeswitch` サービス利用者になる**（出典3）。　<b>副作用:</b> **権限を落としても、設定・directory 利用者・ゲートウェイ資格情報・CDR の 読み取りと、呼の経路の改変、module の読み込みは依然として可能である** （出典3）〈重要〉—— **「root でないから軽い」とは読めない**（本記録の明示）。 **これは被害の上限を下げる措置であり、閉じる措置ではない。**</div><span class="b rsn">stated</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s12"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2026年10月28日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**SignalWire が勧告 GHSA-mg63-h38w-8p9p を公開した**（出典1）〈重要〉—— **CVE-2026-116779、Critical、CVSS 3.1 で 9.8、影響は 1.11.2 以前、 修正は 1.11.3 以降。公開者は andywolk。** **「この経路の悪用が実際に観測されている」と明記している**（出典1）〈重要〉—— **つまり勧告の公開時点で、既に実際の悪用があった**（本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年11月5日（CVE 記録の公開。出典3 の記述）</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CVE 記録が公開された**（出典3）〈重要〉—— **出典3 は「CVE 記録 2026-11-05 公開、影響範囲は 1.11.3 未満、 修復版は 1.11.3、修正コミットは `7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86`」と記している**（出典3）。 **本記録は CVE／NVD の記録そのものを取得していない**〈自己未確認1〉—— **この日付は出典3 の記述に依存する。**</td></tr><tr><td class="sm nowrap tw">2026年11月9日</td><td class=nowrap><span class="b kind">注意喚起</span></td><td>**CISA が KEV に収載した**（出典2）〈重要〉—— **本記録が KEV のカタログ（カタログ版 2026.11.24）を直接取得して確認した。** **`dateAdded: 2026-11-09`、`dueDate: 2026-11-12`—— 対応期限は収載の3日後である**（出典2）〈重要〉。 **短い説明は「SignalWire FreeSwitch には、設定と資格情報の開示、 任意の通話制御、コマンド実行を許すコード注入の脆弱性がある」** （出典2。原文英語。本記録が訳した）。</td></tr><tr><td class="sm nowrap tw">2026年11月12日</td><td class=nowrap><span class="b kind">行政対応（当局 → 組織の向き）</span></td><td>**KEV の対応期限**（出典2）〈重要〉—— **米国連邦民間行政機関（FCEB）に対する期限であり、 日本の組織に法的な義務は生じない**（本記録の明示）—— **ただし「3日」という設定は、CISA が緊急度をどう見たかを示す** （本記録の評価）。</td></tr><tr><td class="sm nowrap tw">2026年11月20日 14時01分（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**阿里云先知に、再現環境での検証記事が公開された**（出典3）〈重要〉—— **コード上の該当箇所（`sofia_presence.c:4870` の `+` による分割、 `:4894` の `to_proto` への書き込み、`:5014` の `switch_core_chat_send`、 `mod_dptools.c:6486` の `api` 登録、`:4698`／`:4705` の URL デコードと `switch_api_execute`）、 既定の認証姿勢（`sofia.c:6118` の論理により stock では MESSAGE 認証が要る）、 既定でチャットが有効になること（`sofia.c:4665`）、 成立条件、再現手順、root 権限でのコマンド実行の確認を記している。**</td></tr><tr><td class="sm nowrap tw">2026年11月25日</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録の作成者が一次資料を取得して確認した**（本記録の観測）〈重要〉—— ①**SignalWire の勧告 GHSA-mg63-h38w-8p9p を取得し、 深刻度・影響範囲・修正版・影響の内容・前提条件・迂回策・修正の仕組み・ 謝辞・「実際の悪用が観測されている」旨を確認した**（出典1）。 ②**CISA の KEV カタログ（JSON）を取得し、 収載日・期限・短い説明・要求される対応・CWE・備考の参照先を確認した**（出典2）。 **確認できなかったもの**: **NVD／CVE 記録そのもの**〈自己未確認1〉、 **実際に悪用された組織・時期・手口の詳細**〈未確定1〉。</td></tr></tbody></table></div></div>
+<div id="s13"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>6</span></div><ul><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>悪用に認証済みアカウントが必要かどうか、資料間で読みが分かれている</span><div class=sm>**勧告（出典1）は、前提条件を「1通の SIP MESSAGE を受理させること」とし、 「MESSAGE 認証が強制されている場合は profile 上の任意の有効なアカウントで 足りる」と述べる。 さらに「`conf/vanilla/directory/default/default.xml` を そのまま残している構成は、その利用者がパスワードも a1-hash も持たないため、 アカウント無しで悪用できる場合がある」とする**（出典1）〈重要〉。 **一方、出典3 は「stock の internal／external は MESSAGE 認証を 既定で要求する（`sofia.c:6118` 付近の論理により、 `auth-messages` の明示が無い場合は `PFLAG_AUTH_MESSAGES` が設定される）。 公開 PoC の『単包未認証』は `auth-messages=false` を設定した構成でのみ成立し、 stock の既定値ではない」とする**（出典3）〈重要〉。 **本記録はこの2つを矛盾とは読まない**（本記録の整理）〈重要〉—— **「認証は要求される」と「vanilla の既定利用者はパスワードを持たないので 認証が実質的に通る」は両立する。** **ただし、どちらの読みを採るかで自組織の危険度の判定が変わるため、 本記録は確認事項を2つに分けて示した**—— ①**profile で `auth-messages` が無効化されていないか、** ②**directory にパスワードも a1-hash も持たない利用者が残っていないか。** **なお CVSS の `PR:N`（権限不要）は、 後者の構成を前提にした評価と整合する**（本記録の評価）。</div></li><li><span class="b dk">単位・母数の曖昧さ</span><span class=ui>影響範囲の表現が勧告と検証記事で異なる（1.11.2 以前／1.11.3 未満）</span><div class=sm>**勧告は影響範囲を「1.11.2 以前（&lt;= 1.11.2）」、 修正を「1.11.3 以降（&gt;= 1.11.3）」と記す**（出典1）。 **出典3 は「すべての 1.11.3 より低いバージョン」と記す**（出典3）。 **本記録はこれを実質的に同じ範囲と判断する**（本記録の整理）〈重要〉—— **1.11.2 と 1.11.3 の間に別の公開版が無い前提での表現の違いである。** **ただし本記録はその前提（版の一覧）を確認していない**（本記録の明示）—— **実務では「1.11.3 以降であるか」で判断すれば足りる。**</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>修正前の悪用を見つける公式な手順が示されていない</span><div class=sm>**CISA は `forensicTriage: Yes` としてフォレンジックのトリアージを求め、 「CISA のフォレンジックトリアージ要件」の URL を備考に挙げているが、 本脆弱性に固有の痕跡（どのログの、どの記録を見るか）は KEV の記載からは読めない**（出典2。本記録の確認）〈重要〉。 **勧告も、修正後（1.11.3 以降）は拒否された要求に 403 を返して 記録に残すと述べる一方、修正前の悪用の見つけ方には触れていない**（出典1）。 **これは本件では実務上重い沈黙である**（本記録の評価）〈重要〉—— **出典3 が示すとおり、SIP の `202 Accepted` は実行の成否を示さないため、 SIP の記録だけでは「試みられたが失敗した」と「成功した」を区別できない。** **本記録が整理した手がかり（`switch_api_execute` 経由の API 実行記録・ `system`／`module_load`／`originate` の実行記録・OS 側の痕跡）は、 本記録の推定であり、既定の記録に残るかを検証していない**〈自己未確認2〉。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は勧告の逐語引用を十分に取得できていない</span><div class=sm>**本記録の作成者は出典1 を取得したが、 取り出しの過程で引用できる長さに制限があり、 勧告の全文を逐語で保持できていない**（本記録の明示）〈重要〉—— **本記録が「原文英語。本記録が訳した」と付した箇所は、 取得結果に含まれた記述に基づく訳である。** **数値（CVSS 9.8・ベクタ・影響範囲・公開日）、 迂回策の3項目、修正の仕組み、謝辞、 および「この経路の悪用が実際に観測されている」という記述の存在は 確認済みである**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>本記録は第三者の再現を自分で再現していない</span><div class=sm>**出典3 の検証（コンテナでの再現・root 権限でのコマンド実行の確認）を、 本記録の作成者は再現していない**（本記録の明示）〈重要〉—— **検証環境の構築は、脆弱な版の FreeSWITCH を動かすことを伴うため 本記録の作業範囲に含めなかった**（本記録の判断）。 **ただし出典3 の記述はコードの行番号と既定値の論理を伴っており、 勧告（出典1）の記述と整合している**（本記録の評価）。 **本記録がコード自体を取得して行番号を照合したわけではない**（本記録の明示）。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>NVD／CVE の記録を本記録は取得していない</span><div class=sm>**出典3 が述べる「CVE 記録 2026-11-05 公開」および 修正コミット `7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86` は、 本記録が原典で確認していない**（本記録の明示）〈重要〉—— **時系列の T2（CVE 記録の公開）は出典3 の記述に依存する。** **本記録が自分で確認したのは、勧告の公開日（2026年10月28日・出典1）と KEV の収載日（2026年11月9日・出典2）である。**</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s14"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>1通の SIP MESSAGE が FreeSWITCH の API コマンドになるまで</div><div class=svgwrap><svg viewBox="0 0 2018 174" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,87.0 C193.0,87.0 193.0,87.0 220,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,87.0 C397.0,87.0 397.0,87.0 424,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,87.0 C601.0,87.0 601.0,87.0 628,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,87.0 C805.0,87.0 805.0,87.0 832,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,87.0 C1009.0,87.0 1009.0,87.0 1036,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,87.0 C1213.0,87.0 1213.0,48.0 1240,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,48.0 C1417.0,48.0 1417.0,87.0 1444,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,87.0 C1621.0,87.0 1621.0,48.0 1648,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1594,87.0 C1621.0,87.0 1621.0,126.0 1648,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,48.0 C1825.0,48.0 1825.0,48.0 1852,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1798,126.0 C1825.0,126.0 1825.0,48.0 1852,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,126.0 C1315.0,126.0 1315.0,48.0 1240,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M2002,126.0 C1927.0,126.0 1927.0,48.0 1852,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">攻撃者（実際の悪用が観測</text><text x="91.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されているが、主体は非公</text><text x="91.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">表）</text><rect x="220" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="295.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">SIP MESSAGE（</text><text x="295.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">To 利用者 = api</text><text x="295.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">+system%20i…</text><rect x="424" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">メッセージ認証（stoc</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">k は要求／既定利用者は</text><text x="499.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">パスワード無し）</text><rect x="628" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="703.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sofia profil</text><text x="703.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">e（internal 5</text><text x="703.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">060・externa…</text><rect x="832" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="907.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">sofia_presen</text><text x="907.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ce.c:4870（最初</text><text x="907.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の + で分割し pr…</text><rect x="1036" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">switch_core_</text><text x="1111.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">chat_send（:5</text><text x="1111.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">014。protoco…</text><rect x="1240" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">api チャットインタフ</text><text x="1315.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ェース（mod_dpto</text><text x="1315.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ols:6486 で既…</text><rect x="1444" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1519.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">switch_api_e</text><text x="1519.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">xecute（mod_d</text><text x="1519.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ptools:4705…</text><rect x="1648" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1723.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">system API（O</text><text x="1723.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">S コマンドを守護プロセ</text><text x="1723.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ス権限で実行）</text><rect x="1648" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1723.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">mod_lua のインラ</text><text x="1723.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イン Lua（第2の到達</text><text x="1723.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">点。vanilla 設…</text><rect x="1852" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1927.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">設定・資格情報・CDR </text><text x="1927.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の読み取りと改変／呼の制</text><text x="1927.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">御・傍受・外部発信／m…</text><rect x="1240" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">1.11.3 の ena</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ble-chat-api</text><text x="1315.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">-proto（既定で無…</text><rect x="1852" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1927.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">CISA KEV（11/</text><text x="1927.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9 収載・期限 11/1</text><text x="1927.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2・フォレンジック対象）</text></svg></div><div class=fn>出典1（SignalWire の勧告）と出典3（阿里云先知による再現・コード追跡）で 確認された経路を描いた（整理は本記録）〈重要〉。 **メモリ破壊も不正なパケットも無く、 To ヘッダの利用者部分が protocol の選択子とコマンドの連結点になっている。** **左下の破線は、資料間で読みが分かれている認証の前提条件である**〈齟齬1〉。 **右端の「403 を返して記録に残す」は 1.11.3 以降の挙動であり、 修正前の悪用を見つける手順は示されていない**〈未確定2〉。</div></div></div>
+<div class="blk " id="s15"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">公表されていない</span><div class=sm>**勧告も KEV も、修正前の悪用をどう検知するかを示していない** 〈未確定2〉〈重要〉。 **出典3 が示す注意点が重要である**（出典3）—— **SIP の `202 Accepted` は受理を意味するだけで、 チャットインタフェースの実行の成否を示さない （処理関数は `end:` ラベルで一律に 200／202 を返す）。** **したがって SIP の応答コードを見ても、 攻撃の成否は分からない**（本記録の整理）〈重要〉。 **修正後（1.11.3 以降）は、拒否された要求に 403 を返して 記録に残すため、探索の試みが見えるようになる**（出典1）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>受信チャットが不要な profile で enable-chat=false を設定する （出典1。勧告の迂回策）</div><div class=ctl><span class="b eff">影響を限定できた</span>SIP の受信ポートに到達できる範囲を、トランク事業者の IP と VPN 経由の内線に限定する（本記録の推奨）</div><div class=ctl><span class="b eff">影響を限定できた</span>パスワードも a1-hash も持たない directory 利用者を削除する （出典1。勧告の迂回策。経路は閉じない）</div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">公表されていない</span><div class=sm>**公式には示されていない**〈未確定2〉〈重要〉。 **本記録が出典3 の記述から整理できる手がかりは3つである** （本記録の整理）—— ①**受信 MESSAGE の To 利用者部分に `+` を含む記録、** ②**`switch_api_execute` 経由で実行された API の記録、** ③**`system`・`module_load`・`originate` 等の API の実行記録。** **ただし本記録は、これらが FreeSWITCH の既定の記録に残るかを 検証していない**〈自己未確認2〉—— **そのため「公表されていない」を基本の判断として残す。**</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>1.11.3 以降へ更新し、profile 単位の enable-chat-api-proto を 無効のまま運用する（出典1。修正の仕組み）</div><div class=ctl><span class="b eff">影響を限定できた</span>FreeSWITCH の守護プロセスを root で動かさない （出典3。被害の上限を下げるが経路は閉じない）</div></td></tr><tr><td class=nowrap><span class="b stage">影響（暗号化・破壊・改ざん）</span></td><td><span class="b do">公表されていない</span><div class=sm>**公表されていない**〈未確定2〉〈重要〉—— **CISA は `forensicTriage: Yes` としてトリアージを求めているが、 本脆弱性に固有の痕跡は KEV の記載からは読めない**（出典2。本記録の確認）。 **本記録は、通話基盤の性質上、影響の確認対象として ①directory 利用者とゲートウェイ資格情報の変更履歴、 ②想定外の外部発信（CDR）、 ③読み込まれている module の一覧を挙げる**（本記録の推奨）—— **ただしこれは本記録の整理であり、公式な手順ではない。**</div></td><td><div class=ctl><span class="b eff">検知できた</span>ゲートウェイ資格情報と directory 利用者の変更を記録・監視し、 想定外の外部発信を CDR で検出する（本記録の推奨）</div><div class=ctl><span class="b eff">影響を限定できた</span>通話基盤を網的に分離し、そこから到達できる範囲を限定する （本記録の推奨）</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s16"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class="absent">対応の巧拙を評価できる材料が公表資料から得られていません。</div></div>
+<div id="s17"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「設定で緩和して様子を見る」が使えない脆弱性がある。更新の可否が唯一の論点になる。</div><div class=lw>**1.10 系には関門が無く、新しい引数 `enable-chat-api-proto` を 設定に書いても未知の引数として無視される**（出典3）〈重要〉—— **「設定層では緩和できず、更新するか該当するパッチを当てるしかない」** （出典3。本記録が訳した）。 **勧告が挙げる迂回策のうち、経路を閉じるのは `enable-chat=false`（その profile で受信 MESSAGE のチャットを 完全に無効にする）だけであり、 `auth-messages` の有効化と `disable_system_api_commands=true` は 閉じない**（出典1）〈重要〉。</div><div class=la><b>取るべき行動</b> **通話基盤・ネットワーク機器のような「止めにくい資産」について、 『設定での緩和が不可能だった場合に何日で更新できるか』を 事前に答えられる状態にする**（本記録の推奨）〈重要〉—— **確認するのは3点だけでよい**—— **①更新の検証に要る日数、②検証環境の有無、 ③停止の許容時間と承認者。** **本件では CISA の期限が収載から3日だった**（出典2）—— **その速度に自組織が追随できないなら、 到達範囲を縮める手段（ⓐ profile の無効化、ⓑ 接続元の限定）を 先に用意しておく必要がある。**</div></li><li><div class=lp>「導入した覚えのないオープンソース」が製品の中で動いている可能性を、 棚卸しの対象に入れる。</div><div class=lw>**CISA は KEV の備考で「この脆弱性はオープンソースの部品・ 第三者ライブラリ・protocol・独自実装に影響し、 異なる製品で使われうる」と明示している** （出典2。原文英語。本記録が訳した）〈重要〉—— **該当製品の一覧は示されていない**〈未確定4〉。 **FreeSWITCH は PBX・コールセンター基盤・SIP トランク・ WebRTC ゲートウェイとして製品に組み込まれることがある**（本記録の評価）。</div><div class=la><b>取るべき行動</b> **SIP の受信ポートを持つ製品・サービスを一覧にし、 ベンダーに「FreeSWITCH を同梱しているか、 同梱している場合のバージョンと CVE-2026-116779 への対応」を照会する** （本記録の推奨）〈重要〉—— **照会先は保守契約の窓口でよい。** **併せて、この照会の結果を資産管理台帳の「同梱部品」欄に残す**—— **次に同種の事案が起きたときに、同じ照会を繰り返さないためである。**</div></li><li><div class=lp>通話基盤の侵害は「情報漏えい」として整理すると論点を落とす。呼そのものが制御される。</div><div class=lw>**勧告が挙げる影響は、OS コマンドの実行、設定と資格情報の開示、 そして通話の完全な制御である**（出典1）〈重要〉。 **出典3 はより具体的に、`originate`・`uuid_*`・`sofia` 等の API による 呼の制御・傍受・外部発信、`module_load` による module の読み込み、 ゲートウェイ資格情報と CDR の読み取り・改変を挙げている**（出典3）〈重要〉—— **つまり、盗聴・なりすまし発信・通話料金の不正利用が成立する** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **通話基盤に対する侵害時の確認項目を、情報漏えいの手順とは別に作る** （本記録の推奨）〈重要〉—— **最低限の3項目は、①directory 利用者とゲートウェイ資格情報の変更履歴、 ②想定外の外部発信（CDR の宛先・時刻・通話時間の異常）、 ③読み込まれている module の一覧。** **これらを平常時に取得しておき、比較できる状態にする**—— **事後に「元はどうだったか」が分からないと判断できない。**</div></li><li><div class=lp>勧告の「悪用が観測されている」という一文を、公表日と突き合わせて読む。</div><div class=lw>**勧告（2026年10月28日）の時点で既に 「この経路の悪用が実際に観測されている」と書かれていた**（出典1）〈重要〉。 **CISA の KEV 収載は12日後の11月9日、期限は収載の3日後の11月12日である** （出典2。算出は本記録）。 **本記録はここを重く見る**（本記録の評価）〈重要〉—— **「KEV に載ってから動く」運用では、本件では少なくとも12日間、 既に悪用されている脆弱性を放置したことになる。**</div><div class=la><b>取るべき行動</b> **脆弱性情報の取り込みで、「悪用が観測されている」という ベンダー勧告自身の記述を、KEV 収載と同じ重みの起動条件にする** （本記録の推奨）〈重要〉—— **具体的には、自組織が使う主要製品の GitHub Security Advisory／ ベンダー勧告を購読し、`exploited in the wild` 相当の表現を 検出したら緊急の判定に回す。** **KEV は米国政府の都合で選別されたカタログであり、 自組織の資産の優先順位とは一致しない**（本記録の明示）。</div></li></ul></div></div>
+<div id="s18"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>まず `enable-chat` を業務で使っていない profile で false にする。即日できて、経路を閉じる。</div><div class=lw>**勧告の迂回策のうち、経路を閉じるのはこれだけである**（出典1）〈重要〉—— **「受信チャットを必要としない profile では `enable-chat=false` を設定する。 これはその profile で受信 MESSAGE のチャットを完全に無効にする」** （出典1。原文英語。本記録が訳した）。 **vanilla では internal（5060）と external（5080）の両方で 受信チャットが有効であり、`sofia.c:4665` は `PFLAG_ENABLE_CHAT` を無条件に設定する**（出典1・3）〈重要〉—— **明示的に切らない限り有効である。**</div><div class=la><b>取るべき行動</b> **①各 profile の設定で `enable-chat` の指定を確認する （指定が無ければ有効である）、 ②`fs_cli` で `sofia status` を実行して待ち受けている profile を列挙する、 ③業務で SIP MESSAGE を使っていない profile に `&lt;param name=&quot;enable-chat&quot; value=&quot;false&quot;/&gt;` を追加して反映する** （出典1・3。整理は本記録）〈重要〉—— **実行前に、WebRTC のチャット機能・SMS ゲートウェイ連携・ プレゼンス通知が当該 profile を使っていないかを確認する。**</div></li><li><div class=lp>`auth-calls=false` はメッセージ認証を切らない。似た名前の設定を混同しない。</div><div class=lw>**`sofia.c:6118` 付近の論理では、`auth-messages` を明示していない場合に `PFLAG_AUTH_MESSAGES` が設定され、stock の internal／external では MESSAGE 認証が要求される**（出典3）〈重要〉。 **一方、`external.xml` の `auth-calls=false` は呼の認証にのみ影響し、 メッセージ認証を切らない**（出典3）。 **逆に、WebRTC・通知・チャットゲートウェイからメッセージを 直接投げさせるために `auth-messages=false` を設定していた環境では、 認証の関門が消える**（出典3）〈重要〉。</div><div class=la><b>取るべき行動</b> **全 profile の設定で `auth-messages` を grep し、 `false` が明示されている profile を洗い出す**（本記録の推奨）〈重要〉—— **該当する profile は、`enable-chat=false` の適用を最優先にする。** **併せて、directory にパスワードも a1-hash も持たない利用者が 残っていないかを確認する（勧告の迂回策の一つ）**（出典1）。</div></li><li><div class=lp>SIP の 202 応答で成否を判断しない。試みと成功を区別できない。</div><div class=lw>**「SIP が `202 Accepted` を返すのは、メッセージが受理されたことだけを 意味し、チャットインタフェースの実行が成功したことを意味しない。 処理関数は `end:` ラベルで一律に 200／202 を返すため、 チャットの配送に失敗してもここを通る」**（出典3。本記録が訳した）〈重要〉—— **負の対照として `foo+...` を送った場合も 202 が返るが、 ファイルは作られなかったと記されている**（出典3）。 **したがって、SIP の記録だけでは「試みられたが失敗した」と 「成功した」を区別できない**（本記録の整理）〈重要〉。</div><div class=la><b>取るべき行動</b> **調査では SIP の応答コードではなく、実行側の痕跡を見る** （本記録の推奨）〈重要〉—— **①`switch_api_execute` 経由で実行された API の記録、 ②`system`・`module_load`・`originate` 等の API の実行記録、 ③OS 側の痕跡（新規プロセス・ファイル生成・外向き通信）。** **本記録はこれらが既定の記録に残るかを検証していない**〈自己未確認2〉—— **平常時に、`system` API を1回実行して どこに何が残るかを自環境で確かめておくこと。**</div></li><li><div class=lp>守護プロセスを root で動かさない。閉じる措置ではないが、被害の上限は下がる。</div><div class=lw>**出典3 の検証では、コンテナ内で root 権限で動いていたため `system touch /tmp/fs-pwned` が root 所有のファイルを作り、 `system bash -c &#x27;id &gt; /dev/tcp/...&#x27;` は `uid=0(root) gid=0(root) groups=0(root)` を返した**（出典3）〈重要〉。 **公式の推奨どおり権限を落としていれば到達点は `freeswitch` サービス利用者になる**（出典3）。 **ただし権限を落としても、設定・directory 利用者・ ゲートウェイ資格情報・CDR の読み取りと改変、呼の経路の変更、 module の読み込みは依然として可能である**（出典3）〈重要〉—— **「root でないから軽い」とは読めない**（本記録の明示）。</div><div class=la><b>取るべき行動</b> **①実行利用者を確認する（`ps` で守護プロセスの利用者を見る）、 ②root で動いている場合は専用利用者に切り替える、 ③設定ファイル・ゲートウェイ資格情報の読み取り権限を その利用者に必要な範囲へ絞る**（本記録の推奨）〈重要〉—— **コンテナで動かしている場合は、`-u root -g root` のような 起動引数が残っていないかを確認する**（出典3 の検証環境が該当）。</div></li><li><div class=lp>外部入力から内部の管理 API の名前を選べる経路が、他にもないかを探す。</div><div class=lw>**本件は、受信 MESSAGE の To 利用者部分が チャット protocol の選択子になり、その先に OS コマンドを実行する標準 API が繋がっていた**（出典1・3）〈重要〉—— **`api` インタフェースは隠された裏口ではなく、 正規に登録された機能であり、1.11.3 の修正も削除ではなく 明示的な有効化への変更である**（出典1・3）。 **本記録は、これが「機能の到達範囲を絞っていなかった」類型であり、 同じ構図が他の製品にもあると考える**（本記録の評価）〈重要〉。</div><div class=la><b>取るべき行動</b> **自組織の自作・改造部分で、外部から到達できる入力が 内部 API・コマンド・module の名前を選べる箇所を棚卸しする** （本記録の推奨）〈重要〉—— **探すのは「文字列から処理を引く」構造 （ディスパッチテーブル・プラグイン名での検索・ 動的なクラス／関数の解決）である。** **見つけたら、拒否一覧ではなく許可一覧にする。**</div></li></ul></div></div>
+<div class="blk " id="s19"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> FreeSWITCH 1.11.2 以前（出典3 の表現では 1.11.3 未満）を運用しており、 受信 SIP MESSAGE を受け付ける profile がある。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> SIP の受信ポートを持つ製品・サービスを使っているが、 その製品が FreeSWITCH を同梱しているかを確認していない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> profile で `auth-messages` を `false` に設定している、 または directory にパスワードも a1-hash も持たない利用者が残っている。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> FreeSWITCH の守護プロセスを root で動かしている （コンテナで `-u root -g root` 相当の起動をしている場合を含む）。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> SIP の受信ポート（既定 5060／5080）がインターネットから到達可能で、 接続元の制限がない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 通話基盤の平常時の状態（directory 利用者・ゲートウェイ資格情報・ 読み込み済み module・CDR の傾向）を記録しておらず、 事後に比較できない。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s20"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年10月28日 SignalWire（FreeSWITCH）</span> <a href="https://github.com/signalwire/freeswitch/security/advisories/GHSA-mg63-h38w-8p9p" target="_blank" rel="noreferrer noopener nofollow">GHSA-mg63-h38w-8p9p: Inbound SIP MESSAGE can select the api chat proto and run FreeSWITCH API commands</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**本記録の作成者が本文を直接取得して確認した**〈重要〉—— **本事案の一次公表である**（本記録の整理）。 **確認した内容**: **CVE-2026-116779、深刻度 Critical、 CVSS 3.1 で 9.8（`AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H`）、 影響範囲 1.11.2 以前、修正 1.11.3 以降、公開日 2026年10月28日、 公開者 andywolk、CWE-77／CWE-78／CWE-749。** **仕組み**: **`sofia_presence_handle_sip_i_message()` が 受信 MESSAGE の To 利用者部分のうち `+` より前を チャット protocol 名として扱い、`mod_dptools` の `api` チャット インタフェースがメッセージのアドレスを FreeSWITCH の API コマンドとして 実行する。選択子に制限が無いため、MESSAGE を届けられる相手は どの API コマンドが実行されるかを選べる。** **影響**: **FreeSWITCH プロセスの権限でのコマンド実行（OS コマンドを含む）、 設定と資格情報の開示、通話の完全な制御。 vanilla 設定が含む `mod_lua` が読み込まれている場合、 インラインの Lua が第2の到達点になる。** **攻撃面**: **受信 MESSAGE を受け付ける任意の SIP profile（これが既定）。 vanilla は internal と external でチャットを有効にしたまま。** **前提条件**: **1通の SIP MESSAGE を受理させること。 MESSAGE 認証が強制されている場合は profile 上の任意の有効なアカウントで足りる。 `conf/vanilla/directory/default/default.xml` を残している構成は、 その利用者がパスポートも a1-hash も持たないため アカウント無しで悪用できる場合がある。** **迂回策**: **`enable-chat=false`（完全に無効にする）。 `auth-messages` の有効化だけでは不十分で、 パスワードも a1-hash も持たない directory 利用者の削除を併せると 認証済みの悪用に縮小できるが閉じない。 `disable_system_api_commands=true` は `system` API のみを外すため閉じない。** **修正**: **profile 単位の新しい引数 `enable-chat-api-proto`。 明示的に設定しない限り無効。拒否された要求には 403 を返して記録に残す。 vanilla の profile と mod_sofia の見本設定ではコメントアウトして同梱。** **悪用**: **「この経路の悪用が実際に観測されている」と明記**〈重要〉。 **謝辞**: **Örn Arnarson と Gunnlaugur（報告者 orn1983・解析 gunnlaugurmani）。** **なお、本記録が取得した際の取り出しでは引用の長さに制限があったため、 逐語の引用は短い範囲に限られる**（本記録の明示）〈自己未確認4〉—— **本記録が「原文英語。本記録が訳した」と付した箇所は、 取得結果に含まれた記述に基づく訳である。**）</span></li></ol></div><div class=rg><div class=rgt>政府・監督官庁</div><ol><li><span class=rid>[2]</span> <span class=sm>2026年11月9日（KEV への収載日。カタログ版 2026.11.24 を取得） CISA（米国サイバーセキュリティ・インフラセキュリティ庁）</span> <a href="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" target="_blank" rel="noreferrer noopener nofollow">Known Exploited Vulnerabilities Catalog — CVE-2026-116779（SignalWire FreeSwitch Code Injection Vulnerability）</a> <span class="b kind">注意喚起・勧告</span><span class=sm>（**本記録の作成者がカタログの JSON を直接取得し、該当項目を抽出して確認した** 〈重要〉—— **取得したカタログ版は 2026.11.24（公開 2026-11-24T17:47:46 UTC）。** **確認した内容**: **`cveID: CVE-2026-116779`、 `vendorProject: SignalWire`、`product: FreeSwitch`、 `vulnerabilityName: SignalWire FreeSwitch Code Injection Vulnerability`、 `dateAdded: 2026-11-09`、`dueDate: 2026-11-12`、 `knownRansomwareCampaignUse: Unknown`、`forensicTriage: Yes`、 `cwes: [CWE-77, CWE-78, CWE-749]`。** **短い説明**: **「SignalWire FreeSwitch には、設定と資格情報の開示、 任意の通話制御、コマンド実行を許すコード注入の脆弱性がある」** （原文英語。本記録が訳した）。 **要求される対応**: **「ベンダーの指示に従って緩和を適用し、 BOD 26-04（リスクに基づくセキュリティ更新の優先順位付け）の指針と CISA のフォレンジックトリアージ要件に従うこと。 クラウドサービスについては該当する BOD 26-04 の指針に従い、 緩和が得られない場合は当該製品の使用を中止すること。 各資産のインターネット露出の評価と BOD 26-04 の適用は 関係者の責任である」**（原文英語。本記録が訳した）。 **備考**: **「この脆弱性はオープンソースの部品・第三者ライブラリ・ protocol・独自実装に影響し、異なる製品で使われうる」と記し、 参照先として出典1 の勧告 URL、BOD 26-04 の2つの URL、 NVD の CVE-2026-116779 を挙げている**（原文英語。本記録が訳した）〈重要〉。）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月20日 14時01分（UTC） 阿里云先知（Aliyun Xianzhi）</span> <a href="https://xz.aliyun.com/news/93416" target="_blank" rel="noreferrer noopener nofollow">利用SIP MESSAGE触发FreeSWITCH CVE-2026-116779远程命令执行漏洞复现与分析</a> <span class="b kind">ブログ</span><span class=sm>（**本記録の収集済み本文（`output/articles/20261124/` の保存記事）で確認した** 〈重要〉—— **第三者による再現と解析の記事であり、実在の被害の記録ではない**（本記録の明示）。 **確認した内容**: **コード上の該当箇所 （`sofia_presence.c:4747` の受信 MESSAGE 処理関数、`:4870` の `+` による分割と `char proto[512]` への複製、`:4894` の `to_proto` への書き込み、 `:5014` の `switch_core_chat_send`、`:5027` の `end:` ラベル、 `mod_dptools.c:6486` の `api` 登録、`:4698`／`:4705` の URL デコードと `switch_api_execute`、`sofia.c:4665` の `PFLAG_ENABLE_CHAT` の無条件設定、 `sofia.c:6118` 付近の `PFLAG_AUTH_MESSAGES` の既定設定）、 CVE 記録の公開日（2026年11月5日）と修正コミット `7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86`、 成立条件（`+` が先頭でないこと・左側が `api`・空白は `%20`・ To 利用者が512バイト未満・profile が MESSAGE を受け付けること）、 `202 Accepted` が実行の成否を示さないこと（負の対照 `foo+...` でも 202）、 1.10.11／1.10.12 に関門が無く設定層では緩和できないこと、 `external.xml` の `auth-calls=false` がメッセージ認証を切らないこと、 再現環境（`drachtio/drachtio-freeswitch-mrf`・FreeSWITCH 1.10.10・ internal 5060／external 5080／open 5090（`auth-messages=false`）／ openapi 5091）、 コンテナ内 root 権限での `system touch /tmp/fs-pwned` と `uid=0(root)` の確認、 権限を落とした場合でも設定・directory 利用者・ゲートウェイ資格情報・CDR の 読み取りと呼の経路の改変・module の読み込みが可能であること、 公開 PoC の「単包未認証」が `auth-messages=false` の構成でのみ成立すること。** **本記録はこの検証を自分で再現していない**（本記録の明示）〈自己未確認5〉—— **ただし記述はコードの行番号と既定値の論理を伴っており、 勧告（出典1）の記述と整合している。**）</span></li></ol></div><div class=rg><div class=rgt>技術的背景・先行事例</div><ol><li><span class=rid>[4]</span> <span class=sm>NVD（米国国立標準技術研究所）</span> <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-116779" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-116779</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本記録はこの記録そのものを取得していない**〈自己未確認1〉〈重要〉—— **出典2（CISA KEV）の備考が参照先として挙げている URL を記載した。** **出典3 が述べる「CVE 記録 2026-11-05 公開」「影響範囲 1.11.3 未満」は、 本記録が原典で確認していない。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s21"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月25日</span> <span class="b rev">新規作成</span> **2026年11月24日に収集した阿里云先知の検証記事（出典3）を起点に作成した。** **本記録の作成者が直接取得して裏を取ったもの**: ①**SignalWire の勧告 GHSA-mg63-h38w-8p9p**（出典1）—— **CVE 番号・深刻度・CVSS ベクタ・影響範囲・修正版・公開日・公開者・CWE、 仕組み（To 利用者部分が protocol 選択子になる）、 影響（コマンド実行・設定と資格情報の開示・通話の制御・ `mod_lua` が第2の到達点）、攻撃面と前提条件、 迂回策3項目とそのうち2つが経路を閉じないこと、 修正の仕組み（`enable-chat-api-proto`・403 と記録）、謝辞、 そして「この経路の悪用が実際に観測されている」という記述を確認した。** ②**CISA の KEV カタログ（JSON・カタログ版 2026.11.24）**（出典2）—— **収載日 2026-11-09・期限 2026-11-12・脆弱性名・短い説明・ 要求される対応・`forensicTriage: Yes`・ランサムウェア使用「不明」・ CWE 3件・備考（オープンソース部品として他製品に影響しうる旨と参照先）を確認した。** **裏が取れなかったもの**: **NVD／CVE の記録そのもの**〈自己未確認1〉、 **修正前の悪用を見つける公式な手順**〈未確定2〉、 **1.10 系向けの公式パッチの有無**〈未確定3〉、 **FreeSWITCH を同梱する第三者製品の一覧**〈未確定4〉、 **実際に悪用された組織・時期・攻撃者**〈未確定1〉。 **本記録は、①勧告と KEV が公表した事実、 ②第三者（出典3）による再現とコード追跡、 ③本記録の評価（検知の困難・対応の順序・類型としての読み）を 層として分けて記述した**（本記録の明示）〈重要〉。 **認証の前提条件について資料間で読みが分かれる点は、 矛盾と断定せず、確認事項を2つに分けて示した**〈齟齬1〉。</li></ul></div></div>
+<div class="blk " id="s22"><h3>タグ</h3><span class="b tag">FreeSWITCH</span><span class="b tag">SignalWire</span><span class="b tag">CVE-2026-116779</span><span class="b tag">SIP</span><span class="b tag">コマンド注入</span><span class="b tag">KEV</span><span class="b tag">CISA</span><span class="b tag">実悪用</span><span class="b tag">VoIP</span><span class="b tag">PBX</span><span class="b tag">SIPメッセージ</span><span class="b tag">設定で緩和不能</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-25 10:02 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
