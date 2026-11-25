@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>Radwareの内部管理APIが無認証で露出 — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1302</span>Radwareの内部管理APIが無認証で露出</h1>
+<header class="site-header">
+  <p class="subtitle">**イスラエルの DDoS 防御・アプリケーション配信ベンダ Radware の内部専用の Cloud WAF 管理 API が、認証を要求しないまま公開インターネットから到達可能になっており、 2026年11月19日に第三者がアクセスして顧客の連絡先情報と、 一部の顧客についてはクラウド保存先への認証情報を取得しうる状態になっていた** （出典1）〈重要〉。 **Radware の記述は「2026年11月19日、認可されていない者が、 認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API にアクセスした」である** （出典1。本記録の訳。原文英語）。 **「アクセスされた可能性があると確認された情報には、顧客の連絡先情報が含まれ、 一部の顧客については、顧客が自ら管理する保存先（AWS S3、Azure Blob Storage、 または SFTP）へのログ書き出しのために設定された認証情報が含まれる」** （出典1。本記録の訳。原文英語）〈重要〉。 **Radware は最初の不正な API アクセスから10時間後に検知し、 発信元の IP アドレスと当該 API へのアクセスを遮断し、 内部アカウントの認証情報をすべて無効化して差し替えた**（出典1）。 **同社は影響を受けた AppSec（WAF・BOT）顧客に対し、 ログ書き出しの認証情報を「強く」早急に更新し、 少なくとも11月19日以降の想定外のアクセスについて クラウド保存先のアクセスログを確認するよう求めている**（出典1）〈重要〉。 **同社はすでに、見覚えのない IP アドレスがログ書き出し先のバケットへ アクセスを試みたという AWS の警報の報告を顧客から受けている**（出典1）。 **一方、Radware は2026年11月25日時点で本件について公式の声明を出しておらず、 米証券取引委員会（SEC）への侵害報告も行っていない** （出典1。本記録の確認）〈重要〉—— **本件が外部に知られたのは、匿名の情報源が同社の根本原因分析報告を BleepingComputer に渡したためである**（出典1）。</p>
+  <div><span class="b type">意図せぬ露出（設定不備等で外部から到達可能だった）</span><span class="b type2">不正アクセス・侵害</span><span class="b type2">委託先・再委託先起因で委託元多数に波及</span><span class="b st">続報が続いている</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設定不備</span><span class="b cause">設計・実装上の不備</span><span class="b cause">権限管理の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月24日 17時49分（UTC。BleepingComputer）</span>
+  <span>最終更新: 2026年11月25日</span>
+</div>
+
+<div class="lead"><p><strong>防御を売る会社の内部管理 API が、鍵をかけずに表通りに面していた</strong> （本記録の整理）〈重要〉。 <strong>Radware は1996年創業、本社はテルアビブ、 12,500社を超える企業・通信事業者にアプリケーション配信と DDoS 防御のサービスを提供している</strong>（出典1）。 <strong>2026年11月19日、同社の内部専用の Cloud WAF 管理 API に 認可されていない者がアクセスした</strong>（出典1）—— <strong>その API は、認証を要求しないまま公開インターネットから到達可能だった。</strong> <strong>本記録が読者に持ち帰ってほしいのは、流出したものの性質である</strong> （本記録の評価）〈重要〉。 <strong>出たのは Radware のデータではなく、顧客自身のクラウド保存先への鍵である</strong> （出典1）—— <strong>AWS S3 のアクセスキー、Azure Blob Storage のキーまたは SAS トークン、 SFTP の認証情報。</strong> <strong>これらは Radware が顧客のログを書き出すために預かっていたものであり、 Radware が無効化できる認証情報ではない</strong>（本記録の整理）〈重要〉—— <strong>同社が自前でできたのは、自社の内部アカウントの差し替えと API の遮断までであって、 顧客の鍵の更新は顧客しか行えない。</strong> <strong>そしてすでに、顧客から「見覚えのない IP アドレスが ログ書き出し先のバケットへアクセスを試みた」という AWS の警報の報告が同社に届いている</strong>（出典1）。 <strong>つまり、鍵は使われようとしている。</strong> <strong>それにもかかわらず、Radware は本件について公式の声明を出しておらず、 SEC への侵害報告も行っていない</strong>（出典1。本記録の確認）〈重要〉—— <strong>本件が公になったのは、匿名の情報源が同社の根本原因分析報告を 報道機関に渡したからである。</strong></p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>6</span></div><ul><li><span class=ui>影響を受けた顧客の件数（連絡先情報・認証情報のそれぞれ）</span><span class="b rsn">公表されていない</span><div class=sm>**Radware の記述は「顧客の連絡先情報」と 「一部の顧客については（for a subset of customers） ログ書き出しのために設定された認証情報」である** （出典1。本記録の訳。原文英語）〈重要〉—— **件数はどちらも公表されていない。** **連絡先情報については「一部の顧客」という限定が付いておらず、 対象範囲が認証情報より広い可能性があるが、 Radware は範囲を明示していない**（本記録の読み）。 **同社全体の顧客は12,500社を超えるとされるが**（出典1）、 **これは母集団であって影響範囲ではない**（本記録の明示）。 **本記録は件数を推定しない**（本記録の方針）—— **顧客が「自社は該当するか」を判断する材料は、 個別の通知以外に存在しない。**</div></li><li><span class=ui>管理 API が認証なしで公開インターネットから到達可能だった期間</span><span class="b rsn">公表されていない</span><div class=sm>**Radware が述べたのは、2026年11月19日に 認可されていない者がアクセスしたことと、 その10時間後に検知したことである**（出典1）〈重要〉。 **API がいつからその状態にあったのかは一切述べられていない。** **本記録はこれを、本件で最も重要な欠落と見る** （本記録の評価）〈重要〉—— **露出はアクセスより前に始まっており、 11月19日より前に別の第三者が到達していた可能性を Radware は否定していない。** **顧客への助言の言い回し 「少なくとも11月19日以降の想定外のアクセスについて アクセスログを確認する」は、 それ以前の確認を排除していない**（本記録の読み）。 **「10時間で検知した」という数字が 「10時間しか開いていなかった」と読まれる危険がある** （本記録の評価）。</div></li><li><span class=ui>攻撃者の帰属・動機、および遮断された発信元 IP の帰属先</span><span class="b rsn">公表されていない</span><div class=sm>**Radware の記述は「認可されていない者（an unauthorized party）」までで、 国・集団・動機のいずれにも触れていない**（出典1）〈重要〉。 **同社は発信元の IP アドレスを特定して遮断しており、 単一の発信元が把握されていたことが分かるが、 その帰属先・所在国は公表されていない**（本記録の読み）。 **顧客が受けた AWS の警報に現れた「見覚えのない IP アドレス」が 同一のものかどうかも述べられていない**（本記録の明示）。 **本記録は帰属を推定しない**（本記録の方針）。</div></li><li><span class=ui>API が到達可能になった理由、および検知の端緒</span><span class="b rsn">公表されていない</span><div class=sm>**API が「認証を要求せずに公開インターネットから到達可能」に なった理由（設定変更、移行作業、クラウド基盤の既定値、 ロードバランサやファイアウォールの設定の整理のいずれか）は 公表されていない**（本記録の確認）〈重要〉。 **根本原因分析報告（root cause analysis report）と題された文書で あるにもかかわらず、公表された引用の範囲には 「なぜそうなったか」が含まれていない**（本記録の読み）〈重要〉—— **これは文書に書かれていないのか、 BleepingComputer が引用しなかったのかを本記録は区別できない**〈差異1〉。 **検知の端緒（監視の警報か、手作業の点検か、外部からの通報か）も 公表されていない**—— **10時間という時間の意味は、端緒が分かって初めて評価できる** （本記録の評価）。</div></li><li><span class=ui>流出した認証情報を使ったアクセスの試みの成否・件数・時期</span><span class="b rsn">調査中</span><div class=sm>**Radware は、露出した API キーやその他の顧客情報が 認可なく使われたかどうかをまだ調査している**（出典1）〈重要〉。 **同時に、同社はすでに 「見覚えのない IP アドレスがログ書き出し先のバケットへ アクセスを試みた」という AWS の警報の報告を 顧客から受けている**（出典1。本記録の訳。原文英語）。 **報告の件数・時期・試みの成否はいずれも公表されていない。** **本記録はこれを、本件で最も行動を要する未確定事項と見る** （本記録の評価）〈重要〉—— **「悪用は確認されていない」ではなく 「悪用が試みられている」段階であり、 鍵を更新していない顧客のリスクは時間とともに上がる。**</div></li><li><span class=ui>捜査機関への連絡、規制当局への報告、および公式の声明を出さない理由</span><span class="b rsn">公表されていない</span><div class=sm>**BleepingComputer は「Radware は本件について公式の声明を まだ出しておらず、米証券取引委員会に侵害報告も提出していない」と 記している**（出典1。本記録の訳。原文英語）〈重要〉。 **捜査機関への連絡の有無にも言及が無い。** **理由はいずれも述べられていない。** **本記録は開示義務の違反を主張しない**（本記録の方針）〈重要〉—— **①同社はイスラエル法人であり、外国民間発行者として 適用される開示の様式と期限が米国法人と同じとは限らない、 ②重要性（materiality）の判断は発行者が行うものであり、 本記録に判断材料が無い。** **記録するのは、2026年11月25日時点で 公式の声明も提出も確認できないという事実である。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Radware Ltd.</span><span class="b role">被害組織</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Radware Cloud WAF（AppSec：WAF・BOT）の利用顧客</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>不明の第三者（unauthorized party）</span><span class="b role">推定加害者</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Amazon Web Services（AWS）／Microsoft Azure</span><span class="b role">サービス・基盤の提供者（SaaS・決済網等）</span><span class="b lc">間接言及</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>米証券取引委員会（SEC）</span><span class="b role">監督官庁</span><span class="b lc">関係未公表</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>最初の不正な API アクセスから検知までの時間</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>10<span class=fu>時間</span></div><div class=fn>**BleepingComputer は「木曜日に侵害を検知した、 最初の不正な API アクセスから10時間後に」と記している** （出典1。本記録の訳。原文英語）〈重要〉。 **本記録はこの値を、侵害対応の速さとしては良好と評価する** （本記録の評価）—— **一般的な侵入の滞留時間は日や週の単位で語られる。** **ただし、これは「API が開いていた時間」ではない** （本記録の明示）〈重要〉〈未確定2〉—— **認証なしで到達可能だった期間は公表されておらず、 11月19日より前に別の第三者が到達していた可能性は排除されていない。** **10時間という数字が「10時間しか開いていなかった」と 読まれることを、本記録は明確に否定する。**</div></div><div class=fig><div class=fh><span class=fl>Radware の顧客数（企業・通信事業者）</span><span class="b conf">最少</span><span class="b org">報道値</span></div><div class=fv>12,500<span class=fu>社</span></div><div class=fn>**BleepingComputer は「12,500を超える企業・通信事業者の顧客」と記している** （出典1。本記録の訳。原文英語）〈重要〉—— **これは Radware 全体の顧客数であり、本件の影響を受けた顧客数ではない。** **本件で認証情報が対象になったのは 「一部の顧客（a subset of customers）」であり、 その件数は公表されていない**（出典1）〈未確定1〉。 **本記録がこの背景値を置くのは、 ベンダ1社の管理 API の露出が及びうる母集団の規模を 示すためである**（本記録の判断）—— **実際の影響範囲の推定には使えない。**</div></div><div class=fig><div class=fh><span class=fl>流出の対象となったログ書き出し用の認証情報の種類</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>3<span class=fu>種類</span></div><div class=fn>**①AWS S3 のアクセスキー、②Azure Blob Storage のキーまたは SAS トークン、 ③SFTP の認証情報**（出典1。本記録の訳。原文英語）〈重要〉。 **いずれも、顧客が自ら管理する保存先へ Radware がログを書き出すために設定されたものである**（出典1）。 **本記録がこれを数値として立てるのは、 3種類すべてが「顧客側の資産への鍵」であり、 Radware が無効化できないという共通の性質を持つためである** （本記録の判断）〈重要〉—— **本件の是正の実効は、 Radware ではなく顧客の作業にかかっている。**</div></div><div class=fig><div class=fh><span class=fl>Radware が「露出していない」と明示的に列挙した項目の数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>5<span class=fu>件</span></div><div class=fn>**①WAF のトラフィック検査、②証明書、③エンドユーザーのデータ、 ④顧客のアプリケーショントラフィック、 ⑤クラウド DDoS サービスとそのデータ**（出典1。本記録の訳。原文英語） 〈重要〉。 **本記録がこれを数値として立てるのは、 「何が出ていないか」を項目で示す公表が多くないためである** （本記録の判断）—— **特に証明書を明示したことは、 顧客が証明書の再発行の必要を判断できるようにしている** （本記録の評価）。 **ただしこれらは「見つかっていない」という調査段階の記述であり、 同社は調査を継続中である**（出典1。本記録の明示）。</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>**本件の攻撃は、技術的にはほとんど何もしていない**（本記録の整理）〈重要〉。 **Radware の記述によれば、認可されていない者が行ったのは 「認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API へのアクセス」である** （出典1。本記録の訳。原文英語）—— **脆弱性の悪用、認証の突破、権限の昇格はいずれも述べられていない。** **本記録は chain を、偵察・初期侵入・収集の3段で構成する** （本記録の整理）〈重要〉—— **偵察の具体（どのように API を見つけたか）は公表されていないため 推定として明示する。** **初期侵入は「認証が無いので入った」であり、 段階として記述する内容がほとんど無い**（本記録の明示）。 **収集は、顧客の連絡先と顧客のクラウド保存先への認証情報である。** **その後の段階（持ち出し先、鍵の使用）については、 顧客が受けた AWS の警報という形で痕跡が現れているが、 Radware の記録ではなく顧客からの報告である**（出典1）〈重要〉。</p><ol class=chain><li><div class=stg><span class="b stage">1. 偵察</span><span class="b conf">推定</span><span class=srcs></span></div><div>**攻撃者が、公開インターネットから到達可能な Radware の内部管理 API を見つけた**（本記録の整理）〈重要〉—— **発見の方法は公表されていない**〈未確定4〉。 **一般的な経路としては、 インターネット全体の走査サービスによる露出面の列挙、 証明書の透明性記録からのホスト名の収集、 公開文書や SDK に残った管理エンドポイントの記述、 エージェント型の攻撃基盤による網羅的な試行が考えられる** （本記録の整理。一般的な手口。本件の記録ではない）。 **本記録は、どれであったかを推定しない**（本記録の方針）。</div><div class=fn>根拠: Radware の記述「認証を要求せずに公開インターネットから到達可能だった」 から、外部から発見可能な状態だったことが読める（出典1）</div></li><li><div class=stg><span class="b stage">2. 初期侵入</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**攻撃者が当該 API にアクセスした**（出典1）〈重要〉—— **「2026年11月19日、認可されていない者が、 認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API にアクセスした」** （本記録の訳。原文英語）。 **本記録が記録として重く見るのは、 この段階に記述する内容がほとんど無いことである** （本記録の評価）〈重要〉—— **脆弱性の悪用も、認証の突破も、権限の昇格も無い。** **認証が無いので、到達した時点で入っている。** **Radware は単一の発信元 IP アドレスを特定して遮断しており、 アクセスが1か所からのものだったことが分かる**（出典1）。</div><div class=fn>根拠: Radware の根本原因分析報告の記述（出典1 が引用）</div></li><li><div class=stg><span class="b stage">3. 収集</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**顧客の連絡先情報と、一部の顧客については 顧客が自ら管理する保存先へのログ書き出し用の認証情報が アクセスされうる状態にあった**（出典1）〈重要〉—— **認証情報の種類は、AWS S3 のアクセスキー、 Azure Blob Storage のキーまたは SAS トークン、 SFTP の認証情報の3種である**（出典1）。 **Radware の言い回しは「アクセスされた可能性があると 確認された情報（The confirmed information potentially accessed）」であり、 到達可能だった範囲を確認したという意味である** （本記録の読み）〈重要〉—— **実際に読まれたかどうかは述べていない。** **露出しなかったものは明示的に列挙されている**（出典1）—— **WAF のトラフィック検査、証明書、エンドユーザーのデータ、 顧客のアプリケーショントラフィック、 クラウド DDoS サービスとそのデータ。**</div><div class=fn>根拠: Radware の記述「The confirmed information potentially accessed includes customer contact details, and for a subset of customers, the credentials configured for log export into their self-managed storage (AWS S3, Azure Blob Storage, or SFTP)」（出典1 が引用）</div></li><li><div class=stg><span class="b stage">4. 持ち出し</span><span class="b conf">disclosed</span><span class=srcs></span></div><div>**流出した鍵を使ったアクセスの試みが、 顧客側のクラウドで観測されている**（出典1）〈重要〉—— **「同社はすでに、見覚えのない IP アドレスがログ書き出し先の バケットへアクセスを試みたという AWS の警報の報告を 顧客から受けていると述べた」**（本記録の訳。原文英語）。 **試みの成否、件数、時期はいずれも公表されていない**〈未確定5〉。 **その IP アドレスが、Radware が遮断した発信元 IP と 同一かどうかも述べられていない**（本記録の明示）。 **本記録は、この段階を Radware の記録ではなく 顧客からの報告として位置づける**（本記録の整理）〈重要〉—— **ベンダの侵害の帰結が、 ベンダには見えない場所（顧客のクラウドアカウント）で 起きている。**</div><div class=fn>根拠: Radware が顧客から受けた AWS の警報の報告（出典1 が引用）</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>最初の不正な API アクセスから検知まで</div><div class=mv>**10時間である**（出典1。本記録の訳。原文英語）〈重要〉—— **「木曜日に侵害を検知した、 最初の不正な API アクセスから10時間後に」。** **本記録は、侵害対応としては良好と評価する**（本記録の評価）—— **侵入の滞留時間が日や週で語られることが多いなかで、 10時間は短い。** **ただしこれは「API が開いていた時間」ではない** 〈未確定2〉〈重要〉—— **認証なしで到達可能だった期間は公表されておらず、 露出はアクセスより前に始まっている。**</div></div><div class=met><div class=ml>検知から遮断・認証情報の差し替えまで</div><div class=mv>**同日（2026年11月19日）のうちに完了している** （出典1。本記録の読み）〈重要〉—— **発信元 IP の遮断、API へのアクセスの遮断、 内部アカウントの認証情報の一括無効化と差し替えが 「侵害を検知した後」に行われたと記されている。** **各措置の実施時刻は公表されていないため、 時間単位では算出できない**〈未確定1〉。 **本記録は、認証情報の一括差し替えを検知当日に行った判断を 高く評価する**（本記録の評価）—— **全社の内部認証情報の差し替えは 自動化された連携や常駐の処理を止めるため、 通常は影響調査を待ちたくなる判断である。**</div></div><div class=met><div class=ml>検知から顧客への通知まで</div><div class=mv>**算出できない**〈未確定1〉〈重要〉—— **根本原因分析報告に顧客への助言が含まれていることから、 顧客への通知が行われたことは読み取れるが**（出典1）、 **通知の日付・方法・対象件数はいずれも公表されていない。** **顧客から AWS の警報の報告が同社に届いていることは、 顧客が本件を知っていることの裏づけである**（本記録の読み）。</div></div><div class=met><div class=ml>検知から当事者の公表まで</div><div class=mv>**当事者による公表は存在しない**（出典1。本記録の確認） 〈差異2〉〈重要〉—— **「Radware は本件について公式の声明をまだ出しておらず、 米証券取引委員会に侵害報告も提出していない」** （本記録の訳。原文英語）。 **本記録も radware.com のセキュリティアドバイザリと プレスリリースの各ページを確認したが、 閲覧者検証の画面を返し内容を取得できなかった。** **したがって算出できない。** **本件が公になったのは2026年11月24日、 匿名の情報源が同社の根本原因分析報告を BleepingComputer に渡したことによる**（出典1）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>**Radware は、何が持ち出されたかを確定する前に、 内部アカウントの認証情報をすべて無効化して差し替えた** （出典1）〈重要〉—— **検知当日の措置である**（本記録の読み）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **全社の内部認証情報の一括差し替えは、 自動化された連携や常駐の処理を止める** （本記録の評価。一般的な性質。Radware は影響に触れていない） 〈重要〉—— **捨てられたのは、影響範囲を確定してから 必要な範囲だけを差し替える選択である。** **その代わりに得られたのは、 盗まれた可能性のある内部認証情報が その日以降使えない状態である。**</div></li><li><div class=ui>**Radware は、2026年11月25日時点で本件について 公式の声明を出さず、SEC への侵害報告も行っていない** （出典1。本記録の確認）〈重要〉—— **本件が公になったのは、匿名の情報源が 同社の根本原因分析報告を報道機関に渡したためである**（出典1）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **公表しないことで、同社は顧客への直接の通知と 調査の継続に集中でき、 確定していない情報が流通することを避けられた** （本記録の読み）〈重要〉—— **捨てられたのは、直接の顧客以外に届く経路である** （本記録の評価）。 **本件で鍵が使われる場所は顧客のクラウドアカウントであり、 その運用は顧客の中の別のチームが担っていることがある。** **公の声明は、ベンダが直接通知できない層に届く唯一の手段である。** **さらに、結果として事実関係は 内部文書の流出という形で世に出ており、 公表の枠組みと速度を自ら決める主導権が失われている** （本記録の評価）。</div></li><li><div class=ui>**Radware は、露出しなかったものを5項目にわたって 明示的に列挙した**（出典1）〈重要〉—— **WAF のトラフィック検査、証明書、エンドユーザーのデータ、 顧客のアプリケーショントラフィック、 クラウド DDoS サービスとそのデータ。**</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> **「出ていない」と列挙することは、 後に出ていたと判明した場合の訂正の負担を負うことである** （本記録の評価）〈重要〉—— **捨てられたのは、範囲を曖昧にしておく安全策である。** **実際、これらは「本日までに証拠は見つかっていない」という 調査段階の記述であり**（出典1）、 **調査の進展で変わりうる。**</div></li></ul></div>
+<section id="s6"><h2>流出したのは Radware のデータではなく、顧客自身のクラウドへの鍵である<span class="b slot">被害規模・影響範囲</span><span class=srcs>出典 [1]</span></h2><p><strong>この事案の重さは、件数ではなく鍵の持ち主にある</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>Radware の記述はこうである</strong>（出典1。本記録の訳。原文英語）——</p>
+<p><strong>「アクセスされた可能性があると確認された情報には、顧客の連絡先情報が含まれ、一部の顧客については、顧客が自ら管理する保存先（AWS S3、Azure Blob Storage、または SFTP）へのログ書き出しのために設定された認証情報が含まれる。」</strong></p>
+<p><strong>ここで出たのは、Radware のシステムへの認証情報ではない</strong>（本記録の整理）〈重要〉—— <strong>顧客が自分のクラウドアカウントの中に作り、Radware にログを書き込ませるために預けた鍵である。</strong></p>
+<p><strong>この違いが、是正の構造を決める</strong>（本記録の評価）。</p>
+<p><strong>Radware が自前でできたことは3つだった</strong>（出典1）—— <strong>①発信元の IP アドレスの遮断、②内部管理 API へのアクセスの遮断、③内部アカウントの認証情報の一括無効化と差し替え。</strong></p>
+<p><strong>いずれも Radware の資産に対する措置である。</strong></p>
+<p><strong>顧客の鍵は、Radware には無効化できない</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>だから同社は「強く」助言する形をとっている</strong>（出典1。本記録の訳。原文英語）—— <strong>「影響を受けた AppSec（WAF、BOT）顧客に対し、Cloud WAF のログ書き出しの認証情報（Azure Blob Storage のキーまたは SAS トークン、AWS S3 のアクセスキー、または SFTP の認証情報を含む）をできるだけ早く更新し、少なくとも11月19日以降の想定外のアクセスについてクラウド保存先のアカウントのアクセスログを確認するよう強く助言した。」</strong></p>
+<p><strong>「強く助言した」は、ベンダができる最大限であって、リスクの解消ではない</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>12,500社を超える顧客のうち、ログ書き出しを設定していた「一部」が何社なのかは公表されていない</strong>（出典1）〈未確定1〉。</p>
+<p><strong>その全社が鍵を更新するまで、露出は続く。</strong></p>
+<p><strong>そしてすでに、使われようとしている</strong>（出典1。本記録の訳。原文英語）〈重要〉——</p>
+<p><strong>「同社はすでに、見覚えのない IP アドレスがログ書き出し先のバケットへアクセスを試みたという AWS の警報の報告を顧客から受けていると述べた。」</strong></p>
+<p><strong>本記録は、この一文を本件で最も行動を要する情報と評価する</strong>（本記録の評価）—— <strong>「悪用は確認されていない」という段落ではない。</strong> <strong>試みは始まっている。</strong></p></section>
+<section id="s7"><h2>「内部専用だから認証は要らない」という前提が、境界の崩れで全面的に開いた<span class="b slot">原因・手口</span><span class=srcs>出典 [1]</span></h2><p><strong>原因は Radware 自身が1文で書いている</strong>（出典1。本記録の訳。原文英語）〈重要〉——</p>
+<p><strong>「2026年11月19日、認可されていない者が、認証を要求せずに公開インターネットから到達可能だった内部専用の Cloud WAF 管理 API にアクセスした。」</strong></p>
+<p><strong>本記録は、この1文を3つの独立した判断の帰結として読む</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>第1に、API を「内部専用」と位置づけた。</strong> <strong>これ自体は妥当な設計である。</strong></p>
+<p><strong>第2に、内部専用であることを前提に、認証を要求しない実装にした。</strong> <strong>ここが本件の成立条件である</strong>（本記録の評価）〈重要〉—— <strong>認証を要求しない API は、ネットワークの境界が1か所崩れた瞬間に、全面的に開く。</strong> <strong>段階的な劣化が無い。</strong></p>
+<p><strong>第3に、その API が公開インターネットから到達可能になった。</strong> <strong>これは設定の問題であり、いつ、何によってそうなったのかは公表されていない</strong>〈未確定2〉〈未確定4〉。</p>
+<p><strong>本記録が強調したいのは、第2と第3の関係である</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>第3（到達可能になったこと）は、どんな組織でも起きる</strong>（本記録の評価）—— <strong>設定変更、移行作業、クラウド基盤の既定値の変更、ロードバランサの設定、ファイアウォール規則の整理。</strong> <strong>「内部からしか届かない」という状態は、誰かが構成に触れるたびに揺らぐ。</strong></p>
+<p><strong>第2（認証を要求しないこと）は、第3が起きたときに被害をゼロにするか全面にするかを決める</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>もし当該 API が認証を要求していれば、到達可能になっても「到達できるが入れない」で止まった。</strong></p>
+<p><strong>これが、本記録が原因に「設計・実装上の不備」を設定不備と並べて挙げる理由である</strong>（本記録の判断）。</p>
+<p><strong>加えて、権限の広さも記録しておく</strong>（本記録の評価）〈重要〉—— <strong>1つの管理 API から、顧客の連絡先と顧客のクラウド保存先への認証情報の両方に到達できた。</strong> <strong>管理 API が顧客の資産への鍵まで扱える設計は、侵害1件の影響範囲を顧客のクラウドアカウントまで広げる。</strong></p>
+<p><strong>なお、この事案がセキュリティベンダで起きたことを、本記録は皮肉として扱わない</strong>（本記録の明示）—— <strong>防御製品を作る組織も、自社の管理基盤については他の事業者と同じ構成管理の問題を抱える。</strong> <strong>本件の所見はベンダ特有のものではなく、「内部専用」の名で認証を省いたすべての API に当てはまる。</strong></p></section>
+<section id="s8"><h2>10時間で気づいたが、いつから開いていたかは公表されていない<span class="b slot">発覚の端緒</span><span class=srcs>出典 [1]</span></h2><p><strong>検知の速さは評価できる</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>BleepingComputer は「木曜日に侵害を検知した、最初の不正な API アクセスから10時間後に」と記している</strong>（出典1。本記録の訳。原文英語）。</p>
+<p><strong>侵入の滞留時間が日や週で語られることが多いなかで、10時間は短い</strong>（本記録の評価）。</p>
+<p><strong>そして検知後の措置も速い</strong>（出典1）—— <strong>発信元 IP の遮断、API へのアクセスの遮断、内部アカウントの認証情報の一括無効化と差し替え。</strong></p>
+<p><strong>本記録は、3番目を最も踏み込んだ判断と評価する</strong>（本記録の評価）〈重要〉—— <strong>何が盗まれたかを確定する前に、盗まれた可能性のあるものを全部無効にしている。</strong> <strong>全社の内部認証情報の一括差し替えは、通常、自動化された連携や常駐の処理を止める</strong>（本記録の評価。一般的な性質。Radware は影響に触れていない）。<strong>それを検知当日に実行している。</strong></p>
+<p><strong>しかし、評価できるのはここまでである</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>公表されていないのは、API が「認証を要求せずに公開インターネットから到達可能」だった期間である</strong>〈未確定2〉。</p>
+<p><strong>Radware が述べたのは、11月19日に認可されていない者がアクセスしたことと、その10時間後に検知したことだけである。</strong></p>
+<p><strong>露出は、アクセスより前に始まっている</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>したがって、2つの問いが残る</strong>（本記録の評価）——</p>
+<p><strong>①API はいつから開いていたのか。</strong> <strong>②その間に、別の第三者が到達していなかったのか。</strong></p>
+<p><strong>Radware は①にも②にも答えていない。</strong></p>
+<p><strong>顧客への助言の言い回しが、この点を示している</strong>（出典1。本記録の訳。原文英語）〈重要〉—— <strong>「少なくとも11月19日以降の想定外のアクセスについてアクセスログを確認する」。</strong></p>
+<p><strong>「少なくとも」は、それ以前の確認を排除していない</strong>（本記録の読み）。</p>
+<p><strong>本記録は、10時間という数字が「10時間しか開いていなかった」と読まれることを明確に否定する</strong>（本記録の評価）〈重要〉—— <strong>10時間は検知の速さであり、露出の長さではない。</strong></p></section>
+<section id="s9"><h2>公式の声明も SEC への報告も無く、公になったのは内部文書が渡されたからである<span class="b slot">当局対応</span><span class=srcs>出典 [1]</span></h2><p><strong>本件が世に出た経路を、記録として残しておく必要がある</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>BleepingComputer の記述はこうである</strong>（出典1。本記録の訳。原文英語）——</p>
+<p><strong>「匿名の情報源によって BleepingComputer と共有された根本原因分析報告の中で、Radware は……と述べている。」</strong></p>
+<p><strong>つまり、本件の事実関係は、同社が公表した文書ではなく、同社が顧客または社内に向けて作った文書が外部に渡ったことによって知られている</strong>（本記録の整理）〈重要〉。</p>
+<p><strong>そして同紙は、公表の不在を明示している</strong>（出典1。本記録の訳。原文英語）——</p>
+<p><strong>「Radware は本件について公式の声明をまだ出しておらず、米証券取引委員会に侵害報告も提出していない。」</strong></p>
+<p><strong>本記録も独立に確認を試みた</strong>（本記録の作業）〈重要〉—— <strong>radware.com のセキュリティアドバイザリおよびプレスリリースの各ページは閲覧者検証の画面を返し、内容を取得できなかった</strong>〈差異2〉。<strong>検索でも本件に関する同社の公表は索引されていなかった。</strong> <strong>したがって本記録は、公表が無いことをBleepingComputer の記述と、同社サイトに本件の告知を発見できなかったことの両方で記録する</strong>（本記録の明示）—— <strong>サイトの取得に失敗しているため、「存在しない」と断定はしない。</strong></p>
+<p><strong>Radware は Nasdaq 上場企業である</strong>（本記録の整理）。</p>
+<p><strong>ただし本記録は、開示義務の違反を主張しない</strong>（本記録の方針）〈重要〉—— <strong>①同社はイスラエル法人であり、外国民間発行者として適用される様式と期限が米国法人と同じとは限らない、②重要性（materiality）の判断は発行者が行うものであり、本記録に判断材料が無い</strong>〈未確定6〉。</p>
+<p><strong>記録するのは事実である</strong>（本記録の明示）—— <strong>2026年11月25日時点で、公式の声明も提出も確認できない。</strong></p>
+<p><strong>本記録が評価として述べるのは、別のことである</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>公表が無くても、顧客への通知は行われたとみられる。</strong> <strong>根本原因分析報告が顧客への助言を含んでおり</strong>（出典1）、<strong>顧客から AWS の警報の報告が同社に届いていることが、顧客が本件を知っていることの裏づけである</strong>（本記録の読み）。</p>
+<p><strong>したがって本件の問題は「顧客が知らない」ことではない</strong>（本記録の評価）—— <strong>問題は、顧客の顧客、すなわちログ書き出し先のクラウドアカウントを共有する組織内の別のチームや、同じ鍵を他の用途に流用していた運用が、本件を知る経路を持たないことである</strong>（本記録の評価）〈重要〉。</p>
+<p><strong>公開の声明は、ベンダが直接通知できない層に届く唯一の手段である。</strong></p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>侵入経路</th><td>内部専用の Cloud WAF 管理 API が、認証を要求しないまま 公開インターネットから到達可能だった（Radware の記述）</td></tr><tr><th>侵入経路の確度</th><td>公表あり</td></tr><tr><th>露出期間</th><td><b>開始:</b> 公表されていない（2026年11月19日より前。期間は不明）　<b>終了:</b> 2026年11月19日（発信元 IP と当該 API へのアクセスを遮断）　<b>duration_text:</b> **確定できない**〈未確定2〉〈重要〉—— **Radware が述べているのは、2026年11月19日に 認可されていない者がアクセスしたことと、 最初の不正な API アクセスから10時間後に検知して遮断したことである**（出典1）。 **API が「認証を要求せずに公開インターネットから到達可能だった」期間は 一切述べられていない**（本記録の確認）。 **本記録が算出できたのは「不正アクセスから検知まで10時間」という 別の値であり、これは露出期間ではない**（本記録の明示。数値参照）〈重要〉—— **露出はアクセスより前に始まっている。** **この区別が重要なのは、 「10時間で気づいた」という速さが 「10時間しか開いていなかった」と読まれかねないためである** （本記録の評価）—— **同じ API に別の第三者が先に到達していた可能性を、 Radware は否定していない。**　<b>disclosure:</b> 公表されていない</td></tr><tr><th>intrusion_target</th><td>**Radware の内部専用 Cloud WAF 管理 API**（出典1）〈重要〉—— **API の名称・エンドポイント・到達可能になっていた理由 （設定変更、移行作業、既定設定のいずれか）は公表されていない**〈未確定4〉。 **侵入先は Radware の管理基盤であり、 顧客のアプリケーションや WAF の処理経路ではない**（出典1）—— **「WAF のトラフィック検査と防御は中断なく継続しており、 顧客のアプリケーションとサービスの可用性または防御への影響は 確認していない」**（本記録の訳。原文英語）。</td></tr><tr><th>漏えいした情報項目</th><td><ul class=cl><li>顧客の連絡先情報（customer contact details）</li><li>一部の顧客について、ログ書き出し用の AWS S3 アクセスキー</li><li>一部の顧客について、ログ書き出し用の Azure Blob Storage のキーまたは SAS トークン</li><li>一部の顧客について、ログ書き出し用の SFTP の認証情報</li></ul><span class="b rsn">stated</span><div class=fn>**Radware の記述は「アクセスされた可能性があると確認された情報 （The confirmed information potentially accessed）には、 顧客の連絡先情報が含まれ、一部の顧客については、 顧客が自ら管理する保存先（AWS S3、Azure Blob Storage、または SFTP）への ログ書き出しのために設定された認証情報が含まれる」である** （出典1。本記録の訳。原文英語）〈重要〉。 **本記録が注目するのは、この一文の言い回しである**（本記録の読み）〈重要〉—— **「アクセスされた可能性があると確認された」は、 「アクセスされたことを確認した」でも 「アクセスされていない」でもない。** **到達可能だった範囲を確認したという意味であり、 実際に読まれたかどうかは述べていない**（本記録の読み）。 **認証情報の種類は、顧客への助言の側でより具体的に列挙されている** （出典1。本記録の訳。原文英語）—— **「Azure Blob Storage のキーまたは SAS トークン、 AWS S3 のアクセスキー、または SFTP の認証情報」。** **対象顧客の件数は公表されていない**〈未確定1〉。 **連絡先情報については「一部の顧客」という限定が付いていない** （本記録の確認）〈重要〉—— **本記録は、連絡先の範囲が認証情報の範囲より広い可能性を記録する** （本記録の読み）—— **ただし Radware は範囲を明示していない。**</div></td></tr><tr><th>含まれていない情報</th><td><ul class=cl><li>WAF のトラフィック検査</li><li>証明書</li><li>エンドユーザーのデータ</li><li>顧客のアプリケーショントラフィック</li><li>クラウド DDoS サービスおよびそのデータ</li></ul><span class="b rsn">stated</span><div class=fn>**Radware は、本件で露出しなかったものを明示的に列挙している** （出典1。本記録の訳。原文英語）〈重要〉—— **「侵害は、WAF のトラフィック検査、証明書、エンドユーザーのデータ、 顧客のアプリケーショントラフィック、 クラウド DDoS サービスとそのデータを露出させていない。」** **さらに「本日までに、顧客のセキュリティポリシーの変更や 顧客のアプリケーショントラフィックへのアクセスの証拠は見つかっていない」と している**（本記録の訳。原文英語）。 **本記録はこの列挙を、公表の質として評価する**（本記録の評価）〈重要〉—— **「何が出ていないか」を項目で示す公表は多くない。** **特に証明書を明示している点は重い**（本記録の読み）—— **WAF は TLS を終端するため、 顧客の秘密鍵を預かっている構成があり得る。** **そこが出ていないと明言したことで、 顧客が証明書を再発行する必要があるかの判断ができる。** **一方で、本記録は留保を置く**（本記録の明示）—— **これらは「見つかっていない」という調査段階の記述であり、 同社は調査を継続中である**（出典1）。</div></td></tr><tr><th>悪用の有無</th><td><b>状況:</b> 調査中　<b>時点:</b> 2026年11月24日（報道の時点）　<b>補足:</b> **Radware は、露出した API キーやその他の顧客情報が 認可なく使われたかどうかをまだ調査している**（出典1）〈重要〉。 **同時に、同社はすでに悪用の試みの報告を受けている** （出典1。本記録の訳。原文英語）—— **「同社はすでに、見覚えのない IP アドレスがログ書き出し先の バケットへアクセスを試みたという AWS の警報の報告を 顧客から受けている。」** **本記録はこの一文を、本件で最も行動を要する情報と評価する** （本記録の評価）〈重要〉—— **「悪用は確認されていない」という段階ではなく、 「悪用が試みられている」段階である。** **試みが成功したかどうかは述べられていない**〈未確定5〉。 **試みた IP アドレスが、Radware が遮断した発信元 IP と 同一かどうかも述べられていない**（本記録の明示）。</td></tr><tr><th>ログの有無</th><td>**一定の精度で記録が残っていたとみられる**（本記録の読み）〈重要〉—— **根拠は3点である**（出典1）—— **①不正アクセスの発生日（2026年11月19日）を特定していること、 ②最初の不正な API アクセスから検知までの時間を 「10時間」と時間単位で示していること、 ③発信元の IP アドレスを特定して遮断していること。** **さらに、顧客へは「少なくとも11月19日以降の想定外のアクセスについて クラウド保存先のアクセスログを確認する」よう助言しており** （出典1。本記録の訳。原文英語）、 **同社が11月19日を起点として確定していることが分かる**（本記録の読み）。 **一方、API が認証なしで到達可能になっていた期間については 何も述べられていない**〈未確定2〉〈重要〉—— **「少なくとも11月19日以降」という助言の言い回しは、 それ以前の確認を排除していない**（本記録の読み）。 **本記録は、同社が11月19日より前の到達を調べたかどうかを 評価できない**（本記録の明示）。</td></tr><tr><th>緩和策</th><td><div class=sub><b>数え方:</b> 発信元の IP アドレスを遮断した　<b>副作用:</b> **公表されていない**（出典1）—— **単一の IP アドレスの遮断であり、 正規の利用に影響する性質の措置ではない**（本記録の評価）。 **ただし本記録は、この措置の有効性を限定的と見る** （本記録の評価）〈重要〉—— **IP アドレスの遮断は、同じ攻撃者が別の経路から 再び到達することを防がない。**　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 内部専用の Cloud WAF 管理 API へのアクセスを遮断した　<b>副作用:</b> **公表されていない**（出典1）〈重要〉—— **「内部専用」の API であるため、 内部の正規の運用がこの API に依存していた場合、 遮断は社内の業務に影響しうる**（本記録の評価。 Radware はこの点に触れていない）。 **同社は「WAF のトラフィック検査と防御は中断なく継続した」としており、 顧客側のサービスへの影響は否定されている**（出典1）。　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 内部アカウントの認証情報をすべて無効化し差し替えた　<b>副作用:</b> **公表されていない**（出典1）〈重要〉—— **全社の内部認証情報の一括差し替えは、 通常、自動化された連携や常駐の処理を停止させる** （本記録の評価。一般的な性質。Radware は影響に触れていない）。 **本記録はこの措置を、本件の対応で最も踏み込んだ判断と評価する** （本記録の評価）—— **何が盗まれたかを確定する前に、 盗まれた可能性のあるものを全部無効にしている。**</div><div class=sub><b>数え方:</b> 影響を受けた AppSec（WAF・BOT）顧客に対し、ログ書き出しの認証情報を早急に更新するよう「強く」助言した　<b>副作用:</b> **顧客側に作業と停止の負担が生じる**（本記録の評価）〈重要〉—— **ログ書き出しの認証情報を更新する間、 Radware から顧客の保存先へのログ転送は止まる、 または設定の入れ替えが必要になる**（本記録の推定。 Radware はこの点に触れていない）。 **さらに本記録は、構造上の制約を指摘する**（本記録の評価）〈重要〉—— **流出したのは顧客自身のクラウド保存先への認証情報であり、 Radware には無効化する権限が無い。** **したがってこの措置の実効は、 12,500社規模の顧客のうち該当する顧客が 実際に鍵を更新するかどうかにかかっている。** **「強く助言した」は、ベンダができる最大限であって、 リスクの解消ではない。**　<b>出典:</b> 1</div><div class=sub><b>数え方:</b> 影響を受けた顧客に対し、少なくとも2026年11月19日以降の想定外のアクセスについてクラウド保存先のアクセスログを確認するよう求めた　<b>副作用:</b> **顧客側に調査の負担が生じる**（本記録の評価）—— **クラウド保存先のアクセスログを有効にしていない顧客は、 確認そのものができない**（本記録の評価）〈重要〉—— **AWS S3 のアクセスログや Azure の診断ログは 既定で有効になっていない設定があり、 その場合は「確認したが分からない」で終わる。** **Radware はこの前提に触れていない**（本記録の明示）。　<b>出典:</b> 1</div></td></tr><tr><th>criminal</th><td><b>police_contactの公表状況:</b> 公表されていない　<b>complaint_filedの公表状況:</b> 公表されていない　<b>補足:</b> **捜査機関への連絡・通報の有無は公表されていない** （出典1。本記録の確認）〈重要〉〈未確定6〉—— **根本原因分析報告は技術的な経緯と顧客への助言で構成されており、 法執行・規制当局への対応に触れていない。** **BleepingComputer は、SEC への侵害報告が行われていないことを 明示的に記している**（出典1）。</td></tr><tr><th>attribution</th><td><b>状況:</b> 確認されていない　<b>補足:</b> **帰属は行われていない**（出典1。本記録の確認）〈重要〉〈未確定3〉—— **Radware の記述は「認可されていない者（an unauthorized party）」までで、 国・集団・動機のいずれにも触れていない。** **同社は発信元の IP アドレスを特定して遮断しており、 単一の発信元が把握されていたことが分かるが、 その帰属先は公表されていない**（本記録の読み）。 **本記録は帰属を推定しない**（本記録の方針）。</td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">公表されていない（2026年11月19日より前）</td><td class=nowrap><span class="b kind">露出の開始</span></td><td>**内部専用の Cloud WAF 管理 API が、認証を要求しないまま 公開インターネットから到達可能な状態になった**（出典1）〈重要〉—— **この状態がいつ始まったのか、 設定変更・移行作業・既定設定のいずれによるものかは 一切公表されていない**〈未確定2〉〈未確定4〉。 **本記録はこの項目を、空白であること自体を残すために立てる** （本記録の明示）—— **露出の開始が分からないと、 11月19日より前に別の第三者が到達していた可能性を排除できない。**</td></tr><tr><td class="sm nowrap tw">2026年11月19日（木曜日）</td><td class=nowrap><span class="b kind">発生</span></td><td>**認可されていない者が、当該の内部専用 Cloud WAF 管理 API に アクセスした**（出典1）〈重要〉—— **Radware の記述は「2026年11月19日、認可されていない者が、 認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API にアクセスした」** （本記録の訳。原文英語）。 **アクセスの時刻は公表されていない**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日（最初の不正な API アクセスから10時間後）</td><td class=nowrap><span class="b kind">検知</span></td><td>**Radware が侵害を検知した**（出典1）〈重要〉—— **BleepingComputer は「木曜日に侵害を検知した、 最初の不正な API アクセスから10時間後に」と記している** （本記録の訳。原文英語）。 **検知の端緒（監視の警報か、手作業の点検か、外部からの通報か）は 公表されていない**（本記録の確認）〈未確定4〉。</td></tr><tr><td class="sm nowrap tw">2026年11月19日（検知後）</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Radware が発信元の IP アドレスと当該の内部管理 API への アクセスを遮断し、内部アカウントの認証情報をすべて 無効化して差し替えた**（出典1）〈重要〉—— **「同社は、侵害を検知した後、内部アカウントの認証情報を すべて無効化し差し替えた」**（本記録の訳。原文英語）。 **各措置の実施時刻は公表されていない**（本記録の確認）。</td></tr><tr><td class="sm nowrap tw">公表されていない（2026年11月19日以降）</td><td class=nowrap><span class="b kind">組織の対応（通知・停止・連携など）</span></td><td>**Radware が、影響を受けた AppSec（WAF・BOT）顧客に対し、 ログ書き出しの認証情報の早急な更新と、 少なくとも2026年11月19日以降のクラウド保存先のアクセスログの確認を 求めた**（出典1）〈重要〉—— **通知の日付・方法・対象の件数はいずれも公表されていない** 〈未確定1〉。 **本記録は、助言の存在を根本原因分析報告の記述から確認している** （出典1）—— **顧客への実際の通知が行われたかどうかは、 同社の対外的な公表では確認できない。**</td></tr><tr><td class="sm nowrap tw">公表されていない（2026年11月19日以降・報道時点までに）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**顧客から Radware に、見覚えのない IP アドレスが ログ書き出し先のバケットへアクセスを試みたという AWS の警報の報告が届いた**（出典1）〈重要〉—— **「同社はすでに、見覚えのない IP アドレスがログ書き出し先の バケットへアクセスを試みたという AWS の警報の報告を 顧客から受けていると述べた」**（本記録の訳。原文英語）。 **報告の件数・時期・試みの成否はいずれも公表されていない** 〈未確定5〉。 **本記録は、これを悪用の試みが始まっている証拠として記録する** （本記録の整理）。</td></tr><tr><td class="sm nowrap tw">2026年11月24日 17時49分（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**BleepingComputer が、匿名の情報源から受け取った Radware の根本原因分析報告（root cause analysis report）に基づき、 本件を報じた**（出典1）〈重要〉—— **「匿名の情報源によって BleepingComputer と共有された 根本原因分析報告の中で」**（本記録の訳。原文英語）。 **本記録は、これが本件の公表の起点であると整理する** （本記録の整理）—— **当事者の公表によってではなく、 内部文書の流出によって事案が公になった。**</td></tr><tr><td class="sm nowrap tw">2026年11月25日 1時31分（UTC）</td><td class=nowrap><span class="b kind">報道・レポート公開</span></td><td>**Risky Business の Risky Bulletin が、 本件を「サイバーセキュリティ企業 Radware がハッキングされた」として 取り上げた**（出典2）—— **同じ回の筆頭は CIA の OSINT 基盤の侵害であり、 本 DB では INC-2026-1301 として記録している**（本記録の確認）〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年11月25日（本記録の確認時点）</td><td class=nowrap><span class="b kind">本記録の作成者による観測（現況確認）</span></td><td>**本記録が確認した時点で、Radware の公式の声明・ セキュリティアドバイザリは見つからなかった**（本記録の作業）〈重要〉—— **同社サイト（radware.com のセキュリティアドバイザリおよび プレスリリースの各ページ）は閲覧者検証の画面を返し、 内容を取得できなかった**（本記録の作業）〈差異2〉。 **検索でも本件に関する同社の公表は索引されていなかった。** **BleepingComputer も「Radware は本件について公式の声明を まだ出しておらず、米証券取引委員会に侵害報告も提出していない」と 記している**（出典1。本記録の訳。原文英語）。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>4</span></div><ul><li><span class="b dk">裏取りできていない</span><div class=sm>**本件の事実関係は、Radware の根本原因分析報告 （root cause analysis report）の記述に基づく**（出典1）〈重要〉—— **しかしその文書は公表されたものではなく、 匿名の情報源が BleepingComputer に渡したものである** （出典1。本記録の訳。原文英語）。 **本記録が読んでいるのは、BleepingComputer が引用した部分だけである** （本記録の明示）〈重要〉。 **したがって本記録は次のいずれも検証していない**—— **①文書の全体の構成と、引用されなかった部分の内容、 ②文書が顧客向けのものか社内向けのものか、 ③文書の日付と版、 ④「根本原因分析」と題されながら 「なぜ API が到達可能になったか」が引用に含まれていないのが 文書の欠落なのか引用の選択なのか。** **本記録は引用の精度に依拠している**（本記録の判断）—— **引用された英文は具体的で、 改変の形跡を示すものは見当たらない**（本記録の読み）。</div></li><li><span class="b dk">当事者の公表なし</span><div class=sm>**BleepingComputer は、Radware が公式の声明を出しておらず SEC への侵害報告も行っていないと記している**（出典1）〈重要〉。 **本記録も独立に確認を試みた**（本記録の作業）—— **radware.com のセキュリティアドバイザリのページと プレスリリースのページは、いずれも閲覧者検証の画面 （&quot;Verifying your browser before proceeding...&quot;）を返し、 内容を取得できなかった。** **検索でも本件に関する同社の公表は索引されていなかった。** **したがって本記録は、公表が存在しないと断定しない** （本記録の方針）〈重要〉—— **取得に失敗していることと、存在しないことは別である。** **記録するのは2点である**（本記録の明示）—— **①BleepingComputer が公表の不在を明示していること、 ②本記録が同社サイトから本件の告知を確認できなかったこと。** **なお、閲覧者検証による取得の失敗は 本 DB の先行レコードでも記録されている（INC-2026-0580）** （本記録の確認）—— **その事案では、別サイトの WAF（Radware 製）によって 本記録の取得が遮断されていた。**</div></li><li><span class="b dk">単位・母数の曖昧さ</span><div class=sm>**Radware の言い回しは &quot;The confirmed information potentially accessed&quot; である** （出典1）〈重要〉。 **本記録はこれを「到達可能だった範囲を確認した」と読む** （本記録の読み）—— **「アクセスされたことを確認した」でも 「アクセスされていない」でもない。** **この区別が重要なのは、顧客が取るべき行動が変わるためである** （本記録の評価）〈重要〉—— **到達可能性なら全対象の鍵を更新する必要があり、 実アクセスの特定ができているなら対象を絞れる。** **認証を要求しない API では呼び出し元を識別できないため、 誰が何を取得したかの記録そのものが残りにくい** （本記録の評価。一般的な性質）—— **本記録は、到達可能性の確認にとどまっている可能性が高いと読むが、 Radware は明示していない**〈未確定5〉。</div></li><li><span class="b dk">一次資料が沈黙している</span><div class=sm>**引用された記述は、 ①何が起きたか（認証を要求しない内部専用 API への不正アクセス）、 ②何が露出しうるか（顧客の連絡先と一部顧客の認証情報）、 ③何が露出していないか（5項目）、 ④何をしたか（IP と API の遮断、内部認証情報の差し替え）、 ⑤顧客は何をすべきか（鍵の更新とログの確認）で構成されている** （出典1。本記録の整理）〈重要〉。 **含まれていないのは、API がなぜ 「認証を要求せずに公開インターネットから到達可能」に なったのかである**〈未確定4〉。 **設定変更か、移行作業か、既定値か、 設計当初からそうだったのかが分からない。** **本記録は、これが文書の欠落なのか BleepingComputer の引用の選択なのかを区別できない**〈差異1〉—— **ただし、他組織が本件から学べるものの多くが この1点にかかっていることは記録しておく**（本記録の評価）。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>認証を省いた管理APIが、顧客のクラウドへの鍵を外に置いていた</div><div class=svgwrap><svg viewBox="0 0 1406 324" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,162.0 C193.0,162.0 193.0,162.0 220,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,162.0 C397.0,162.0 397.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,60.0 628,60.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,162.0 628,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,162.0 C601.0,162.0 601.0,264.0 628,264.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,162.0 C805.0,162.0 805.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M166,162.0 C499.0,162.0 499.0,162.0 832,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,162.0 C1009.0,162.0 1009.0,111.0 1036,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,111.0 C1111.0,111.0 1111.0,213.0 1036,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C805.0,213.0 805.0,162.0 424,162.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1213.0,213.0 1213.0,111.0 1240,111.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,213.0 C1213.0,213.0 1213.0,213.0 1240,213.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">認可されていない第三者｜</text><text x="91.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">帰属は行われていない</text><text x="91.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">単一の発信元 IP が特</text><text x="91.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">定され遮断された（出典1</text><rect x="220" y="125.0" width="150" height="74" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="147.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">露出面の発見｜方法は公表</text><text x="295.0" y="161.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">されていない</text><text x="295.0" y="174.0" text-anchor="middle" fill="#f48fb1" font-size="10">走査・証明書記録・公開文</text><text x="295.0" y="186.0" text-anchor="middle" fill="#f48fb1" font-size="10">書などが考えられる（本記</text><rect x="424" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">内部専用 Cloud W</text><text x="499.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">AF 管理 API｜認証</text><text x="499.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">を要求せず公開インター…</text><text x="499.0" y="181.0" text-anchor="middle" fill="#64b5f6" font-size="10">いつから開いていたかは非</text><text x="499.0" y="193.0" text-anchor="middle" fill="#64b5f6" font-size="10">公表（出典1）〈未確定2</text><rect x="628" y="16.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客の連絡先情報｜「一部</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">の顧客」の限定が付いてい</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ない</text><text x="703.0" y="79.0" text-anchor="middle" fill="#ffcc80" font-size="10">対象範囲は明示されていな</text><text x="703.0" y="91.0" text-anchor="middle" fill="#ffcc80" font-size="10">い（本記録の読み）</text><rect x="628" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ログ書き出し用の認証情報</text><text x="703.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">｜AWS S3キー／Az</text><text x="703.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ure Blobキー・…</text><text x="703.0" y="181.0" text-anchor="middle" fill="#ffcc80" font-size="10">一部の顧客（a subs</text><text x="703.0" y="193.0" text-anchor="middle" fill="#ffcc80" font-size="10">et of custom</text><rect x="628" y="220.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="703.0" y="242.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">露出していないとされる5</text><text x="703.0" y="256.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">項目｜WAF検査・証明書</text><text x="703.0" y="270.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">・エンドユーザーのデー…</text><text x="703.0" y="283.0" text-anchor="middle" fill="#ffcc80" font-size="10">「本日までに証拠は見つか</text><text x="703.0" y="295.0" text-anchor="middle" fill="#ffcc80" font-size="10">っていない」という調査段</text><rect x="832" y="118.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="907.0" y="140.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客が自ら管理するクラウ</text><text x="907.0" y="154.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ド保存先｜AWS S3／</text><text x="907.0" y="168.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Azure Blob／…</text><text x="907.0" y="181.0" text-anchor="middle" fill="#80cbc4" font-size="10">Radware には鍵を</text><text x="907.0" y="193.0" text-anchor="middle" fill="#80cbc4" font-size="10">無効化する権限が無い（本</text><rect x="1036" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1111.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">顧客側の AWS の警報</text><text x="1111.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">｜見覚えのない IP が</text><text x="1111.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バケットへアクセスを試…</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#f48fb1" font-size="10">悪用の試みを最初に捉えた</text><text x="1111.0" y="142.0" text-anchor="middle" fill="#f48fb1" font-size="10">のはベンダではなく顧客（</text><rect x="1036" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1111.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">Radware｜10時間</text><text x="1111.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">で検知・IP と API</text><text x="1111.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5"> を遮断・内部認証情報…</text><text x="1111.0" y="232.0" text-anchor="middle" fill="#80cbc4" font-size="10">自社の資産に対する措置は</text><text x="1111.0" y="244.0" text-anchor="middle" fill="#80cbc4" font-size="10">検知当日に完了（出典1。</text><rect x="1240" y="67.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="1315.0" y="89.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">影響を受けた AppSe</text><text x="1315.0" y="103.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">c（WAF・BOT）顧客</text><text x="1315.0" y="117.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">｜鍵の更新を「強く」助…</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#80cbc4" font-size="10">是正の実行者は顧客。ベン</text><text x="1315.0" y="142.0" text-anchor="middle" fill="#80cbc4" font-size="10">ダにできるのは助言まで（</text><rect x="1240" y="169.0" width="150" height="88" rx="6" fill="#1a1d27" stroke="#b0bec5" stroke-width="1.4"/><text x="1315.0" y="191.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">公式の声明・SEC への</text><text x="1315.0" y="205.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">侵害報告｜2026年11</text><text x="1315.0" y="219.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">月25日時点で確認でき…</text><text x="1315.0" y="232.0" text-anchor="middle" fill="#b0bec5" font-size="10">本件は匿名の情報源が内部</text><text x="1315.0" y="244.0" text-anchor="middle" fill="#b0bec5" font-size="10">文書を報道機関に渡して公</text></svg></div><div class=fn>**Radware の根本原因分析報告の引用（出典1）から本記録が構成した** 〈重要〉。 **実線は Radware が述べた事実、 破線は本記録の推定または公表されていない範囲である。** **API が認証なしで到達可能になった時期と理由、 攻撃者の帰属、対象顧客の件数、 悪用の試みの成否はいずれも公表されていない** 〈未確定1〉〈未確定2〉〈未確定3〉〈未確定4〉〈未確定5〉。 **根本原因分析報告は公表された文書ではなく、 匿名の情報源が報道機関に渡したものである**〈差異1〉。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">偵察</span></td><td><span class="b do">公表されていない</span><div class=sm>**この段階での検知について、公表は何も述べていない** （本記録の確認）〈重要〉—— **ただし本記録は、検知ではなく「自分で先に見つける」側に 機会があったと評価する**（本記録の評価）。 **公開インターネットから見た自組織の露出面の継続的な列挙 （外部攻撃面の管理）を行っていれば、 認証を要求しない管理 API が外から見えている状態は 発見できた可能性がある**（本記録の評価）—— **これは攻撃の検知ではなく、構成の点検である。** **Radware が外部露出面の点検を行っていたかどうかは 公表されていない**〈未確定4〉。</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">検知した</span><div class=sm>**検知は機能した**（出典1）〈重要〉—— **最初の不正な API アクセスから10時間後に Radware は侵害を検知した**（本記録の訳。原文英語）。 **検知の端緒（監視の警報か、手作業の点検か、 外部からの通報か）は公表されていない**〈未確定4〉。 **本記録は10時間を、侵害対応としては良好と評価する** （本記録の評価）—— **ただしこれは「API が開いていた時間」ではない** 〈未確定2〉〈重要〉—— **露出の開始は公表されておらず、 11月19日より前に別の第三者が到達していた可能性は 排除されていない。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">収集</span></td><td><span class="b do">公表されていない</span><div class=sm>**どのデータに実際にアクセスされたかを 記録から特定できたのかは公表されていない** （本記録の確認）〈重要〉〈未確定5〉—— **「アクセスされた可能性があると確認された」という言い回しは、 到達可能性の確認であって、 アクセスの記録に基づく特定とは読めない**（本記録の読み）。 **認証を要求しない API では、 呼び出し元を識別する手段が無いため、 誰が何を取得したかの記録そのものが 残りにくい**（本記録の評価。一般的な性質）〈重要〉—— **認証の欠如は、侵入を容易にするだけでなく、 事後の範囲確定も難しくする。**</div></td><td><span class=sm>—</span></td></tr><tr><td class=nowrap><span class="b stage">持ち出し</span></td><td><span class="b do">検知した</span><div class=sm>**検知したのはベンダではなく顧客である** （出典1。本記録の整理）〈重要〉—— **AWS の警報が、見覚えのない IP アドレスからの バケットへのアクセスの試みを捉えた。** **これは、顧客側で保存先のアクセス監視が 有効になっていた場合にのみ成立する**（本記録の評価）〈重要〉—— **Radware は顧客に「少なくとも11月19日以降の 想定外のアクセスについてアクセスログを確認する」よう 求めているが**（出典1）、 **ログを有効にしていない顧客は確認そのものができない** （本記録の評価）。 **Radware はこの前提に触れていない**（本記録の明示）。</div></td><td><span class=sm>—</span></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>**Radware は、何が持ち出されたかを確定する前に、 内部アカウントの認証情報をすべて無効化して差し替えた** （出典1）〈重要〉—— **検知当日の措置である**（本記録の読み）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価である**（本記録の判断）〈重要〉—— **評価を「機能した」とするのは、 措置の対象（自社の内部認証情報）が Radware の権限の内側にあり、 実行によって実際にリスクが消えているためである。** **留保を置く**（本記録の明示）—— **本記録が参照できるのは同社の根本原因分析報告の引用のみであり、 差し替えが全系統に及んだかどうかは確認できていない。**</td></tr><tr><td>**Radware は、2026年11月25日時点で本件について 公式の声明を出さず、SEC への侵害報告も行っていない** （出典1。本記録の確認）〈重要〉—— **本件が公になったのは、匿名の情報源が 同社の根本原因分析報告を報道機関に渡したためである**（出典1）。</td><td class=nowrap><span class="b assess">不十分</span></td><td class=sm>**本記録の評価である**（本記録の判断）〈重要〉—— **評価を「不十分」とするのは、 流出したものが顧客側の資産への鍵であり、 是正の実行者が顧客だからである**（本記録の評価）。 **ベンダが無効化できない認証情報について、 ベンダにできる最も強い措置は 「気づいていない利用者にも届く形で知らせること」である。** **直接の契約窓口への通知だけでは、 同じ鍵を別の用途に流用していた運用や、 保存先を共有する別のチームには届かない。** **留保を置く**（本記録の明示）—— **本記録はサイトの取得に失敗しているため、 公表が存在しないと断定はしない**〈差異2〉。</td></tr><tr><td>**Radware は、露出しなかったものを5項目にわたって 明示的に列挙した**（出典1）〈重要〉—— **WAF のトラフィック検査、証明書、エンドユーザーのデータ、 顧客のアプリケーショントラフィック、 クラウド DDoS サービスとそのデータ。**</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>**本記録の評価である**（本記録の判断）〈重要〉—— **「何が出ていないか」を項目で示す公表は多くない。** **顧客が取るべき行動を絞れる形になっている点を評価する。** **ただし、対象顧客の件数が公表されていないため、 自社が「一部の顧客」に当たるかは 個別の通知を待つしかない**（本記録の明示）〈未確定1〉。</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>**SaaS ベンダに預けている認証情報を棚卸しする。 ベンダが破られたとき、無効化できるのは自分だけである。**</div><div class=lw>**本件で流出したのは Radware のデータではなく、 顧客自身のクラウド保存先への鍵である**（出典1）〈重要〉—— **AWS S3 のアクセスキー、 Azure Blob Storage のキーまたは SAS トークン、 SFTP の認証情報。** **Radware が自前でできたのは自社の内部認証情報の差し替えまでで、 顧客の鍵は顧客しか更新できない**（本記録の整理）。 **同社は「強く」助言する形をとっているが**（出典1）、 **これはベンダができる最大限であって、リスクの解消ではない** （本記録の評価）。 **そしてすでに、顧客から 「見覚えのない IP アドレスがログ書き出し先のバケットへ アクセスを試みた」という AWS の警報の報告が届いている**（出典1）。</div><div class=la><b>取るべき行動</b> **自組織が外部のサービス事業者に渡している認証情報を 一覧にする—— 渡した相手、渡した鍵の種類、できること（読み／書き／削除）、 対象リソース、有効期限、最終更新日、更新の手順と所要時間。** **「更新の手順」が書けない項目は、 ベンダ侵害時に更新できないということなので、 先に手順を作る。** **棚卸しの入口は、 クラウド基盤のアクセスキーの一覧と 発行者・用途の記録を突き合わせることである。**</div></li><li><div class=lp>**ベンダ侵害の通知は、契約窓口に届いても運用担当には届かない。 受け取った通知を社内の誰に渡すかを事前に決めておく。**</div><div class=lw>**本件の是正は、顧客側の作業である**（出典1）〈重要〉—— **ログ書き出しの認証情報の更新と、 クラウド保存先のアクセスログの確認。** **どちらも、Radware との契約を管理している部署ではなく、 クラウド基盤を運用している部署の作業である** （本記録の評価）。 **さらに、同じ鍵を他の用途に流用していた運用や、 保存先を共有する別のチームは、 ベンダからの通知を受け取る立場にない**（本記録の評価）〈重要〉。 **Radware は公式の声明を出していないため、 契約窓口を経由しない経路が存在しない**（出典1。本記録の確認）。</div><div class=la><b>取るべき行動</b> **ベンダからのセキュリティ通知の受け取り口を1つに定め、 受け取った通知を「どの鍵が関係するか」で 運用担当へ割り振る手順を作る。** **割り振りの材料は、上記の認証情報の一覧である—— 一覧が無いと、通知を読んでも誰に渡すかが決まらない。** **通知から運用担当への到達までの所要時間を測る訓練を 年1回行う（実際の通知で測れた場合はそれを記録する）。**</div></li><li><div class=lp>**「内部専用だから認証は不要」という設計上の例外を、 自組織の中で数える。1か所の境界の崩れで全面的に開く。**</div><div class=lw>**本件の原因は Radware 自身が1文で書いている** （出典1。本記録の訳。原文英語）〈重要〉—— **「認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API」。** **到達可能になったこと自体は、 設定変更・移行作業・既定値の変更などでどの組織でも起きる** （本記録の評価）。 **認証を要求しない実装は、それが起きた瞬間に全面的に開く** （本記録の評価）〈重要〉—— **段階的な劣化が無い。** **さらに、呼び出し元を識別できないため、 事後に誰が何を取得したかの範囲確定も難しくなる** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織のシステム一覧から、 「内部からしか到達しない前提で認証を省いている」 インターフェースを抜き出す （管理 API、内部向けの管理画面、 ヘルスチェックや設定取得のエンドポイント、 データベースの管理用の口を含む）。** **各項目に「認証を入れる」「入れられない理由」のどちらかを書かせ、 後者には境界の崩れを検知する仕組みを割り当てる。** **項目数を経営報告の指標にし、ゼロに近づける—— 1件でも残っていれば、本件と同じ型の事案が起きうる。**</div></li><li><div class=lp>**自社が無効化できない認証情報を漏らしたときは、 直接通知だけでは足りない。公の声明が届く層がある。**</div><div class=lw>**Radware は2026年11月25日時点で公式の声明を出しておらず、 SEC への侵害報告も行っていない**（出典1。本記録の確認）〈重要〉。 **本件が公になったのは、匿名の情報源が 同社の根本原因分析報告を報道機関に渡したためである**（出典1）。 **顧客への通知は行われたとみられるが**（本記録の読み）、 **本件で鍵が使われる場所は顧客のクラウドアカウントであり、 その運用は顧客の中の別のチームが担っていることがある** （本記録の評価）〈重要〉。 **公の声明は、ベンダが直接通知できない層に届く唯一の手段である** （本記録の評価）。 **また、内部文書の流出という形で事実が世に出た結果、 公表の枠組みと速度を自ら決める主導権が失われている** （本記録の評価）。</div><div class=la><b>取るべき行動</b> **自組織の事案公表の基準に 「自社が無効化できない認証情報・鍵が露出した場合」の行を立て、 その場合は直接通知に加えて公開の告知を行うと定める。** **告知に必ず載せる項目を決める—— 更新すべき認証情報の種類、更新の手順、 確認すべきログと期間の起点、 自組織が検知した悪用の試みの有無。** **併せて、内部文書が流出した場合に 公表へ切り替える判断の権限を誰が持つかを決めておく—— 本件では、事実が先に外へ出た。**</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>**ベンダに渡す鍵には、送信元 IP の制限と最小権限と有効期限を付ける。 ベンダが破られるかは制御できないが、鍵が何に使えるかは制御できる。**</div><div class=lw>**本件で顧客から報告されたのは 「見覚えのない IP アドレスがログ書き出し先のバケットへ アクセスを試みた」という AWS の警報である**（出典1）〈重要〉。 **鍵に送信元の制限が付いていれば、 流出しても別の場所からは使えない**（本記録の評価）。 **流出した鍵の用途は「ログの書き出し」であり、 必要な権限は特定のバケットへの書き込みのみである** （出典1。本記録の整理）—— **読み出しや削除の権限が付いていれば、 それは用途を超えている。**</div><div class=la><b>取るべき行動</b> **ベンダへ渡すクラウドの認証情報を、 ①対象リソースを特定のバケット・パスに限定、 ②操作を用途に必要なものだけに限定（ログ書き出しなら書き込みのみ）、 ③送信元 IP アドレスの範囲を制限、 ④有効期限を設定、の4点で作り直す。** **③はベンダの送信元が変わるたびに更新が必要になるので、 ベンダに通知の約束を取り付けてから入れる。** **可能な保存先では、長期の鍵をやめて 顧客側が付与する一時的な権限委任（役割の引き受け）に替える—— ベンダ側に長期の鍵が存在しない構成が最も強い。**</div></li><li><div class=lp>**ベンダが書き込む先のアクセスログを有効にしておく。 既定で無効な設定があり、そのままでは「確認したが分からない」になる。**</div><div class=lw>**Radware は顧客に「少なくとも11月19日以降の想定外のアクセスについて クラウド保存先のアカウントのアクセスログを確認する」よう 求めている**（出典1。本記録の訳。原文英語）〈重要〉。 **しかし、AWS S3 のアクセスログや Azure の診断ログは 既定で有効になっていない設定があり、 その場合は確認そのものができない** （本記録の評価。一般的な性質。Radware はこの前提に触れていない）。 **本件で悪用の試みを最初に捉えたのは Radware ではなく顧客側の警報である**（出典1）〈重要〉—— **ベンダの侵害の帰結は、ベンダには見えない場所で起きる。**</div><div class=la><b>取るべき行動</b> **外部のサービス事業者が書き込む保存先について、 アクセスログ（データイベントの記録）が有効かを1つずつ確認する。** **有効でないものを有効にし、 保存期間が調査に足りるか（最低90日）を確かめる。** **併せて、ベンダの正規の送信元 IP 以外からのアクセスを 警報にする検知を入れる—— 本件ではこの形の警報が最初の手がかりになった。** **費用を抑えるには、ベンダが書き込む先に限って有効にすればよい。**</div></li><li><div class=lp>**認証を要求しない API は、侵入を容易にするだけでなく 事後の範囲確定も不能にする。影響調査の観点から認証を入れる。**</div><div class=lw>**Radware の言い回しは 「アクセスされた可能性があると確認された情報」である** （出典1。本記録の訳。原文英語）〈重要〉—— **「アクセスされたことを確認した」ではない。** **本記録の読みでは、これは到達可能だった範囲の確認であり、 実際に何が読まれたかの特定ではない**（本記録の読み）。 **認証を要求しない API では呼び出し元を識別する手段が無いため、 誰が何を取得したかの記録そのものが残りにくい** （本記録の評価。一般的な性質）。 **その結果、同社は範囲の確定を待たずに 内部認証情報を一括で差し替える判断を取ることになった** （本記録の推定）。</div><div class=la><b>取るべき行動</b> **自組織の API について、 「侵害されたとき、誰が何を取得したかをログから言えるか」を 1つずつ確認する。** **言えないものを一覧にし、 呼び出し元の識別（認証）とリクエスト単位の記録を入れる。** **認証を入れる判断を「侵入を防ぐため」だけで議論すると 「内部だから不要」で終わるので、 「事故のあとに範囲を言えるため」を理由に並べる—— こちらの方が経営の判断を得やすい。**</div></li><li><div class=lp>**外部から見た自組織の露出面を継続的に列挙する。 攻撃の検知ではなく、構成の点検として回す。**</div><div class=lw>**本件の API は「認証を要求せずに公開インターネットから 到達可能だった」**（出典1。本記録の訳。原文英語）〈重要〉—— **外から見えていたということは、 外から見る仕組みがあれば自分でも見つけられた** （本記録の評価）。 **到達可能になった時期は公表されていないため、 点検の頻度がどの程度あれば間に合ったかは評価できない** 〈未確定2〉—— **本記録はこれを、本件の教訓ではなく一般の策として置く** （本記録の明示）。</div><div class=la><b>取るべき行動</b> **自組織の保有 IP 範囲とドメインに対し、 外部から到達できるポートとエンドポイントを定期に列挙する （週次または構成変更の契機ごと）。** **列挙結果から「認証を要求しないエンドポイント」を 自動で抽出する検査を加える—— 認証なしで 200 を返すものを一覧にする。** **検出した項目の所有者を記録する欄を必ず作る—— 所有者が決まっていないと、一覧ができただけで止まる。**</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> **外部のサービス事業者に、自組織のクラウド保存先や システムへの長期の認証情報（アクセスキー、SAS トークン、 SFTP の認証情報など）を預けている場合。**</td><td class=sm>**本件で流出したのはベンダのデータではなく、 顧客自身のクラウド保存先への鍵である**（出典1）〈重要〉—— **ベンダには無効化する権限が無く、是正は顧客の作業になる。** **すでに、流出した鍵を使うアクセスの試みが 顧客側の AWS の警報で観測されている**（出典1）。</td></tr><tr><td class=nowrap><span class="b axis">認証・認可</span></td><td><span class=chk>□</span> **「内部からしか到達しない」ことを前提に、 認証を要求しない管理 API・管理画面・エンドポイントを 1つ以上持っている場合。**</td><td class=sm>**本件の原因は「認証を要求せずに公開インターネットから 到達可能だった内部専用の Cloud WAF 管理 API」である** （出典1。本記録の訳。原文英語）〈重要〉—— **到達可能になること自体はどの組織でも起きるが、 認証が無いとその瞬間に全面的に開き、 呼び出し元を識別できないため事後の範囲確定もできない** （本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> **外部のサービス事業者が書き込む保存先について、 アクセスログ（データイベントの記録）を有効にしていない、 または保存期間が90日に届かない場合。**</td><td class=sm>**Radware は顧客に「少なくとも11月19日以降の 想定外のアクセスについてアクセスログを確認する」よう求めている** （出典1。本記録の訳。原文英語）〈重要〉—— **ログを有効にしていない顧客は確認そのものができず、 「確認したが分からない」で終わる**（本記録の評価）。 **本件で悪用の試みを最初に捉えたのは顧客側の警報である**（出典1）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **ベンダからのセキュリティ通知の受け取り口が定まっておらず、 受け取った通知を「どの鍵が関係するか」で 運用担当へ割り振る手順が無い場合。**</td><td class=sm>**本件の是正（鍵の更新とログの確認）は、 契約を管理している部署ではなくクラウド基盤を運用している部署の 作業である**（本記録の評価）〈重要〉。 **Radware は公式の声明を出していないため、 契約窓口を経由しない経路が存在しない**（出典1。本記録の確認）—— **同じ鍵を流用していた運用や保存先を共有する別のチームには 通知が届かない。**</td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> **1つの管理 API・管理基盤から、 自組織のデータと顧客（または取引先）の資産への認証情報の 両方に到達できる構成になっている場合。**</td><td class=sm>**本件では、1つの内部管理 API から 顧客の連絡先情報と顧客のクラウド保存先への認証情報の 両方に到達できた**（出典1）〈重要〉—— **管理基盤の侵害1件が、顧客のクラウドアカウントまで 影響範囲を広げる構成である**（本記録の評価）。</td></tr><tr><td class=nowrap><span class="b axis">体制・契約</span></td><td><span class=chk>□</span> **自組織が無効化できない認証情報・鍵を露出させた場合に、 直接通知に加えて公開の告知を行うという基準を持っていない場合。**</td><td class=sm>**Radware は公式の声明を出さず、 本件は内部文書の流出によって公になった**（出典1）〈重要〉—— **結果として、公表の枠組みと速度を自ら決める主導権が 失われている**（本記録の評価）。 **公の声明は、ベンダが直接通知できない層に届く唯一の手段である。**</td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[3]</span> <span class=sm>公表されていない（2026年11月19日以降・日付不明） Radware Ltd.</span> Radware の根本原因分析報告（root cause analysis report・題名不明） <span class="b kind">調査報告書</span><span class=sm>（**本件の一次資料だが、公表されていない**（本記録の明示）〈重要〉〈差異1〉。 **匿名の情報源が BleepingComputer に渡したものであり、 Radware が対外的に公開した文書ではない**（出典1）。 **本記録はこの文書を取得しておらず、 BleepingComputer が引用した部分だけを読んでいる**（本記録の明示）。 **本記録がこれを独立した出典として立てるのは、 本件の中核の記述（侵入経路・露出範囲・露出していない範囲・ 対応・顧客への助言）がすべて同社自身の文言であり、 報道の記述とは区別して扱う必要があるためである** （本記録の判断）〈重要〉—— **出典1 が報道、本出典が当事者の文書であって、 両者は本件の信頼性の層が違う。** **ただし公表されていないため、 読者が原典を確認することはできない**（本記録の明示）。 **文書の日付・版・宛先（顧客向けか社内向けか）、 および「根本原因分析」と題されながら API が到達可能になった理由が引用に含まれていない点について、 本記録は検証していない**〈未確定4〉。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[1]</span> <span class=sm>2026年11月24日 17時49分（UTC） BleepingComputer</span> <a href="https://www.bleepingcomputer.com/news/security/radware-discloses-breach-exposing-customer-cloud-access-keys/" target="_blank" rel="noreferrer noopener nofollow">Radware discloses breach exposing customer cloud access keys</a> <span class="b kind">記事</span><span class=sm>（**本記録が依拠する唯一の実質的な資料である**（本記録の明示）〈重要〉。 **本記録は全文を確認した**（本記録の作業）。 **記事の価値は、Radware 自身の根本原因分析報告 （root cause analysis report）を引用している点にある** （本記録の評価）—— **「匿名の情報源によって BleepingComputer と共有された 根本原因分析報告の中で」と明示されており、 公表された文書ではない**〈差異1〉。 **本記録が引いた核心の記述は次のとおり （いずれも原文英語。訳は本記録による）**—— **「2026年11月19日、認可されていない者が、 認証を要求せずに公開インターネットから到達可能だった 内部専用の Cloud WAF 管理 API にアクセスした。」** **「アクセスされた可能性があると確認された情報には、 顧客の連絡先情報が含まれ、一部の顧客については、 顧客が自ら管理する保存先（AWS S3、Azure Blob Storage、または SFTP）への ログ書き出しのために設定された認証情報が含まれる。」** **「WAF のトラフィック検査と防御は中断なく継続しており、 顧客のアプリケーションとサービスの可用性または防御への影響は 確認していない」 「本日までに、顧客のセキュリティポリシーの変更や 顧客のアプリケーショントラフィックへのアクセスの証拠は 見つかっていない。」** **記事（BleepingComputer）の記述として重要なもの**〈重要〉—— **①「同社は、侵害を検知した後、内部アカウントの認証情報を すべて無効化し差し替えた。木曜日に、最初の不正な API アクセスから 10時間後に検知した」（本記録の訳）。** **②「同社は、影響を受けた AppSec（WAF、BOT）顧客に対し、 Cloud WAF のログ書き出しの認証情報（Azure Blob Storage の キーまたは SAS トークン、AWS S3 のアクセスキー、 または SFTP の認証情報を含む）をできるだけ早く更新し、 少なくとも11月19日以降の想定外のアクセスについて クラウド保存先のアカウントのアクセスログを確認するよう 『強く』助言した」（本記録の訳）。** **③「同社はすでに、見覚えのない IP アドレスがログ書き出し先の バケットへアクセスを試みたという AWS の警報の報告を 顧客から受けていると述べた」（本記録の訳）。** **④「Radware は本件について公式の声明をまだ出しておらず、 米証券取引委員会に侵害報告も提出していない」（本記録の訳）。** **⑤「BleepingComputer は Radware の広報担当者に 本件について質問したが、回答は即座には得られなかった」（本記録の訳）。** **背景として、1996年創業・本社テルアビブ、 12,500社を超える企業・通信事業者の顧客を持つことが記されている。**）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月25日 1時31分（UTC） Risky Business（Risky.biz）</span> <a href="https://risky.biz/RBNEWS638/" target="_blank" rel="noreferrer noopener nofollow">Risky Bulletin: Hackers breach CIA OSINT system</a> <span class="b kind">記事</span><span class=sm>（**本件を扱った日次ブリーフィングである**（本記録の確認）—— **本記録が取得できたのは番組の概要（show notes の冒頭）までであり、 音声の内容は確認していない**（本記録の明示）。 **概要の記述は「ハッカーが CIA の OSINT 基盤を侵害し、 セキュリティ企業 Radware がハッキングされ、 米国がイランによる50隻の船舶ハッキングを調査し、 脅威アクターが Azure の API の不具合を悪用して クラウド環境へアクセスした」（本記録の訳。原文英語）。** **本記録がこの資料を挙げるのは、 本件が独立した報道機関によっても取り上げられたことを 記録に残すためである**（本記録の明示）〈重要〉—— **事実関係の追加は無く、BleepingComputer の報道を 超える情報は含まれていない。** **同じ回の筆頭である CIA の OSINT 基盤の侵害は、 本 DB の INC-2026-1301 として記録している。**）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月25日</span> <span class="b rev">新規作成</span> **新規作成。** **BleepingComputer の報道（出典1）の全文と、 そこに引用された Radware の根本原因分析報告の記述に基づく** （本記録の作業）〈重要〉。 **本記録が試みて取得できなかったもの**—— **①Radware の公式の声明・セキュリティアドバイザリ （radware.com のセキュリティアドバイザリおよび プレスリリースの各ページは閲覧者検証の画面を返し取得できず）、 ②根本原因分析報告の原文（公表されていない）、 ③本件に関する検索結果（索引されていなかった）。** **報道から1日しか経っていないためとみられる**（本記録の推定）〈差異2〉。 **本記録は、本 DB 内で「Radware」を含む先行レコード （INC-2026-0580・0784）を確認し、 前者は別事案で本記録の取得が Radware 製 WAF に遮断された記録、 後者は Radware の研究者による GitHub に関する調査レポートであって、 いずれも本件とは別であることを確かめた**（本記録の確認）。 **本記録が独自に立てた論点は5つである**—— **①流出したものが Radware のデータではなく 顧客自身のクラウドへの鍵であり、 ベンダに無効化する権限が無いため是正の実行者が顧客になる、 という構造を本件の中心に置いたこと、 ②「認証を要求しない」ことが 到達可能性の崩れを全面的な侵害に変換する増幅器であり、 設定不備と並べて設計上の不備を原因に挙げたこと、 ③「10時間で検知」が「10時間しか開いていなかった」と 読まれる危険を明示し、露出期間が非公表であることを 最も重要な欠落と評価したこと、 ④認証の欠如が事後の範囲確定も不能にするため、 同社が範囲の確定を待たずに内部認証情報を 一括差し替えする判断に追い込まれたと読んだこと、 ⑤自社が無効化できない鍵を漏らした場合、 公開の声明がベンダの直接通知では届かない層 （鍵を流用していた運用・保存先を共有する別チーム）に 届く唯一の手段であると評価したこと。** **本記録は開示義務の違反を主張しない**（本記録の方針）—— **Radware はイスラエル法人であり、 外国民間発行者として適用される開示の様式と期限が 米国法人と同じとは限らず、 重要性の判断は発行者が行うものである。**</li></ul></div></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-25 14:20 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
