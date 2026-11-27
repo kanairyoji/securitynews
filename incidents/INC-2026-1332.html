@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>nfsd に12年潜んだRCE（NFS2ROOT） — インシデント事例DB</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --border-2: #21262d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --dim-2: #6e7681;
+  --faint: #484f58;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --danger: #f85149;
+  --purple: #a371f7;
+  --purple-2: #d2a8ff;
+  --orange: #db6d28;
+  --code: #161b22;
+  --grp-a: #f85149;
+  --grp-b: #3fb950;
+  --grp-c: #d29922;
+  --grp-s: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+ font-family:-apple-system,'Hiragino Kaku Gothic Pro','Meiryo',sans-serif;
+ font-size:14px;line-height:1.75;overflow-wrap:anywhere}
+/* **長い機械文字列だけを折る。** CVSS ベクタ（69字）・SHA-256（64字）・
+   ウォレットアドレス（42字）は空白が無いので折り返せず、375px では
+   ページ全体が 474px まで横に伸びていた（2026-09-08 の実測）。
+   `word-break:break-all` は日本語の本文まで無条件に切ってしまうので使わない。
+   `overflow-wrap:anywhere` は**入りきらないときだけ**折り、加えて
+   min-content を縮めるのでグリッドの列が押し広げられなくなる
+   （break-word だと min-content が縮まず .figs の列がはみ出したまま）。
+   nowrap を指定したバッジ・表見出しには効かない（そちらが優先される）。 */
+/* **固定するのは h1 だけ。** ヘッダ全体を固定していたため、スクロール中も
+   サブタイトル（3行）とバッジが居座って画面を占有していた（2026-08-29 の指摘）。
+   h1 を header の外に出してあるのは、sticky が親の範囲内でしか効かないため。 */
+h1.stickytitle{position:sticky;top:0;z-index:100;margin:0;
+ background:var(--surface);border-bottom:1px solid var(--border);
+ padding:11px 20px;font-size:18px;font-weight:700;line-height:1.4;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+ overflow:hidden}
+h1.stickytitle .stid{font-family:monospace;font-size:11.5px;color:var(--dim);
+ font-weight:400;margin-right:9px}
+.site-header{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:10px 20px 12px}
+.site-header .id{font-family:monospace;font-size:12px;color:var(--dim)}
+/* サブタイトル。元の長いタイトルを降ろす場所。**主張を弱めて場所を取らせない**
+   （スマホで h1 が6行・画面の22%を占めていた。2026-08-29） */
+.site-header .subtitle{font-size:12.5px;line-height:1.65;color:var(--dim);
+  margin:0 0 8px;font-weight:400}
+@media(max-width:600px){
+  h1.stickytitle{font-size:16px;padding:9px 12px;line-height:1.38}
+  .site-header{padding:8px 12px 10px}
+  /* 狭い画面ではサブタイトルを3行で切る。全文は本文冒頭の要約で読める */
+  .site-header .subtitle{font-size:12px;line-height:1.6;
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
+    overflow:hidden}
+}
+.wrap{max-width:1100px;margin:0 auto;padding:20px}
+/* **本文の行長は保つ。** 幅を広げても段落まで広げると読みにくくなる。
+   1440px で測ると本文はすでに1行60字あり、日本語の適正（40〜50字）を
+   超えていた（2026-08-31）。広げた分は表・図・年表に使わせる。 */
+.wrap p,.wrap li,.lead,.absent,.ctl{max-width:900px}
+.twrap,.figs,table.g,.tl,.part{max-width:none}
+.b{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+ border-radius:4px;margin:0 4px 3px 0;white-space:nowrap;vertical-align:middle}
+.b.type{background:#64b5f626;color:var(--accent);border:1px solid var(--accent)}
+.b.type2{color:var(--accent);border:1px solid #64b5f655}
+.b.st,.b.jr{color:var(--dim);border:1px solid var(--border)}
+.b.cause{color:var(--warn);border:1px solid #ffcc8055}
+.b.role{background:var(--surface2);color:var(--text)}
+.b.lc{color:var(--dim);border:1px solid var(--border)}
+.b.conf{background:#64b5f626;color:var(--accent)}
+.b.org{color:var(--dim);border:1px solid var(--border)}
+.b.sub{color:var(--warn);border:1px solid #ffcc8055}
+.b.rsn{color:var(--warn);border:1px solid #ffcc8055}
+.b.dk{color:var(--danger);border:1px solid #f48fb155}
+.b.kind{color:var(--dim);border:1px solid var(--border)}
+.b.slot{color:var(--dim);border:1px solid var(--border);font-weight:400}
+.b.tag{background:var(--surface2);color:var(--dim)}
+.b.rev,.b.ind,.b.refl{color:var(--ok);border:1px solid #80cbc455}
+.b.fu,.b.dead{color:var(--danger);border:1px solid #f48fb155}
+.lead{background:var(--surface);border-left:3px solid var(--accent);
+ padding:14px 16px;border-radius:0 6px 6px 0;margin:16px 0}
+.upd{background:var(--surface);border-left:3px solid var(--warn, #d29922);
+ padding:10px 16px;border-radius:0 6px 6px 0;margin:0 0 16px;font-size:13px}
+.upd-h{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px}
+.upd-d{font-weight:600;color:var(--warn, #d29922)}
+.upd a{margin-left:auto}
+.meta{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:10px 0 4px}
+section{margin:26px 0}
+section h2{font-size:15.5px;color:var(--accent);border-bottom:1px solid var(--border);
+ padding-bottom:6px;margin-bottom:10px;line-height:1.55}
+section p{margin:9px 0}
+.srcs{font-size:11px;color:var(--dim);font-weight:400;margin-left:6px;white-space:nowrap}
+.blk{margin:26px 0}
+.blk h3{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+ margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px}
+/* 関係した組織（B79）——表ではなく1組織1ブロック。
+   画面が広いときだけ 名前｜説明 の2段組にする。説明は中央値72字の文章なので、
+   狭い画面では幅を全部使わせる */
+.orgs{margin:6px 0}
+.org{display:grid;grid-template-columns:minmax(150px,210px) 1fr;gap:3px 16px;
+ padding:10px 0;border-top:1px solid var(--border)}
+.org:first-child{border-top:none;padding-top:2px}
+.org-h{display:flex;flex-wrap:wrap;gap:5px;align-items:baseline}
+.org-n{font-weight:600;font-size:13px;line-height:1.5}
+.org-b{font-size:13px;line-height:1.75}
+.org-p{margin:0 0 4px}
+.org-p:last-child{margin-bottom:0}
+.org-l{display:inline-block;min-width:2.6em;margin-right:8px;font-size:11px;
+ color:var(--dim);font-weight:600}
+@media(max-width:600px){
+ .org{grid-template-columns:1fr;gap:5px}
+ .org-b{font-size:12.5px}
+}
+table.g{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0}
+/* 表は自分の中で横に流す。ページ全体が横スクロールすると本文が読めなくなる
+   （スマホで 811px の表がはみ出していた。2026-08-29） */
+.twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
+.twrap table.g{margin:0}
+table.g th{background:var(--surface2);padding:7px 9px;text-align:left;
+ border:1px solid var(--border);font-weight:600;white-space:nowrap}
+table.g td{padding:7px 9px;border:1px solid var(--border);vertical-align:top}
+table.g tr:nth-child(even) td{background:rgba(255,255,255,.02)}
+table.dt th{width:150px;color:var(--dim)}
+.on{font-weight:600}
+.sm{font-size:12px;color:var(--dim);line-height:1.6}
+.nowrap{white-space:nowrap} .tw{width:132px}
+.figs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(270px,100%),1fr));gap:10px}
+.fig{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:11px 13px}
+.fh{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin-bottom:5px}
+.fl{font-size:12px;color:var(--dim);flex:1;min-width:100%;line-height:1.5}
+.fv{font-size:23px;font-weight:700;line-height:1.25}
+.fu{font-size:12px;font-weight:400;color:var(--dim);margin-left:4px}
+.fa{font-size:11px;color:var(--dim);margin-top:2px}
+.fn{font-size:11.5px;color:var(--dim);margin-top:7px;padding-top:7px;
+ border-top:1px solid var(--border);line-height:1.65}
+.corr{font-size:11.5px;margin-top:6px;padding:5px 8px;background:var(--surface2);
+ border-radius:4px;color:var(--warn)}
+.box{border-radius:8px;padding:14px 16px;margin:26px 0}
+.box .bt{font-size:13px;font-weight:700;margin-bottom:9px}
+.box .bc{display:inline-block;font-size:11px;padding:0 7px;border-radius:9px;
+ margin-left:7px;background:rgba(255,255,255,.09)}
+.box ul{list-style:none}
+.box li{padding:7px 0;border-top:1px solid rgba(255,255,255,.07)}
+.box li:first-child{border-top:none}
+.unk{background:#ffcc8014;border:1px solid #ffcc8044}
+.unk .bt{color:var(--warn)}
+.disc{background:#f48fb114;border:1px solid #f48fb144}
+.disc .bt{color:var(--danger)}
+.rep-box{background:#80cbc414;border:1px solid #80cbc444}
+.rep-box .bt{color:var(--ok)}
+.rep{padding:8px 0;border-top:1px solid rgba(255,255,255,.07)}
+.rep:first-of-type{border-top:none}
+.ui{font-weight:600;margin-right:6px}
+.cl{margin-left:18px} .cl li{margin:2px 0}
+.sub{font-size:12.5px;padding:3px 0;color:var(--text)}
+.rg{margin-bottom:16px}
+.rgt{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:5px}
+.rg ol{list-style:none}
+.rg li{font-size:12.5px;padding:4px 0;line-height:1.7}
+.rid{font-family:monospace;color:var(--dim);margin-right:3px}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+code{background:var(--code);border-radius:3px;padding:1px 5px;font-size:12px;color:#a5b4fc}
+ul,ol{margin:8px 0 8px 20px} li{margin:3px 0}
+strong{color:#f1f5f9}
+/* 目次 — 広い画面では左に追従、狭い画面では折りたたみ */
+html{scroll-behavior:smooth}
+.blk,section,.part,.box,.less{scroll-margin-top:92px}
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+ padding:12px 14px;margin:18px 0}
+.toc>summary{cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);
+ list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▾ ";font-size:11px}
+.toc:not([open])>summary::before{content:"▸ "}
+.tocl{list-style:none;margin:10px 0 0;padding:0;
+ columns:2;column-gap:22px}
+.tocl li{margin:0;break-inside:avoid}
+.tocl li.tg{font-size:11px;font-weight:700;letter-spacing:.04em;margin:9px 0 3px;
+ padding-top:7px;border-top:1px solid var(--border)}
+.tocl li.tg:first-child{margin-top:0;padding-top:0;border-top:none}
+.tocl li.tg1{color:var(--accent)}
+.tocl li.tg2{color:var(--ok)}
+.tocl li.tg3{color:var(--dim)}
+.tocl a{display:block;font-size:12.5px;padding:2.5px 0;line-height:1.55;
+ color:var(--text);text-decoration:none}
+.tocl a:hover{color:var(--accent);text-decoration:underline}
+@media(min-width:1180px){
+ /* PC で左右に大きな余白ができて「狭い」と見えていたので広げた
+    （1440px の画面で コンテナ1180px・本文870px＝画面の60%だった）。
+    minmax(0,1fr) にしないと、広い表が入ったときにカラムがはみ出す */
+ .wrap{max-width:1400px;display:grid;grid-template-columns:260px minmax(0,1fr);
+   gap:38px;align-items:start}
+ .wrap>.meta,.wrap>.lead,.wrap>footer{grid-column:2}
+ .toc{grid-column:1;grid-row:1 / span 99;position:sticky;top:92px;
+   max-height:calc(100vh - 110px);overflow:auto;margin:0}
+ .tocl{columns:1}
+ .toc>summary{pointer-events:none}
+ .toc>summary::before{content:""}
+}
+@media(max-width:1179px){
+ .tocl{max-height:none}
+}
+@media(min-width:1180px){
+ /* 本文カラムが広くなった分、段落だけ行長を保つ（表と図は全幅を使う） */
+ .wrap>*:not(.toc) p,.wrap>*:not(.toc) li{max-width:960px}
+}
+@media(max-width:600px){
+ .tocl{columns:1}
+}
+/* 2部構成の仕切り */
+.part{margin:34px 0 20px;padding:14px 16px;border-radius:8px}
+.part .ph{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.part .pn{font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;letter-spacing:.04em}
+.part .pd{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.75}
+.p1{background:#64b5f612;border:1px solid #64b5f644;border-left:4px solid var(--accent)}
+.p1 .ph{color:var(--accent)} .p1 .pn{background:var(--accent);color:#0f1117}
+.p2{background:#80cbc412;border:1px solid #80cbc444;border-left:4px solid var(--ok)}
+.p2 .ph{color:var(--ok)} .p2 .pn{background:var(--ok);color:#0f1117}
+.blknote{font-size:11.5px;color:var(--dim);margin:-4px 0 10px;line-height:1.7}
+/* 攻撃の経過 */
+.chain{list-style:none;margin:10px 0 0}
+.chain li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--border);
+ margin-left:4px}
+.chain li::before{content:"";position:absolute;left:-6px;top:16px;width:9px;height:9px;
+ border-radius:50%;background:var(--accent)}
+.stg{margin-bottom:5px}
+.b.stage{background:#64b5f626;color:var(--accent)}
+.b.do,.b.eff,.b.assess,.b.axis{color:var(--dim);border:1px solid var(--border)}
+/* 対応の指標 */
+.mets{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));gap:9px}
+.met{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+.ml{font-size:11.5px;color:var(--dim);line-height:1.5}
+.mv{font-size:22px;font-weight:700;margin-top:3px}
+.dec{list-style:none;margin:6px 0 0}
+.dec li{padding:9px 0;border-top:1px solid var(--border)}
+.dec li:first-child{border-top:none}
+/* 構造図 */
+.dia{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
+.diat{font-size:13px;font-weight:700;margin-bottom:8px}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:620px}
+/* 学び */
+.less{background:#80cbc40e;border:1px solid #80cbc433;border-radius:8px;
+ padding:14px 16px;margin:18px 0}
+.lesst{font-size:13px;font-weight:700;color:var(--ok);margin-bottom:8px}
+.less ul{list-style:none;margin:0}
+.less li{padding:11px 0;border-top:1px solid rgba(255,255,255,.07)}
+.less li:first-child{border-top:none}
+.lp{font-weight:700;line-height:1.65}
+.lw{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.7}
+.la{font-size:12.5px;margin-top:6px;padding:7px 10px;background:var(--surface2);
+ border-radius:5px;line-height:1.7}
+.la b{color:var(--ok);margin-right:6px}
+/* 内容が無いことを明示する箱（黙って省略しない） */
+.absent{font-size:12.5px;color:var(--dim);background:var(--surface);
+ border:1px dashed var(--border);border-radius:6px;padding:11px 13px;line-height:1.75}
+.less.empty{background:transparent;border-style:dashed}
+.less.empty .lesst{color:var(--dim)}
+.chk{color:var(--ok);font-weight:700;margin-right:5px}
+.cl.ok li{color:var(--text)} .cl.warn li{color:var(--warn)}
+.ctl{padding:2px 0;font-size:12.5px}
+footer{border-top:1px solid var(--border);margin-top:40px;padding:18px 0;
+ font-size:11.5px;color:var(--dim);line-height:1.9}
+@media(max-width:600px){
+ .wrap{padding:14px 12px} .figs{grid-template-columns:1fr}
+ table.g{font-size:12px} table.dt th{width:auto}
+ .twrap{width:auto}
+ .twrap table.g{min-width:520px}
+}
+</style>
+</head>
+<body>
+<h1 class="stickytitle"><span class="stid">INC-2026-1332</span>nfsd に12年潜んだRCE（NFS2ROOT）</h1>
+<header class="site-header">
+  <p class="subtitle">Linux カーネル内蔵 NFS サーバ（nfsd）に12年潜んだ境界外書き込み「NFS2ROOT」（CVE-2026-99362）——TCP 2049 への接続だけで root を狙える構成があり、主要ディストリビューションの修正は遅れた</p>
+  <div><span class="b type">脆弱性</span><span class="b st">初報のみ</span><span class="b jr">有名事象として記録（日本と直接の関係は薄い）</span><span class="b cause">設計・実装上の不備</span></div>
+</header>
+<div class="wrap">
+
+<div class="meta">
+  <span>初報: 2026年11月19日（kernel.org の CNA が CVE-2026-99362 を公開した日。Ubuntu のセキュリティ情報の published も同日）</span>
+  <span>最終更新: 2026年11月26日</span>
+</div>
+
+<div class="lead"><p>Linux カーネルに内蔵された NFS サーバ（nfsd）に、<strong>認証も利用者の操作も要らず TCP 2049 への接続だけで境界外書き込みを起こせる脆弱性</strong>が公表された。 CVE-2026-99362、呼称 NFS2ROOT。CVE は2026年11月19日に kernel.org の CNA から公開され（出典3・4）、 CVSS 3.1 の基本値は 9.8（Critical）である（出典2。cve.org の値。Red Hat は 9.4 と評価。出典1）。 <strong>原因は2014年3月のコード変更でカーネル 3.16 に入り、12年間 LTS・各ディストリビューション・ アプライアンスのカーネルに残った</strong>（出典4・5）。 成立の筋道はこうである——クライアントが応答キャッシュのサイズを最小値まで交渉して スロットのデータ用バッファを0バイトにし、細工した COMPOUND 要求を送ると、 サーバがこれを正常処理と誤認して0バイトのバッファへ応答を書き込む（出典1・2・4）。 韓国の報道によれば、研究組織 OpenSec Intelligence は<strong>0バイトのヒープバッファに80バイトの応答が 複写され、境界外61バイトが上書きされる</strong>と分析し、<strong>うち40バイトを攻撃者が制御して KASLR の回避と任意オブジェクトの解放を経てリモート root シェルに至る</strong>と説明したという（出典5）。 <strong>修正はカーネル 5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2・7.4-rc1 に入っている</strong>（出典4）。 <strong>一方で Ubuntu は2026年11月25日時点で 26.10・26.04 LTS が対応作業中、 24.04／22.04／20.04／18.04／16.04 LTS が未修正である</strong>（出典2。本記録が確認）。 Red Hat は RHEL の既定構成では nfsd を動かさないため攻撃面は NFSv4.1/4.2 を 公開するサーバに限られるとしている（出典1）。 <strong>2026年11月26日時点で実環境での悪用は報告されておらず、CISA KEV にも収載されていない</strong>（出典4）。</p></div>
+
+
+<details class="toc" id="toc" open><summary>目次</summary><ol class="tocl"><li class="tg tg1">起きたこと</li><li><a href="#s1" title="公表されていない・確定していないこと">公表されていない・確定していないこと</a></li><li><a href="#s2" title="関係した組織">関係した組織</a></li><li><a href="#s3" title="主な数値">主な数値</a></li><li><a href="#s4" title="攻撃の経過">攻撃の経過</a></li><li><a href="#s5" title="被害組織の対応">被害組織の対応</a></li><li><a href="#s6" title="公表・報道からわかったこと（4件）">公表・報道からわかったこと（4件）</a></li><li><a href="#s10" title="事案の詳細">事案の詳細</a></li><li><a href="#s11" title="経過">経過</a></li><li><a href="#s12" title="資料間の食い違い・留保">資料間の食い違い・留保</a></li><li class="tg tg2">ここから学べること</li><li><a href="#s13" title="波及の構造">波及の構造</a></li><li><a href="#s14" title="どこで止められたか">どこで止められたか</a></li><li><a href="#s15" title="対応の評価">対応の評価</a></li><li><a href="#s16" title="CISO・経営層への示唆">CISO・経営層への示唆</a></li><li><a href="#s17" title="セキュリティ技術者への示唆">セキュリティ技術者への示唆</a></li><li><a href="#s18" title="自組織に当てはまるか">自組織に当てはまるか</a></li><li class="tg tg3">資料</li><li><a href="#s19" title="出典">出典</a></li><li><a href="#s20" title="この記録の更新履歴">この記録の更新履歴</a></li><li><a href="#s21" title="タグ">タグ</a></li></ol></details>
+
+<div class="part p1" id="part1"><div class="ph"><span class="pn">Part 1</span>起きたこと</div><div class="pd">公表資料と報道から確認できた事実を記録します。確定した事実・報道にとどまる情報・公表されていない事項を区別して示します。評価や推奨はここには書きません。</div></div>
+<div id="s1"><div class="box unk"><div class=bt>公表されていない・確定していないこと<span class=bc>7</span></div><ul><li><span class=ui>実環境での悪用の有無</span><span class="b rsn">公表されていない</span><div class=sm>**2026年11月26日時点で実環境での悪用は報告されておらず、 CISA KEV にも収載されていない**（出典4）。 **公開された実証コードも確認されていない**—— OpenSec は動作する実証コードを非公開に保っているとされる（出典4・5）。 **ただし上流の修正と5段階の攻撃原理が公になっているため、 N-day としての武器化が早まる懸念が示されている**（出典5）。</div></li><li><span class=ui>Red Hat 製品の製品別の修正状況（Errata の配布予定）</span><span class="b rsn">公表されていない</span><div class=sm>**本記録が取得した Red Hat のページには製品別の一覧表が含まれていなかった** （本記録の確認）〈齟齬2〉。 韓国の報道は「Red Hat が RHEL 7〜10 と OpenShift 4〜5 を影響対象に分類し、 CVSS 9.8 を付与したが、11月26日時点で公式の Errata はまだ配布していない」と 伝えているが（出典5）、 **Red Hat 自身のページで本記録が確認できた CVSS は 9.4 であり、 報道の 9.8 とは一致しない**〈齟齬3〉。</div></li><li><span class=ui>Ubuntu の修正版の提供時期</span><span class="b rsn">調査中</span><div class=sm>出典2 は 26.10 と 26.04 LTS について「対応作業中」として作業中の版 （7.3.0-12.13／7.0.0-45.45）を示すが、**提供時期は示していない**。 **24.04 以下の LTS については修正版の番号も時期も示されていない**（本記録の確認）。 HWE・OEM・旧カーネルの一部は「Ignored（対象外）」とされ、 理由として標準サポートの終了や新しいカーネルへの置き換えが挙げられている（出典2）。</div></li><li><span class=ui>Linux ベースの NAS・アプライアンスの製品別の対応状況</span><span class="b rsn">公表されていない</span><div class=sm>**カーネル 3.16 以降が広く影響を受けるため、Linux ベースの NAS と セキュリティアプライアンスもメーカーのファームウェア点検が必要とされている**（出典5）。 **個別の製品・メーカーの対応状況は本記録では確認していない**—— これらはカーネルを組み込んで出荷するため、利用者が自力で更新できないことが多い（本記録の評価）。</div></li><li><span class=ui>Debian の修正状況</span><span class="b rsn">探索したが未発見</span><div class=sm>本記録が行った検索の結果要約には「Debian 12（bookworm）の既定カーネル（6.1.192-2）は なお未修正」との記述が現れたが（出典4 に対応する検索の過程）、 **本記録は Debian のセキュリティトラッカーを直接確認していない。** したがって本記録は Debian の状況を記録しない。</div></li><li><span class=ui>日本国内での影響・国内機関の注意喚起</span><span class="b rsn">公表されていない</span><div class=sm>本記録が確認した資料に日本への言及は無い（出典1・2・4・5）。 JPCERT/CC・IPA の本件に関する注意喚起も本記録は確認していない。 存在しないという意味ではなく、本記録が探索していないという意味である。</div></li><li><span class=ui>OpenSec Intelligence が示した検知指標の一次資料</span><span class="b rsn">検証できない</span><div class=sm>韓国の報道は、OpenSec が**カーネルログの `nfsd4_check_resp_size` 警告**と **カーネルワーカーによる異常なシェル実行の痕跡**を重点的に監視するよう 付言したと伝えている（出典5）。 **本記録は OpenSec 自身の公表（opensec.in のブログ）を取得できておらず** （JavaScript による保護が返り、本文に到達できなかった）〈齟齬1〉、 **この検知指標を一次資料で確認していない。**</div></li></ul></div></div>
+<div class="blk " id="s2"><h3>関係した組織</h3><div class=orgs><div class=org><div class=org-h><span class=org-n>Linux カーネル（kernel.org。CVE の採番機関（CNA）でもある）</span><span class="b role">製品・部品の供給元</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>OpenSec Intelligence（セキュリティ研究組織）</span><span class="b role">発見・通報した主体</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Red Hat</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>Canonical（Ubuntu）</span><span class="b role">波及先（取引先・利用事業者）</span><span class="b lc">確認済</span></div><div class=org-b></div></div><div class=org><div class=org-h><span class=org-n>watchTowr</span><span class="b role">報告したベンダー</span><span class="b lc">確認済</span></div><div class=org-b></div></div></div></div>
+<div class="blk " id="s3"><h3>主な数値</h3><div class="blknote">各数値には確度（確定／約／最大）と出所（公表値／報道値／本記録の算出）を付しています。</div><div class=figs><div class=fig><div class=fh><span class=fl>CVSS 3.1 基本値（cve.org／Canonical の評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.8<span class=fu>点</span></div><div class=fn>Critical。ベクトルは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H（出典1 が cve.org の値として記載）。 Canonical も 9.8 とする（出典2）。 **ネットワーク経由（AV:N）・権限不要（PR:N）・利用者の操作不要（UI:N）**であり、 **ゼロクリックの要件を満たす**（出典5）。 NVD の評価は本記録の確認時点で未掲載（N/A）だった（出典1）。</div></div><div class=fig><div class=fh><span class=fl>CVSS 3.1 基本値（Red Hat の独自評価）</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>9.4<span class=fu>点</span></div><div class=fn>ベクトルは CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:H（出典1）。 **cve.org との差は完全性への影響の評価である（I:L 対 I:H）**（本記録の整理）〈重要〉—— Red Hat の説明は影響を「サービス不能、および場合によってはコード実行」と記しており、 コード実行の成立を確定的なものとして扱っていない（出典1）。 深刻度の区分そのものは Critical である（出典1）。</div></div><div class=fig><div class=fh><span class=fl>境界外に上書きされるバイト数</span><span class="b conf">確定</span><span class="b org">第三者調査</span></div><div class=fv>61<span class=fu>バイト</span></div><div class=fn>**0バイトのヒープバッファに80バイトの応答が複写され、境界外61バイトが 上書きされる**という OpenSec Intelligence の分析である（出典5）。 **うち40バイトを攻撃者が制御できるとされる**（出典5）。 **本記録は OpenSec 自身の公表を取得できていない**〈齟齬1〉—— この値は韓国の報道が伝えた分析結果である。 なお Canonical の説明は「クライアントはスロットを越えて書き込まれたバイトの 大半を読み出せる。これには COMPOUND のタグが含まれる」と述べており（出典2）、 **書き込みと読み出しの双方が成立する構造であることは一次資料でも確認できる。**</div></div><div class=fig><div class=fh><span class=fl>原因のコード変更から公表までの期間</span><span class="b conf">約</span><span class="b org">公表値</span></div><div class=fv>12<span class=fu>年</span></div><div class=fn>2014年3月のコード変更（カーネル 3.16）から2026年11月の CVE 公開まで（出典4・5）。 **この間、LTS カーネル・各ディストリビューション・アプライアンスに残り続けた**（出典5）。</div></div><div class=fig><div class=fh><span class=fl>修正が入ったカーネルの系列数</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>8<span class=fu>系列</span></div><div class=fn>5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2・7.4-rc1（出典4）。 **系列ごとに修正版の番号が異なるため、「この版以上」という単一の基準では判定できない**（本記録の評価）〈重要〉—— 運用側は自ホストの系列を特定したうえで、その系列の修正版と照合する必要がある。</div></div><div class=fig><div class=fh><span class=fl>攻撃に使われる TCP ポート</span><span class="b conf">確定</span><span class="b org">公表値</span></div><div class=fv>2,049<span class=fu>番</span></div><div class=fn>NFS の標準ポートである（出典1・4・5）。 **緩和策はこのポートへの到達を信頼できるホストに限定することである**（出典1・4）。 Red Hat は firewalld の規則で制限する際、`firewall-cmd --reload` が 明示的に許可されていないクライアントの接続を切断する点に注意するよう述べている（出典1）。</div></div><div class=fig><div class=fh><span class=fl>本記録の確認時点で未修正だった Ubuntu の LTS リリース数</span><span class="b conf">確定</span><span class="b org">本記録の算出</span></div><div class=fv>5<span class=fu>リリース</span></div><div class=fn>本記録が算出した。出典2 の一覧で「Vulnerable（未修正）」とされていた LTS は 24.04（noble）・22.04（jammy）・20.04（focal）・18.04（bionic）・16.04（xenial）の5つ （2026年11月27日の確認時点）。 **26.10（stonking）と 26.04 LTS（resolute）は「対応作業中」、 14.04（trusty）は「影響なし」である**（出典2）。 **linux-aws・linux-azure・linux-gcp・linux-oracle・linux-raspi・linux-gke、 および FIPS 系の派生も多数が未修正とされていた**（出典2）〈重要〉—— **クラウド向けカーネルを使っている環境も同じ状態である。**</div></div></div></div>
+<div class="blk " id="s4"><h3>攻撃の経過</h3><div class="blknote">公表された範囲の事実のみ。公表されていない段階は補完せず明示しています。</div><p>攻撃者は認証なしに TCP 2049 へ接続し、NFSv4.1 のセッション確立時に 応答キャッシュのサイズを最小値まで交渉してスロットのデータ用バッファを0バイトにする。 続いて細工した COMPOUND 要求を送ると、サーバは応答がスロットに収まるかを検査せずに 書き込み、境界外へ上書きする。 書き込まれたバイトの大半はクライアントが読み出せるため、 カーネルメモリの配置の把握にも使える（出典2）。 **報じられている分析では、ここから KASLR の回避と任意オブジェクトの解放を経て リモート root シェルに至るとされる**（出典5）〈未確定7〉。 **実環境での悪用は報告されていない**（出典4）。</p><ol class=chain><li><div class=stg><span class="b stage">1. 初期侵入</span><span class="b conf">確認済</span><span class=srcs></span></div><div>攻撃者が認証なしに TCP 2049 へ接続し、NFSv4.1 のセッションを確立する。 **その際、キャッシュする応答のサイズを最小値まで交渉し、 セッションスロットのデータ用バッファを0バイトにする。**</div><div class=fn>根拠: 出典2「クライアントは非常に小さいキャッシュ応答サイズを交渉でき、 それによってセッションスロットのデータ用バッファが0長になる」 （原文英語。本記録が訳した）。 出典4 も「キャッシュする応答のサイズを最小値まで交渉し、 スロットの応答バッファに余地が残らない状態にする」と述べている（原文英語。本記録が訳した）。</div></li><li><div class=stg><span class="b stage">2. 実行</span><span class="b conf">確認済</span><span class=srcs></span></div><div>細工した COMPOUND 要求を送る。 **サーバは応答が交渉した上限に収まるかを検査せずにキャッシュへ書き込み、 0バイトのスロットの末尾を越えて上書きする（スラブ境界外書き込み）。**</div><div class=fn>根拠: 出典2「細工した COMPOUND 要求によって、サーバがスロットの末尾を越えて 応答を書き込み、KASAN が検出するスラブ境界外書き込みが起きる」 （原文英語。本記録が訳した）。 **修正は「SEQUENCE 応答と、後続操作のエラー状態のための領域が、 交渉した上限に収まるかをスロットを使う前に検査する」ものである**（出典2）。 **報じられている OpenSec の分析では、0バイトのバッファへ80バイトが複写され、 境界外61バイトが上書きされる**（出典5）。</div></li><li><div class=stg><span class="b stage">3. 権限昇格</span><span class="b conf">推定</span><span class=srcs></span></div><div>**上書きされたバイトの大半をクライアントが読み出せることを使ってカーネルメモリの 配置を把握し、制御可能な領域から KASLR の回避と任意オブジェクトの解放へ進む。** **報じられている分析では、ここからリモート root シェルに至るとされる。**</div><div class=fn>根拠: 出典2「クライアントはスロットを越えて書き込まれたバイトの大半を読み出せ、 これには COMPOUND のタグが含まれる」（原文英語。本記録が訳した）—— **読み出しが成立することは一次資料で確認できる。** 出典4 も「あふれたデータの多くはクライアント自身の要求から来るものであり、 サーバは上書きされたデータの多くを応答で返すため、 攻撃者がカーネルメモリの配置を把握する助けになる」と述べている（原文英語。本記録が訳した）。 **境界外61バイトのうち40バイトを攻撃者が制御し、KASLR の回避と 任意オブジェクトの解放を経て root シェルに至るという具体は、 OpenSec の分析として韓国の報道が伝えたものである**（出典5）〈未確定7〉。</div></li></ol></div>
+<div class="blk " id="s5"><h3>被害組織の対応</h3><div class="blknote">所要日数は経過（タイムライン）の各時点から算出しています。</div><div class=mets><div class=met><div class=ml>セキュリティ上の報告から CVE 公開まで</div><div class=mv>**59日**（本記録の算出）—— **2026年9月21日の報告（出典4）から11月19日の CVE 公開（出典4）まで。** **なお上流のコミュニティで問題が浮上したのは8月17日であり、 そこから数えると94日である**（出典4）〈重要〉—— **「コミュニティで見えていた」時点と「セキュリティ問題として扱われた」時点が 1か月以上離れている**（本記録の整理）。</div></div><div class=met><div class=ml>CVE 公開からディストリビューションの修正提供まで</div><div class=mv>**本記録の確認時点（2026年11月27日）で完了していない**〈重要〉—— **CVE 公開（11月19日）から8日が経過した時点で、Ubuntu の LTS 5リリース （24.04／22.04／20.04／18.04／16.04）は未修正、 26.10 と 26.04 LTS は対応作業中である**（出典2）。 **Red Hat の Errata も11月26日時点で未配布と報じられている**（出典5）。 **上流の修正は存在するのに、利用者の大半はまだ適用できない状態である** （本記録の評価）。</div></div></div><div class=sub><b>この事案で下された判断</b></div><ul class=dec><li><div class=ui>OpenSec Intelligence は詳細分析と攻撃の実証結果を公表する一方、 **動作する実証コードは非公開に保っている**（出典4・5）。</div><span class="b rsn">理由は公表されていない</span><div class=fn><b>トレードオフ:</b> 分析を公表すれば、運用側は点検項目（カーネル版・nfsd・NFSv4.1/4.2・ポート）を 具体的に判断できる。 一方で**上流の修正と攻撃原理が公になれば、修正の差分から攻撃を組み立てる 「N-day の武器化」が早まる**（出典5 が懸念として伝えている）。 実証コードを出さなければその速度は落ちるが、完全には止まらない（本記録の読み）。</div></li><li><div class=ui>Red Hat は「既定構成では nfsd を動かさないため、攻撃面は NFSv4.1/4.2 の共有を 公開するよう設定された環境に限られる」と明示した（出典1）。</div><div class=fn><b>トレードオフ:</b> 攻撃面の限定を明示すれば、利用者は対応の優先度を現実的に判断できる。 一方で**「既定では動かない」という説明は、意図的に NFS サーバを運用している 環境には何の軽減にもならない**（本記録の整理）〈重要〉—— **そして NFS を動かす目的でそのホストを立てている場合、 それは「例外的な構成」ではなく主たる用途である**（本記録の評価）。</div></li></ul></div>
+<section id="s6"><h2>TCP 2049 への接続だけで境界外書き込みが起きる。原因は2014年のコード変更である<span class="b slot">概観</span></h2><p>Linux カーネルに内蔵された NFS サーバ（nfsd）に、認証も利用者の操作も要らずに境界外書き込みを起こせる脆弱性が公表された。CVE-2026-99362、呼称 NFS2ROOT。CVE は2026年11月19日に kernel.org の CNA から公開され（出典4）、CVSS 3.1 の基本値は 9.8（Critical）である（出典1・2）。</p>
+<p>成立の筋道は、仕様の交渉を悪用するものである。NFSv4.1 のセッション確立時、クライアントはキャッシュする応答のサイズを交渉できる。これを最小値まで小さくすると、セッションスロットのデータ用バッファが0バイトになる。そこへ細工した COMPOUND 要求を送ると、サーバは応答がスロットに収まるかを検査せずに書き込み、スロットの末尾を越えて上書きする（出典2・4）。</p>
+<p>Canonical の説明が示す構造が重要である——<strong>クライアントは、スロットを越えて書き込まれたバイトの大半を読み出せる</strong>（出典2）。書き込みと読み出しの双方が成立する。出典4 も、あふれたデータの多くはクライアント自身の要求から来るもので、サーバは上書きされたデータの多くを応答で返すため、攻撃者がカーネルメモリの配置を把握する助けになると述べている。</p>
+<p>原因のコード変更は2014年3月、カーネル 3.16 に入った（出典4・5）。<strong>12年間、LTS・各ディストリビューション・アプライアンスのカーネルに残った</strong>（出典5）。修正は 5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2・7.4-rc1 に入り、上流のコミットの表題は「nfsd: preflight SEQUENCE replies before accepting a slot」（スロットを受け入れる前に SEQUENCE 応答を事前検査する）とされている（出典4）。</p></section>
+<section id="s7"><h2>既定では動かない。しかし NFS サーバを立てている環境では主たる用途である<span class="b slot">被害規模・影響範囲</span></h2><p>影響を受けるのは、①カーネル内蔵の nfsd が動作し、②NFSv4.1 または NFSv4.2 が有効で、③TCP 2049 に到達できる経路があるホストである（出典1・4・5）。</p>
+<p>Red Hat はこの限定を明示している——RHEL の既定構成では nfsd を動かさないため、攻撃面は NFSv4.1/4.2 の共有を公開するよう設定された環境に限られる（出典1）。本記録はこの説明を適切と評価する（本記録の評価）。CVSS 9.8 という数字だけでは、全 Linux ホストが危険という読み方を招く。</p>
+<p>ただし、ここには読み替えが要る（本記録の読み）。<strong>「既定では動かない」という説明は、意図して NFS サーバを運用している環境には何の軽減にもならない。</strong>そして NFS を動かす目的でそのホストを立てているなら、それは例外的な構成ではなく主たる用途である。韓国の報道は具体的な対象として、共有ファイルサーバ、Kubernetes のストレージノード、Linux ベースの NAS、セキュリティアプライアンスを挙げている（出典5）。NAS とアプライアンスはカーネルを組み込んで出荷されるため、利用者が自力で更新できないことが多い（本記録の評価）。</p>
+<p>なお Red Hat と cve.org では評価が分かれている。Red Hat は CVSS を 9.4、完全性への影響を低（I:L）とし、影響を「サービス不能、および場合によってはコード実行」と記している（出典1）。cve.org と Canonical は 9.8、完全性への影響を高（I:H）とする（出典1・2）。そして OpenSec Intelligence の分析として報じられているのはリモート root シェルである（出典5）。運用側は、どの評価で優先度を決めるかを自分で選ぶことになる（本記録の整理）。</p></section>
+<section id="s8"><h2>上流に修正はある。だが本記録の確認時点で Ubuntu の LTS 5つは未修正である<span class="b slot">対策・注意喚起</span></h2><p>本件の運用上の核心はここにある。<strong>上流の修正は存在するのに、利用者の大半はまだ適用できない。</strong></p>
+<p>本記録が2026年11月27日に Canonical のセキュリティ情報で確認した状態は次のとおりである（出典2）——26.10（stonking）と 26.04 LTS（resolute）は対応作業中、<strong>24.04 LTS（noble）・22.04 LTS（jammy）・20.04 LTS（focal）・18.04 LTS（bionic）・16.04 LTS（xenial）は未修正</strong>。14.04（trusty）は影響なし。さらに linux-aws・linux-azure・linux-gcp・linux-oracle・linux-raspi・linux-gke、および FIPS 系の派生も多数が未修正とされていた。<strong>クラウド向けカーネルを使っている環境も同じ状態である。</strong> Red Hat についても、11月26日時点で公式の Errata はまだ配布されていないと報じられている（出典5）。CVE 公開（11月19日）から8日が経っている。</p>
+<p>この状況で採れる手段は限られる。第一に、<strong>TCP 2049 への到達を認可されたストレージ帯域に限定すること</strong>（出典1・4・5）。Red Hat は firewalld の規則を示しつつ、<code>firewall-cmd --reload</code> が明示的に許可されていないクライアントの接続を切断する点に注意するよう述べている（出典1）——規則の適用そのものが既存のセッションを切る。第二に、NFS が不要なら nfs-server を停止・無効化する（出典1）。第三に、暫定措置として /etc/nfs.conf で NFSv4.1・4.2 を無効化してサービスを再起動する（出典4・5）——ただしこれは NFSv4.1/4.2 に依存する運用を止める。</p>
+<p>そして「内部ネットワークだから安全」という判断は成り立たない（本記録の評価）。出典5 は、内部網へ侵入した後に共有ファイルサーバや Kubernetes のストレージノードを掌握する経路として悪用される危険が大きいと述べている。2049 を内部網に閉じておくことは外部直接露出を減らす要因だが、それだけである。</p></section>
+<section id="s9"><h2>版だけ見る点検では当たらない。4項目をホスト側で確かめる必要がある<span class="b slot">評価・解釈</span></h2><p>本件の点検は、脆弱性スキャナの版判定では埋まらない（本記録の評価）。</p>
+<p>理由は2つある。第一に、<strong>修正版の番号が系列ごとに異なる</strong>ことである—— 5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2（出典4）。「この版以上なら安全」という単一の基準が作れない。自ホストの系列を特定したうえで、その系列の修正版と照合する必要がある。</p>
+<p>第二に、<strong>攻撃面の有無がホストの設定で決まる</strong>ことである。韓国の報道が伝える OpenSec の推奨は4項目である——①稼働サーバのカーネル版、②nfsd モジュールの読み込みの有無、③NFSv4.1・4.2 の有効状態、④TCP 2049 の開放帯域。4条件すべてに該当するなら直ちに修正カーネルへ更新して再起動する（出典5）。②③④は稼働中のホストを調べないと分からない。版だけを見れば母数が過大になり、設定を見なければ本当に危ないホストが埋もれる（本記録の評価）。</p>
+<p>検知についても、本件は難しい側に寄っている。出典5 は、今回の攻撃が正常なNFS トラフィックの形を取るため、ネットワークシグネチャで振り分けるのが難しいと伝えている。代わりに示されているのはホスト側の痕跡である——カーネルログの <code>nfsd4_check_resp_size</code> 警告と、カーネルワーカーによる異常なシェル実行の痕跡（出典5）。本記録は OpenSec 自身の公表を取得できておらずこの指標を一次資料で確認していないが〈齟齬1〉、<strong>ネットワークで見えないものをホストのログで捕まえるという方向は、本件の構造と整合している</strong>（本記録の評価）。問題は、カーネルログの警告を集約して見ている組織が少ないことである。そして該当ホストが NAS やアプライアンスの場合、ログを外へ出せるかが先に問題になる（本記録の読み）。</p>
+<p>なお2026年11月26日時点で、実環境での悪用は報告されておらず、CISA KEV にも収載されていない（出典4）。OpenSec は実証コードを非公開に保っている（出典4・5）。ただし上流の修正と攻撃原理が公になったことで、N-day としての武器化が早まるとの懸念が示されている（出典5）。</p></section>
+<div class="blk " id="s10"><h3>事案の詳細</h3><div class=twrap><table class="g dt"><tbody><tr><th>影響を受けたシステム</th><td><div class=sub><b>名称:</b> Linux カーネル内蔵の NFS サーバ（nfsd）　<b>ベンダー:</b> Linux カーネル（kernel.org）　<b>CVE番号:</b> CVE-2026-99362　<b>CVE番号の公表状況:</b> stated　<b>バージョン:</b> **影響: カーネル 3.16 以降（2014年3月のコード変更で導入）から、 各系列の修正版より前のすべて**（出典4・5）。 **修正: 5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2・7.4-rc1**（出典4）〈重要〉—— **系列ごとに番号が異なるため、単一の基準値で判定できない**（本記録の評価）。 **Ubuntu 14.04（trusty）は「影響なし」とされている**（出典2）。　<b>概要:</b> **NFSv4.1 のセッション応答キャッシュ処理における境界外書き込み**（出典1・2・4）〈重要〉—— **クライアントが、キャッシュする応答のサイズ（ca_maxresponsesize_cached）を 最小値（NFSD_MIN_HDR_SEQ_SZ）まで小さく交渉できる。 その結果、セッションスロットのデータ用バッファ（sl_data[]）が0バイトになる**（出典2・4）。 **細工した COMPOUND 要求を送ると、サーバは応答がスロットに収まるかを検査せずに キャッシュへ書き込み、スロットの末尾を越えて書き込む**（出典2）。 弱点分類は CWE-787（境界外書き込み。出典1）。　<b>症状:</b> **Canonical の説明では、KASAN が検出するスラブ境界外書き込みが起きる。 さらにクライアントはスロットを越えて書き込まれたバイトの大半を読み出せ、 これには COMPOUND のタグが含まれる**（出典2）〈重要〉—— **書き込みと読み出しの双方が成立するため、カーネルメモリ配置の把握にも使える** （出典2・4。本記録の読み）。 **Red Hat の説明は影響を「サービス不能、および場合によってはコード実行」とする**（出典1）。 **OpenSec Intelligence の分析として報じられているのは、 0バイトのヒープバッファへ80バイトの応答が複写され境界外61バイトが上書きされ、 うち40バイトを攻撃者が制御して KASLR の回避と任意オブジェクトの解放を経て リモート root シェルに至るというものである**（出典5）〈未確定7〉。　<b>手法:</b> **TCP 2049 への接続のみ。認証（アカウント）も利用者の操作も要らない**（出典1・4・5）〈重要〉—— **細工したパケットの送信だけで成立するため、ゼロクリックの要件を満たす**（出典5）。　<b>内容:</b> 機密性・完全性・可用性すべてに高（C:H／I:H／A:H。cve.org の評価。出典1）。 **Red Hat は完全性への影響を低（I:L）と評価しており、見解が分かれている**（出典1）〈齟齬3〉。　<b>preconditions:</b> **①カーネル内蔵の nfsd が動作していること、②NFSv4.1 または NFSv4.2 が 有効であること、③TCP 2049 に到達できる経路があること**（出典1・4・5）〈重要〉—— **Red Hat は RHEL の既定構成では nfsd を動かさないため、 攻撃面は NFSv4.1/4.2 の共有を公開するよう設定された環境に限られると述べている**（出典1）。</div><div class=sub><b>名称:</b> Ubuntu の linux カーネルパッケージ（および aws/azure/gcp/oracle/raspi/gke・FIPS 系の派生）　<b>ベンダー:</b> Canonical（Ubuntu）　<b>CVE番号:</b> CVE-2026-99362　<b>CVE番号の公表状況:</b> stated　<b>バージョン:</b> **本記録が2026年11月27日に確認した時点の状態**（出典2）〈重要〉—— **26.10（stonking）: 対応作業中（7.3.0-12.13）／26.04 LTS（resolute）: 対応作業中（7.0.0-45.45）／ 24.04 LTS（noble）・22.04 LTS（jammy）・20.04 LTS（focal）・18.04 LTS（bionic）・ 16.04 LTS（xenial）: 未修正／14.04 LTS（trusty）: 影響なし。** **linux-aws・linux-azure・linux-gcp・linux-oracle・linux-raspi・linux-gke、 および linux-fips 系の派生（24.04／22.04／20.04／18.04）も多数が未修正。** **HWE・OEM・旧カーネルの一部は「対象外」（標準サポート終了・新カーネルへの置き換えが理由）。** **大半のリリースについて修正済みパッケージの版は示されていない。**　<b>概要:</b> **Canonical は深刻度を Critical、CVSS 3 基本値を 9.8 とする**（出典2）。 内容は上流と同一（NFSv4.1 のスロットのデータ用バッファが0長になることによる境界外書き込み）。　<b>症状:</b> 同上（出典2）。　<b>手法:</b> 同上（出典2）。　<b>内容:</b> 同上（出典2）。　<b>preconditions:</b> 同上。**クラウド向けカーネル（aws/azure/gcp）を使う環境も対象に含まれる**（出典2）〈重要〉—— **マネージドな環境だからカーネルの脆弱性に関係ないとは言えない**（本記録の評価）。</div></td></tr><tr><th>緩和策</th><td><div class=sub><b>手順:</b> **修正カーネルへ更新し、再起動する**（出典1・4・5）〈重要〉—— **自ホストのカーネル系列を特定し、その系列の修正版 （5.10.275／5.15.226／6.1.193／6.6.163／6.12.117／6.18.61／7.3.2／7.4-rc1）と照合する**（出典4）。 **再起動後に稼働中のカーネル版を確認する**（出典4）。　<b>副作用:</b> **カーネルの更新は再起動を要するため、サービス停止の調整が必要になる**（本記録の整理）。 **さらに本件では、ディストリビューション側の修正が間に合っていない**（出典2・5）〈重要〉—— **Ubuntu の LTS 5つは未修正であり（本記録の確認時点）、 Red Hat の Errata も11月26日時点で未配布と報じられている**（出典5）—— **したがって「更新する」という第一の対処が、環境によっては採れない。**</div><div class=sub><b>手順:</b> **TCP 2049 への到達を、認可されたストレージ帯域（信頼できるホスト）に限定する**（出典1・4・5）〈重要〉—— **Red Hat は firewalld の規則で信頼できるホストに制限することを示している**（出典1）。 **韓国の報道は、ディストリビューションの修正前であれば 認可された帯域以外からの TCP 2049 接続を全面的に遮断すべきと伝えている**（出典5）。　<b>副作用:</b> **Red Hat は `firewall-cmd --reload` が、明示的に許可されていないクライアントの 接続を切断する点に注意するよう述べている**（出典1）〈重要〉—— **規則の適用そのものが既存の NFS セッションを切る**（本記録の読み）。 **また「内部ネットワークだから安全」とは言えない**（本記録の評価）—— **出典5 は、内部網へ侵入した後に共有ファイルサーバや Kubernetes の ストレージノードを掌握する経路として悪用される危険が大きいと述べている。**</div><div class=sub><b>手順:</b> **NFS が不要なら nfs-server サービスを停止・無効化する**（出典1）。　<b>副作用:</b> **Red Hat は、サービスの停止が稼働中の NFS セッションを終了させる点に 注意するよう述べている**（出典1）。</div><div class=sub><b>手順:</b> **直ちに更新できない場合の暫定措置として、設定ファイル（/etc/nfs.conf）で NFSv4.1・NFSv4.2 を無効化してサービスを再起動する**（出典4・5）。　<b>副作用:</b> **NFSv4.1/4.2 の機能（セッション・pNFS 等）に依存する運用は止まる**（本記録の推定）—— **クライアント側の対応状況によっては共有そのものが使えなくなりうる。** **本記録はこの措置を、影響の見積りを済ませてから適用すべきものと評価する**（本記録の評価）。</div><div class=sub><b>手順:</b> **4項目の点検——①稼働サーバのカーネル版、②nfsd モジュールの読み込みの有無、 ③NFSv4.1・4.2 の有効状態、④TCP 2049 の開放帯域——を行い、 4条件すべてに該当するなら直ちに修正カーネルへ更新して再起動する**（出典5。OpenSec の推奨として報じられたもの）〈重要〉。　<b>副作用:</b> **この4項目は、脆弱性スキャナの版判定だけでは埋まらない**（本記録の評価）〈重要〉—— **カーネル版が該当していても nfsd を動かしていなければ攻撃面は無く、 逆に版だけ見て「要対応」と判定すると母数が過大になる**（本記録の読み）。 **②③④は稼働中のホストを調べないと分からない。**</div></td></tr></tbody></table></div></div>
+<div class="blk " id="s11"><h3>経過</h3><div class=twrap><table class=g><tbody><tr><td class="sm nowrap tw">2014年3月（コミット 47ee52986472 によってカーネル 3.16 へ入ったとされる時期）</td><td class=nowrap><span class="b kind">発生</span></td><td>原因となるコード変更が Linux カーネル 3.16 に入る。 **以後12年間、LTS・各ディストリビューション・アプライアンスのカーネル全般に残った**（出典4・5）。 コミット識別子は 47ee52986472 と報じられている（出典4 の検索結果要約に現れたが、 **本記録は上流のコミットそのものを確認していない**〈齟齬1〉）。</td></tr><tr><td class="sm nowrap tw">2026年8月17日</td><td class=nowrap><span class="b kind">判明</span></td><td>上流（カーネルのコミュニティ）でこの問題が浮上する（出典4）。 **この時点ではセキュリティ上の問題としての扱いではない**（本記録の読み。 出典4 は「surfaced upstream by the community」と区別して述べている）。</td></tr><tr><td class="sm nowrap tw">2026年9月21日</td><td class=nowrap><span class="b kind">外部からの指摘・通報</span></td><td>OpenSec Intelligence がセキュリティ上の問題として報告する（出典4）。</td></tr><tr><td class="sm nowrap tw">2026年11月19日</td><td class=nowrap><span class="b kind">公表</span></td><td>kernel.org の CNA が CVE-2026-99362 を公開する（出典4）。 Ubuntu のセキュリティ情報の公開日も同日である（出典2）。 **修正は「スロットを受け入れる前に SEQUENCE 応答を事前検査する」という内容で、 SEQUENCE 応答と後続操作のエラー状態のための領域が交渉した上限に収まるかを 検査するようになった**（出典2・4）。</td></tr><tr><td class="sm nowrap tw">2026年11月25日（現地時間）</td><td class=nowrap><span class="b kind">公表</span></td><td>OpenSec Intelligence が詳細分析と攻撃の実証結果を公表したと報じられている（出典5）。 **実証コードは非公開とされる**（出典4・5）。 **一方で、上流の修正と5段階の攻撃原理が公になったことで、 N-day としての武器化が早まるとの懸念が示されている**（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年11月25日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>Ubuntu のセキュリティ情報が更新される（出典2 の last updated）。 **本記録が11月27日に確認した時点でも、24.04／22.04／20.04／18.04／16.04 LTS は 「Vulnerable（未修正）」、26.10 と 26.04 LTS は「対応作業中」だった**（出典2）〈重要〉。</td></tr><tr><td class="sm nowrap tw">2026年11月26日</td><td class=nowrap><span class="b kind">対策の実施</span></td><td>**Red Hat が公式のセキュリティ更新（Errata）をまだ配布していない状態である**と 報じられている（出典5。「26日基準」）〈重要〉。 Ubuntu も主要カーネルパッケージを評価待ちの状態に置いているとされる（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年11月26日2時45分（UTC）</td><td class=nowrap><span class="b kind">公表</span></td><td>韓国の보안뉴스（Boannews）が本件を報じる。本記録の起点となった記事である（出典5）。</td></tr><tr><td class="sm nowrap tw">2026年11月26日</td><td class=nowrap><span class="b kind">公表</span></td><td>**実環境での悪用は報告されておらず、CISA KEV にも収載されていない**（出典4）〈重要〉。 公開された実証コードも確認されていないとされる。</td></tr></tbody></table></div></div>
+<div id="s12"><div class="box disc"><div class=bt>資料間の食い違い・留保<span class=bc>7</span></div><ul><li><span class="b dk">裏取りできていない</span><span class=ui>OpenSec Intelligence 自身の公表を本記録は読んでいない</span><div class=sm>**本記録は opensec.in の本文を取得できていない**（出典3）〈重要〉—— JavaScript とクッキーの有効化を要求する保護が返り、本文に到達しなかった （ブラウザ相当の User-Agent での取得も試みた）。 **したがって次の内容はすべて韓国の報道経由であり、一次資料で確認していない** （出典5）——①境界外61バイトの上書きと80バイトの複写、 ②うち40バイトを攻撃者が制御できること、 ③KASLR 回避と任意オブジェクトの解放を経てリモート root シェルに至ること、 ④4項目の点検推奨、 ⑤カーネルログの `nfsd4_check_resp_size` 警告とカーネルワーカーの 異常なシェル実行という検知指標、 ⑥2014年3月のコミット識別子 47ee52986472。 **一方で、脆弱性の機構そのもの（0長バッファ・境界外書き込み・ 上書き分の読み出し・修正の内容）は Canonical の一次資料で確認できている**（出典2）—— **報道が伝える分析は、この機構と整合している**（本記録の評価）。</div></li><li><span class="b dk">一次資料が沈黙している</span><span class=ui>Red Hat の製品別の修正状況を本記録は確認できていない</span><div class=sm>**本記録が取得した Red Hat のページ（出典1）には、 製品別の影響・修正状態の一覧表が含まれていなかった。** したがって RHEL 7〜10・OpenShift 4〜5 が影響対象に分類されているか、 Errata の配布予定がどうなっているかを、本記録は一次資料で確認していない〈未確定2〉。 韓国の報道はこれらを伝えているが（出典5）、本記録は報道経由の情報として扱う。 **読者が RHEL を使っている場合は、Red Hat の該当ページで 自組織の製品・版の状態を直接確認する必要がある**（本記録の注記）。</div></li><li><span class="b dk">発表・報道間の食い違い</span><span class=ui>Red Hat の CVSS 評価が報道と食い違う（9.4 対 9.8）</span><div class=sm>**本記録が Red Hat のページで確認した同社独自の CVSS 3.1 は 9.4 （AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:H）であり、完全性への影響を低（I:L）とする**（出典1）。 **一方、韓国の報道は「Red Hat がこの欠陥に CVSS 9.8 を付与した」と伝えている**（出典5）。 同じページに cve.org の値 9.8（I:H）が併記されているため、 **報道がこの併記値を Red Hat の評価として読んだ可能性がある**（本記録の推定）—— ただし断定しない。 **実務上の意味: 完全性への影響の評価が分かれるのは、 コード実行の成立をどう見るかの差である**（本記録の整理）—— Red Hat の説明は影響を「サービス不能、および場合によってはコード実行」とし、 第三者の分析はリモート root シェルとする（出典1・5）。 **深刻度の区分は、いずれの提供元でも Critical である。**</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>上流のコミットと修正差分を本記録は確認していない</span><div class=sm>**本記録は、原因となった2014年のコミット（47ee52986472 と報じられている）と、 修正コミット（「nfsd: preflight SEQUENCE replies before accepting a slot」と 報じられている）のいずれも、上流のリポジトリで確認していない。** したがって「どの判定が足りなかったか」「どの検査が追加されたか」を 差分として検証していない。 修正の内容についての記述は Canonical の説明（出典2）に基づく。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>Debian の修正状況を記録しない理由</span><div class=sm>本記録が行った検索の結果要約には「Debian 12（bookworm）の既定カーネル（6.1.192-2）は なお未修正」との記述が現れたが、**本記録は Debian のセキュリティトラッカーを 直接確認していない。** したがって本記録は Debian の状況を記録しない〈未確定5〉。 **Debian を使っている読者は自ら確認する必要がある**（本記録の注記）。 なお 6.1 系の修正版は 6.1.193 とされている（出典4）。</div></li><li><span class="b dk">参照先が変更された</span><span class=ui>Ubuntu の状態は本記録の確認時点のものである</span><div class=sm>**出典2 のページは修正の進行に応じて更新される。** 本記録が記載した状態（26.10・26.04 LTS は対応作業中、 24.04／22.04／20.04／18.04／16.04 LTS は未修正）は**2026年11月27日の確認時点のもの**である。 同ページの最終更新は2026年11月25日と表示されていた。 **読者は必ず現時点の状態を自ら確認すること**（本記録の注記）—— 本記録の数値（未修正の LTS が5つ）は、この時点の記録として残すものである。</div></li><li><span class="b dk">裏取りできていない</span><span class=ui>kernel.org の CVE レコード原文を本記録は読んでいない</span><div class=sm>**一次公表である kernel.org の CVE レコード（出典6）は、 lore のボット判定の仕組みに阻まれ本文を取得できなかった。** **公開の事実と日付（2026年11月19日・kernel.org の CNA）は、 watchTowr の FAQ（出典4）と Ubuntu のセキュリティ情報の公開日（出典2）の 一致によって確認している**（本記録の裏取り）。 **したがって本記録は、CVE レコードそのものに記載された説明文・ 影響範囲の表記を確認していない。** 機構の説明は Canonical（出典2）、修正版の一覧は watchTowr（出典4）に依拠する。</div></li></ul></div></div>
+<div class="part p2" id="part2"><div class="ph"><span class="pn">Part 2</span>ここから学べること</div><div class="pd">上の事実をもとにした本記録の評価・示唆です。<b>当事者が述べたことではありません。</b>読者は日本の CISO・セキュリティ技術者を想定しています。</div></div>
+<div class="blk " id="s13"><h3>波及の構造</h3><div class="blknote">事案の構造を図にしたものです。数値は公表値に基づきます。</div><div class=dia><div class=diat>TCP 2049 へ接続 → 応答キャッシュを最小値で交渉（スロットのバッファが0バイト）→ 細工した COMPOUND 要求 → 境界外61バイトの上書き＋上書き分の読み出し → KASLR 回避 → root（報じられた分析）</div><div class=svgwrap><svg viewBox="0 0 1610 252" width="100%" preserveAspectRatio="xMidYMid meet" role="img"><path d="M166,126.0 C193.0,126.0 193.0,87.0 220,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,87.0 C397.0,87.0 397.0,87.0 424,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,87.0 C601.0,87.0 601.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,48.0 C805.0,48.0 805.0,126.0 832,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M982,126.0 C1009.0,126.0 1009.0,126.0 1036,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1186,126.0 C1213.0,126.0 1213.0,126.0 1240,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M1390,126.0 C1417.0,126.0 1417.0,126.0 1444,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M574,165.0 C499.0,165.0 499.0,87.0 424,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,126.0 C703.0,126.0 703.0,48.0 628,48.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M370,165.0 C295.0,165.0 295.0,87.0 220,87.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><path d="M778,204.0 C703.0,204.0 703.0,126.0 628,126.0" fill="none" stroke="#2e3250" stroke-width="1.4"/><rect x="16" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="91.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">未認証の攻撃者（TCP </text><text x="91.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">2049 に到達できる位</text><text x="91.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">置。外部または内部網）</text><rect x="220" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">NFSv4.1 セッショ</text><text x="295.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ン確立: 応答キャッシュ</text><text x="295.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">のサイズを最小値まで交渉</text><rect x="424" y="55.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="499.0" y="77.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">セッションスロットのデー</text><text x="499.0" y="91.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">タ用バッファが0バイトに</text><text x="499.0" y="105.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">なる</text><rect x="628" y="16.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="38.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">細工した COMPOUN</text><text x="703.0" y="52.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">D 要求（検査なしでキャ</text><text x="703.0" y="66.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ッシュへ書き込まれる）</text><rect x="832" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="907.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">スラブ境界外書き込み（0</text><text x="907.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">バイトのバッファへ80バ</text><text x="907.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">イト／境界外61バイト…</text><rect x="1036" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1111.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">上書きされたバイトの大半</text><text x="1111.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">をクライアントが読み出せ</text><text x="1111.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">る（COMPOUND …</text><rect x="1240" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="1315.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">KASLR の回避と任意</text><text x="1315.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">オブジェクトの解放（報じ</text><text x="1315.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">られた分析）</text><rect x="1444" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#ffcc80" stroke-width="1.4"/><text x="1519.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">リモート root シェ</text><text x="1519.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ル（実環境での成立は未報</text><text x="1519.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">告）</text><rect x="424" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#64b5f6" stroke-width="1.4"/><text x="499.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">共有ファイルサーバ／Ku</text><text x="499.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">bernetes ストレ</text><text x="499.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ージノード／Linux…</text><rect x="628" y="94.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="703.0" y="116.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正カーネル 5.10.</text><text x="703.0" y="130.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">275／5.15.226</text><text x="703.0" y="144.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">／6.1.193／6.…</text><rect x="220" y="133.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#f48fb1" stroke-width="1.4"/><text x="295.0" y="155.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">緩和策: TCP 204</text><text x="295.0" y="169.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">9 を認可されたストレー</text><text x="295.0" y="183.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ジ帯域に限定／nfsd…</text><rect x="628" y="172.0" width="150" height="64" rx="6" fill="#1a1d27" stroke="#80cbc4" stroke-width="1.4"/><text x="703.0" y="194.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">配布版の提供遅れ（Ubu</text><text x="703.0" y="208.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">ntu LTS 5件が未</text><text x="703.0" y="222.0" text-anchor="middle" fill="#e2e8f0" font-size="11.5">修正・Red Hat …</text></svg></div><div class=fn>出典1・2・4から読み取れる構造に、出典5が伝える OpenSec の分析（バイト数・root シェル）を 重ねたもの。 **実環境での悪用は報告されていないため、右側2つは原理として示された筋道である**（出典4。〈未確定1〉）。 **バイト数と root 到達の具体は報道経由であり、本記録は一次資料を確認していない**（〈齟齬1〉）。</div></div></div>
+<div class="blk " id="s14"><h3>どこで止められたか</h3><div class="blknote">段階ごとに検知の機会があったか、どの対策があれば効きえたかを整理したものです。「効きえた対策」は本記録の評価であり、当事者が述べたものではありません。</div><div class=twrap><table class=g><thead><tr><th>段階</th><th>検知の機会</th><th>効きえた対策</th></tr></thead><tbody><tr><td class=nowrap><span class="b stage">初期侵入</span></td><td><span class="b do">現実的な検知機会なし</span><div class=sm>**本記録の評価**〈重要〉——**この段階は正規の NFS セッション確立の形をとる。** **出典5 は「今回の攻撃が正常な NFS トラフィックの形を取るため、 ネットワークシグネチャで振り分けるのが難しい」と伝えている**（出典5）—— **交渉値が極端に小さいことは原理的には観測できるが、 それを見ている監視は通常存在しない**（本記録の読み）。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>TCP 2049 への到達を、認可されたストレージ帯域（信頼できるクライアント）に限定する （firewalld 等。出典1・4・5）。<span class=sm>　**修正が提供されない環境における唯一の実効策である**（本記録の評価）〈重要〉—— **ディストリビューションの修正が遅れている本件では、 これが第一の対処になる環境が多い**（出典2・5）。</span></div><div class=ctl><span class="b eff">侵入を防げた</span>NFS が不要なホストで nfs-server を停止・無効化する（出典1）。<span class=sm>　Red Hat が示す緩和策（出典1）。 **既定構成では nfsd が動かないため、意図せず有効になっているホストを 洗い出す価値がある**（本記録の評価）。</span></div></td></tr><tr><td class=nowrap><span class="b stage">実行</span></td><td><span class="b do">機会はあったが検知できず</span><div class=sm>**カーネルログに痕跡が出る可能性がある**（本記録の評価）〈重要〉—— **出典5 は、OpenSec がカーネルログの `nfsd4_check_resp_size` 警告を 重点的に監視するよう付言したと伝えている**〈未確定7〉。 **本記録はこの指標を一次資料で確認していない**〈齟齬1〉。 **ただしカーネルログの警告を集約して監視している組織は限られる**（本記録の読み）—— 監視していなければ、痕跡は出ても誰も見ない。</div></td><td><div class=ctl><span class="b eff">侵入を防げた</span>修正カーネル（系列ごとの修正版）へ更新し、再起動する（出典1・4・5）。<span class=sm>　上流の修正が検査を追加している（出典2・4）。 **ただし本件では、ディストリビューション側の提供が間に合っていない環境がある**（出典2・5）。</span></div><div class=ctl><span class="b eff">検知できた</span>カーネルログ（dmesg・journald）の警告を集約し、 NFS 関連の境界検査の警告と KASAN の検出を警報の対象にする。<span class=sm>　本記録の評価。**ネットワーク側で見分けられない攻撃を、 ホスト側の痕跡で捕まえるという設計である**（本記録の読み）。 **集約の仕組みが先に要る**——該当ホストが NAS やアプライアンスの場合、 ログを外へ出せるかが先に問題になる。</span></div></td></tr><tr><td class=nowrap><span class="b stage">権限昇格</span></td><td><span class="b do">公表されていない</span><div class=sm>**実環境での成立例が報告されていないため、どのような痕跡が残るかを示す 資料が無い**（〈未確定1〉）。 **出典5 は、カーネルワーカーによる異常なシェル実行の痕跡を 監視対象にすべきと伝えている**〈未確定7〉。</div></td><td><div class=ctl><span class="b eff">検知できた</span>カーネルプロセス（ワーカー）からの子プロセス生成・シェル実行を 検知対象に加える（EDR・監査ログ）。<span class=sm>　本記録の評価。**カーネルスレッドがシェルを起動することは正常時に起きない**（本記録の読み）—— 平常時のベースラインを取る必要がない種類の指標である。</span></div><div class=ctl><span class="b eff">影響を限定できた</span>NFS サーバを、他の機能を兼ねない専用ホスト（または専用ネットワーク区画）で動かす。<span class=sm>　本記録の評価。**本件は root の取得に至るため、成立後の限定は難しい**（本記録の読み）—— **できるのは、そのホストから他へ広がる範囲を事前に狭めることである。** とくに Kubernetes のストレージノードは、掌握されると多数の 利用側に影響が及ぶ（出典5）。</span></div></td></tr></tbody></table></div></div>
+<div class="blk " id="s15"><h3>対応の評価</h3><div class="blknote">評価材料がない判断は「評価材料なし」としています。結果論で断じないための区分です。</div><div class=twrap><table class=g><thead><tr><th>判断</th><th>評価</th><th>評価の根拠と留保</th></tr></thead><tbody><tr><td>OpenSec Intelligence は詳細分析と攻撃の実証結果を公表する一方、 **動作する実証コードは非公開に保っている**（出典4・5）。</td><td class=nowrap><span class="b assess">機能した</span></td><td class=sm>本記録の評価。**実証コードを非公開に保つ判断は、 ディストリビューションの修正が揃っていない状況では合理的である**（本記録の読み）〈重要〉—— **本件は上流に修正があるのに下流の提供が遅れており、 「更新せよ」という助言が成立しない環境が多数ある**（出典2・5）。 **同時に、4項目の点検（カーネル版・nfsd の読み込み・NFSv4.1/4.2・ポート開放）という 具体的な判断基準が示されたことで、運用側は母数を絞れる**（本記録の評価）。 ただし本記録は OpenSec 自身の公表を確認できていないため、 評価は報道経由の内容に基づく〈齟齬1〉。</td></tr><tr><td>Red Hat は「既定構成では nfsd を動かさないため、攻撃面は NFSv4.1/4.2 の共有を 公開するよう設定された環境に限られる」と明示した（出典1）。</td><td class=nowrap><span class="b assess">部分的に機能</span></td><td class=sm>本記録の評価。**影響範囲の限定を明示する姿勢は適切である**（本記録の読み）—— CVSS 9.8 という数字だけでは、全 Linux ホストが危険という読み方を招く。 **一方で、Red Hat が完全性への影響を低（I:L）と評価し、 影響を「サービス不能、および場合によってはコード実行」と記していることは、 cve.org の評価（I:H）および OpenSec の分析（root シェル）と 温度差がある**（出典1・5）〈齟齬3〉—— **運用側は、どちらの評価で優先度を決めるかを自分で選ぶことになる。**</td></tr></tbody></table></div></div>
+<div id="s16"><div class=less><div class=lesst>CISO・経営層への示唆</div><ul><li><div class=lp>「上流に修正がある」と「自社が適用できる」は別である。その差を期間として管理する。</div><div class=lw>本件では上流の修正が各系列に入っているのに、 **本記録の確認時点（CVE 公開から8日後）で Ubuntu の LTS 5リリースが未修正、 Red Hat の Errata も未配布と報じられている**（出典2・5）〈重要〉。 **「更新する」という第一の助言が成立しない期間が現に存在する**（本記録の評価）。</div><div class=la><b>取るべき行動</b> 重大な脆弱性の対応台帳に「上流修正の有無」と「自社が使う配布版での提供状況」を 別の列として持たせ、両者が食い違う期間を**代替策の有効期間**として管理する。 その期間に適用した代替策（ネットワーク制限等）の解除条件を、提供状況の列と紐づける。</div></li><li><div class=lp>カーネルの脆弱性を「クラウドだから関係ない」と判断しない。</div><div class=lw>Canonical の一覧では linux-aws・linux-azure・linux-gcp・linux-oracle・linux-gke といった クラウド向けカーネルも多数が未修正とされていた（出典2）〈重要〉。 **マネージドな基盤でも、ノードのカーネルは利用者側の責任範囲に入ることが多い**（本記録の評価）。</div><div class=la><b>取るべき行動</b> クラウド上のノード（EC2・VM・Kubernetes のワーカー）について、 使用しているカーネルの系列と版を一覧化し、本件のような系列別の修正に 照合できる状態にする。 マネージドなノードについては、提供者の更新方針（自動更新の有無・適用のタイミング）を 文書として確認する。</div></li><li><div class=lp>NAS・アプライアンスの「中のカーネル」を資産台帳に書く。</div><div class=lw>カーネル 3.16 以降が広く影響を受けるため、Linux ベースの NAS と セキュリティアプライアンスもメーカーのファームウェア点検が必要とされている（出典5）。 **これらは利用者が自力でカーネルを更新できず、メーカーの対応を待つしかない**（本記録の評価）〈重要〉—— そして対応の有無は、台帳に製品名しか書いていなければ追跡できない。</div><div class=la><b>取るべき行動</b> NAS・アプライアンス・組み込み機器について、台帳に①基盤 OS、②NFS 等の サービスの有効状態、③メーカーのセキュリティ情報の公開先 URL を記載する。 本件については、各メーカーへ CVE-2026-99362 への対応予定を照会する。</div></li><li><div class=lp>深刻度の評価が提供元で割れたときの決め方を、先に決めておく。</div><div class=lw>本件では cve.org と Canonical が CVSS 9.8（完全性への影響を高）、 Red Hat が 9.4（完全性への影響を低。影響を「サービス不能、および場合によってはコード実行」）と 評価が分かれている（出典1・2）〈重要〉。 さらに第三者の分析はリモート root シェルに至るとしている（出典5）。 **事案の最中にどの数字を採るかを議論すると、対応が遅れる**（本記録の読み）。</div><div class=la><b>取るべき行動</b> 脆弱性対応の規程に「複数の提供元で深刻度が異なる場合は最も高い評価を採る」 または「自社の構成に基づいて再評価する手順」を明記する。 本件のように攻撃面が設定に依存する場合は、後者の手順（構成の確認項目）を 具体的に書いておく。</div></li></ul></div></div>
+<div id="s17"><div class=less><div class=lesst>セキュリティ技術者への示唆</div><ul><li><div class=lp>版だけでなく「nfsd が動いているか・NFSv4.1/4.2 が有効か・2049 が誰に開いているか」を確かめる。</div><div class=lw>報じられている OpenSec の推奨は4項目であり、 **4条件すべてに該当する場合に直ちに更新・再起動すべきとされている**（出典5）〈重要〉。 **版だけを見れば母数が過大になり、設定を見なければ本当に危ないホストが埋もれる**（本記録の評価）。 **また修正版の番号は系列ごとに異なるため、単一の基準値では判定できない**（出典4）。</div><div class=la><b>取るべき行動</b> 全 Linux ホストに対して、①`uname -r` でカーネル系列と版、 ②nfsd の読み込み状態（`lsmod | grep nfsd`／`systemctl is-active nfs-server`）、 ③NFSv4.1・4.2 の有効状態（`/etc/nfs.conf`・`/proc/fs/nfsd/versions`）、 ④TCP 2049 の待ち受けと到達元の制限、を一度に集める点検を実施する。 結果を系列別の修正版（5.10.275／5.15.226／6.1.193／6.6.163／6.12.117／6.18.61／7.3.2）と 照合する。</div></li><li><div class=lp>ネットワークで見分けられない攻撃を、カーネルログで捕まえる準備をする。</div><div class=lw>**本件は正常な NFS トラフィックの形を取るため、ネットワークシグネチャでの 振り分けが難しいとされている**（出典5）〈重要〉。 代わりに示されているのはカーネルログの `nfsd4_check_resp_size` 警告と、 カーネルワーカーによる異常なシェル実行の痕跡である（出典5）〈未確定7〉。 **ただしカーネルログの警告を集約している組織は限られる**（本記録の評価）。</div><div class=la><b>取るべき行動</b> NFS サーバのカーネルログ（dmesg・journald）を集約基盤へ転送し、 NFS 関連の境界検査の警告と KASAN の検出を警報の対象にする。 併せて、カーネルスレッドからの子プロセス生成・シェル実行を検知対象に加える（EDR・監査ログ）—— **これは正常時に起きない事象であり、ベースラインを取る必要がない。**</div></li><li><div class=lp>firewalld の規則を当てる前に、既存セッションが切れることを織り込む。</div><div class=lw>Red Hat は、信頼できるホストへの制限を示しつつ、 **`firewall-cmd --reload` が明示的に許可されていないクライアントの接続を 切断する点に注意するよう述べている**（出典1）〈重要〉。 **nfs-server の停止も稼働中のセッションを終了させる**（出典1）—— **緩和策の適用そのものが業務を止めうる**（本記録の整理）。</div><div class=la><b>取るべき行動</b> NFS サーバごとに、現在接続しているクライアントの一覧を取得し （`ss -tn state established &#x27;( dport = :2049 or sport = :2049 )&#x27;` 等）、 許可リストを作ってから規則を適用する。 適用は業務影響を調整した時間帯に行い、適用後に接続の再確立を確認する。</div></li><li><div class=lp>Kubernetes の NFS 永続ストレージを、単一ホストの掌握が全体に及ぶ経路として見る。</div><div class=lw>出典5 は、内部網へ侵入した後に共有ファイルサーバや Kubernetes の ストレージノードを掌握する経路として悪用される危険が大きいと述べている〈重要〉。 **ストレージノードは多数の利用側が依存する集約点であり、 root を取られれば全ての永続データに手が届く**（本記録の評価）。</div><div class=la><b>取るべき行動</b> Kubernetes の NFS プロビジョナ・ストレージノードについて、 ①2049 への到達元をクラスタのノード帯域に限定する、 ②ノードを他の用途と兼用しない、 ③当該ホストのカーネル版を上記4項目の点検に含める、を実施する。 NFS 以外の選択肢（CSI ドライバの変更）がある場合は、移行の検討も記録に残す。</div></li><li><div class=lp>暫定措置として NFSv4.1/4.2 を無効化する場合は、影響を先に測る。</div><div class=lw>/etc/nfs.conf で NFSv4.1・4.2 を無効化する暫定措置が示されているが（出典4・5）、 **NFSv4.1/4.2 の機能（セッション等）に依存する運用は止まる**（本記録の推定）—— クライアント側の対応状況によっては共有そのものが使えなくなりうる（本記録の読み）。</div><div class=la><b>取るべき行動</b> 無効化を検討する前に、各 NFS サーバへ接続しているクライアントの使用バージョンを 確認する（`/proc/fs/nfsd/clients` 等）。 NFSv4.0 以下へ落とせるクライアントだけで構成されているサーバを特定し、 そこから順に適用する。適用できないサーバはネットワーク制限で守る。</div></li></ul></div></div>
+<div class="blk " id="s18"><h3>自組織に当てはまるか</h3><div class="blknote">該当する項目があれば、この事案と同じ構図が自組織でも成立しうることを意味します。</div><div class=twrap><table class=g><thead><tr><th>観点</th><th>自社に当てはまるか</th><th>該当する場合に何が起きうるか</th></tr></thead><tbody><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> カーネル内蔵の nfsd を動かし、NFSv4.1 または NFSv4.2 の共有を公開しているホストがある （カーネル 3.16 以降・各系列の修正版より前）。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> TCP 2049 が、認可されたストレージ帯域の外（他の社内セグメント・インターネット）から 到達できる。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 使用している配布版（Ubuntu の LTS・RHEL 等）で、本件の修正カーネルがまだ提供されていない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">システム構成</span></td><td><span class=chk>□</span> Kubernetes の永続ストレージに NFS を使っている（NFS プロビジョナ・ストレージノード）。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">委託・第三者部品</span></td><td><span class=chk>□</span> Linux ベースの NAS・セキュリティアプライアンスを運用しており、 カーネルを自分で更新できない。</td><td class=sm></td></tr><tr><td class=nowrap><span class="b axis">運用・監視</span></td><td><span class=chk>□</span> 脆弱性の点検を、スキャナによるカーネル版の判定だけで行っている。</td><td class=sm></td></tr></tbody></table></div></div>
+<div class="blk " id="s19"><h3>出典</h3><div class=rg><div class=rgt>当事者の公表</div><ol><li><span class=rid>[6]</span> <span class=sm>2026年11月19日（kernel.org の CNA が CVE を公開した日） Linux カーネル（kernel.org・CVE 採番機関）</span> <a href="https://lore.kernel.org/linux-cve-announce/?q=CVE-2026-99362" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-99362 の CVE レコード（kernel.org CNA による公開）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（**本件の一次公表にあたる資料だが、本記録は本文を取得できていない**〈齟齬7〉〈重要〉—— kernel.org の lore（メーリングリストのアーカイブ）がボット判定の仕組み （Anubis。JavaScript による検証）を返し、本文に到達しなかった。 **公開の事実と日付（2026年11月19日・kernel.org の CNA による）は 出典4 で確認し、Ubuntu のセキュリティ情報の公開日も同日であることを 出典2 で確認した**（本記録の裏取り）。 上流の修正版の一覧と修正コミットの表題も出典4 経由である。 **したがって本記録は、一次公表の存在と日付は二次資料2件の一致で確認したが、 原文は読んでいない。**）</span></li></ol></div><div class=rg><div class=rgt>波及先組織の公表</div><ol><li><span class=rid>[1]</span> <span class=sm>公開日は本記録が確認したページに記載が無かった（最終更新の欄も空） Red Hat</span> <a href="https://access.redhat.com/security/cve/CVE-2026-99362" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-99362（Red Hat Customer Portal のセキュリティ情報）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（本記録が本文を取得して確認した。 **Red Hat 独自の CVSS 3.1 は 9.4（AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:L/A:H）で、 同じページに cve.org の値 9.8（C:H/I:H/A:H）も併記されている。 NVD は本記録の確認時点で未掲載（N/A）だった。** 弱点分類は CWE-787。 影響の説明は「サービス不能、および場合によってはコード実行」。 **深刻度は Critical とし、既定構成では nfsd を動かさないため 攻撃面は NFSv4.1/4.2 の共有を公開するよう設定された環境に限られると述べる。** 緩和策（nfs-server の停止・無効化、firewalld による 2049 の制限、 および reload が未許可クライアントの接続を切る点の注意）もここから取った。 Bugzilla 2576719 と上流の stable ツリーのコミットへのリンクがある。 **製品別の修正状況の一覧表は、本記録が取得したページには含まれていなかった**〈齟齬2〉。 value は CVE の公開日を便宜上置いたものである（ページに公開日の記載が無いため）。）</span></li><li><span class=rid>[2]</span> <span class=sm>2026年11月19日公開・2026年11月25日最終更新 Canonical（Ubuntu Security）</span> <a href="https://ubuntu.com/security/CVE-2026-99362" target="_blank" rel="noreferrer noopener nofollow">CVE-2026-99362（Ubuntu Security のセキュリティ情報）</a> <span class="b kind">脆弱性情報（JVN/CVE等）</span><span class=sm>（本記録が本文を取得して確認した。 **技術的な説明が最も詳しい一次資料である**—— 「クライアントは非常に小さいキャッシュ応答サイズを交渉でき、 それによってセッションスロットのデータ用バッファが0長になる。 細工した COMPOUND 要求によってサーバがスロットの末尾を越えて応答を書き込み、 KASAN が検出するスラブ境界外書き込みが起きる。 **クライアントはスロットを越えて書き込まれたバイトの大半を読み出せ、 これには COMPOUND のタグが含まれる。** 修正は、SEQUENCE 応答と後続操作のエラー状態のための領域が 交渉した上限に収まるかを、スロットを使う前に検査する」 （原文英語。本記録が訳した）。 深刻度 Critical・CVSS 3 基本値 9.8。 **リリース別の状態（26.10・26.04 LTS は対応作業中、24.04／22.04／20.04／18.04／16.04 LTS は 未修正、14.04 は影響なし）、および linux-aws/azure/gcp/oracle/raspi/gke・FIPS 系の派生が 多数未修正であることをここで確認した**〈重要〉。 HWE・OEM・旧カーネルの一部は「対象外」（標準サポート終了・新カーネルへの置き換えが理由）。）</span></li></ol></div><div class=rg><div class=rgt>ベンダー分析</div><ol><li><span class=rid>[4]</span> <span class=sm>2026年11月26日時点の内容（本記録の確認時点。「as of November 26, 2026」の記述がある） watchTowr</span> <a href="https://watchtowr.com/intelligence/nfs2root-linux-nfs-cve-2026-99362-faq/" target="_blank" rel="noreferrer noopener nofollow">NFS2ROOT (CVE-2026-99362) FAQ: Linux NFS Exposure and Fix</a> <span class="b kind">調査レポート</span><span class=sm>（本記録が本文を取得して確認した。 **経緯の日付はここから取った**——2026年8月17日に上流のコミュニティで浮上、 9月21日に OpenSec がセキュリティ問題として報告、11月19日に kernel.org の CNA が CVE を公開。 **修正版の一覧（5.10.275・5.15.226・6.1.193・6.6.163・6.12.117・6.18.61・7.3.2・7.4-rc1）、 2014年3月・カーネル 3.16 での導入、CVSS 9.8、 「2026年11月26日時点で実環境での悪用の報告は無く、CISA KEV にも未収載」もここから取った。** 緩和策（修正カーネルへの更新と再起動、2049 の制限、NFSv4.1/4.2 の無効化）、 および運用手順（nfsd 稼働ホストの特定 → 系列と版の確認 → 再起動後の稼働版の確認）も同様。 **ページには境界外のバイト数・ディストリビューション別の状況・ 検知手法の記述は無かった**（本記録の確認）。）</span></li></ol></div><div class=rg><div class=rgt>個人研究者</div><ol><li><span class=rid>[3]</span> <span class=sm>2026年11月25日（現地時間。報道が伝えた公表日） OpenSec Intelligence</span> <a href="https://opensec.in/blog/nfs2root-cve-2026-99362" target="_blank" rel="noreferrer noopener nofollow">NFS2ROOT (CVE-2026-99362): pre-auth root in Linux nfsd</a> <span class="b kind">調査レポート</span><span class=sm>（**本記録はこの資料の本文を取得できていない**〈齟齬1〉〈重要〉—— JavaScript とクッキーの有効化を要求する保護（「Just a moment...」）が返り、 本文に到達しなかった（ブラウザ相当の User-Agent による取得も試みた）。 **したがって本記録に現れる「境界外61バイト・うち40バイトを攻撃者が制御・ KASLR 回避・リモート root シェル・4項目の点検推奨・ `nfsd4_check_resp_size` 警告の監視」は、すべて出典5（韓国の報道）が伝えた 内容であり、本記録は一次資料で確認していない。** 発見・報告の経緯（2026年9月21日の報告）は出典4 で確認した。）</span></li></ol></div><div class=rg><div class=rgt>報道</div><ol><li><span class=rid>[5]</span> <span class=sm>2026年11月26日2時45分（UTC） 보안뉴스（Boannews・韓国）</span> <a href="https://www.boannews.com/news/articleView.html?idxno=147562" target="_blank" rel="noreferrer noopener nofollow">인증 없이 루트 권한 탈취... 리눅스 &#x27;NFS2ROOT&#x27; 제로클릭 경보</a> <span class="b kind">記事</span><span class=sm>（本記録の起点となった報道。OpenSec Intelligence の分析として、 **0バイトのヒープバッファへ80バイトの応答が複写され境界外61バイトが上書きされること、 うち40バイトを攻撃者が制御して KASLR 回避と任意オブジェクトの解放を経て リモート root シェルに至ること、実証コードは非公開であること、 4項目の点検推奨、カーネルログの `nfsd4_check_resp_size` 警告と カーネルワーカーの異常なシェル実行の監視、 攻撃が正常な NFS トラフィックの形を取るためネットワークシグネチャでの 検知が難しいこと**を伝える。 また **Red Hat が RHEL 7〜10 と OpenShift 4〜5 を影響対象に分類し CVSS 9.8 を付与したが11月26日時点で Errata は未配布、Ubuntu も 26.04 LTS を含む 主要カーネルパッケージを評価待ちに置いている**と伝える〈齟齬3〉。 **Linux ベース NAS・セキュリティアプライアンスのファームウェア点検の必要、 内部網侵入後に共有ファイルサーバ・Kubernetes ストレージノードを掌握する経路としての危険、 上流修正と5段階の攻撃原理の公開による N-day 武器化の懸念**も同様。 **本記録は出典3（OpenSec 自身の公表）を取得できていないため、 上記の技術的な数値と検知指標はこの報道経由である**〈齟齬1〉。）</span></li></ol></div></div>
+<div id="sec-updates"><div class="blk " id="s20"><h3>この記録の更新履歴</h3><ul class="sm"><li><span class=sm>2026年11月26日</span> <span class="b rev">新規作成</span> 2026年11月26日の보안뉴스（韓国）の報道を起点に作成。 一次資料として Canonical のセキュリティ情報（機構の説明・修正の内容・ リリース別の状態）と Red Hat のセキュリティ情報（独自 CVSS 9.4・ 既定構成での攻撃面の限定・緩和策）を取得して確認し、 watchTowr の FAQ で経緯の日付・修正版の一覧・悪用とKEVの状況を確認した。 **OpenSec Intelligence 自身の公表は JavaScript による保護のため取得できず、 境界外61バイト等の技術的な数値と検知指標は報道経由である** —— この限界を discrepancies[self_unverified] と references[3].note に記録した。 **Red Hat の CVSS が報道（9.8）と一次資料（9.4）で食い違う点を discrepancies[source_conflict] に記録した。** Ubuntu の修正状況は確認時点のものであることを discrepancies[content_changed] に明記した。</li></ul></div></div>
+<div class="blk " id="s21"><h3>タグ</h3><span class="b tag">Linuxカーネル</span><span class="b tag">nfsd</span><span class="b tag">NFS</span><span class="b tag">NFS2ROOT</span><span class="b tag">CVE-2026-99362</span><span class="b tag">CWE-787</span><span class="b tag">境界外書き込み</span><span class="b tag">ゼロクリック</span><span class="b tag">未認証RCE</span><span class="b tag">TCP2049</span><span class="b tag">Kubernetes</span><span class="b tag">NAS</span><span class="b tag">パッチ提供遅れ</span></div>
+
+<script>
+// 狭い画面では目次を畳んでおく（本文が遠くなるのを避ける）。
+// 広い画面ではサイドバーとして常時表示するので開いたままにする。
+(function () {
+  var toc = document.getElementById('toc');
+  if (!toc) return;
+  var narrow = window.matchMedia('(max-width: 1179px)');
+  function sync(e) { if (e.matches) toc.removeAttribute('open'); else toc.setAttribute('open', ''); }
+  sync(narrow);
+  if (narrow.addEventListener) narrow.addEventListener('change', sync);
+  // 目次から飛んだら、狭い画面では畳んで本文を見せる
+  toc.addEventListener('click', function (ev) {
+    if (ev.target.tagName === 'A' && narrow.matches) toc.removeAttribute('open');
+  });
+})();
+</script>
+
+<footer>
+  インシデント事例DB — 自動生成｜作成 2026-11-27 09:10 JST<br>
+  <b>Part 1（起きたこと）</b>は公表資料・報道に基づく事実の記録です。数値には確度と出所を、
+  出典には一次情報／報道の別を付しています。公表されていない事項は削除せず明示しています。<br>
+  <b>Part 2（学べること）</b>は本記録による評価・示唆であり、当事者の見解ではありません。
+</footer>
+</div>
+</body>
+</html>
